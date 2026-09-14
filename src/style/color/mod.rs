@@ -56,6 +56,13 @@ impl StyleColor {
 
 /// A trait implemented by color values that can be resolved into RGBA output.
 pub trait ColorLike {
+    /// Whether every color conversion is a pure function of this value's
+    /// owned storage. Return false for interior-mutable or externally backed
+    /// colors. A true result permits observation reuse until mutable access
+    /// to the containing component; the guarantee must hold for its lifetime.
+    fn is_immutable(&self) -> bool {
+        false
+    }
     fn box_clone(&self) -> Box<dyn ColorLike>;
     fn to_rgba_f32(&self) -> [f32; 4];
     fn as_oklch(&self) -> Option<&OklchColor> {
@@ -100,6 +107,9 @@ impl Clone for Box<dyn ColorLike> {
 }
 
 impl ColorLike for Box<dyn ColorLike> {
+    fn is_immutable(&self) -> bool {
+        (**self).is_immutable()
+    }
     fn box_clone(&self) -> Box<dyn ColorLike> {
         (**self).box_clone()
     }
@@ -114,6 +124,9 @@ impl ColorLike for Box<dyn ColorLike> {
 }
 
 impl ColorLike for Color {
+    fn is_immutable(&self) -> bool {
+        true
+    }
     fn box_clone(&self) -> Box<dyn ColorLike> {
         Box::new(*self)
     }
@@ -129,6 +142,9 @@ impl ColorLike for Color {
 }
 
 impl ColorLike for StyleColor {
+    fn is_immutable(&self) -> bool {
+        true
+    }
     fn box_clone(&self) -> Box<dyn ColorLike> {
         Box::new(self.clone())
     }

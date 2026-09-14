@@ -1319,8 +1319,9 @@ impl ElementTrait for MalformedRecordingHost {
                 properties: chunk.properties,
                 content_revision: chunk.content_revision,
                 payload_identity: chunk.payload_identity,
-            }],
-            ops: Vec::new(),
+            }]
+            .into(),
+            ops: Vec::new().into(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),
@@ -1477,7 +1478,7 @@ fn compiler_rect_phase_artifact(role: PaintChunkRole, rects: Vec<DrawRectOp>) ->
     chunk.payload_identity = PaintPayloadIdentity::prepared_rects(rects.iter())
         .expect("rect phase fixture must have canonical identity");
     artifact.ops = rects.into_iter().map(PaintOp::DrawRect).collect();
-    artifact.chunks = vec![chunk];
+    artifact.chunks = vec![chunk].into();
     artifact
 }
 

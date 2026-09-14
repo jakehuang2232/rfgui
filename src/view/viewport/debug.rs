@@ -283,10 +283,18 @@ pub(super) fn build_compile_trace_nodes(
         ));
     }
 
-    let mut nodes = vec![
+    let nodes = vec![
         TraceRenderNode::new(
             format!("setup_passes (passes={})", profile.setup_pass_count),
             profile.setup_passes_ms,
+        ),
+        TraceRenderNode::new(
+            if profile.topology_cache_hit {
+                "topology_cache [HIT]"
+            } else {
+                "topology_cache [MISS]"
+            },
+            profile.topology_cache_lookup_ms,
         ),
         TraceRenderNode::new(
             "annotate_resource_versions",
@@ -317,9 +325,6 @@ pub(super) fn build_compile_trace_nodes(
                 .collect(),
         ),
     ];
-    if profile.topology_cache_hit {
-        nodes.insert(0, TraceRenderNode::new("topology_cache [HIT]", 0.0));
-    }
     nodes
 }
 

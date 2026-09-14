@@ -26,7 +26,7 @@ fn select_label(item: &String, _: usize) -> String {
 }
 
 #[component]
-pub fn ComponentTest(theme: Theme) -> RsxNode {
+pub fn ComponentTest(theme: Theme, animation_on: bool) -> RsxNode {
     let options = (1..=1000)
         .map(|index| format!("Option {index}"))
         .collect::<Vec<String>>();
@@ -49,7 +49,7 @@ pub fn ComponentTest(theme: Theme) -> RsxNode {
             <TooltipSection theme={theme.clone()} />
             <SnackbarSection theme={theme.clone()} />
             <NumberFieldSection theme={theme.clone()} />
-            <MaterialSymbolsSection theme={theme.clone()} />
+            <MaterialSymbolsSection theme={theme.clone()} animation_on={animation_on} />
             <TreeViewSection theme={theme.clone()} />
             <Checkbox
                 label="Enable flag"

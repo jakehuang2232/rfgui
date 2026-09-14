@@ -57,6 +57,9 @@ pub fn darken_color(base: &dyn ColorLike, amount: f32) -> OklchColor {
 }
 
 impl ColorLike for OklchColor {
+    fn is_immutable(&self) -> bool {
+        true
+    }
     fn box_clone(&self) -> Box<dyn ColorLike> {
         Box::new(self.clone())
     }

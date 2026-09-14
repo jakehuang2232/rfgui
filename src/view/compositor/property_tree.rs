@@ -1111,28 +1111,38 @@ impl PropertyChangeFlags {
 /// opacity and scroll identity continue to mirror the existing contracts.
 #[derive(Default)]
 pub(crate) struct PropertyTrees {
-    pub(crate) transforms: FxHashMap<TransformNodeId, TransformNode>,
-    pub(crate) layout_positions: FxHashMap<LayoutPositionNodeId, LayoutPositionNode>,
-    pub(crate) visual_offsets: FxHashMap<VisualOffsetNodeId, VisualOffsetNode>,
-    pub(crate) clips: FxHashMap<ClipNodeId, ClipNode>,
-    pub(crate) effects: FxHashMap<EffectNodeId, EffectNode>,
-    pub(crate) scrolls: FxHashMap<ScrollNodeId, ScrollNode>,
+    native_subtrees: incremental::NativeSubtrees,
+    prune_proof: Option<incremental::PruneProof>,
+    recent_write_query: std::cell::RefCell<Option<observed_map::WriteQuery>>,
+    pub(crate) observed_nodes: usize,
+    pub(crate) replayed_nodes: usize,
+    pub(crate) transforms: observed_map::ObservedMap<TransformNodeId, TransformNode>,
+    pub(crate) layout_positions:
+        observed_map::ObservedMap<LayoutPositionNodeId, LayoutPositionNode>,
+    pub(crate) visual_offsets: observed_map::ObservedMap<VisualOffsetNodeId, VisualOffsetNode>,
+    pub(crate) clips: observed_map::ObservedMap<ClipNodeId, ClipNode>,
+    pub(crate) effects: observed_map::ObservedMap<EffectNodeId, EffectNode>,
+    pub(crate) scrolls: observed_map::ObservedMap<ScrollNodeId, ScrollNode>,
     // Rebuilt every sync from live observations, not inferred from an absent
     // ScrollNode (which could instead mean an invalid/missing contract).
     inactive_scroll_owners: FxHashSet<NodeKey>,
-    transform_generations: FxHashMap<TransformNodeId, u64>,
+    transform_generations: observed_map::ObservedMap<TransformNodeId, u64>,
     local_transform_generations: FxHashMap<TransformNodeId, u64>,
     layout_position_generations: FxHashMap<LayoutPositionNodeId, u64>,
     visual_offset_generations: FxHashMap<VisualOffsetNodeId, u64>,
     clip_generations: FxHashMap<ClipNodeId, u64>,
-    effect_generations: FxHashMap<EffectNodeId, u64>,
-    scroll_generations: FxHashMap<ScrollNodeId, u64>,
-    pub(crate) states: FxHashMap<NodeKey, NodePropertyState>,
+    effect_generations: observed_map::ObservedMap<EffectNodeId, u64>,
+    scroll_generations: observed_map::ObservedMap<ScrollNodeId, u64>,
+    pub(crate) states: observed_map::ObservedMap<NodeKey, NodePropertyState>,
     pub(crate) changes: FxHashMap<NodeKey, PropertyChangeFlags>,
     pub(crate) validation_errors: Vec<PropertyTreeValidationError>,
     pub(crate) spatial_validation_errors: Vec<SpatialTreeValidationError>,
     pub(crate) epoch: u64,
 }
+
+mod incremental;
+pub(crate) mod observed_map;
+pub(crate) use observed_map::{PropertyStoreStamp, GenerationStoreStamp};
 
 impl PropertyTrees {
     #[cfg(test)]
@@ -1500,11 +1510,12 @@ impl PropertyTrees {
             }
         }
 
-        let positions = self
-            .layout_positions
+        // Read the discovered dependency closure directly. Unrelated spatial
+        // nodes cannot contribute to these derived transform projections.
+        let positions = required_positions
             .iter()
-            .filter(|(id, _)| required_positions.contains(id))
-            .map(|(&id, node)| LayoutPositionNodeSnapshot {
+            .filter_map(|&id| self.layout_positions.get(&id).map(|node| (id, node)))
+            .map(|(id, node)| LayoutPositionNodeSnapshot {
                 id,
                 owner: node.owner,
                 reference: node.reference,
@@ -1514,11 +1525,10 @@ impl PropertyTrees {
                 generation: node.generation,
             })
             .collect::<Vec<_>>();
-        let visuals = self
-            .visual_offsets
+        let visuals = required_visuals
             .iter()
-            .filter(|(id, _)| required_visuals.contains(id))
-            .map(|(&id, node)| VisualOffsetNodeSnapshot {
+            .filter_map(|&id| self.visual_offsets.get(&id).map(|node| (id, node)))
+            .map(|(id, node)| VisualOffsetNodeSnapshot {
                 id,
                 owner: node.owner,
                 parent: node.parent,
@@ -1526,11 +1536,10 @@ impl PropertyTrees {
                 generation: node.generation,
             })
             .collect::<Vec<_>>();
-        let scrolls = self
-            .scrolls
+        let scrolls = required_scrolls
             .iter()
-            .filter(|(id, _)| required_scrolls.contains(id))
-            .map(|(&id, node)| ScrollNodeSnapshot {
+            .filter_map(|&id| self.scrolls.get(&id).map(|node| (id, node)))
+            .map(|(id, node)| ScrollNodeSnapshot {
                 id,
                 owner: node.owner,
                 parent: node.parent,
@@ -1577,6 +1586,9 @@ impl PropertyTrees {
     }
 
     pub(crate) fn sync(&mut self, arena: &NodeArena, roots: &[NodeKey]) {
+        self.native_subtrees.begin(arena, roots);
+        self.observed_nodes = 0;
+        self.replayed_nodes = 0;
         self.epoch = self.epoch.wrapping_add(1);
         self.inactive_scroll_owners.clear();
         self.changes.clear();
@@ -1584,10 +1596,20 @@ impl PropertyTrees {
         self.spatial_validation_errors.clear();
         let mut seen = FxHashSet::default();
         for &root in roots {
-            self.sync_subtree(arena, root, PropertyTreeState::default(), true, &mut seen);
+            self.sync_subtree(
+                arena,
+                root,
+                PropertyTreeState::default(),
+                true,
+                &mut seen,
+                true,
+            );
         }
-        self.prune_unseen(arena, &seen);
+        let same_coverage = self.prune_unseen(arena, &seen);
         self.refresh_derived_spatial_projections();
+        if !same_coverage {
+            self.native_subtrees.finish(&seen, true);
+        }
     }
 
     fn sync_subtree(
@@ -1597,13 +1619,37 @@ impl PropertyTrees {
         inherited: PropertyTreeState,
         is_frame_root: bool,
         seen: &mut FxHashSet<NodeKey>,
-    ) {
-        let Some(node) = arena.get(key) else {
-            return;
-        };
-        if !seen.insert(key) {
-            return;
+        ancestors_tracked: bool,
+    ) -> Option<std::sync::Arc<[NodeKey]>> {
+        if !arena.contains_key(key) || !seen.insert(key) {
+            return None;
         }
+        let node = arena.get(key)?;
+        let boundary = ancestors_tracked
+            .then(|| incremental::BoundaryInputs::observe(self, arena, key, &node, is_frame_root))
+            .flatten();
+        let subtree_revision = arena.subtree_mutation_revision(key);
+        if let Some(boundary) = boundary {
+            if let Some(keys) = self.native_subtrees.replay(
+                key,
+                subtree_revision,
+                boundary,
+                inherited,
+                is_frame_root,
+                &mut self.inactive_scroll_owners,
+            ) {
+                seen.extend(keys.iter().copied());
+                self.replayed_nodes += keys.len();
+                return Some(keys);
+            }
+        }
+        self.observed_nodes += 1;
+        let errors_before = (
+            self.validation_errors.len(),
+            self.spatial_validation_errors.len(),
+        );
+        let tracked =
+            ancestors_tracked && incremental::native_inputs_are_tracked(arena, key, &node);
 
         self.sync_spatial_nodes(arena, key, node.element.as_ref());
         let layout_position = self
@@ -1738,15 +1784,17 @@ impl PropertyTrees {
                     .map(|node| node.generation)
                     .unwrap_or_else(|| self.bump_effect_generation(id))
             };
-            self.effects.insert(
-                id,
-                EffectNode {
-                    owner: key,
-                    parent: inherited.effect,
-                    opacity,
-                    generation,
-                },
-            );
+            if changed || previous.is_some_and(|node| node.owner != key) {
+                self.effects.insert(
+                    id,
+                    EffectNode {
+                        owner: key,
+                        parent: inherited.effect,
+                        opacity,
+                        generation,
+                    },
+                );
+            }
             if changed {
                 self.mark_change(key, PropertyChangeFlags::EFFECT);
                 if previous.is_none() || parent_changed {
@@ -1756,13 +1804,19 @@ impl PropertyTrees {
             Some(id)
         };
 
-        let clip = node
-            .element
-            .exact_retained_self_clip_scissor_rect(key, arena, is_frame_root)
-            .or_else(|| {
-                node.element
-                    .exact_generic_subtree_self_clip_scissor_rect(key, arena, is_frame_root)
-            });
+        let clip = if let Some(boundary) = boundary {
+            boundary.self_clip
+        } else {
+            node.element
+                .exact_retained_self_clip_scissor_rect(key, arena, is_frame_root)
+                .or_else(|| {
+                    node.element.exact_generic_subtree_self_clip_scissor_rect(
+                        key,
+                        arena,
+                        is_frame_root,
+                    )
+                })
+        };
         let clip = if let Some(logical_scissor) = clip {
             let id = ClipNodeId {
                 owner: key,
@@ -1786,16 +1840,18 @@ impl PropertyTrees {
                     .map(|node| node.generation)
                     .unwrap_or_else(|| self.bump_clip_generation(id))
             };
-            self.clips.insert(
-                id,
-                ClipNode {
-                    owner: key,
-                    parent: inherited.clip,
-                    geometry,
-                    behavior: ClipBehavior::Replace,
-                    generation,
-                },
-            );
+            if changed || previous.is_some_and(|node| node.owner != key) {
+                self.clips.insert(
+                    id,
+                    ClipNode {
+                        owner: key,
+                        parent: inherited.clip,
+                        geometry,
+                        behavior: ClipBehavior::Replace,
+                        generation,
+                    },
+                );
+            }
             if changed {
                 self.mark_change(key, PropertyChangeFlags::CLIP);
             }
@@ -1859,16 +1915,18 @@ impl PropertyTrees {
                     .map(|node| node.generation)
                     .unwrap_or_else(|| self.bump_clip_generation(id))
             };
-            self.clips.insert(
-                id,
-                ClipNode {
-                    owner: key,
-                    parent: paint.clip,
-                    geometry,
-                    behavior: ClipBehavior::Intersect,
-                    generation,
-                },
-            );
+            if changed || previous.is_some_and(|node| node.owner != key) {
+                self.clips.insert(
+                    id,
+                    ClipNode {
+                        owner: key,
+                        parent: paint.clip,
+                        geometry,
+                        behavior: ClipBehavior::Intersect,
+                        generation,
+                    },
+                );
+            }
             if changed {
                 self.mark_change(key, PropertyChangeFlags::CLIP);
             }
@@ -1905,24 +1963,26 @@ impl PropertyTrees {
                     .map(|node| node.generation)
                     .unwrap_or_else(|| self.bump_scroll_generation(id))
             };
-            self.scrolls.insert(
-                id,
-                ScrollNode {
-                    owner: key,
-                    parent: inherited.scroll,
-                    offset,
-                    configured_axis: snapshot.configured_axis,
-                    viewport: snapshot.scrollport_rect,
-                    content_size: Size {
-                        width: snapshot.content_size[0],
-                        height: snapshot.content_size[1],
+            if changed || prior.is_some_and(|node| node.owner != key) {
+                self.scrolls.insert(
+                    id,
+                    ScrollNode {
+                        owner: key,
+                        parent: inherited.scroll,
+                        offset,
+                        configured_axis: snapshot.configured_axis,
+                        viewport: snapshot.scrollport_rect,
+                        content_size: Size {
+                            width: snapshot.content_size[0],
+                            height: snapshot.content_size[1],
+                        },
+                        layout_content_bounds_at_zero: snapshot.layout_content_bounds_at_zero,
+                        scrollbar_overlay: snapshot.scrollbar_overlay,
+                        contents_clip: snapshot.contents_clip,
+                        generation,
                     },
-                    layout_content_bounds_at_zero: snapshot.layout_content_bounds_at_zero,
-                    scrollbar_overlay: snapshot.scrollbar_overlay,
-                    contents_clip: snapshot.contents_clip,
-                    generation,
-                },
-            );
+                );
+            }
             if changed {
                 self.mark_change(key, PropertyChangeFlags::SCROLL);
             }
@@ -1952,13 +2012,48 @@ impl PropertyTrees {
             .is_none_or(|previous| *previous != next_state)
         {
             self.mark_change(key, PropertyChangeFlags::TOPOLOGY);
+            self.states.insert(key, next_state);
         }
-        self.states.insert(key, next_state);
 
         let children = node.children().to_vec();
         drop(node);
+        let mut members = vec![key];
+        let mut complete = tracked;
         for child in children {
-            self.sync_subtree(arena, child, descendants, false, seen);
+            if let Some(keys) = self.sync_subtree(arena, child, descendants, false, seen, tracked) {
+                members.extend(keys.iter().copied());
+            } else {
+                complete = false;
+            }
+        }
+        if complete
+            && errors_before
+                == (
+                    self.validation_errors.len(),
+                    self.spatial_validation_errors.len(),
+                )
+            && subtree_revision.is_some()
+            && subtree_revision == arena.subtree_mutation_revision(key)
+        {
+            let inactive = members
+                .iter()
+                .copied()
+                .filter(|key| self.inactive_scroll_owners.contains(key))
+                .collect::<Vec<_>>();
+            let members = std::sync::Arc::from(members);
+            self.native_subtrees.store(
+                key,
+                subtree_revision.unwrap(),
+                boundary.expect("complete native subtree has boundary observations"),
+                inherited,
+                is_frame_root,
+                std::sync::Arc::clone(&members),
+                inactive.into(),
+            );
+            Some(members)
+        } else {
+            self.native_subtrees.remove(key);
+            None
         }
     }
 
@@ -2026,22 +2121,7 @@ impl PropertyTrees {
         let child_reference_offset_at_scroll_zero = Vec2::from_array(child_reference_offset);
         let reference_scroll = match reference {
             SpatialPositionReference::LayoutParent(Some(parent)) => {
-                let parent_node = arena.get(parent);
-                let declared_scroll = parent_node.as_ref().is_some_and(|node| {
-                    node.element.retained_paint_properties().is_scroll_container
-                });
-                let applied_scroll = parent_node.as_ref().is_some_and(|node| {
-                    let (x, y) = node.element.get_scroll_offset();
-                    x.to_bits() != 0.0_f32.to_bits() || y.to_bits() != 0.0_f32.to_bits()
-                });
-                // Parent-first sync has already resolved this owner's actual
-                // scroll observation. An inactive declaration with zero offset
-                // contributes no subtraction to the child's spatial edge.
-                // Nonzero offsets and invalid contracts still require a node.
-                ((declared_scroll && !self.inactive_scroll_owners.contains(&parent))
-                    || applied_scroll
-                    || self.scrolls.contains_key(&ScrollNodeId(parent)))
-                .then_some(ScrollNodeId(parent))
+                self.spatial_parent_scroll(arena, parent)
             }
             SpatialPositionReference::Viewport
             | SpatialPositionReference::LayoutParent(None)
@@ -2067,17 +2147,19 @@ impl PropertyTrees {
                 .map(|node| node.generation)
                 .unwrap_or_else(|| self.bump_layout_position_generation(position_id))
         };
-        self.layout_positions.insert(
-            position_id,
-            LayoutPositionNode {
-                owner: key,
-                reference,
-                reference_scroll,
-                translation_at_scroll_zero,
-                child_reference_offset_at_scroll_zero,
-                generation,
-            },
-        );
+        if position_changed || previous.is_some_and(|node| node.owner != key) {
+            self.layout_positions.insert(
+                position_id,
+                LayoutPositionNode {
+                    owner: key,
+                    reference,
+                    reference_scroll,
+                    translation_at_scroll_zero,
+                    child_reference_offset_at_scroll_zero,
+                    generation,
+                },
+            );
+        }
         if position_changed {
             self.mark_change(key, PropertyChangeFlags::POSITION);
         }
@@ -2087,16 +2169,7 @@ impl PropertyTrees {
         // cumulative visual offset, even when an absolute node selects a
         // viewport or named-anchor position reference. Keep that inheritance
         // distinct from the layout-position reference graph.
-        let parent = arena.parent_of(key).and_then(|parent| {
-            #[cfg(test)]
-            if !self
-                .visual_offsets
-                .contains_key(&VisualOffsetNodeId(parent))
-            {
-                return None;
-            }
-            Some(VisualOffsetNodeId(parent))
-        });
+        let parent = self.spatial_visual_parent(arena, key);
         let previous = self.visual_offsets.get(&visual_id).copied();
         let visual_changed = previous.is_none_or(|previous| {
             previous.parent != parent || !vec2_bits_equal(previous.offset, offset.to_array())
@@ -2108,18 +2181,50 @@ impl PropertyTrees {
                 .map(|node| node.generation)
                 .unwrap_or_else(|| self.bump_visual_offset_generation(visual_id))
         };
-        self.visual_offsets.insert(
-            visual_id,
-            VisualOffsetNode {
-                owner: key,
-                parent,
-                offset,
-                generation,
-            },
-        );
+        if visual_changed || previous.is_some_and(|node| node.owner != key) {
+            self.visual_offsets.insert(
+                visual_id,
+                VisualOffsetNode {
+                    owner: key,
+                    parent,
+                    offset,
+                    generation,
+                },
+            );
+        }
         if visual_changed {
             self.mark_change(key, PropertyChangeFlags::VISUAL_OFFSET);
         }
+    }
+
+    fn spatial_parent_scroll(&self, arena: &NodeArena, parent: NodeKey) -> Option<ScrollNodeId> {
+        let parent_node = arena.get(parent);
+        let declared_scroll = parent_node
+            .as_ref()
+            .is_some_and(|node| node.element.retained_paint_properties().is_scroll_container);
+        let applied_scroll = parent_node.as_ref().is_some_and(|node| {
+            let (x, y) = node.element.get_scroll_offset();
+            x.to_bits() != 0.0_f32.to_bits() || y.to_bits() != 0.0_f32.to_bits()
+        });
+        // Parent-first sync has resolved the current scroll observation. Invalid
+        // contracts and nonzero offsets continue to require a scroll endpoint.
+        ((declared_scroll && !self.inactive_scroll_owners.contains(&parent))
+            || applied_scroll
+            || self.scrolls.contains_key(&ScrollNodeId(parent)))
+        .then_some(ScrollNodeId(parent))
+    }
+
+    fn spatial_visual_parent(&self, arena: &NodeArena, key: NodeKey) -> Option<VisualOffsetNodeId> {
+        arena.parent_of(key).and_then(|parent| {
+            #[cfg(test)]
+            if !self
+                .visual_offsets
+                .contains_key(&VisualOffsetNodeId(parent))
+            {
+                return None;
+            }
+            Some(VisualOffsetNodeId(parent))
+        })
     }
 
     fn mark_change(&mut self, key: NodeKey, flags: PropertyChangeFlags) {
@@ -2171,13 +2276,38 @@ impl PropertyTrees {
         *generation
     }
 
-    fn prune_unseen(&mut self, arena: &NodeArena, seen: &FxHashSet<NodeKey>) {
-        self.transforms.retain(|id, _| seen.contains(&id.0));
-        self.layout_positions.retain(|id, _| seen.contains(&id.0));
-        self.visual_offsets.retain(|id, _| seen.contains(&id.0));
-        self.clips.retain(|id, _| seen.contains(&id.owner));
-        self.effects.retain(|id, _| seen.contains(&id.0));
-        self.scrolls.retain(|id, _| seen.contains(&id.0));
+    fn prune_unseen(&mut self, arena: &NodeArena, seen: &FxHashSet<NodeKey>) -> bool {
+        let previous = self.prune_proof.take();
+        let same_coverage = previous.as_ref().is_some_and(|old| old.seen == *seen);
+        let writes = previous
+            .as_ref()
+            .filter(|_| same_coverage)
+            .and_then(|old| self.property_writes_since(&old.stamp));
+        if let Some(writes) = writes {
+            // The complete live owner set is identical and all older stores
+            // were pruned. Only a subsequently written key can now be unseen.
+            // Raw map edits participate in the same history; losing any map's
+            // proof takes the original complete sweep below.
+            for &owner in writes.iter().filter(|owner| !seen.contains(owner)) {
+                self.transforms.remove(&TransformNodeId(owner));
+                self.layout_positions.remove(&LayoutPositionNodeId(owner));
+                self.visual_offsets.remove(&VisualOffsetNodeId(owner));
+                for role in [ClipNodeRole::SelfClip, ClipNodeRole::ContentsClip] {
+                    self.clips.remove(&ClipNodeId { owner, role });
+                }
+                self.effects.remove(&EffectNodeId(owner));
+                self.scrolls.remove(&ScrollNodeId(owner));
+                self.states.remove(&owner);
+            }
+        } else {
+            self.transforms.retain(|id, _| seen.contains(&id.0));
+            self.layout_positions.retain(|id, _| seen.contains(&id.0));
+            self.visual_offsets.retain(|id, _| seen.contains(&id.0));
+            self.clips.retain(|id, _| seen.contains(&id.owner));
+            self.effects.retain(|id, _| seen.contains(&id.0));
+            self.scrolls.retain(|id, _| seen.contains(&id.0));
+            self.states.retain(|key, _| seen.contains(key));
+        }
         // Active property state follows the current roots, but tombstone
         // counters follow the owner's generational arena lifetime. A node can
         // temporarily leave the active root set and later reattach with the
@@ -2196,7 +2326,15 @@ impl PropertyTrees {
             .retain(|id, _| arena.contains_key(id.owner));
         self.scroll_generations
             .retain(|id, _| arena.contains_key(id.0));
-        self.states.retain(|key, _| seen.contains(key));
+        self.prune_proof = Some(incremental::PruneProof {
+            seen: if same_coverage {
+                previous.unwrap().seen
+            } else {
+                seen.clone()
+            },
+            stamp: self.property_store_stamp(),
+        });
+        same_coverage
     }
 
     /// Final observed changes survive layout's consumption of LAYOUT/PLACE.

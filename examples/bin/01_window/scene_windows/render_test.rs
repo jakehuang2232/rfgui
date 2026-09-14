@@ -21,6 +21,20 @@ use rfgui::style;
 use rfgui::style::{FillMode, Gradient, SideOrCorner};
 use std::rc::Rc;
 
+pub(crate) fn demo_animator(enabled: bool, animator: Animator) -> Option<Animator> {
+    if !enabled {
+        return None;
+    }
+    #[cfg(any(test, feature = "renderer-perf"))]
+    if matches!(
+        std::env::var("RFGUI_PERF_UPDATES").as_deref(),
+        Ok("idle" | "particles")
+    ) {
+        return None;
+    }
+    Some(animator)
+}
+
 fn animator_demo_keyframe<T: ColorLike + 'static>(
     background: T,
     width: f32,
@@ -45,7 +59,7 @@ fn animator_demo_keyframe<T: ColorLike + 'static>(
 }
 
 #[component]
-pub fn RenderTest(theme: Theme) -> RsxNode {
+pub fn RenderTest(theme: Theme, animation_on: bool) -> RsxNode {
     let click_count = use_state(|| 0_i32);
     let transform_event_status = use_state(|| String::from("Move over the transform cards"));
     let justify_content = use_state(|| JustifyContent::Start);
@@ -374,7 +388,7 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                             height: Length::px(56.0),
                             background: Color::hex("#38bdf8"),
                             border_radius: BorderRadius::uniform(Length::px(18.0)),
-                            animator: Animator::new([
+                            animator: demo_animator(animation_on, Animator::new([
                                 Animation::new([
                                     Keyframe::new(0.0, animator_demo_keyframe(Color::hex("#38bdf8"), 56.0, 56.0, 0.72, -34.0, -18.0, 0.88)),
                                     Keyframe::new(0.45, animator_demo_keyframe(Color::hex("#f97316"), 88.0, 40.0, 1.0, 0.0, 0.0, 3.0)),
@@ -386,7 +400,7 @@ pub fn RenderTest(theme: Theme) -> RsxNode {
                             .duration(1400)
                             .repeat(Repeat::Infinite)
                             .fill_mode(FillMode::Both)
-                            .direction(Direction::Normal),
+                            .direction(Direction::Normal)),
                         }}>
                             <Text style={{ color: theme.color.text.secondary.clone() }}>
                                 {"Animator::new + Animation::new + Keyframe::new"}

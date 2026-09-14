@@ -18,9 +18,9 @@ pub(super) struct ScopedSnapshotStore {
     states: Vec<PaintOwnerPropertyStateSnapshot>,
     clips: Vec<ClipNodeSnapshot>,
     effects: Vec<EffectNodeSnapshot>,
-    effect_users: FxHashMap<
+    effect_observations: FxHashMap<
         crate::view::compositor::property_tree::EffectNodeId,
-        rustc_hash::FxHashSet<NodeKey>,
+        rustc_hash::FxHashSet<usize>,
     >,
 }
 
@@ -49,6 +49,7 @@ impl RecordingCache {
         manifest: &PaintCoverageManifest,
         artifact: &mut PaintArtifact,
     ) -> bool {
+        let _profile = super::super::work_profile::scope("replay_scope_store");
         let Some(store) = &mut self.scope_store else {
             return false;
         };
@@ -61,31 +62,17 @@ impl RecordingCache {
             }) && current.next().is_none()
         };
         if !unchanged {
-            let Some(updates) = store.effect_updates(manifest) else {
+            let Some((updates, changed)) = store.effect_updates(manifest) else {
                 return false;
             };
-            // Key shape, owner/clip stores and first-encounter order are fixed.
-            // Only proven consistent current scalar effect observations change.
             for effect in &mut store.effects {
                 if let Some(current) = updates.get(&effect.id) {
                     *effect = *current;
                 }
             }
             self.scope_store_effect_updates += updates.len();
-            // Keep unchanged strong references in place. Rebuilding this key
-            // would clone/drop three Arcs per chunk for a two-owner animation.
-            for ((owner, clip, effect), (now_owner, now_clip, now_effect)) in
-                store.key.0.iter_mut().zip(observations(manifest))
-            {
-                if !Arc::ptr_eq(owner, now_owner) {
-                    *owner = now_owner.clone();
-                }
-                if !Arc::ptr_eq(clip, now_clip) {
-                    *clip = now_clip.clone();
-                }
-                if !Arc::ptr_eq(effect, now_effect) {
-                    *effect = now_effect.clone();
-                }
+            for (index, now_owner, now_clip, now_effect) in changed {
+                store.key.0[index] = (now_owner.clone(), now_clip.clone(), now_effect.clone());
             }
         }
         artifact.owner_nodes.clone_from(&store.owners);
@@ -109,26 +96,28 @@ impl RecordingCache {
     ) {
         // Called only after every observation merged without conflict. Spatial
         // closure still reads this frame's PropertyTrees after materialization.
-        let mut effect_users = FxHashMap::default();
-        let mut seen = rustc_hash::FxHashSet::default();
-        for (owner, _, _) in &key.0 {
+        let mut effect_observations = FxHashMap::default();
+        for (index, (owner, _, standalone)) in key.0.iter().enumerate() {
+            for effect in standalone.iter() {
+                effect_observations
+                    .entry(effect.id)
+                    .or_insert_with(rustc_hash::FxHashSet::default)
+                    .insert(index);
+            }
             let mut cursor = Some(owner);
             while let Some(scope) = cursor {
-                if !seen.insert(Arc::as_ptr(scope)) {
-                    break;
-                }
                 for effect in scope.effects.iter().flat_map(|chain| chain.iter()) {
-                    effect_users
+                    effect_observations
                         .entry(effect.id)
                         .or_insert_with(rustc_hash::FxHashSet::default)
-                        .insert(scope.topology.owner);
+                        .insert(index);
                 }
                 cursor = scope.parent.as_ref();
             }
         }
         self.scope_store = Some(ScopedSnapshotStore {
             key,
-            effect_users,
+            effect_observations,
             owners: artifact.owner_nodes.clone(),
             states: artifact.owner_property_states.clone(),
             clips: artifact.clip_nodes.clone(),
@@ -137,17 +126,26 @@ impl RecordingCache {
     }
 }
 
+type ChangedObservation<'a> = (
+    usize,
+    &'a Arc<PaintOwnerScope>,
+    &'a Arc<[ClipNodeSnapshot]>,
+    &'a Arc<[EffectNodeSnapshot]>,
+);
+
 impl ScopedSnapshotStore {
-    fn effect_updates(
+    fn effect_updates<'a>(
         &self,
-        manifest: &PaintCoverageManifest,
-    ) -> Option<FxHashMap<crate::view::compositor::property_tree::EffectNodeId, EffectNodeSnapshot>>
-    {
+        manifest: &'a PaintCoverageManifest,
+    ) -> Option<(
+        FxHashMap<crate::view::compositor::property_tree::EffectNodeId, EffectNodeSnapshot>,
+        Vec<ChangedObservation<'a>>,
+    )> {
         let mut updates = FxHashMap::default();
-        let mut changed_owners = rustc_hash::FxHashSet::default();
+        let mut changed = Vec::new();
         let mut current = observations(manifest);
         let mut compared = rustc_hash::FxHashSet::default();
-        for (old, old_clip, old_effect) in &self.key.0 {
+        for (index, (old, old_clip, old_effect)) in self.key.0.iter().enumerate() {
             let (now, clip, effect) = current.next()?;
             if Arc::ptr_eq(old, now)
                 && Arc::ptr_eq(old_clip, clip)
@@ -155,6 +153,7 @@ impl ScopedSnapshotStore {
             {
                 continue;
             }
+            changed.push((index, now, clip, effect));
             // Standalone observations must still bind to the owner endpoint.
             if old_clip != clip
                 || !(0..2).any(|i| old.effects[i] == *old_effect && now.effects[i] == *effect)
@@ -194,7 +193,6 @@ impl ScopedSnapshotStore {
                             {
                                 return None;
                             }
-                            changed_owners.insert(after.topology.owner);
                         }
                     }
                 }
@@ -212,22 +210,23 @@ impl ScopedSnapshotStore {
         if current.next().is_some() {
             return None;
         }
-        // Every previous consumer of a changed effect must have supplied a
-        // changed current scope. Otherwise this new value conflicts with an
-        // unchanged observation (including a transparent ancestor) and the
-        // original merge must diagnose it. Changed edges use that full merge.
+        // The original merge recorded every occurrence, not just owner ids.
+        // Each updated effect must replace all old observations that consumed it.
+        // This catches two chunks of one owner supplying conflicting snapshots,
+        // without rescanning every unchanged scope chain on each animation tick.
+        let changed_indices = changed
+            .iter()
+            .map(|(index, ..)| *index)
+            .collect::<rustc_hash::FxHashSet<_>>();
         if updates.keys().any(|id| {
-            self.effect_users
+            self.effect_observations
                 .get(id)
-                .is_none_or(|users| !users.is_subset(&changed_owners))
+                .is_none_or(|indices| !indices.is_subset(&changed_indices))
         }) {
             return None;
         }
-        // Owner membership alone is insufficient: the same owner may appear
-        // in several chunks, or change a different effect in its chain. Check
-        // every current occurrence of each patched id against its new value.
         let mut inspected = rustc_hash::FxHashSet::default();
-        for (owner, _, effect) in observations(manifest) {
+        for (_, owner, _, effect) in &changed {
             if effect.iter().any(|snapshot| {
                 updates
                     .get(&snapshot.id)
@@ -235,7 +234,7 @@ impl ScopedSnapshotStore {
             }) {
                 return None;
             }
-            let mut cursor = Some(owner);
+            let mut cursor = Some(*owner);
             while let Some(scope) = cursor {
                 if !inspected.insert(Arc::as_ptr(scope)) {
                     break;
@@ -255,7 +254,7 @@ impl ScopedSnapshotStore {
                 cursor = scope.parent.as_ref();
             }
         }
-        Some(updates)
+        Some((updates, changed))
     }
 }
 

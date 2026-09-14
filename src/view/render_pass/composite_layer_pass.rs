@@ -306,9 +306,11 @@ impl GraphicsPass for CompositeLayerPass {
             .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))
             .unwrap_or_else(|| ctx.viewport().msaa_sample_count());
         with_composite_layer_resources_cache(|cache| {
-            let resources = cache.get_or_insert_with(COMPOSITE_LAYER_RESOURCES, || {
-                create_resources(&device, format, sample_count)
-            });
+            let resources = cache.get_or_insert_scoped_with(
+                ctx.viewport().render_resource_scope_id(),
+                COMPOSITE_LAYER_RESOURCES,
+                || create_resources(&device, format, sample_count),
+            );
             if resources.pipeline_format != format
                 || resources.pipeline_sample_count != sample_count
             {
@@ -700,6 +702,10 @@ pub fn clear_composite_layer_resources_cache() {
     with_composite_layer_resources_cache(|cache| {
         cache.clear();
     });
+}
+
+pub(super) fn release_scope(scope: u64) {
+    with_composite_layer_resources_cache(|cache| cache.clear_scope(scope));
 }
 
 #[cfg(test)]

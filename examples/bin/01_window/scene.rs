@@ -13,6 +13,8 @@ use crate::window_manager::WindowManager;
 
 #[component]
 pub fn MainScene() -> RsxNode {
+    let animation_on = use_state(|| true);
+    let animations_enabled = animation_on.get();
     let window_z_order = use_state(Vec::<usize>::new);
     let window_positions = use_state(Vec::<(f32, f32)>::new);
 
@@ -27,7 +29,7 @@ pub fn MainScene() -> RsxNode {
     let mut window_manager = WindowManager::new(window_positions.binding());
     window_manager.push(
         "Inspector Panel",
-        vec![build_inspector_panel(&theme)],
+        vec![build_inspector_panel(&theme, animation_on.binding())],
         (
             WindowManager::WINDOW_DEFAULT_WIDTH,
             WindowManager::WINDOW_DEFAULT_HEIGHT,
@@ -36,7 +38,7 @@ pub fn MainScene() -> RsxNode {
     window_manager.push(
         "Component Test",
         vec![rsx! {
-            <ComponentTest theme={theme.clone()} />
+            <ComponentTest theme={theme.clone()} animation_on={animations_enabled} />
         }],
         (460.0, 380.0),
     );
@@ -44,7 +46,7 @@ pub fn MainScene() -> RsxNode {
     window_manager.push(
         "Render test",
         vec![rsx! {
-            <RenderTest theme={theme.clone()} />
+            <RenderTest theme={theme.clone()} animation_on={animations_enabled} />
         }],
         (640.0, 420.0),
     );
@@ -72,7 +74,7 @@ pub fn MainScene() -> RsxNode {
 
     window_manager.push(
         "Custom Native Component Demo",
-        vec![rsx! { <ParticleDemo /> }],
+        vec![rsx! { <ParticleDemo animation_on={animation_on.binding()} /> }],
         (600.0, 400.0),
     );
     window_manager.push(

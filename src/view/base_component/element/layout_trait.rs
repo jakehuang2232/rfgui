@@ -47,6 +47,51 @@ fn measure_inline_ifc_root_children(
     }
 }
 
+impl Element {
+    /// The viewport has refreshed subtree dirty aggregates before this read.
+    /// This is the native early-return contract, before taking mutable access.
+    pub(crate) fn measure_is_noop(
+        &self,
+        constraints: LayoutConstraints,
+        arena: &NodeArena,
+    ) -> bool {
+        let context = constraints.context();
+        let proposal = LayoutProposal {
+            width: context.width,
+            height: context.height,
+            viewport_width: context.viewport_width,
+            viewport_height: context.viewport_height,
+            percent_base_width: context.percent_base_width,
+            percent_base_height: context.percent_base_height,
+        };
+        self.layout_assigned_width.is_none()
+            && self.layout_assigned_height.is_none()
+            && !self.layout_dirty
+            && self.last_layout_proposal == Some(proposal)
+            && !self
+                .children
+                .iter()
+                .any(|&child| arena.subtree_dirty_intersects(child, DirtyPassMask::LAYOUT))
+    }
+
+    pub(crate) fn place_is_noop(&self, placement: LayoutPlacement, arena: &NodeArena) -> bool {
+        let mask = DirtyPassMask::PLACEMENT;
+        !self.dirty_flags.intersects(mask)
+            && !self
+                .children
+                .iter()
+                .any(|&child| arena.subtree_dirty_intersects(child, mask))
+            && !self.inline_ifc_layout_call_site_dirty_gate(arena, placement)
+            && self.last_layout_placement == Some(placement)
+            && self.hit_test_clip_matches_current_placement(placement)
+            && (self.children.is_empty()
+                || rect_approx_eq(
+                    self.last_child_hit_test_clip_rect,
+                    Some(self.current_child_hit_test_clip_rect()),
+                ))
+    }
+}
+
 impl Layoutable for Element {
     fn measure(
         &mut self,
@@ -201,14 +246,12 @@ impl Layoutable for Element {
             // Inline IFC root: the shaped line stack, not the per-child
             // union, is the auto size of this box.
             if self.computed_style.layout == Layout::Inline && !self.inline_ifc_owned_by_root {
-                if let Some((content_w, content_h)) =
-                    self.measure_inline_ifc_root_content_size(
-                        arena,
-                        inner_w,
-                        proposal.viewport_width,
-                        proposal.viewport_height,
-                    )
-                    && (content_w > 0.0 || content_h > 0.0)
+                if let Some((content_w, content_h)) = self.measure_inline_ifc_root_content_size(
+                    arena,
+                    inner_w,
+                    proposal.viewport_width,
+                    proposal.viewport_height,
+                ) && (content_w > 0.0 || content_h > 0.0)
                 {
                     self.layout_state.content_size = Size {
                         width: content_w,

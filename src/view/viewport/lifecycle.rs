@@ -258,7 +258,8 @@ impl Viewport {
             self.needs_reconfigure = false;
             if let Some(device) = self.gpu.device.as_ref() {
                 if let Some(queue) = self.gpu.queue.as_ref() {
-                    crate::view::render_pass::prewarm_text_pipeline(
+                    crate::view::render_pass::text_pass::prewarm_text_pipeline_for_scope(
+                        self.render_resource_scope_id(),
                         device,
                         queue,
                         self.gpu.surface_target_format,
@@ -324,7 +325,8 @@ impl Viewport {
         self.release_render_resource_caches();
         self.create_frame_attachments();
         if let Some(queue) = self.gpu.queue.as_ref() {
-            crate::view::render_pass::prewarm_text_pipeline(
+            crate::view::render_pass::text_pass::prewarm_text_pipeline_for_scope(
+                self.render_resource_scope_id(),
                 &device_for_prewarm,
                 queue,
                 self.gpu.surface_config.format,

@@ -353,3 +353,5 @@ fn generic_tracker_tracks_untracked_custom_hosts() {
     assert_eq!(first.topology_revision, second.topology_revision);
     assert!(tracker.matches_live_snapshot(&arena, &[root], &trees));
 }
+
+mod generation_history_tests;

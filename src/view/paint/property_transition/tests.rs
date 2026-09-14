@@ -130,7 +130,8 @@ fn complete_artifact() -> (
         chunks: vec![
             chunk(root, PaintNodePhase::BeforeChildren, 0..0),
             chunk(child, PaintNodePhase::AfterChildren, 0..0),
-        ],
+        ]
+        .into(),
         clip_nodes: vec![
             ClipNodeSnapshot {
                 id: child_clip,

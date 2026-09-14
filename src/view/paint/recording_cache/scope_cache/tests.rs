@@ -65,7 +65,7 @@ fn effect_store_patch_requires_consistent_values_at_every_occurrence() {
             _ => unreachable!(),
         };
         let mut manifest = PaintCoverageManifest::default();
-        manifest.items = vec![observation(changed), observation(second)];
+        manifest.items = vec![observation(changed), observation(second)].into();
         let mut output = PaintArtifact::default();
         assert_eq!(
             cache.replay_scope_store(&manifest, &mut output),

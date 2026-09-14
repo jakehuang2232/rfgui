@@ -1,9 +1,10 @@
 impl Element {
     pub(crate) fn post_layout_animation_is_noop(&self) -> bool {
-        self.scroll_direction == ScrollDirection::None
-            && !self.scrollbar_interaction_pending
+        !self.scrollbar_interaction_pending
             && self.last_scrollbar_interaction.is_none()
             && self.sampled_scrollbar_alpha.to_bits() == 0.0_f32.to_bits()
+            && self.scrollbar_drag.is_none()
+            && !self.is_hovered
     }
 
     fn note_scrollbar_interaction(&mut self) {
@@ -16,8 +17,10 @@ impl Element {
 
     fn max_scroll(&self) -> (f32, f32) {
         (
-            (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width).max(0.0),
-            (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height).max(0.0),
+            (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width)
+                .max(0.0),
+            (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height)
+                .max(0.0),
         )
     }
 
@@ -77,8 +80,8 @@ impl Element {
         } else {
             0.0
         };
-        let changed = lifecycle_changed
-            || self.sampled_scrollbar_alpha.to_bits() != next_alpha.to_bits();
+        let changed =
+            lifecycle_changed || self.sampled_scrollbar_alpha.to_bits() != next_alpha.to_bits();
         self.sampled_scrollbar_alpha = next_alpha;
         changed
     }
@@ -439,8 +442,10 @@ impl Element {
         }
         const TRACK_SHADOW_ALPHA: f32 = 0.5;
         const THUMB_SHADOW_ALPHA: f32 = 0.5;
-        let geometry =
-            self.scrollbar_geometry(self.layout_state.layout_inner_position.x, self.layout_state.layout_inner_position.y);
+        let geometry = self.scrollbar_geometry(
+            self.layout_state.layout_inner_position.x,
+            self.layout_state.layout_inner_position.y,
+        );
         let track_alpha = (0.35 * alpha).clamp(0.0, 1.0);
         let thumb_alpha = (0.58 * alpha).clamp(0.0, 1.0);
         let track_shadow_alpha = (TRACK_SHADOW_ALPHA * alpha).clamp(0.0, 1.0);
@@ -556,42 +561,60 @@ impl Element {
     where
         F: FnMut(&mut PointerDownEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).pointer_down.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .pointer_down
+            .push(Box::new(handler));
     }
 
     pub fn on_pointer_up<F>(&mut self, handler: F)
     where
         F: FnMut(&mut PointerUpEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).pointer_up.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .pointer_up
+            .push(Box::new(handler));
     }
 
     pub fn on_pointer_move<F>(&mut self, handler: F)
     where
         F: FnMut(&mut PointerMoveEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).pointer_move.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .pointer_move
+            .push(Box::new(handler));
     }
 
     pub fn on_pointer_enter<F>(&mut self, handler: F)
     where
         F: FnMut(&mut PointerEnterEvent) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).pointer_enter.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .pointer_enter
+            .push(Box::new(handler));
     }
 
     pub fn on_pointer_leave<F>(&mut self, handler: F)
     where
         F: FnMut(&mut PointerLeaveEvent) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).pointer_leave.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .pointer_leave
+            .push(Box::new(handler));
     }
 
     pub fn on_click<F>(&mut self, handler: F)
     where
         F: FnMut(&mut ClickEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).click.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .click
+            .push(Box::new(handler));
     }
 
     pub fn on_context_menu<F>(&mut self, handler: F)
@@ -618,28 +641,40 @@ impl Element {
     where
         F: FnMut(&mut KeyDownEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).key_down.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .key_down
+            .push(Box::new(handler));
     }
 
     pub fn on_key_up<F>(&mut self, handler: F)
     where
         F: FnMut(&mut KeyUpEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).key_up.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .key_up
+            .push(Box::new(handler));
     }
 
     pub fn on_focus<F>(&mut self, handler: F)
     where
         F: FnMut(&mut FocusEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).focus.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .focus
+            .push(Box::new(handler));
     }
 
     pub fn on_blur<F>(&mut self, handler: F)
     where
         F: FnMut(&mut BlurEvent, &mut ViewportControl<'_>) + 'static,
     {
-        self.event_handlers.get_or_insert_with(Default::default).blur.push(Box::new(handler));
+        self.event_handlers
+            .get_or_insert_with(Default::default)
+            .blur
+            .push(Box::new(handler));
     }
 
     pub fn on_ime_commit<F>(&mut self, handler: F)
@@ -874,7 +909,10 @@ impl Element {
     }
 
     pub(crate) fn layout_flow_origin(&self) -> (f32, f32) {
-        (self.layout_state.layout_flow_position.x, self.layout_state.layout_flow_position.y)
+        (
+            self.layout_state.layout_flow_position.x,
+            self.layout_state.layout_flow_position.y,
+        )
     }
 
     /// Replace the child-key list wholesale. Returns the previous keys so

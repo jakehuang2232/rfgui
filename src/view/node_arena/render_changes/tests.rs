@@ -154,3 +154,28 @@ fn newer_content_work_does_not_keep_an_acknowledged_topology_cause_alive() {
             .contains(DirtyFlags::PAINT)
     );
 }
+
+#[test]
+fn subtree_changes_cover_mutation_removal_reparent_and_leave_siblings_stable() {
+    let (mut arena, root) = scene();
+    let other = arena.insert(Node::new(Box::new(Element::new_with_id(2, 0., 0., 2., 2.))));
+    let child = arena.insert(Node::new(Box::new(Element::new_with_id(3, 0., 0., 2., 2.))));
+    arena.set_children(root, vec![child]);
+    arena.set_parent(child, Some(root));
+    let a = arena.subtree_mutation_revision(root);
+    let b = arena.subtree_mutation_revision(other);
+    drop(arena.get_mut(child));
+    assert_ne!(a, arena.subtree_mutation_revision(root));
+    assert_eq!(b, arena.subtree_mutation_revision(other));
+    let a = arena.subtree_mutation_revision(root);
+    arena.set_parent(child, Some(other));
+    assert_ne!(a, arena.subtree_mutation_revision(root));
+    assert_ne!(b, arena.subtree_mutation_revision(other));
+    arena.set_children(root, vec![]);
+    arena.set_children(other, vec![child]);
+    let b = arena.subtree_mutation_revision(other);
+    arena.remove(child);
+    assert_ne!(b, arena.subtree_mutation_revision(other));
+    arena.mutation_clock.set(u64::MAX);
+    assert_eq!(arena.subtree_mutation_revision(root), None);
+}

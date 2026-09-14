@@ -10,6 +10,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::PropertyTrees;
 use crate::view::base_component::ElementTrait;
 use crate::view::node_arena::{NodeArena, NodeKey};
+mod native_signatures;
+mod native_observations;
+mod generation_records;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaintGenerationCoverage {
@@ -22,6 +25,7 @@ pub(crate) enum PaintGenerationCoverage {
 
 #[derive(Clone, Debug)]
 struct NodeGenerationRecord {
+    native_observation: Option<(std::sync::Arc<()>, u64)>,
     self_paint_revision: u64,
     composite_revision: u64,
     topology_revision: u64,
@@ -54,11 +58,15 @@ pub(crate) struct PaintGenerationSnapshot {
 
 #[derive(Default)]
 pub(crate) struct PaintGenerationTracker {
+    native_scene: Option<native_observations::SceneObservation>,
+    native_signatures: std::cell::RefCell<native_signatures::NativeSignatures>,
     next_revision: u64,
-    nodes: FxHashMap<NodeKey, NodeGenerationRecord>,
+    nodes: generation_records::GenerationRecords,
+    recent_generation_query: std::cell::RefCell<Option<GenerationWriteQuery>>,
     observed_roots: Vec<NodeKey>,
     root_topology_revision: u64,
     epoch: u64,
+    pub(crate) native_observation_replays: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,7 +124,37 @@ impl LiveSnapshotField {
     }
 }
 
+struct GenerationWriteQuery {
+    before: super::property_tree::observed_map::Stamp,
+    after: super::property_tree::observed_map::Stamp,
+    owners: std::sync::Arc<rustc_hash::FxHashSet<NodeKey>>,
+}
 impl PaintGenerationTracker {
+    pub(crate) fn generation_store_stamp(&self) -> super::property_tree::observed_map::Stamp {
+        self.nodes.stamp()
+    }
+    pub(crate) fn generation_writes_since(
+        &self,
+        before: &super::property_tree::observed_map::Stamp,
+    ) -> Option<std::sync::Arc<rustc_hash::FxHashSet<NodeKey>>> {
+        let after = self.nodes.stamp();
+        if let Some(query) = self.recent_generation_query.borrow().as_ref() {
+            if query.before == *before && query.after == after {
+                return Some(query.owners.clone());
+            }
+        }
+        let mut owners = rustc_hash::FxHashSet::default();
+        self.nodes.changed_since(before, |owner| {
+            owners.insert(owner);
+        })?;
+        let owners = std::sync::Arc::new(owners);
+        *self.recent_generation_query.borrow_mut() = Some(GenerationWriteQuery {
+            before: before.clone(),
+            after,
+            owners: owners.clone(),
+        });
+        Some(owners)
+    }
     pub(crate) fn local_generations_for(&self, key: NodeKey) -> Option<LocalPaintGenerations> {
         self.nodes
             .get(&key)
@@ -203,7 +241,9 @@ impl PaintGenerationTracker {
                 Some(LiveSnapshotField::Children)
             } else if record.coverage != coverage_for(node.element.as_ref()) {
                 Some(LiveSnapshotField::Coverage)
-            } else if record.observed_self_signature != node.element.retained_paint_signature() {
+            } else if record.observed_self_signature
+                != self.native_signature(arena, key, node.element.as_ref())
+            {
                 Some(LiveSnapshotField::SelfSignature)
             } else if record.observed_transform_generation
                 != property_trees.transform_generation_for_owner(key)
@@ -287,7 +327,9 @@ impl PaintGenerationTracker {
                 Some(LiveSnapshotField::Children)
             } else if record.coverage != coverage_for(node.element.as_ref()) {
                 Some(LiveSnapshotField::Coverage)
-            } else if record.observed_self_signature != node.element.retained_paint_signature() {
+            } else if record.observed_self_signature
+                != self.native_signature(arena, key, node.element.as_ref())
+            {
                 Some(LiveSnapshotField::SelfSignature)
             } else if record.observed_transform_generation
                 != property_trees.transform_generation_for_owner(key)
@@ -321,6 +363,7 @@ impl PaintGenerationTracker {
     }
 
     pub(crate) fn begin_frame(&mut self, roots: &[NodeKey]) {
+        self.native_scene = None;
         self.epoch = self.epoch.wrapping_add(1);
         if self.observed_roots != roots {
             self.root_topology_revision = self.allocate_revision();
@@ -338,10 +381,85 @@ impl PaintGenerationTracker {
         property_trees: &PropertyTrees,
     ) -> LocalPaintGenerations {
         let self_signature = element.retained_paint_signature();
+        self.observe_signature(
+            key,
+            parent,
+            children,
+            element,
+            property_trees,
+            self_signature,
+        )
+    }
+
+    pub(crate) fn observe_native_node(
+        &mut self,
+        arena: &NodeArena,
+        key: NodeKey,
+        parent: Option<NodeKey>,
+        children: &[NodeKey],
+        element: &dyn ElementTrait,
+        property_trees: &PropertyTrees,
+    ) -> LocalPaintGenerations {
+        let signature = self.native_signature(arena, key, element);
+        let result =
+            self.observe_signature(key, parent, children, element, property_trees, signature);
+        let tracked = self.native_signatures.borrow().tracked_revision(arena, key);
+        if let Some(mut record) = self.nodes.get_mut(&key) {
+            record.native_observation =
+                tracked.map(|revision| (arena.mutation_identity(), revision));
+        }
+        result
+    }
+
+    fn native_signature(&self, arena: &NodeArena, key: NodeKey, element: &dyn ElementTrait) -> u64 {
+        self.native_signatures
+            .borrow_mut()
+            .observe(arena, key, element)
+    }
+
+    fn observe_signature(
+        &mut self,
+        key: NodeKey,
+        parent: Option<NodeKey>,
+        children: &[NodeKey],
+        element: &dyn ElementTrait,
+        property_trees: &PropertyTrees,
+        self_signature: u64,
+    ) -> LocalPaintGenerations {
+        self.native_scene = None;
+        // Manual observations have no arena mutation proof. The native caller
+        // installs a fresh certificate only after the complete observation.
+        if let Some(mut record) = self.nodes.get_mut(&key) {
+            record.native_observation = None;
+        }
         let coverage = coverage_for(element);
         let transform_generation = property_trees.transform_generation_for_owner(key);
         let effect_generation = property_trees.effect_generation_for_owner(key);
         let scroll_generation = property_trees.scroll_generation_for_owner(key);
+
+        // The full observation above is unchanged. Reuse the existing record
+        // only after comparing every input; unknown hosts still advance each
+        // frame. Warm nodes need one lookup and one epoch write, not a second
+        // lookup followed by rewriting the same signatures and topology.
+        if let Some(mut previous) = self.nodes.get_mut(&key) {
+            if previous.active
+                && coverage != PaintGenerationCoverage::Untracked
+                && previous.coverage == coverage
+                && previous.observed_self_signature == self_signature
+                && previous.observed_transform_generation == transform_generation
+                && previous.observed_effect_generation == effect_generation
+                && previous.observed_scroll_generation == scroll_generation
+                && previous.observed_parent == parent
+                && previous.observed_children == children
+            {
+                previous.last_seen_epoch = self.epoch;
+                return LocalPaintGenerations {
+                    self_paint_revision: previous.self_paint_revision,
+                    composite_revision: previous.composite_revision,
+                    topology_revision: previous.topology_revision,
+                };
+            }
+        }
 
         let (self_paint_revision, composite_revision, topology_revision) =
             if self.nodes.contains_key(&key) {
@@ -396,7 +514,7 @@ impl PaintGenerationTracker {
                 )
             };
 
-        if let Some(record) = self.nodes.get_mut(&key) {
+        if let Some(mut record) = self.nodes.get_mut(&key) {
             record.self_paint_revision = self_paint_revision;
             record.composite_revision = composite_revision;
             record.topology_revision = topology_revision;
@@ -416,6 +534,7 @@ impl PaintGenerationTracker {
             self.nodes.insert(
                 key,
                 NodeGenerationRecord {
+                    native_observation: None,
                     self_paint_revision,
                     composite_revision,
                     topology_revision,
@@ -440,6 +559,8 @@ impl PaintGenerationTracker {
     }
 
     pub(crate) fn finish_frame(&mut self, arena: &NodeArena) {
+        self.native_scene = None;
+        self.native_signatures.get_mut().prune(arena);
         let newly_inactive = self
             .nodes
             .iter()
@@ -449,7 +570,7 @@ impl PaintGenerationTracker {
             .collect::<Vec<_>>();
         for key in newly_inactive {
             let revision = self.allocate_revision();
-            if let Some(record) = self.nodes.get_mut(&key) {
+            if let Some(mut record) = self.nodes.get_mut(&key) {
                 record.active = false;
                 record.topology_revision = revision;
             }
@@ -495,7 +616,8 @@ impl PaintGenerationTracker {
 
         let parent = node.parent();
         let children = node.children().to_vec();
-        self.observe_node(
+        self.observe_native_node(
+            arena,
             key,
             parent,
             &children,

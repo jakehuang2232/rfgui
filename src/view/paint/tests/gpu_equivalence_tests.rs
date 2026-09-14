@@ -1234,7 +1234,8 @@ fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
                 content_revision: revision,
                 payload_identity: identities[1].clone(),
             },
-        ],
+        ]
+        .into(),
         ops: rects
             .into_iter()
             .map(|params| {

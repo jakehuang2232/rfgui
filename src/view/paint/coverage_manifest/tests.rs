@@ -191,8 +191,9 @@ impl PlanHost {
                 properties: chunk.properties,
                 content_revision: chunk.content_revision,
                 payload_identity: chunk.payload_identity,
-            }],
-            ops: Vec::new(),
+            }]
+            .into(),
+            ops: Vec::new().into(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),

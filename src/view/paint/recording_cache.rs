@@ -2,7 +2,11 @@
 //! metadata determines its command payload. Unknown/custom hosts keep running
 //! both hooks. Revision counters alone are never a replay key.
 mod order_cache;
+pub(super) mod topology_cache;
+mod materialized_blocks;
+mod artifact_blocks;
 mod scope_cache;
+pub(super) mod subtree_cache;
 use super::{
     PaintArtifact, PaintChunkMetadata, PaintContentRevision, PaintCoverageItem,
     PaintCoverageManifest, PaintNodePlan, PaintRecordingContext,
@@ -15,7 +19,12 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct RecordingCache {
+    pub(super) subtrees: subtree_cache::SubtreeCache,
     entries: FxHashMap<NodeKey, Entry>,
+    materialized_blocks: materialized_blocks::MaterializedBlocks,
+    artifact_blocks: artifact_blocks::ArtifactBlocks,
+    pub(super) topology: topology_cache::TopologyCache,
+    replayed_subtrees: FxHashMap<usize, (Arc<subtree_cache::Snapshot>, u64)>,
     order_paths: FxHashMap<NodeKey, (Arc<[usize]>, bool)>,
     pub(super) property_closure:
         Option<super::frame_recorder::property_closure_cache::PropertyClosureCache>,
@@ -28,6 +37,7 @@ pub(crate) struct RecordingCache {
     requires_full_walk: bool,
     metadata: FxHashMap<NodeKey, (u64, Arc<PaintNodePlan<PaintChunkMetadata>>)>,
     requests: FxHashMap<NodeKey, Request>,
+    unique_schedule: Option<super::shared_sequence::SharedSequence<PaintCoverageItem>>,
     pub(crate) hits: usize,
     pub(crate) misses: usize,
 }
@@ -68,6 +78,10 @@ fn metadata_eq(
 }
 impl RecordingCache {
     pub(crate) fn begin(&mut self) {
+        self.subtrees.begin();
+        self.replayed_subtrees.clear();
+        self.materialized_blocks.begin();
+        self.artifact_blocks.begin();
         self.requires_full_walk = false;
         self.metadata.clear();
         self.requests.clear();
@@ -164,17 +178,43 @@ impl RecordingCache {
         arena: &NodeArena,
         preflight: &mut PaintCoverageManifest,
     ) -> Option<()> {
+        let _profile = super::work_profile::scope("materialize_manifest_commands");
         // Transparent/culled unknown hosts also have hooks. They cannot be
         // skipped merely because preflight emitted no chunk for them.
         if self.requires_full_walk {
             return None;
         }
-        let mut owners = Vec::with_capacity(self.metadata.len());
-        let mut seen = rustc_hash::FxHashSet::with_capacity_and_hasher(
-            self.metadata.len(),
-            Default::default(),
-        );
-        for item in &preflight.items {
+        // A completed native subtree carries commands recorded against the
+        // same complete metadata/state proof replayed by the walker. Keep that
+        // schedule as a block; fresh or opaque input still follows full hooks.
+        let blocks = preflight
+            .items
+            .freeze_blocks()
+            .into_iter()
+            .map(|source| {
+                let key = Arc::as_ptr(&source) as *const () as usize;
+                let snapshot = self.replayed_subtrees.get(&key).cloned();
+                let completed = snapshot
+                    .as_ref()
+                    .and_then(|(snapshot, clock)| snapshot.completed_commands(arena, *clock));
+                (source, completed, snapshot)
+            })
+            .collect::<Vec<_>>();
+        let pending_items = || {
+            blocks
+                .iter()
+                .filter(|(_, ready, _)| ready.is_none())
+                .flat_map(|(source, _, _)| source.iter())
+        };
+        let pending_capacity = blocks
+            .iter()
+            .filter(|(_, ready, _)| ready.is_none())
+            .map(|(source, _, _)| source.len())
+            .sum();
+        let mut owners = Vec::with_capacity(pending_capacity);
+        let mut seen =
+            rustc_hash::FxHashSet::with_capacity_and_hasher(pending_capacity, Default::default());
+        for item in pending_items() {
             if let PaintCoverageItem::ArtifactChunk { chunk, .. } = item {
                 if !self.metadata.contains_key(&chunk.owner) {
                     return None;
@@ -184,8 +224,7 @@ impl RecordingCache {
                 }
             }
         }
-        let mut all_ops =
-            FxHashMap::with_capacity_and_hasher(preflight.items.len(), Default::default());
+        let mut all_ops = FxHashMap::with_capacity_and_hasher(pending_capacity, Default::default());
         for owner in owners {
             if let Some(entry) = self.replay_entry(owner) {
                 // Immutable command storage avoids allocating and copying each
@@ -257,26 +296,64 @@ impl RecordingCache {
         // Validate the complete replacement before touching the manifest.
         // Success changes only ops: all metadata, order and live scope proofs
         // remain literally the preflight values, with no clone/recomparison.
-        let chunks = preflight
-            .items
-            .iter()
+        let same_ids = self.unique_schedule.as_ref().is_some_and(|previous| {
+            previous.equivalent_with(&preflight.items, |a, b| match (a, b) {
+                (
+                    PaintCoverageItem::ArtifactChunk { chunk: a, .. },
+                    PaintCoverageItem::ArtifactChunk { chunk: b, .. },
+                ) => a.id == b.id,
+                (PaintCoverageItem::ArtifactChunk { .. }, _)
+                | (_, PaintCoverageItem::ArtifactChunk { .. }) => false,
+                _ => true,
+            })
+        });
+        if !same_ids {
+            let mut unique = rustc_hash::FxHashSet::default();
+            for item in &preflight.items {
+                if let PaintCoverageItem::ArtifactChunk { chunk, .. } = item {
+                    if !unique.insert(chunk.id) {
+                        return None;
+                    }
+                }
+            }
+        }
+        let pending_chunks = pending_items()
             .filter_map(|item| match item {
                 PaintCoverageItem::ArtifactChunk { chunk, .. } => Some(chunk.id),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        if chunks.len() != all_ops.len() || chunks.iter().any(|id| !all_ops.contains_key(id)) {
+        if pending_chunks.len() != all_ops.len()
+            || pending_chunks.iter().any(|id| !all_ops.contains_key(id))
+        {
             return None;
         }
-        for item in &mut preflight.items {
-            if let PaintCoverageItem::ArtifactChunk { chunk, ops, .. } = item {
-                *ops = Some(
-                    all_ops
-                        .remove(&chunk.id)
-                        .expect("complete replacement checked above"),
-                );
+        // A live hook executed for a pending block may have mutated another
+        // subtree. Recheck native storage after those hooks, before publishing.
+        if blocks.iter().any(|(_, ready, snapshot)| {
+            ready.is_some()
+                && snapshot.as_ref().is_none_or(|(snapshot, clock)| {
+                    snapshot.completed_commands(arena, *clock).is_none()
+                })
+        }) {
+            return None;
+        }
+        let mut output = super::shared_sequence::SharedSequence::with_shared_capacity(blocks.len());
+        for (source, ready, snapshot) in blocks {
+            if let Some(ready) = ready {
+                self.mark_completed_subtree_seen(&snapshot.as_ref().unwrap().0);
+                output.append_shared(ready);
+                super::work_profile::count("subtree_command_block_replays", 1);
+            } else {
+                let completed = self.materialized_blocks.materialize_block(source, &all_ops);
+                if let Some((snapshot, _)) = snapshot {
+                    snapshot.remember_completed_commands(completed.clone());
+                }
+                output.append_shared(completed);
             }
         }
+        self.unique_schedule = Some(preflight.items.clone());
+        preflight.items = output;
         Some(())
     }
     pub(crate) fn replay(&mut self, owner: NodeKey) -> Option<PaintNodePlan<PaintArtifact>> {
@@ -330,6 +407,11 @@ impl RecordingCache {
         }
     }
     pub(crate) fn finish(&mut self, accepted: bool) {
+        self.materialized_blocks.finish(accepted);
+        self.artifact_blocks.finish(accepted);
+        self.topology.finish(accepted);
+        self.replayed_subtrees.clear();
+        self.subtrees.finish(accepted);
         // Hidden, removed, rejected and no-longer-recordable owners lose their
         // strong resource references at this frame boundary, not at a high-water mark.
         self.entries.retain(|_, entry| accepted && entry.seen);
@@ -337,6 +419,7 @@ impl RecordingCache {
         self.order_paths.retain(|_, (_, seen)| accepted && *seen);
         if !accepted {
             self.scope_store = None;
+            self.unique_schedule = None;
             self.property_closure = None;
         }
         self.metadata.clear();

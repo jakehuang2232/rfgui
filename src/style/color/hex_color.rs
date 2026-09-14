@@ -101,6 +101,9 @@ impl<'a> HexColor<'a> {
 }
 
 impl<'a> ColorLike for HexColor<'a> {
+    fn is_immutable(&self) -> bool {
+        true
+    }
     fn box_clone(&self) -> Box<dyn ColorLike> {
         Box::new(HexColor::new(self.raw.to_string()))
     }

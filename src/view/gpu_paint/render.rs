@@ -67,6 +67,16 @@ struct SourcePass {
     reuse: bool,
     resources: Option<Arc<SourceResources>>,
 }
+
+// Payload validation and draw counts remain exact. The allocation reserves
+// bounded growth room so a changing instance count need not change graph
+// topology or recreate the GPU buffer on every frame.
+fn vertex_buffer_capacity(payload_bytes: usize) -> u64 {
+    (payload_bytes as u64).max(4).next_power_of_two()
+}
+
+#[cfg(test)]
+mod tests;
 impl GraphicsPass for SourcePass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::RequiresOwnPass);
@@ -77,7 +87,7 @@ impl GraphicsPass for SourcePass {
             label: Some("GPU Paint Uniform"),
         });
         self.vertices = builder.create_buffer(BufferDesc {
-            size: (self.source.vertices.len() as u64).max(4),
+            size: vertex_buffer_capacity(self.source.vertices.len()),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
             label: Some("GPU Paint Vertices"),
         });

@@ -734,6 +734,8 @@ pub(crate) struct TopologyCacheKey {
     signature: TopologySignature,
 }
 
+mod topology_diagnostics;
+
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FramePassTestPayload {
@@ -764,8 +766,35 @@ impl FrameGraphTestSnapshot {
     }
 }
 
-fn topology_cache_matches(cached: &TopologyCacheKey, current: &TopologyCacheKey) -> bool {
-    cached.hash == current.hash && cached.signature == current.signature
+fn topology_color_attachment(
+    attachment: &GraphicsColorAttachmentDescriptor,
+) -> TopologyGraphicsColorAttachment {
+    TopologyGraphicsColorAttachment {
+        target: attachment.target,
+        load_op: attachment.load_op,
+        store_op: attachment.store_op,
+        clear_color_bits: attachment.clear_color.map(|color| color.map(f64::to_bits)),
+    }
+}
+
+fn topology_depth_stencil_attachment(
+    attachment: GraphicsDepthStencilAttachmentDescriptor,
+) -> TopologyDepthStencilAttachment {
+    TopologyDepthStencilAttachment {
+        target: attachment.target,
+        depth: attachment.depth.map(|depth| TopologyDepthAspect {
+            load_op: depth.load_op,
+            store_op: depth.store_op,
+            clear_depth_bits: depth.clear_depth.map(f32::to_bits),
+            usage: depth.usage,
+        }),
+        stencil: attachment.stencil.map(|stencil| TopologyStencilAspect {
+            load_op: stencil.load_op,
+            store_op: stencil.store_op,
+            clear_stencil: stencil.clear_stencil,
+            usage: stencil.usage,
+        }),
+    }
 }
 
 fn topology_pass_details(details: &PassDetails) -> TopologyPassDetails {
@@ -774,30 +803,11 @@ fn topology_pass_details(details: &PassDetails) -> TopologyPassDetails {
             color_attachments: graphics
                 .color_attachments
                 .iter()
-                .map(|attachment| TopologyGraphicsColorAttachment {
-                    target: attachment.target,
-                    load_op: attachment.load_op,
-                    store_op: attachment.store_op,
-                    clear_color_bits: attachment.clear_color.map(|color| color.map(f64::to_bits)),
-                })
+                .map(topology_color_attachment)
                 .collect(),
-            depth_stencil_attachment: graphics.depth_stencil_attachment.map(|attachment| {
-                TopologyDepthStencilAttachment {
-                    target: attachment.target,
-                    depth: attachment.depth.map(|depth| TopologyDepthAspect {
-                        load_op: depth.load_op,
-                        store_op: depth.store_op,
-                        clear_depth_bits: depth.clear_depth.map(f32::to_bits),
-                        usage: depth.usage,
-                    }),
-                    stencil: attachment.stencil.map(|stencil| TopologyStencilAspect {
-                        load_op: stencil.load_op,
-                        store_op: stencil.store_op,
-                        clear_stencil: stencil.clear_stencil,
-                        usage: stencil.usage,
-                    }),
-                }
-            }),
+            depth_stencil_attachment: graphics
+                .depth_stencil_attachment
+                .map(topology_depth_stencil_attachment),
             sample_count: graphics.sample_count,
             viewport_policy: graphics.viewport_policy,
             scissor_policy: graphics.scissor_policy,
@@ -806,6 +816,97 @@ fn topology_pass_details(details: &PassDetails) -> TopologyPassDetails {
         },
         PassDetails::Compute(_) => TopologyPassDetails::Compute,
         PassDetails::Transfer(_) => TopologyPassDetails::Transfer,
+    }
+}
+
+impl TopologyPassDetails {
+    fn matches_live(&self, details: &PassDetails) -> bool {
+        match (self, details) {
+            (
+                Self::Graphics {
+                    color_attachments,
+                    depth_stencil_attachment,
+                    sample_count,
+                    viewport_policy,
+                    scissor_policy,
+                    merge_policy,
+                    requirements,
+                },
+                PassDetails::Graphics(GraphicsPassDescriptor {
+                    color_attachments: live_colors,
+                    depth_stencil_attachment: live_depth_stencil,
+                    sample_count: live_samples,
+                    viewport_policy: live_viewport,
+                    scissor_policy: live_scissor,
+                    merge_policy: live_merge,
+                    requirements: live_requirements,
+                }),
+            ) => {
+                color_attachments.len() == live_colors.len()
+                    && color_attachments
+                        .iter()
+                        .zip(live_colors)
+                        .all(|(cached, live)| *cached == topology_color_attachment(live))
+                    && *depth_stencil_attachment
+                        == live_depth_stencil.map(topology_depth_stencil_attachment)
+                    && sample_count == live_samples
+                    && viewport_policy == live_viewport
+                    && scissor_policy == live_scissor
+                    && merge_policy == live_merge
+                    && requirements == live_requirements
+            }
+            (Self::Compute, PassDetails::Compute(_))
+            | (Self::Transfer, PassDetails::Transfer(_)) => true,
+            _ => false,
+        }
+    }
+}
+
+impl TopologySignature {
+    /// Compare the same canonical inputs as `topology_signature`, without
+    /// allocating a second signature just to discard it on a warm hit.
+    fn matches_live(&self, graph: &FrameGraph) -> bool {
+        // A new signature field must participate in this comparison too.
+        let Self {
+            passes,
+            external_sinks,
+            textures,
+            texture_metadata,
+            buffers,
+            buffer_metadata,
+            texture_attachment_pairs,
+        } = self;
+        passes.len() == graph.passes.len()
+            && passes.iter().zip(&graph.passes).all(|(cached, live)| {
+                let TopologyPassSignature {
+                    name,
+                    kind,
+                    details,
+                    usages,
+                } = cached;
+                *name == live.descriptor.name
+                    && *kind == live.descriptor.kind
+                    && details.matches_live(&live.descriptor.details)
+                    && usages.iter().copied().eq(live
+                        .usages
+                        .iter()
+                        .map(|usage| (usage.resource, usage.usage)))
+            })
+            && *external_sinks == graph.external_sinks
+            && *textures == graph.textures
+            && *texture_metadata == graph.texture_metadata
+            && buffers.iter().copied().eq(graph.buffers.iter().map(|desc| {
+                TopologyBufferDescriptor {
+                    size: desc.size,
+                    usage: desc.usage,
+                    label: desc.label,
+                }
+            }))
+            && *buffer_metadata == graph.buffer_metadata
+            && texture_attachment_pairs.len() == graph.texture_attachment_pairs.len()
+            && texture_attachment_pairs
+                .iter()
+                .all(|(color, depth)| graph.texture_attachment_pairs.get(color) == Some(depth))
     }
 }
 
@@ -1015,6 +1116,8 @@ pub struct CompileGraphProfile {
 pub struct CompileProfile {
     pub total_ms: f64,
     pub setup_passes_ms: f64,
+    /// Hash filtering, full canonical comparison, and signature creation on a miss.
+    pub topology_cache_lookup_ms: f64,
     pub annotate_resource_versions_ms: f64,
     pub build_compiled_graph_ms: f64,
     pub prepare_upload_ms: f64,
@@ -1024,7 +1127,7 @@ pub struct CompileProfile {
     /// time descending. Only collected when compile detail tracing is on.
     pub prepare_by_pass_name: Vec<(&'static str, usize, f64)>,
     /// True when `annotate_resource_versions` + `build_compiled_graph` were skipped
-    /// because the topology hash matched the cached result from the previous frame.
+    /// because both the hash and full canonical topology matched the prior frame.
     pub topology_cache_hit: bool,
     pub graph: CompileGraphProfile,
 }
@@ -1044,7 +1147,7 @@ impl FrameGraph {
 
     #[cfg(test)]
     pub(crate) fn topology_cache_key_for_test(&self) -> TopologyCacheKey {
-        self.topology_cache_key()
+        self.resolve_topology_cache_key(None).0
     }
 
     #[allow(dead_code)] // C4A prepared-surface validation; production dispatch lands in C4B.
@@ -1385,6 +1488,7 @@ impl FrameGraph {
         Ok(CompileProfile {
             total_ms: compile_started_at.elapsed().as_secs_f64() * 1000.0,
             setup_passes_ms,
+            topology_cache_lookup_ms: 0.0,
             annotate_resource_versions_ms,
             build_compiled_graph_ms,
             prepare_upload_ms: 0.0,
@@ -1486,11 +1590,23 @@ impl FrameGraph {
         }
     }
 
-    fn topology_cache_key(&self) -> TopologyCacheKey {
-        TopologyCacheKey {
-            hash: self.compute_topology_hash(),
-            signature: self.topology_signature(),
+    fn resolve_topology_cache_key(
+        &self,
+        cached: Option<TopologyCacheKey>,
+    ) -> (TopologyCacheKey, bool) {
+        let hash = self.compute_topology_hash();
+        if let Some(cached) = cached {
+            if cached.hash == hash && cached.signature.matches_live(self) {
+                return (cached, true);
+            }
         }
+        (
+            TopologyCacheKey {
+                hash,
+                signature: self.topology_signature(),
+            },
+            false,
+        )
     }
 
     /// Run annotate + build_compiled_graph phases; returns the compiled graph and timings.
@@ -1575,24 +1691,34 @@ impl FrameGraph {
         // Capture every canonical input that affects CompiledGraph reuse after
         // setup has populated pass descriptors and usages. The hash is not a
         // correctness boundary; full equality below is mandatory.
-        let topology_key = self.topology_cache_key();
-
-        // Try to reuse cached CompiledGraph; fall back to full compile on miss.
-        let mut topology_cache_hit = false;
-        let (compiled_graph, annotate_resource_versions_ms, build_compiled_graph_ms, graph_profile) =
-            if let Some((cached_key, cached_graph)) = cache {
-                if topology_cache_matches(&cached_key, &topology_key) {
-                    topology_cache_hit = true;
-                    (
-                        cached_graph,
-                        0.0_f64,
-                        0.0_f64,
-                        CompileGraphProfile::default(),
-                    )
-                } else {
-                    self.compile_annotate_and_build()?
+        let topology_lookup_started_at = Instant::now();
+        let (cached_key, cached_graph) = cache.unzip();
+        if viewport.debug_options().trace_compile_detail {
+            if let Some(previous) = cached_key.as_ref() {
+                if !previous.signature.matches_live(self) {
+                    eprintln!(
+                        "topology-miss {:?}",
+                        previous.signature.differences(&self.topology_signature())
+                    );
                 }
             } else {
+                eprintln!("topology-miss cold");
+            }
+        }
+        let (topology_key, topology_cache_hit) = self.resolve_topology_cache_key(cached_key);
+        let topology_cache_lookup_ms = topology_lookup_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        // Try to reuse cached CompiledGraph; fall back to full compile on miss.
+        let (compiled_graph, annotate_resource_versions_ms, build_compiled_graph_ms, graph_profile) =
+            if topology_cache_hit {
+                (
+                    cached_graph.expect("a reused topology key owns its compiled graph"),
+                    0.0_f64,
+                    0.0_f64,
+                    CompileGraphProfile::default(),
+                )
+            } else {
+                drop(cached_graph);
                 self.compile_annotate_and_build()?
             };
 
@@ -1659,6 +1785,7 @@ impl FrameGraph {
         let profile = CompileProfile {
             total_ms: compile_started_at.elapsed().as_secs_f64() * 1000.0,
             setup_passes_ms,
+            topology_cache_lookup_ms,
             annotate_resource_versions_ms,
             build_compiled_graph_ms,
             prepare_upload_ms,
@@ -5329,6 +5456,7 @@ pub fn dump_cache_stats() -> Vec<CacheStatSnapshot> {
 
 pub struct ResourceCache<T> {
     store: FxHashMap<u64, T>,
+    scopes: FxHashMap<u64, ResourceCache<T>>,
     stats: Option<&'static CacheStats>,
 }
 
@@ -5336,6 +5464,7 @@ impl<T> ResourceCache<T> {
     pub fn new() -> Self {
         Self {
             store: FxHashMap::default(),
+            scopes: FxHashMap::default(),
             stats: None,
         }
     }
@@ -5343,11 +5472,16 @@ impl<T> ResourceCache<T> {
     pub fn with_stats(stats: &'static CacheStats) -> Self {
         Self {
             store: FxHashMap::default(),
+            scopes: FxHashMap::default(),
             stats: Some(stats),
         }
     }
 
     pub fn clear(&mut self) {
+        for scope in self.scopes.values_mut() {
+            scope.clear();
+        }
+        self.scopes.clear();
         if let Some(stats) = self.stats {
             stats
                 .evictions
@@ -5378,8 +5512,32 @@ impl<T> ResourceCache<T> {
         self.store.entry(key).or_insert_with(create)
     }
 
+    /// The viewport owns a unique, non-recycled scope. Numeric backend object
+    /// IDs can collide across Instances, so they cannot partition these resources.
+    pub(crate) fn get_or_insert_scoped_with<F: FnOnce() -> T>(
+        &mut self,
+        scope: u64,
+        key: u64,
+        create: F,
+    ) -> &mut T {
+        let stats = self.stats;
+        self.scopes
+            .entry(scope)
+            .or_insert_with(|| match stats {
+                Some(stats) => Self::with_stats(stats),
+                None => Self::new(),
+            })
+            .get_or_insert_with(key, create)
+    }
+
+    pub(crate) fn clear_scope(&mut self, scope: u64) {
+        if let Some(mut resources) = self.scopes.remove(&scope) {
+            resources.clear();
+        }
+    }
+
     pub fn len(&self) -> usize {
-        self.store.len()
+        self.store.len() + self.scopes.values().map(Self::len).sum::<usize>()
     }
 }
 

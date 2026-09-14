@@ -152,7 +152,8 @@ fn artifact_snapshots_complete_spatial_ancestor_graphs_without_arena_queries() {
                 topology_revision: 1,
             },
             payload_identity: PaintPayloadIdentity::None,
-        }],
+        }]
+        .into(),
         ..PaintArtifact::default()
     };
     assert!(
@@ -304,7 +305,8 @@ fn artifact_snapshot_closure_includes_named_anchor_visual_chain() {
                 topology_revision: 1,
             },
             payload_identity: PaintPayloadIdentity::None,
-        }],
+        }]
+        .into(),
         ..PaintArtifact::default()
     };
     populate_referenced_property_snapshots(&mut artifact, &trees)

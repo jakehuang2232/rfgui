@@ -13,9 +13,7 @@ use crate::view::render_pass::TextureCompositePass;
 use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, DrawRectPass};
 use crate::view::render_pass::render_target::GraphicsPassScissor;
 use crate::view::render_pass::text_pass::{TextInput, TextOutput, TextPreparedInputPass};
-use crate::view::render_pass::texture_composite_pass::{
-    TextureCompositeInput, TextureCompositeOutput,
-};
+use crate::view::render_pass::texture_composite_pass::{TextureCompositeInput, TextureCompositeOutput};
 use crate::view::render_pass::{ShadowModuleSpec, build_shadow_module};
 use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::Key;
@@ -488,10 +486,10 @@ impl From<SurfaceDagError> for ArtifactSurfaceRasterPlanError {
 struct ValidatedArtifactSurfaceDagProgram {
     artifact: PaintArtifact,
     resolved_clips: Vec<ResolvedClip>,
-    surface_dag: SurfaceDag,
-    execution_order: SurfaceDagExecutionOrder,
-    coverage: ArtifactSurfaceCoverageForest,
-    host_placement: ArtifactSurfaceHostPlacementProjection,
+    surface_dag: std::sync::Arc<SurfaceDag>,
+    execution_order: std::sync::Arc<SurfaceDagExecutionOrder>,
+    coverage: std::sync::Arc<ArtifactSurfaceCoverageForest>,
+    host_placement: std::sync::Arc<ArtifactSurfaceHostPlacementProjection>,
 }
 
 /// Sealed per-chunk scissor program for the future artifact executor.
@@ -1094,30 +1092,54 @@ fn validate_artifact_surface_dag_program(
         .map_err(SurfaceDagError::Transition)
         .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
         .flatten();
-    let inputs = super::surface_dag::ArtifactSurfaceInputs::with_graphs(
-        &artifact,
-        LayerizationPolicy::ResolveMaterializedTargets,
-        graphs,
-    )
-    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let requests = inputs
-        .requests()
+    // A warm structural plan retains only graph relationships. Current
+    // command validation already ran above, and `graphs` revalidated numeric
+    // snapshots. Transfer obligations and target elimination stay current.
+    let structure = if graphs.is_some() {
+        cache
+            .as_deref_mut()
+            .map(|cache| cache.surface_structure(&artifact))
+            .transpose()
+            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
+            .flatten()
+    } else {
+        None
+    };
+    let (surface_dag, coverage, graphs) = if let Some((dag, coverage)) = structure {
+        (
+            dag,
+            coverage,
+            graphs.expect("structural replay requires current graph proof"),
+        )
+    } else {
+        let inputs = super::surface_dag::ArtifactSurfaceInputs::with_graphs(
+            &artifact,
+            LayerizationPolicy::ResolveMaterializedTargets,
+            graphs,
+        )
         .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let events = inputs
-        .classify(&requests)
-        .map_err(SurfaceDagError::Transition)
-        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let surface_dag = inputs
-        .reconstruct(&events)
-        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-    let coverage = match cache
-        .as_deref_mut()
-        .and_then(|cache| cache.coverage(&artifact, &surface_dag))
-    {
-        Some(coverage) => coverage,
-        None => inputs
-            .coverage(&surface_dag)
-            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?,
+        let requests = inputs
+            .requests()
+            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+        let events = inputs
+            .classify(&requests)
+            .map_err(SurfaceDagError::Transition)
+            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+        let surface_dag = inputs
+            .reconstruct(&events)
+            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+        let coverage = match cache
+            .as_deref_mut()
+            .and_then(|cache| cache.coverage(&artifact, &surface_dag))
+        {
+            Some(coverage) => coverage,
+            None => inputs
+                .coverage(&surface_dag)
+                .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
+                .into(),
+        };
+        let graphs = inputs.graphs();
+        (surface_dag, coverage, graphs)
     };
     let execution_order = surface_dag
         .derive_materialized_execution_order(
@@ -1133,15 +1155,15 @@ fn validate_artifact_surface_dag_program(
         None => ArtifactSurfaceHostPlacementProjection::try_new(&artifact)
             .map_err(TransitionError::SpatialSnapshot)
             .map_err(SurfaceDagError::Transition)
-            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?,
+            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
+            .into(),
     };
 
-    let graphs = inputs.graphs();
     let program = ValidatedArtifactSurfaceDagProgram {
         artifact,
         resolved_clips: validated.resolved_clips,
-        surface_dag,
-        execution_order,
+        surface_dag: surface_dag.into(),
+        execution_order: execution_order.into(),
         coverage,
         host_placement,
     };
@@ -1743,12 +1765,15 @@ fn artifact_surface_span_chunks<'a>(
     artifact: &'a PaintArtifact,
     target: ArtifactSurfaceRasterTargetId,
     span: &ArtifactSurfaceCoverageSpan,
-) -> Result<&'a [super::PaintChunk], ArtifactSurfaceRasterPlanError> {
+) -> Result<
+    super::shared_sequence::SequenceView<'a, super::PaintChunk>,
+    ArtifactSurfaceRasterPlanError,
+> {
     let chunk_range = span.chunk_range();
     let op_range = span.op_range();
     let chunks = artifact
         .chunks
-        .get(chunk_range)
+        .view(chunk_range)
         .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
     if chunks.len() != span.localized_states().len()
         || chunks.first().map(|chunk| chunk.op_range.start) != Some(op_range.start)
@@ -1800,7 +1825,7 @@ fn artifact_surface_chunk_range_raw_bounds(
 ) -> Result<Option<[u32; 4]>, ArtifactSurfaceRasterPlanError> {
     let chunks = artifact
         .chunks
-        .get(chunk_range.clone())
+        .view(chunk_range.clone())
         .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target))?;
     let mut bounds = None;
     for (local_index, chunk) in chunks.iter().enumerate() {
@@ -1897,7 +1922,7 @@ fn prepare_artifact_surface_span(
         cache.raster_span(
             target,
             span,
-            chunks,
+            &chunks,
             placement,
             composite_effect,
             incoming_scissor,
@@ -2057,7 +2082,7 @@ fn prepare_artifact_surface_span(
         cache.remember_raster_span(
             target,
             span,
-            chunks,
+            &chunks,
             placement,
             composite_effect,
             incoming_scissor,
@@ -2479,12 +2504,6 @@ fn prepare_artifact_surface_raster_plan_from_program(
         .iter()
         .map(|snapshot| (snapshot.id, *snapshot))
         .collect::<FxHashMap<_, _>>();
-    let owner_states = program
-        .artifact
-        .owner_property_states
-        .iter()
-        .map(|snapshot| (snapshot.owner, snapshot.paint))
-        .collect::<FxHashMap<_, _>>();
     let mut prepared_nodes: Vec<Option<PreparedArtifactSurfaceRasterNode>> =
         vec![None; program.execution_order.nodes().len()];
     // Source output and declared upload buffers share the aggregate limit
@@ -2626,14 +2645,9 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 target: target_id,
                 owner: node.target(),
             })?;
-        let owner_state =
-            owner_states
-                .get(&node.target())
-                .ok_or(ArtifactSurfaceRasterPlanError::SurfaceDag(
-                    SurfaceDagError::Transition(TransitionError::MissingOwnerPropertyState(
-                        node.target(),
-                    )),
-                ))?;
+        // The validated structural program retains each boundary owner's
+        // exact endpoints; unrelated paint owners need no per-frame lookup map.
+        let owner_state = node.owner_properties();
         let geometry_for_bounds = |raw_source_bounds_bits, source_bounds_bits| {
             let geometry = surface_composite_geometry(
                 node,
@@ -4402,181 +4416,10 @@ fn child_mask_radii_fit_bounds(radii: [[f32; 2]; 4], [width, height]: [f32; 2]) 
 fn validate_artifact_store_with_cache(
     artifact: &PaintArtifact,
     policy: ArtifactStoreValidationPolicy,
-    cache: Option<&mut PlanningCache>,
+    mut cache: Option<&mut PlanningCache>,
 ) -> Option<ValidatedArtifact> {
     let _profile = crate::view::paint::work_profile::scope("validate_artifact_store");
-    let mut cursor = 0usize;
-    // A unique (owner, phase, slot) also proves unique chunk ids after the
-    // owner check below; role/scope variants may not share the same slot.
-    let mut seen_slots =
-        FxHashSet::with_capacity_and_hasher(artifact.chunks.len(), Default::default());
-    let mut child_mask_stack = Vec::<(
-        crate::view::node_arena::NodeKey,
-        [u32; 4],
-        &PaintPayloadIdentity,
-    )>::new();
-    for chunk in &artifact.chunks {
-        if !super::has_canonical_paint_bounds(chunk.bounds)
-            || chunk.id.owner != chunk.owner
-            || !seen_slots.insert((chunk.owner, chunk.id.phase, chunk.id.slot))
-            || chunk.op_range.start != cursor
-            || chunk.op_range.start > chunk.op_range.end
-            || chunk.op_range.end > artifact.ops.len()
-        {
-            return None;
-        }
-        let properties_are_valid = match policy {
-            #[cfg(test)]
-            ArtifactStoreValidationPolicy::General => {
-                chunk.properties.transform.is_none() && chunk.properties.scroll.is_none()
-            }
-            ArtifactStoreValidationPolicy::SurfaceDag => true,
-        };
-        if !properties_are_valid {
-            return None;
-        }
-        let ops = &artifact.ops[chunk.op_range.clone()];
-        if chunk.id.slot == super::RETAINED_CHILD_MASK_SLOT {
-            let [PaintOp::DrawRect(mask)] = ops else {
-                return None;
-            };
-            let Some(logical_scissor) =
-                crate::view::base_component::exact_logical_scissor_for_rect(chunk.bounds)
-            else {
-                return None;
-            };
-            let canonical = chunk.id.role == PaintChunkRole::SelfDecoration
-                && chunk.id.scope == PaintPropertyScope::Contents
-                && mask.mode == crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
-                && mask.params.position == [chunk.bounds.x, chunk.bounds.y]
-                && mask.params.size == [chunk.bounds.width, chunk.bounds.height]
-                && mask
-                    .params
-                    .size
-                    .iter()
-                    .all(|value| value.is_finite() && *value > 0.0)
-                && mask.params.fill_color == [0.0; 4]
-                && mask.params.opacity.to_bits() == 1.0_f32.to_bits()
-                && mask.params.border_widths == [0.0; 4]
-                && child_mask_radii_fit_bounds(mask.params.border_radii, mask.params.size)
-                && mask.params.gradient.is_none()
-                && mask.params.border_gradient.is_none()
-                && chunk.payload_identity.matches_rects([mask]);
-            if !canonical {
-                return None;
-            }
-            match chunk.id.phase {
-                super::PaintNodePhase::BeforeChildren => {
-                    if child_mask_stack.len() >= u8::MAX as usize {
-                        return None;
-                    }
-                    child_mask_stack.push((chunk.owner, logical_scissor, &chunk.payload_identity));
-                }
-                super::PaintNodePhase::AfterChildren => {
-                    if child_mask_stack.pop()
-                        != Some((chunk.owner, logical_scissor, &chunk.payload_identity))
-                    {
-                        return None;
-                    }
-                }
-            }
-            cursor = chunk.op_range.end;
-            continue;
-        }
-        match chunk.id.role {
-            PaintChunkRole::GpuContent => {
-                let [PaintOp::PreparedGpu(op)] = ops else {
-                    return None;
-                };
-                if chunk.payload_identity != PaintPayloadIdentity::Gpu(op.identity()?)
-                    || op.params.bounds
-                        != [
-                            chunk.bounds.x,
-                            chunk.bounds.y,
-                            chunk.bounds.width,
-                            chunk.bounds.height,
-                        ]
-                    || chunk.id.scope != PaintPropertyScope::SelfPaint
-                    || chunk.id.phase != super::PaintNodePhase::BeforeChildren
-                    || chunk.id.slot != 0
-                {
-                    return None;
-                }
-            }
-
-            PaintChunkRole::ImageContent => {
-                if !validate_image_content_ops(ops, &chunk.payload_identity) {
-                    return None;
-                }
-            }
-            PaintChunkRole::SvgContent => {
-                if !validate_svg_content_ops(ops, &chunk.payload_identity) {
-                    return None;
-                }
-            }
-            PaintChunkRole::SelfDecoration => {
-                if ops
-                    .iter()
-                    .any(|op| matches!(op, PaintOp::PreparedImage(_) | PaintOp::PreparedSvg(_)))
-                    || !validate_self_decoration_ops(ops, &chunk.payload_identity)
-                {
-                    return None;
-                }
-            }
-            PaintChunkRole::TextGlyphs => {
-                if !validate_text_glyph_ops(ops, &chunk.payload_identity) {
-                    return None;
-                }
-            }
-            PaintChunkRole::SelectionUnderlay => {
-                let valid = validate_rect_phase_ops(ops, &chunk.payload_identity, false);
-                if !valid {
-                    return None;
-                }
-            }
-            PaintChunkRole::TextDecoration => {
-                if !validate_rect_phase_ops(ops, &chunk.payload_identity, false) {
-                    return None;
-                }
-            }
-            PaintChunkRole::Caret => {
-                if !validate_rect_phase_ops(ops, &chunk.payload_identity, true) {
-                    return None;
-                }
-            }
-            PaintChunkRole::ScrollbarOverlay => {
-                let allowed = match policy {
-                    ArtifactStoreValidationPolicy::SurfaceDag => {
-                        (ops.is_empty()
-                            && chunk.payload_identity
-                                == PaintPayloadIdentity::prepared_shadows(std::iter::empty()))
-                            || matches!(
-                                ops,
-                                [PaintOp::PreparedScrollbarOverlay(overlay)]
-                                    if overlay.has_canonical_identity()
-                                        && chunk.payload_identity
-                                            == PaintPayloadIdentity::prepared_scrollbar_overlay(
-                                                overlay,
-                                            )
-                            )
-                    }
-                    #[cfg(test)]
-                    ArtifactStoreValidationPolicy::General => false,
-                };
-                if !allowed {
-                    return None;
-                }
-            }
-        }
-        cursor = chunk.op_range.end;
-    }
-    if !child_mask_stack.is_empty() {
-        return None;
-    }
-    if cursor != artifact.ops.len() {
-        return None;
-    }
-
+    planning_cache::command_blocks::validate(artifact, policy, cache.as_deref_mut())?;
     if policy == ArtifactStoreValidationPolicy::SurfaceDag
         && let Some(validated) = cache.and_then(|cache| cache.relations(artifact))
     {

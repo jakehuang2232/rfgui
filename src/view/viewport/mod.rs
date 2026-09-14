@@ -247,6 +247,7 @@ pub struct Viewport {
 
 impl Drop for Viewport {
     fn drop(&mut self) {
+        crate::view::render_pass::release_scoped_resources(self.render_resource_scope_id());
         // Only release the process-wide cache entries owned by this Viewport.
         // Calling `release_render_resource_caches` here would incorrectly clear
         // unrelated global pass caches still used by other Viewports.
@@ -335,6 +336,8 @@ struct FrameRuntime {
     completion_counts: FrameCompletionCounts,
     #[cfg(any(test, feature = "renderer-test-support"))]
     last_cpu_phases: [f64; 10],
+    #[cfg(any(test, feature = "renderer-test-support"))]
+    last_completion_phases: [f64; 6],
     last_frame_graph: Option<FrameGraph>,
     compile_cache: Option<CachedCompiledGraph>,
     debug_overlay_vertices: Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
@@ -376,6 +379,8 @@ impl FrameRuntime {
             completion_counts: FrameCompletionCounts::default(),
             #[cfg(any(test, feature = "renderer-test-support"))]
             last_cpu_phases: [0.; 10],
+            #[cfg(any(test, feature = "renderer-test-support"))]
+            last_completion_phases: [0.; 6],
             last_frame_graph: None,
             compile_cache: None,
             debug_overlay_vertices: Vec::new(),

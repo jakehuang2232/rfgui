@@ -24,10 +24,42 @@ struct Entry {
     origin: Option<ArtifactSurfaceRasterOriginProjection>,
     effect: Option<EffectNodeSnapshot>,
     incoming_scissor: Option<[u32; 4]>,
-    chunks: Vec<super::super::super::PaintChunk>,
+    chunks: super::super::super::shared_sequence::SequenceSnapshot<super::super::super::PaintChunk>,
+    placement: PlacementProof,
     deltas: Vec<[u32; 2]>,
     prepared: PreparedArtifactSurfaceRasterSpan,
     seen: bool,
+    // Liveness only: this cannot certify input equality or GPU residency.
+    localized_liveness: Arc<std::sync::atomic::AtomicBool>,
+}
+// Surface translation has only two owner roles (boundary and descendant).
+// Equal complete placement inputs prove every delta without recomputing it per
+// chunk. Scene-root placement can share its exact resolved immutable owner map.
+#[derive(Clone)]
+enum PlacementProof {
+    Surface([u32; 2]),
+    SceneRoot(ResolvedArtifactSurfaceHostPlacement),
+}
+impl PlacementProof {
+    fn observe(placement: ArtifactSurfaceSpanPlacement<'_>) -> Self {
+        match placement {
+            ArtifactSurfaceSpanPlacement::Surface { base_delta, .. } => {
+                Self::Surface(base_delta.map(f32::to_bits))
+            }
+            ArtifactSurfaceSpanPlacement::SceneRoot(host) => Self::SceneRoot(host.clone()),
+        }
+    }
+    fn matches(&self, placement: ArtifactSurfaceSpanPlacement<'_>) -> bool {
+        match (self, placement) {
+            (Self::Surface(old), ArtifactSurfaceSpanPlacement::Surface { base_delta, .. }) => {
+                *old == base_delta.map(f32::to_bits)
+            }
+            (Self::SceneRoot(old), ArtifactSurfaceSpanPlacement::SceneRoot(now)) => {
+                Arc::ptr_eq(&old.owner_paint_offset_bits, &now.owner_paint_offset_bits)
+            }
+            _ => false,
+        }
+    }
 }
 impl Entry {
     fn matches_environment(&self, current: &Environment) -> bool {
@@ -90,6 +122,9 @@ impl SpanCache {
         self.hits = 0;
         for entry in self.entries.values_mut() {
             entry.seen = false;
+            entry
+                .localized_liveness
+                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
     pub(super) fn finish(&mut self, accepted: bool) {
@@ -123,7 +158,10 @@ impl PlanningCache {
         &mut self,
         target: ArtifactSurfaceRasterTargetId,
         span: &ArtifactSurfaceCoverageSpan,
-        chunks: &[super::super::super::PaintChunk],
+        chunks: &super::super::super::shared_sequence::SequenceView<
+            '_,
+            super::super::super::PaintChunk,
+        >,
         placement: ArtifactSurfaceSpanPlacement<'_>,
         effect: Option<EffectNodeSnapshot>,
         incoming_scissor: Option<[u32; 4]>,
@@ -140,35 +178,37 @@ impl PlanningCache {
             || entry.effect != effect
             || entry.incoming_scissor != incoming_scissor
             || entry.chunks.len() != chunks.len()
-            || !entry.chunks.iter().zip(chunks).all(|(a, b)| {
-                a.id == b.id
-                    && a.owner == b.owner
-                    && a.op_range == b.op_range
-                    && a.properties == b.properties
-                    && a.content_revision == b.content_revision
-                    && a.payload_identity == b.payload_identity
-                    && [a.bounds.x, a.bounds.y, a.bounds.width, a.bounds.height].map(f32::to_bits)
-                        == [b.bounds.x, b.bounds.y, b.bounds.width, b.bounds.height]
+            || (!entry.chunks.shares_with(chunks)
+                && !entry.chunks.iter().zip(chunks.iter()).all(|(a, b)| {
+                    a.id == b.id
+                        && a.owner == b.owner
+                        && a.op_range == b.op_range
+                        && a.properties == b.properties
+                        && a.content_revision == b.content_revision
+                        && a.payload_identity == b.payload_identity
+                        && [a.bounds.x, a.bounds.y, a.bounds.width, a.bounds.height]
                             .map(f32::to_bits)
-            })
-            || !chunks.iter().zip(&entry.deltas).all(|(chunk, delta)| {
-                placement
-                    .chunk_translation(target, chunk.owner)
-                    .is_ok_and(|current| current.map(f32::to_bits) == *delta)
-            })
+                            == [b.bounds.x, b.bounds.y, b.bounds.width, b.bounds.height]
+                                .map(f32::to_bits)
+                }))
+            || (!entry.placement.matches(placement)
+                && !chunks.iter().zip(&entry.deltas).all(|(chunk, delta)| {
+                    placement
+                        .chunk_translation(target, chunk.owner)
+                        .is_ok_and(|current| current.map(f32::to_bits) == *delta)
+                }))
         {
             return None;
         }
+        entry.placement = PlacementProof::observe(placement);
         entry.environment = environment.clone();
         entry.seen = true;
         self.spans.hits += 1;
-        // The span owns the same localized programs. Preserve their per-chunk
-        // fallback cache too, so editing one chunk need not relocalize siblings.
-        for chunk in chunks {
-            if let Some(localized) = self.localized.get_mut(&chunk.id) {
-                localized.seen = true;
-            }
-        }
+        // One frame-liveness update preserves this span's per-chunk fallback
+        // entries. A warm span need not look each one up just to mark it live.
+        entry
+            .localized_liveness
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Some(entry.prepared.clone())
     }
 
@@ -176,7 +216,10 @@ impl PlanningCache {
         &mut self,
         target: ArtifactSurfaceRasterTargetId,
         span: &ArtifactSurfaceCoverageSpan,
-        chunks: &[super::super::super::PaintChunk],
+        chunks: &super::super::super::shared_sequence::SequenceView<
+            '_,
+            super::super::super::PaintChunk,
+        >,
         placement: ArtifactSurfaceSpanPlacement<'_>,
         effect: Option<EffectNodeSnapshot>,
         incoming_scissor: Option<[u32; 4]>,
@@ -210,6 +253,12 @@ impl PlanningCache {
         else {
             return;
         };
+        let localized_liveness = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        for chunk in chunks.iter() {
+            if let Some(entry) = self.localized.get_mut(&chunk.id) {
+                entry.span_liveness = Some(Arc::downgrade(&localized_liveness));
+            }
+        }
         self.spans.entries.insert(
             first.id,
             Entry {
@@ -222,10 +271,12 @@ impl PlanningCache {
                 origin: placement.raster_origin(),
                 effect,
                 incoming_scissor,
-                chunks: chunks.to_vec(),
+                chunks: chunks.snapshot(),
+                placement: PlacementProof::observe(placement),
                 deltas,
                 prepared: prepared.clone(),
                 seen: true,
+                localized_liveness,
             },
         );
     }

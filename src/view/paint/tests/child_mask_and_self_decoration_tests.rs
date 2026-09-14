@@ -295,7 +295,7 @@ fn self_decoration_grammar_accepts_empty_but_rejects_shadow_only_and_border_only
         })
         .cloned()
         .unwrap();
-    border_only.ops = vec![border];
+    border_only.ops = vec![border].into();
     border_only.chunks[0].op_range = 0..1;
     let _ = take_artifact_compile_count();
     let _ = compiled_whole_frame_graph(&border_only);

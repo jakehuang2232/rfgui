@@ -18,6 +18,16 @@ fn complete_frame_timings() -> FrameTimings {
         execute_profile_ms: Some(0.4),
         execute_pass_count: 696,
         end_frame_ms: 5.149,
+        end_frame: EndFrameProfile {
+            staging_finish_ms: 0.1,
+            encoder_finish_ms: 0.2,
+            submit_ms: 0.3,
+            resource_cleanup_ms: 0.4,
+            present_ms: 0.5,
+            gpu_wait_ms: 3.649,
+            gpu_waited: true,
+            abort_cleanup_ms: 0.0,
+        },
         ..Default::default()
     }
 }
@@ -99,6 +109,18 @@ fn frame_timing_details_do_not_double_count_rsx_relayout_or_new_phases() {
         ] {
             assert!(trace.contains(expected), "missing {expected}: {trace}");
         }
+        if flags != 0 {
+            for expected in [
+                "staging_finish 0.100ms",
+                "encoder_finish 0.200ms",
+                "queue_submit 0.300ms",
+                "resource_cleanup 0.400ms",
+                "present 0.500ms",
+                "gpu_wait (waited=true) 3.649ms",
+            ] {
+                assert!(trace.contains(expected), "missing {expected}: {trace}");
+            }
+        }
         let lines: Vec<String> = top_level_lines(&trace)
             .into_iter()
             .map(str::to_owned)
@@ -131,10 +153,57 @@ fn frame_timing_empty_frame_has_finite_zero_accounting() {
     assert!(!trace.contains("overlapping timers"));
 }
 
+#[test]
+fn frame_timing_abort_is_cleanup_without_submit_or_gpu_wait() {
+    let timings = FrameTimings {
+        end_frame: EndFrameProfile {
+            abort_cleanup_ms: 5.149,
+            ..Default::default()
+        },
+        ..complete_frame_timings()
+    };
+    let trace = plain_trace(
+        &timings,
+        &ViewportDebugOptions {
+            trace_compile_detail: true,
+            ..Default::default()
+        },
+    );
+    for expected in [
+        "abort_cleanup 5.149ms",
+        "queue_submit 0.000ms",
+        "present 0.000ms",
+        "gpu_wait (waited=false) 0.000ms",
+    ] {
+        assert!(trace.contains(expected), "missing {expected}: {trace}");
+    }
+    assert_frame_accounting(&timings);
+}
+
 // Called for every real production render_render_tree invocation in tests,
 // including native terminal-failure and recovery frames. Nested diagnostics
 // are intentionally excluded from this additive first-level partition.
 pub(super) fn assert_frame_accounting(t: &FrameTimings) {
+    let completion = &t.end_frame;
+    let completion_phases = [
+        completion.staging_finish_ms,
+        completion.encoder_finish_ms,
+        completion.submit_ms,
+        completion.resource_cleanup_ms,
+        completion.present_ms,
+        completion.gpu_wait_ms,
+        completion.abort_cleanup_ms,
+    ];
+    assert!(
+        completion_phases
+            .iter()
+            .all(|ms| ms.is_finite() && *ms >= 0.0)
+    );
+    // The outer phase additionally includes dispatch, bookkeeping and drops.
+    assert!(completion_phases.iter().sum::<f64>() <= t.end_frame_ms + 1e-9);
+    if !completion.gpu_waited {
+        assert_eq!(completion.gpu_wait_ms, 0.0);
+    }
     let phases = [
         t.begin_frame_ms,
         t.layout_total_ms,

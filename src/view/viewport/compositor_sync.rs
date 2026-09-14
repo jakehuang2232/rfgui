@@ -16,27 +16,26 @@ impl Viewport {
 
         let property_trees = &self.compositor.property_trees;
         let tracker = &mut self.compositor.paint_generations;
-        tracker.begin_frame(roots);
-        let mut seen = FxHashSet::default();
-        let mut pending = roots.iter().rev().copied().collect::<Vec<_>>();
-        while let Some(key) = pending.pop() {
-            if !seen.insert(key) {
-                continue;
-            }
-            let Some(node) = arena.get(key) else {
-                continue;
-            };
-            let children = node.children().to_vec();
-            tracker.observe_node(
-                key,
-                node.parent(),
-                &children,
-                node.element.as_ref(),
-                property_trees,
+        let visited = tracker.sync_arena(arena, roots, property_trees);
+        if self.debug_options.trace_compile_detail {
+            let mut changed = property_trees.changes.iter().collect::<Vec<_>>();
+            changed.sort_by_key(|(key, _)| **key);
+            let dirty = arena
+                .iter()
+                .filter(|(key, _)| !arena.pending_render_changes(*key).is_empty())
+                .count();
+            eprintln!(
+                "property-sync nodes={} visited={} observed={} replayed={} generation_replayed={} changed={} pending={} owners={:?}",
+                arena.len(),
+                visited,
+                property_trees.observed_nodes,
+                property_trees.replayed_nodes,
+                tracker.native_observation_replays,
+                changed.len(),
+                dirty,
+                &changed[..changed.len().min(24)]
             );
-            pending.extend(children.into_iter().rev());
         }
-        tracker.finish_frame(arena);
     }
 
     #[cfg(test)]

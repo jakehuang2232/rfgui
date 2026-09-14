@@ -26,6 +26,15 @@ pub use texture_composite_pass::{
     TextureCompositePass, TextureCompositeSourceIn,
 };
 
+pub(crate) fn release_scoped_resources(scope: u64) {
+    draw_rect_pass::release_scope(scope);
+    shadow_module::release_scope(scope);
+    blur_module::release_scope(scope);
+    composite_layer_pass::release_scope(scope);
+    present_surface_pass::release_scope(scope);
+    text_pass::release_scope(scope);
+}
+
 pub struct GraphicsCtx<'a, 'ctx, 'res, 'pass> {
     frame_resources: &'a mut GraphicsRecordContext<'ctx, 'res>,
     render_pass: &'a mut wgpu::RenderPass<'pass>,

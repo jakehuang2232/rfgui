@@ -737,4 +737,11 @@ mod property_change_tests;
 mod span_dependency_tests;
 
 mod relation_dependency_tests;
+mod scaling_tests;
 mod native_observation_tests;
+mod subtree_recording_tests;
+mod topology_history_tests;
+
+mod surface_structure_tests;
+
+mod command_block_tests;

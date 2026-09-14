@@ -39,7 +39,9 @@ impl NodeArena {
         if let Some(node) = self.slots.get(key) {
             let revision = self.mutation_clock.get().saturating_add(1);
             self.mutation_clock.set(revision);
+            self.mutation_history.borrow_mut().record(revision, key);
             node.mutation_revision.set(revision);
+            self.propagate_subtree_mutation(key, revision);
             // Unclassified mutable access requests input observation, not a
             // raster invalidation. Exact metadata can still establish equality.
             node.record_render_causes(DirtyFlags::PAINT, revision);
@@ -67,6 +69,33 @@ impl NodeArena {
         self.mutation_clock.get()
     }
 
+    /// Only a change detector. Consumers must additionally certify tracked
+    /// native inputs, coherent edges, inherited inputs and arena identity.
+    pub(crate) fn subtree_mutation_revision(&self, key: NodeKey) -> Option<u64> {
+        if self.mutation_clock.get() == u64::MAX {
+            return None;
+        }
+        self.slots
+            .get(key)
+            .map(|node| node.subtree_mutation_revision.get())
+    }
+
+    fn propagate_subtree_mutation(&self, key: NodeKey, revision: u64) {
+        let mut cursor = Some(key);
+        // Corrupt parent graphs still terminate. They cannot acquire a valid
+        // subtree proof; normal trees require only the ancestor depth here.
+        for _ in 0..self.slots.len() {
+            let Some(node) = cursor.and_then(|key| self.slots.get(key)) else {
+                break;
+            };
+            if node.subtree_mutation_revision.get() == revision {
+                break;
+            }
+            node.subtree_mutation_revision.set(revision);
+            cursor = node.parent;
+        }
+    }
+
     pub(crate) fn mutation_identity(&self) -> Arc<()> {
         self.mutation_identity.clone()
     }
@@ -88,6 +117,7 @@ impl NodeArena {
         if !added.is_empty() {
             let revision = self.mutation_clock.get().saturating_add(1);
             self.mutation_clock.set(revision);
+            self.mutation_history.borrow_mut().record(revision, key);
             node.record_render_causes(added, revision);
         }
     }

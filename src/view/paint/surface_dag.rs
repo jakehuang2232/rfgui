@@ -599,6 +599,7 @@ pub(crate) struct SurfaceDagNode {
     target: NodeKey,
     stable_id: u64,
     cursor: ArtifactCursor,
+    owner_properties: PropertyTreeState,
     kind: SurfaceDagNodeKind,
     receiver: SurfaceDagTargetId,
     transition: PropertyStateTransition,
@@ -607,6 +608,10 @@ pub(crate) struct SurfaceDagNode {
 }
 
 impl SurfaceDagNode {
+    pub(super) fn owner_properties(&self) -> PropertyTreeState {
+        self.owner_properties
+    }
+
     pub(crate) fn transfer(&self) -> Option<SurfaceBoundaryTransfer> {
         self.transfer.ok()
     }
@@ -658,6 +663,38 @@ pub(crate) struct SurfaceDag {
 }
 
 impl SurfaceDag {
+    /// Refresh numeric transfer obligations after the caller proved the exact
+    /// same owner/property graph, cursor schedule, clip snapshots and endpoints.
+    /// Candidate membership, transition states and receiver edges depend only
+    /// on that structure. Target elimination must be derived again afterwards.
+    pub(super) fn refresh_boundary_transfers(
+        &self,
+        artifact: &PaintArtifact,
+    ) -> Result<Self, SurfaceDagError> {
+        let transforms = artifact
+            .transform_nodes
+            .iter()
+            .map(|s| (s.id, *s))
+            .collect();
+        let effects = artifact.effect_nodes.iter().map(|s| (s.id, *s)).collect();
+        let scrolls = artifact.scroll_nodes.iter().map(|s| (s.id, *s)).collect();
+        let mut nodes = self.nodes.clone();
+        for node in &mut nodes {
+            node.transfer = boundary_transfer(
+                node.kind,
+                node.transition,
+                node.clip_rebase,
+                &transforms,
+                &effects,
+                &scrolls,
+            )?;
+        }
+        Ok(Self {
+            roots: self.roots.clone(),
+            nodes,
+        })
+    }
+
     /// Exact projection of the fields read by coverage reconstruction. Numeric
     /// boundary transfer is deliberately absent: materialization is rebuilt
     /// from the current transfer even when chunk membership can be reused.
@@ -668,13 +705,23 @@ impl SurfaceDag {
                 target,
                 stable_id,
                 cursor,
+                owner_properties,
                 kind,
                 receiver,
                 transition: _,
                 clip_rebase,
                 transfer: _,
             } = *node;
-            (id, target, stable_id, cursor, kind, receiver, clip_rebase)
+            (
+                id,
+                target,
+                stable_id,
+                cursor,
+                owner_properties,
+                kind,
+                receiver,
+                clip_rebase,
+            )
         };
         self.roots == other.roots
             && self.nodes.len() == other.nodes.len()
@@ -2258,6 +2305,11 @@ fn reconstruct_surface_from_inputs(
     let owners = &inputs.owners;
     let scroll_scopes = &inputs.scroll_scopes;
     let candidates = &inputs.candidates;
+    let owner_states = artifact
+        .owner_property_states
+        .iter()
+        .map(|state| (state.owner, state.paint))
+        .collect::<FxHashMap<_, _>>();
     let roots = derive_surface_dag_scene_roots(&owners)?;
     if candidates.len() != events.len() {
         return Err(SurfaceDagError::TransitionCount {
@@ -2355,6 +2407,9 @@ fn reconstruct_surface_from_inputs(
             target: owner,
             stable_id: owners.stable_id(owner)?,
             cursor: candidate.cursor(),
+            owner_properties: *owner_states
+                .get(&owner)
+                .ok_or(TransitionError::MissingOwnerPropertyState(owner))?,
             kind: candidate.kind(),
             receiver,
             transition,

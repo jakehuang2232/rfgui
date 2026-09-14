@@ -166,3 +166,6 @@ fn inspector_labels_survive_enabling_scroll_in_complete_demo() -> Result<(), Str
     }
     Ok(())
 }
+
+#[path = "inspector_text_visibility/animation_switch_tests.rs"]
+mod animation_switch_tests;

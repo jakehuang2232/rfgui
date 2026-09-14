@@ -1444,6 +1444,14 @@ impl Viewport {
             * 1000.0;
         let measure_roots_started_at = Instant::now();
         for &root_key in &root_keys {
+            if arena.get(root_key).is_some_and(|node| {
+                node.element
+                    .as_any()
+                    .downcast_ref::<crate::view::base_component::Element>()
+                    .is_some_and(|element| element.measure_is_noop(constraints, &arena))
+            }) {
+                continue;
+            }
             arena.with_element_taken(root_key, |root, arena| {
                 root.measure(constraints, arena);
             });
@@ -1492,6 +1500,14 @@ impl Viewport {
             * 1000.0;
         let place_roots_started_at = Instant::now();
         for &root_key in &root_keys {
+            if arena.get(root_key).is_some_and(|node| {
+                node.element
+                    .as_any()
+                    .downcast_ref::<crate::view::base_component::Element>()
+                    .is_some_and(|element| element.place_is_noop(placement, &arena))
+            }) {
+                continue;
+            }
             arena.with_element_taken(root_key, |root, arena| {
                 root.place(placement, arena);
             });
@@ -2037,8 +2053,16 @@ impl Viewport {
                 "end_frame",
                 t.end_frame_ms,
                 vec![
-                    TraceRenderNode::new("queue_submit", t.end_frame_submit_ms),
-                    TraceRenderNode::new("present", t.end_frame_present_ms),
+                    TraceRenderNode::new("staging_finish", t.end_frame.staging_finish_ms),
+                    TraceRenderNode::new("encoder_finish", t.end_frame.encoder_finish_ms),
+                    TraceRenderNode::new("queue_submit", t.end_frame.submit_ms),
+                    TraceRenderNode::new("resource_cleanup", t.end_frame.resource_cleanup_ms),
+                    TraceRenderNode::new("present", t.end_frame.present_ms),
+                    TraceRenderNode::new(
+                        format!("gpu_wait (waited={})", t.end_frame.gpu_waited),
+                        t.end_frame.gpu_wait_ms,
+                    ),
+                    TraceRenderNode::new("abort_cleanup", t.end_frame.abort_cleanup_ms),
                 ],
             )
         } else {
@@ -2597,8 +2621,7 @@ impl Viewport {
         // partially recorded encoder and never presents its surface image.
         let end_frame_profile = self.complete_frame(frame_disposition(compiled, executed));
         timings.end_frame_ms = phase_clock.checkpoint_ms();
-        timings.end_frame_submit_ms = end_frame_profile.submit_ms;
-        timings.end_frame_present_ms = end_frame_profile.present_ms;
+        timings.end_frame = end_frame_profile;
         timings.total_ms = phase_clock.total_ms();
         #[cfg(any(test, feature = "renderer-test-support"))]
         {
@@ -2613,6 +2636,14 @@ impl Viewport {
                 timings.execute_ms,
                 timings.finish_render_ms,
                 timings.end_frame_ms,
+            ];
+            self.frame.last_completion_phases = [
+                timings.end_frame.staging_finish_ms,
+                timings.end_frame.encoder_finish_ms,
+                timings.end_frame.submit_ms,
+                timings.end_frame.resource_cleanup_ms,
+                timings.end_frame.present_ms,
+                timings.end_frame.gpu_wait_ms,
             ];
         }
 
@@ -3108,7 +3139,9 @@ impl Viewport {
         self.frame.gradient_stops_byte_cursor = 0;
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
         crate::view::render_pass::shadow_module::begin_shadow_resources_frame();
-        crate::view::render_pass::text_pass::begin_text_resources_frame();
+        crate::view::render_pass::text_pass::begin_text_resources_frame_for_scope(
+            self.render_resource_scope_id(),
+        );
 
         let surface = match &self.gpu.surface {
             Some(s) => s,
@@ -3212,7 +3245,9 @@ impl Viewport {
         self.frame.gradient_stops_byte_cursor = 0;
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
         crate::view::render_pass::shadow_module::begin_shadow_resources_frame();
-        crate::view::render_pass::text_pass::begin_text_resources_frame();
+        crate::view::render_pass::text_pass::begin_text_resources_frame_for_scope(
+            self.render_resource_scope_id(),
+        );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rfgui native pixel parity output"),
@@ -3300,6 +3335,7 @@ impl Viewport {
     }
 
     fn abort_frame(&mut self) -> EndFrameProfile {
+        let started_at = Instant::now();
         self.frame.frame_presented = false;
         let Some(frame) = self.frame.frame_state.take() else {
             return EndFrameProfile::default();
@@ -3325,10 +3361,14 @@ impl Viewport {
                 self.frame.completion_counts.aborts.saturating_add(1);
         }
 
-        EndFrameProfile::default()
+        EndFrameProfile {
+            abort_cleanup_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+            ..Default::default()
+        }
     }
 
     fn submit_and_present_frame(&mut self) -> EndFrameProfile {
+        let mut clock = super::frame::FramePhaseClock::new(Instant::now());
         let frame = match self.frame.frame_state.take() {
             Some(frame) => frame,
             None => return EndFrameProfile::default(),
@@ -3338,9 +3378,15 @@ impl Viewport {
             staging_belt.finish();
         }
 
-        let submit_started_at = Instant::now();
+        let mut profile = EndFrameProfile {
+            staging_finish_ms: clock.checkpoint_ms(),
+            ..Default::default()
+        };
+        let command_buffer = frame.encoder.finish();
+        profile.encoder_finish_ms = clock.checkpoint_ms();
         let queue = self.gpu.queue.as_ref().unwrap();
-        let _submission_index = queue.submit(Some(frame.encoder.finish()));
+        let _submission_index = queue.submit(Some(command_buffer));
+        profile.submit_ms = clock.checkpoint_ms();
         #[cfg(any(test, feature = "renderer-test-support"))]
         {
             self.frame.completion_counts.submits =
@@ -3353,9 +3399,8 @@ impl Viewport {
         #[cfg(target_arch = "wasm32")]
         crate::view::render_pass::destroy_frame_transient_buffers();
         self.frame.offscreen_render_target_pool.finish_frame();
-        let submit_ms = submit_started_at.elapsed().as_secs_f64() * 1000.0;
+        profile.resource_cleanup_ms = clock.checkpoint_ms();
 
-        let present_started_at = Instant::now();
         #[cfg(not(any(test, feature = "renderer-test-support")))]
         queue.present(frame.render_texture);
         #[cfg(any(test, feature = "renderer-test-support"))]
@@ -3364,8 +3409,9 @@ impl Viewport {
             self.frame.completion_counts.presents =
                 self.frame.completion_counts.presents.saturating_add(1);
         }
-        let present_ms = present_started_at.elapsed().as_secs_f64() * 1000.0;
+        profile.present_ms = clock.checkpoint_ms();
         self.finish_gpu_paint_frame(true);
+        profile.resource_cleanup_ms += clock.checkpoint_ms();
         #[cfg(not(target_arch = "wasm32"))]
         {
             // Surface latency limits acquired swapchain images, but it does not
@@ -3382,18 +3428,18 @@ impl Viewport {
                     .pop_front()
                     .expect("submission queue exceeded its non-zero limit");
                 if let Some(device) = self.gpu.device.as_ref() {
+                    let wait_started_at = Instant::now();
                     let _ = device.poll(wgpu::PollType::Wait {
                         submission_index: Some(oldest),
                         timeout: None,
                     });
+                    profile.gpu_wait_ms = wait_started_at.elapsed().as_secs_f64() * 1000.0;
+                    profile.gpu_waited = true;
                 }
             }
         }
         self.frame.frame_presented = true;
-        EndFrameProfile {
-            submit_ms,
-            present_ms,
-        }
+        profile
     }
 
     #[cfg(any(test, feature = "renderer-test-support"))]
@@ -3405,6 +3451,8 @@ impl Viewport {
 
 #[cfg(test)]
 mod frame_timing_tests;
+#[cfg(test)]
+mod incremental_layout_tests;
 #[cfg(test)]
 mod legacy_root_render_tests;
 #[cfg(test)]

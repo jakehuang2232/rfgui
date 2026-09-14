@@ -4,6 +4,7 @@ use rfgui::view::gpu_paint::GpuPaintWork;
 use rfgui::view::viewport::ViewportPaintRendererMode;
 use rfgui::view::{Element, Viewport};
 mod gpu;
+mod resource_scope_tests;
 fn tree() -> RsxNode {
     rfgui::ui::rsx_scope(|| {
         rfgui::ui::rsx! {

@@ -26,7 +26,7 @@ use rfgui::view::viewport::{RenderFrameResult, Viewport};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Instant;
+use rfgui::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{
@@ -35,6 +35,8 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
+#[cfg(feature = "renderer-perf")]
+mod performance;
 
 /// Run an `App` until the user closes the window.
 ///
@@ -50,6 +52,8 @@ pub fn run<A: App + 'static>(app: A, config: AppConfig) {
 }
 
 struct Runner {
+    #[cfg(feature = "renderer-perf")]
+    performance: Option<performance::WindowPerformance>,
     /// Holds the App until the Viewport is created, then `None`.
     pending_app: Option<Box<dyn App>>,
     config: AppConfig,
@@ -99,6 +103,8 @@ impl Runner {
             *redraw_flag_write.lock().unwrap() = true;
         });
         Self {
+            #[cfg(feature = "renderer-perf")]
+            performance: performance::WindowPerformance::from_env(),
             pending_app: Some(app),
             config,
             window: None,
@@ -405,13 +411,47 @@ impl Runner {
     /// paints without waiting for a user event — winit does not queue a
     /// `RedrawRequested` at window creation on every platform.
     fn render_once(&mut self) {
+        #[cfg(feature = "renderer-perf")]
+        if self
+            .performance
+            .as_ref()
+            .is_some_and(|performance| performance.complete())
+        {
+            return;
+        }
         self.ensure_ready();
+        #[cfg(feature = "renderer-perf")]
+        if let Some(performance) = self.performance.as_mut() {
+            performance.begin_render();
+        }
         if let Some(viewport) = self.viewport.as_mut() {
-            let result = viewport.render_frame(PlatformServices {
-                clipboard: self.clipboard.as_mut(),
-                cursor: &mut self.cursor,
-                redraw: &self.redraw,
-            });
+            #[cfg(feature = "renderer-perf")]
+            let performance_start = self
+                .performance
+                .as_ref()
+                .map(|_| rfgui::time::Instant::now());
+            #[cfg(feature = "renderer-perf")]
+            let render = if self.performance.is_some() {
+                Viewport::render_frame_for_performance
+            } else {
+                Viewport::render_frame
+            };
+            #[cfg(not(feature = "renderer-perf"))]
+            let render = Viewport::render_frame;
+            let result = render(
+                viewport,
+                PlatformServices {
+                    clipboard: self.clipboard.as_mut(),
+                    cursor: &mut self.cursor,
+                    redraw: &self.redraw,
+                },
+            );
+            #[cfg(feature = "renderer-perf")]
+            if let (Some(performance), Some(start)) = (&mut self.performance, performance_start) {
+                let wall_ms = start.elapsed().as_secs_f64() * 1000.;
+                let focused = self.window.as_ref().map(|window| window.has_focus());
+                performance.observe(viewport, wall_ms, focused, self.occluded);
+            }
             if matches!(result, RenderFrameResult::NeedsRetry) {
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -420,6 +460,16 @@ impl Runner {
         }
         self.sync_ime_cursor_area();
         self.drain_and_apply();
+        #[cfg(feature = "renderer-perf")]
+        if self
+            .performance
+            .as_ref()
+            .is_some_and(|performance| performance.continuous())
+        {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
     }
 
     /// Push the focused element's IME cursor rect to winit so the system
@@ -450,6 +500,10 @@ impl Runner {
         };
         let requests = viewport.drain_platform_requests();
         let want_redraw = requests.request_redraw || *self.redraw_flag.lock().unwrap();
+        #[cfg(feature = "renderer-perf")]
+        if let Some(performance) = self.performance.as_mut() {
+            performance.note_redraw(want_redraw, viewport.is_animating());
+        }
         if let Some(window) = &self.window {
             if let Some(cursor) = requests.cursor {
                 window.set_cursor(winit_cursor_from(cursor));
@@ -661,6 +715,10 @@ impl ApplicationHandler for Runner {
                     .map(|v| v.physical_to_logical_point(position.x as f32, position.y as f32))
                     .unwrap_or((position.x as f32, position.y as f32));
                 self.last_mouse_logical = Some((logical_x, logical_y));
+                #[cfg(feature = "renderer-perf")]
+                if let Some(performance) = self.performance.as_mut() {
+                    performance.pointer_event("move", self.last_mouse_logical);
+                }
                 let move_event = PlatformPointerEvent {
                     kind: PlatformPointerEventKind::Move {
                         x: logical_x,
@@ -694,6 +752,13 @@ impl ApplicationHandler for Runner {
                     return;
                 };
                 let pressed = matches!(state, ElementState::Pressed);
+                #[cfg(feature = "renderer-perf")]
+                if let Some(performance) = self.performance.as_mut() {
+                    performance.pointer_event(
+                        if pressed { "down" } else { "up" },
+                        self.last_mouse_logical,
+                    );
+                }
                 if let Some(viewport) = self.viewport.as_mut() {
                     viewport
                         .set_pointer_button_pressed(platform_button_to_viewport(mapped), pressed);
@@ -929,6 +994,10 @@ impl ApplicationHandler for Runner {
                 };
                 let (dx, dy) = viewport.physical_to_logical_point(delta.0 as f32, delta.1 as f32);
                 let next = (last_x + dx, last_y + dy);
+                #[cfg(feature = "renderer-perf")]
+                if let Some(performance) = self.performance.as_mut() {
+                    performance.pointer_event("raw_move", Some(next));
+                }
                 viewport.set_pointer_position_viewport(next.0, next.1);
                 let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
                     kind: PlatformPointerEventKind::Move {
@@ -973,6 +1042,22 @@ impl ApplicationHandler for Runner {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(feature = "renderer-perf")]
+        if self
+            .performance
+            .as_ref()
+            .is_some_and(|performance| performance.complete())
+        {
+            if let Some(viewport) = self.viewport.as_mut() {
+                viewport.app_on_shutdown(PlatformServices {
+                    clipboard: self.clipboard.as_mut(),
+                    cursor: &mut self.cursor,
+                    redraw: &self.redraw,
+                });
+            }
+            event_loop.exit();
+            return;
+        }
         // Drive component timers (use_timeout, use_interval). Viewport
         // transition/animation plugins tick inside render_rsx and report
         // their state via `viewport.is_animating()` below, so they don't

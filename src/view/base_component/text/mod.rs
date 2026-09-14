@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use crate::style::{
-    ColorLike, Cursor, HexColor, TextWrap, Transform, TransformKind, TransformOrigin,
-};
+use crate::style::{ColorLike, Cursor, HexColor, TextWrap, Transform, TransformKind, TransformOrigin};
 use crate::view::inline_formatting_context::{
     InlineFormattingContext, InlineIfcAlignment, InlineIfcTextPassPaintInput,
 };
@@ -153,6 +151,9 @@ pub(crate) use self::profile::{
     take_text_measure_profile,
 };
 impl Text {
+    pub(crate) fn paint_signature_inputs_are_tracked(&self) -> bool {
+        self.color.is_immutable()
+    }
     pub fn from_content(content: impl Into<String>) -> Self {
         let mut text = Self::new(0.0, 0.0, 10_000.0, 10_000.0, content);
         text.set_auto_width(true);
@@ -866,8 +867,9 @@ impl ElementTrait for Text {
                     properties,
                     content_revision,
                     payload_identity,
-                }],
-                ops,
+                }]
+                .into(),
+                ops: ops.into(),
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
                 transform_nodes: Vec::new(),
@@ -905,8 +907,9 @@ impl ElementTrait for Text {
                 properties,
                 content_revision,
                 payload_identity,
-            }],
-            ops,
+            }]
+            .into(),
+            ops: ops.into(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),
@@ -1009,8 +1012,9 @@ impl ElementTrait for Text {
                 properties,
                 content_revision,
                 payload_identity,
-            }],
-            ops,
+            }]
+            .into(),
+            ops: ops.into(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),
@@ -1264,7 +1268,9 @@ impl ElementTrait for Text {
 
     fn local_dirty_flags(&self) -> super::DirtyFlags {
         if self.needs_standalone_preparation() {
-            self.dirty_flags.union(super::DirtyFlags::LAYOUT).union(super::DirtyFlags::RESOURCE)
+            self.dirty_flags
+                .union(super::DirtyFlags::LAYOUT)
+                .union(super::DirtyFlags::RESOURCE)
         } else {
             self.dirty_flags
         }

@@ -1,6 +1,119 @@
 use super::*;
 
 #[test]
+fn warm_owner_scopes_reject_missing_or_cyclic_live_endpoints_and_recover() {
+    for damage in 0..4 {
+        let mut arena = new_test_arena();
+        let root = commit_element(
+            &mut arena,
+            Box::new(leaf_element(
+                0xfeed_9082,
+                Color::rgb(21, 43, 65),
+                0.5,
+                false,
+            )),
+        );
+        let mut child_element = leaf_element(0xfeed_9083, Color::rgb(65, 43, 21), 1.0, false);
+        let mut child_style = Style::new();
+        child_style.insert(
+            PropertyId::Position,
+            ParsedValue::Position(
+                Position::absolute()
+                    .left(Length::px(0.0))
+                    .top(Length::px(0.0))
+                    .clip(ClipMode::AnchorParent),
+            ),
+        );
+        child_style.insert(
+            PropertyId::BackgroundColor,
+            ParsedValue::color_like(Color::rgb(65, 43, 21)),
+        );
+        child_element.apply_style(child_style);
+        let child = commit_child(&mut arena, root, Box::new(child_element));
+        let (measure, place) = constraints();
+        measure_and_place(&mut arena, root, measure, place);
+        let (mut properties, generations) = sync_identity(&arena, &[root]);
+        let state = properties.node_state_for(child).unwrap().paint;
+        let clip = state.clip.expect("fixture has an explicit self clip");
+        let effect = state.effect.expect("fixture has inherited opacity");
+        let good_clip = properties.clips[&clip].clone();
+        let good_effect = properties.effects[&effect].clone();
+        let mut cache = RecordingCache::default();
+        for _ in 0..2 {
+            let outcome = record_surface_dag_frame_artifact_cached(
+                &arena,
+                &[root],
+                &properties,
+                &generations,
+                &mut cache,
+            )
+            .unwrap();
+            assert!(
+                matches!(outcome, FrameArtifactRecordOutcome::Artifact { .. }),
+                "{outcome:?}"
+            );
+        }
+        assert!(
+            cache.scope_hits > 0,
+            "fixture must reuse immutable owner scopes"
+        );
+        match damage {
+            0 => {
+                properties.clips.remove(&clip);
+            }
+            1 => properties.clips.get_mut(&clip).unwrap().parent = Some(clip),
+            2 => {
+                properties.effects.remove(&effect);
+            }
+            3 => properties.effects.get_mut(&effect).unwrap().parent = Some(effect),
+            _ => unreachable!(),
+        }
+        for outcome in [
+            record_surface_dag_frame_artifact_cached(
+                &arena,
+                &[root],
+                &properties,
+                &generations,
+                &mut cache,
+            )
+            .unwrap(),
+            record_surface_dag_frame_artifact(
+                &arena,
+                &[root],
+                &properties,
+                &generations,
+                RendererMode::Auto,
+            )
+            .unwrap(),
+        ] {
+            assert!(
+                matches!(
+                    outcome,
+                    FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
+                ),
+                "warm scope must not hide live endpoint damage {damage}"
+            );
+        }
+        properties.clips.insert(clip, good_clip);
+        properties.effects.insert(effect, good_effect);
+        assert!(
+            matches!(
+                record_surface_dag_frame_artifact_cached(
+                    &arena,
+                    &[root],
+                    &properties,
+                    &generations,
+                    &mut cache,
+                )
+                .unwrap(),
+                FrameArtifactRecordOutcome::Artifact { .. }
+            ),
+            "repaired endpoints must recover after damage {damage}"
+        );
+    }
+}
+
+#[test]
 fn chunks_share_owner_prefixes_but_conflicting_observations_still_reject() {
     let (arena, roots, child) = prepared_plain_tree();
     let (properties, generations) = sync_identity(&arena, &roots);

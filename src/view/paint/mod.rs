@@ -11,6 +11,7 @@ mod frame_recorder;
 mod property_transition;
 mod recorder;
 mod recording_context;
+mod shared_sequence;
 
 mod surface_dag;
 

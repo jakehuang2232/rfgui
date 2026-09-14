@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::PaintChunk;
 pub(super) mod property_closure_cache;
 use std::collections::hash_map::Entry;
 
@@ -14,7 +16,7 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 use super::coverage_manifest::exact_deferred_viewport_self_clip_witness;
 
 use super::{
-    CoverageRecordingMode, LegacyPaintReason, PaintArtifact, PaintArtifactTarget, PaintChunk,
+    CoverageRecordingMode, LegacyPaintReason, PaintArtifact, PaintArtifactTarget,
     PaintCoverageItem, PaintCoverageValidationError, PaintOpacityAuthority, PaintRecordingContext,
 };
 
@@ -483,7 +485,13 @@ fn record_frame_artifact_with_policy_and_stack(
             | FrameArtifactAuthorityPolicy::ClipEnabled
             | FrameArtifactAuthorityPolicy::SurfaceDag
     ) {
-        for reason in production_property_boundary_reasons(arena, roots, property_trees, policy) {
+        for reason in production_property_boundary_reasons(
+            arena,
+            roots,
+            property_trees,
+            policy,
+            recording_cache.as_deref_mut(),
+        ) {
             if !preflight_eligibility.reasons.contains(&reason) {
                 preflight_eligibility.reasons.push(reason);
             }
@@ -551,33 +559,36 @@ fn record_frame_artifact_with_policy_and_stack(
 }
 
 fn materialize_frame_artifact_with_cache(
-    manifest: super::PaintCoverageManifest,
+    mut manifest: super::PaintCoverageManifest,
     target: PaintArtifactTarget,
     mode: RendererMode,
     mut eligibility: FrameArtifactEligibility,
     mut cache: Option<&mut super::RecordingCache>,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
     let _profile = crate::view::paint::work_profile::scope("materialize_frame_artifact");
-    let (chunk_count, op_count) =
-        manifest
-            .items
-            .iter()
-            .fold((0usize, 0usize), |(chunks, ops), item| match item {
-                PaintCoverageItem::ArtifactChunk {
-                    ops: Some(recorded),
-                    ..
-                } => (chunks + 1, ops + recorded.len()),
-                _ => (chunks, ops),
-            });
+    // The manifest length is a safe capacity hint. Commands stay in their
+    // existing immutable blocks, so no flat payload allocation/count pass is needed.
+    let chunk_count = manifest.items.len();
     let mut artifact = PaintArtifact {
         target,
-        chunks: Vec::with_capacity(chunk_count),
-        ops: Vec::with_capacity(op_count),
+        chunks: super::shared_sequence::SharedSequence::with_shared_capacity(chunk_count),
+        ops: super::shared_sequence::SharedSequence::with_shared_capacity(chunk_count),
         ..PaintArtifact::default()
     };
     let replayed_store = cache
         .as_deref_mut()
         .is_some_and(|cache| cache.replay_scope_store(&manifest, &mut artifact));
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.assemble_artifact_blocks(&mut manifest, &mut artifact);
+    } else {
+        super::RecordingCache::default().assemble_artifact_blocks(&mut manifest, &mut artifact);
+    }
+    if replayed_store {
+        return Ok(FrameArtifactRecordOutcome::Artifact {
+            artifact,
+            eligibility,
+        });
+    }
     let pending_key = (!replayed_store && cache.is_some())
         .then(|| super::RecordingCache::scope_store_key(&manifest));
     let mut seen_clip_nodes = FxHashMap::default();
@@ -587,13 +598,12 @@ fn materialize_frame_artifact_with_cache(
     let mut merged_scopes = rustc_hash::FxHashSet::default();
     let mut merged_clip_chains = rustc_hash::FxHashSet::default();
     let mut merged_effect_chains = rustc_hash::FxHashSet::default();
-    for item in manifest.items {
+    for item in &manifest.items {
         let PaintCoverageItem::ArtifactChunk {
-            chunk,
             clip_snapshot,
             effect_snapshot,
             owner_scope,
-            ops: Some(ops),
+            ops: Some(_),
             ..
         } = item
         else {
@@ -607,23 +617,8 @@ fn materialize_frame_artifact_with_cache(
             }
             unreachable!("eligibility rejects all paint boundaries")
         };
-        let start = artifact.ops.len();
-        artifact.ops.extend(ops.iter().cloned());
-        let end = artifact.ops.len();
-        artifact.chunks.push(PaintChunk {
-            id: chunk.id,
-            owner: chunk.owner,
-            op_range: start..end,
-            bounds: chunk.bounds,
-            properties: chunk.properties,
-            content_revision: chunk.content_revision,
-            payload_identity: chunk.payload_identity,
-        });
-        if replayed_store {
-            continue;
-        }
         let mut scopes = Vec::new();
-        let mut cursor = Some(&owner_scope);
+        let mut cursor = Some(owner_scope);
         while let Some(scope) = cursor {
             // Pointer identity is used only for the same immutable allocation
             // in this manifest, never as a cross-frame content identity. A
@@ -635,7 +630,7 @@ fn materialize_frame_artifact_with_cache(
             scopes.push(scope.as_ref());
             cursor = scope.parent.as_ref();
         }
-        for snapshot in std::iter::once(&clip_snapshot)
+        for snapshot in std::iter::once(clip_snapshot)
             .chain(scopes.iter().flat_map(|scope| &scope.clips))
             .filter(|chain| merged_clip_chains.insert(std::sync::Arc::as_ptr(chain)))
             .flat_map(|chain| chain.iter().copied())
@@ -656,7 +651,7 @@ fn materialize_frame_artifact_with_cache(
                 SnapshotMerge::Identical => {}
             }
         }
-        for snapshot in std::iter::once(&effect_snapshot)
+        for snapshot in std::iter::once(effect_snapshot)
             .chain(scopes.iter().flat_map(|scope| &scope.effects))
             .filter(|chain| merged_effect_chains.insert(std::sync::Arc::as_ptr(chain)))
             .flat_map(|chain| chain.iter().copied())
@@ -730,6 +725,7 @@ fn assess_manifest(
     manifest: &super::PaintCoverageManifest,
     policy: FrameArtifactAuthorityPolicy,
 ) -> FrameArtifactEligibility {
+    let _profile = super::work_profile::scope("assess_manifest");
     let mut reasons = manifest
         .validation_errors
         .iter()
@@ -871,9 +867,15 @@ fn production_property_boundary_reasons(
     roots: &[NodeKey],
     property_trees: &PropertyTrees,
     policy: FrameArtifactAuthorityPolicy,
+    recording_cache: Option<&mut super::RecordingCache>,
 ) -> Vec<FrameArtifactFallbackReason> {
+    let _profile = crate::view::paint::work_profile::scope("production_property_boundary_reasons");
+    let certified_nodes = recording_cache
+        .filter(|_| policy == FrameArtifactAuthorityPolicy::SurfaceDag)
+        .and_then(|cache| cache.topology.boundary_nodes(arena, roots));
+    let certified = certified_nodes.is_some();
     let mut reasons = Vec::new();
-    let mut stack = roots.to_vec();
+    let mut stack = certified_nodes.unwrap_or_else(|| roots.to_vec());
     let mut seen = FxHashSet::default();
     while let Some(key) = stack.pop() {
         if !seen.insert(key) {
@@ -932,7 +934,9 @@ fn production_property_boundary_reasons(
         if property_boundary {
             reasons.push(FrameArtifactFallbackReason::PropertyBoundary(key));
         }
-        stack.extend(node.element.children().iter().copied());
+        if !certified {
+            stack.extend(node.element.children().iter().copied());
+        }
     }
     reasons
 }

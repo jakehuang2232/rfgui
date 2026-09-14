@@ -1512,8 +1512,8 @@ pub(crate) enum PaintArtifactTarget {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PaintArtifact {
     pub(crate) target: PaintArtifactTarget,
-    pub(crate) chunks: Vec<PaintChunk>,
-    pub(crate) ops: Vec<PaintOp>,
+    pub(crate) chunks: super::shared_sequence::SharedSequence<PaintChunk>,
+    pub(crate) ops: super::shared_sequence::SharedSequence<PaintOp>,
     /// Complete, arena-independent transitive clip snapshot for every clip
     /// leaf referenced by `chunks` or `owner_property_states`.
     pub(crate) clip_nodes: Vec<ClipNodeSnapshot>,
@@ -1949,8 +1949,9 @@ impl RetainedChildMaskPlan {
                 properties,
                 content_revision,
                 payload_identity: self.payload_identity.clone(),
-            }],
-            ops: vec![PaintOp::DrawRect(self.op.clone())],
+            }]
+            .into(),
+            ops: vec![PaintOp::DrawRect(self.op.clone())].into(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),

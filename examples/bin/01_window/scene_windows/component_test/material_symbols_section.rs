@@ -8,7 +8,7 @@ use rfgui::style::{Animation, Animator, FillMode, Keyframe};
 use rfgui_components::Accordion;
 
 #[component]
-pub fn MaterialSymbolsSection(theme: Theme) -> RsxNode {
+pub fn MaterialSymbolsSection(theme: Theme, animation_on: bool) -> RsxNode {
     rsx! {
         <Accordion title="Material Symbols">
             <Element style={{
@@ -41,7 +41,7 @@ pub fn MaterialSymbolsSection(theme: Theme) -> RsxNode {
                     <Text>Rotating</Text>
                     <CloseIcon style={{
                         color: theme.color.primary.base.clone(),
-                        animator: Animator::new([
+                        animator: crate::scene_windows::render_test::demo_animator(animation_on, Animator::new([
                             Animation::new([
                                 Keyframe::new(0.0, rfgui::style! {
                                     transform: Transform::new([Rotate::z(Angle::deg(0.0))]),
@@ -52,7 +52,7 @@ pub fn MaterialSymbolsSection(theme: Theme) -> RsxNode {
                             ]),
                         ]).fill_mode(FillMode::Forwards)
                         .repeat(Infinite)
-                        .duration(theme.motion.duration.slow),
+                        .duration(theme.motion.duration.slow)),
                     }} />
                 </Element>
             </Element>

@@ -531,3 +531,6 @@ fn set_clip_mode(arena: &NodeArena, key: NodeKey, mode: ClipMode) {
 mod clip_scope_tests;
 mod property_identity_tests;
 mod scroll_geometry_tests;
+
+mod incremental_sync_tests;
+mod incremental_prune_tests;

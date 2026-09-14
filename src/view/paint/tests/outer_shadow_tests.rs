@@ -32,9 +32,7 @@ fn outer_shadow_artifact_owns_ordered_fractional_payload_and_strict_pass_sequenc
     let payloads = snapshot.pass_payloads();
     assert!(
         matches!(payloads, [
-        FramePassTestPayload::Clear(_),
         FramePassTestPayload::ShadowFill(_),
-        FramePassTestPayload::Clear(_),
         FramePassTestPayload::ShadowFill(_),
         FramePassTestPayload::Clear(_),
         FramePassTestPayload::TextureComposite(_),
@@ -53,6 +51,27 @@ fn outer_shadow_artifact_owns_ordered_fractional_payload_and_strict_pass_sequenc
         })
         .collect::<Vec<_>>();
     assert_eq!(shadow_fills.len(), 2);
+    let mut cleared_fills = 0;
+    for pass in &graph.compiled_graph().unwrap().passes {
+        if pass.descriptor.name.contains("ShadowFillPass") {
+            let crate::view::frame_graph::PassDetails::Graphics(graphics) =
+                &pass.descriptor.details
+            else {
+                panic!("shadow fill must be graphics");
+            };
+            assert_eq!(graphics.color_attachments.len(), 1);
+            assert_eq!(
+                graphics.color_attachments[0].load_op,
+                crate::view::frame_graph::AttachmentLoadOp::Clear
+            );
+            assert_eq!(graphics.color_attachments[0].clear_color, Some([0.; 4]));
+            cleared_fills += 1;
+        }
+    }
+    assert_eq!(
+        cleared_fills, 2,
+        "each fill clears its own scratch attachment"
+    );
     assert_eq!(
         shadow_fills[0].color_bits,
         Color::rgb(220, 30, 20).to_rgba_f32().map(f32::to_bits)

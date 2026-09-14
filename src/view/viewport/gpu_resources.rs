@@ -1165,15 +1165,10 @@ impl Viewport {
     pub fn release_render_resource_caches(&mut self) {
         self.frame.gpu_paint_sources.clear();
         self.invalidate_retained_surfaces();
-        crate::view::render_pass::draw_rect_pass::clear_draw_rect_resources_cache();
-        crate::view::render_pass::shadow_module::clear_shadow_resources_cache();
-        crate::view::render_pass::text_pass::clear_text_resources_cache();
-        crate::view::render_pass::blur_module::clear_blur_resources_cache();
-        crate::view::render_pass::composite_layer_pass::clear_composite_layer_resources_cache();
+        crate::view::render_pass::release_scoped_resources(self.render_resource_scope_id());
         crate::view::render_pass::texture_composite_pass::clear_texture_composite_resources_cache(
             self.render_resource_scope_id(),
         );
-        crate::view::render_pass::present_surface_pass::clear_present_surface_resources_cache();
         self.frame.offscreen_render_target_pool.clear();
         for entry in self.frame.sampled_texture_cache.values() {
             entry.texture.destroy();

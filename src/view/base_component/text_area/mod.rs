@@ -1224,7 +1224,7 @@ impl ElementTrait for TextArea {
         &self,
         parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-            let mut parent = *parent;
+        let mut parent = *parent;
         let paint_x = self.layout_state.layout_position.x + parent.paint_offset[0];
         let paint_y = self.layout_state.layout_position.y + parent.paint_offset[1];
         parent.paint_offset[0] += round_layout_value(paint_x) - paint_x;
@@ -1414,7 +1414,8 @@ impl ElementTrait for TextArea {
                     properties: contents_properties,
                     content_revision,
                     payload_identity,
-                }],
+                }]
+                .into(),
                 ops: selection
                     .ops
                     .into_iter()
@@ -1451,8 +1452,9 @@ impl ElementTrait for TextArea {
                     properties: contents_properties,
                     content_revision,
                     payload_identity,
-                }],
-                ops: vec![crate::view::paint::PaintOp::PreparedText(op)],
+                }]
+                .into(),
+                ops: vec![crate::view::paint::PaintOp::PreparedText(op)].into(),
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
                 transform_nodes: Vec::new(),
@@ -1487,7 +1489,8 @@ impl ElementTrait for TextArea {
                     properties: contents_properties,
                     content_revision,
                     payload_identity,
-                }],
+                }]
+                .into(),
                 ops: decoration
                     .ops
                     .into_iter()
@@ -1525,8 +1528,9 @@ impl ElementTrait for TextArea {
                     properties: contents_properties,
                     content_revision,
                     payload_identity,
-                }],
-                ops: vec![crate::view::paint::PaintOp::DrawRect(caret.op)],
+                }]
+                .into(),
+                ops: vec![crate::view::paint::PaintOp::DrawRect(caret.op)].into(),
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
                 transform_nodes: Vec::new(),
@@ -1725,9 +1729,7 @@ impl ElementTrait for TextArea {
     fn ingest_props(&mut self, node: &crate::ui::RsxElementNode) -> Result<(), String> {
         use crate::ui::FromPropValue;
         use crate::view::base_component::as_blur_handler;
-        use crate::view::renderer_adapter::{
-            as_binding_string, as_bool, as_owned_string, as_usize,
-        };
+        use crate::view::renderer_adapter::{as_binding_string, as_bool, as_owned_string, as_usize};
         for (key, value) in node.props.iter() {
             match *key {
                 // Cold-path-owned: identity, layered style, explicit

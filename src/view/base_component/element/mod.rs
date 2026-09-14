@@ -1733,8 +1733,13 @@ impl DirtyFlags {
     /// Rebuilding an identical payload can still reuse its resident raster.
     pub const RESOURCE: Self = Self(1 << 7);
     pub const RUNTIME: Self = Self(
-        Self::PLACE.0 | Self::BOX_MODEL.0 | Self::HIT_TEST.0 | Self::PAINT.0 | Self::COMPOSITE.0
-            | Self::RECORDING_TOPOLOGY.0 | Self::RESOURCE.0,
+        Self::PLACE.0
+            | Self::BOX_MODEL.0
+            | Self::HIT_TEST.0
+            | Self::PAINT.0
+            | Self::COMPOSITE.0
+            | Self::RECORDING_TOPOLOGY.0
+            | Self::RESOURCE.0,
     );
     pub const ALL: Self = Self(Self::LAYOUT.0 | Self::RUNTIME.0);
 
@@ -3030,8 +3035,9 @@ pub trait ElementTrait:
                         properties,
                         content_revision,
                         payload_identity,
-                    }],
-                    ops,
+                    }]
+                    .into(),
+                    ops: ops.into(),
                     clip_nodes: Vec::new(),
                     effect_nodes: Vec::new(),
                     transform_nodes: Vec::new(),
@@ -3591,8 +3597,9 @@ impl PreparedCustomLeafPaint {
                 properties,
                 content_revision,
                 payload_identity: self.payload_identity,
-            }],
-            ops: vec![self.op],
+            }]
+            .into(),
+            ops: vec![self.op].into(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),
@@ -3868,8 +3875,9 @@ impl PreparedCustomWrapperPaint {
                 properties,
                 content_revision,
                 payload_identity: fill.payload_identity,
-            }],
-            ops: vec![crate::view::paint::PaintOp::DrawRect(fill.op)],
+            }]
+            .into(),
+            ops: vec![crate::view::paint::PaintOp::DrawRect(fill.op)].into(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),
@@ -5615,6 +5623,13 @@ impl InlineRootRecordingWitness {
 }
 
 impl Element {
+    pub(crate) fn paint_signature_inputs_are_tracked(&self) -> bool {
+        self.background_color.is_immutable()
+            && self.border_colors.left.is_immutable()
+            && self.border_colors.right.is_immutable()
+            && self.border_colors.top.is_immutable()
+            && self.border_colors.bottom.is_immutable()
+    }
     #[cfg(test)]
     pub(crate) fn set_resolved_transform_for_test(&mut self, transform: Option<Mat4>) {
         self.resolved_transform = transform;
@@ -5779,10 +5794,13 @@ impl Element {
         }
         self.inline_witness_inputs.borrow_mut().take();
         let result = self.validate_owning_inline_ifc_root_install(arena);
-        if result.is_ok() && observed.as_ref().is_some_and(|before| {
-            inline_witness_inputs::NativeInlineWitnessInputs::observe(self, arena)
-                .as_ref().is_some_and(|after| before.same_inputs(after))
-        }) {
+        if result.is_ok()
+            && observed.as_ref().is_some_and(|before| {
+                inline_witness_inputs::NativeInlineWitnessInputs::observe(self, arena)
+                    .as_ref()
+                    .is_some_and(|after| before.same_inputs(after))
+            })
+        {
             *self.inline_witness_inputs.borrow_mut() = observed;
         }
         result
@@ -5833,7 +5851,8 @@ impl Element {
         }
 
         let collected = {
-            let _profile = crate::view::paint::work_profile::scope("collect_live_inline_root_inputs");
+            let _profile =
+                crate::view::paint::work_profile::scope("collect_live_inline_root_inputs");
             ElementInlineIfcMetadataCollector::collect(
                 arena,
                 ElementInlineIfcMetadataCollectorInput::new(
@@ -5842,7 +5861,8 @@ impl Element {
                     install.viewport_width,
                     install.viewport_height,
                 ),
-            ).ok_or_else(reject)?
+            )
+            .ok_or_else(reject)?
         };
         if !collected.root_source.matches_cache_key(&install.cache_key) {
             return Err(reject());
@@ -7818,8 +7838,9 @@ impl ElementTrait for Element {
                     properties,
                     content_revision,
                     payload_identity,
-                }],
-                ops,
+                }]
+                .into(),
+                ops: ops.into(),
                 clip_nodes: Vec::new(),
                 effect_nodes: Vec::new(),
                 transform_nodes: Vec::new(),
@@ -7861,7 +7882,7 @@ impl ElementTrait for Element {
         &self,
         parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-            let mut parent = *parent;
+        let mut parent = *parent;
         let paint_x = self.layout_state.layout_position.x + parent.paint_offset[0];
         let paint_y = self.layout_state.layout_position.y + parent.paint_offset[1];
         parent.paint_offset[0] += round_layout_value(paint_x) - paint_x;

@@ -1620,8 +1620,9 @@ impl ElementTrait for Svg {
                         properties: metadata.properties,
                         content_revision: metadata.content_revision,
                         payload_identity: metadata.payload_identity,
-                    }],
-                    ops,
+                    }]
+                    .into(),
+                    ops: ops.into(),
                     clip_nodes: Vec::new(),
                     effect_nodes: Vec::new(),
                     transform_nodes: Vec::new(),

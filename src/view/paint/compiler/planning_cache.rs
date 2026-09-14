@@ -1,11 +1,15 @@
 use super::*;
 mod span_cache;
+pub(super) mod command_blocks;
 
 /// Viewport-owned CPU products. Entries are exact-input proofs, not residency
 /// witnesses: live GPU validity is checked separately every frame.
 #[derive(Default)]
 pub(crate) struct PlanningCache {
+    pub(super) commands: command_blocks::CommandBlocks,
     pending_geometry_change: bool,
+    geometry_owners: FxHashSet<NodeKey>,
+    recording_observation: Option<(std::sync::Arc<()>, u64)>,
     frame_geometry_change: bool,
     spans: span_cache::SpanCache,
     geometry: Option<ValidatedArtifactSurfaceDagProgram>,
@@ -13,6 +17,7 @@ pub(crate) struct PlanningCache {
     localized: FxHashMap<super::super::PaintChunkId, LocalizedEntry>,
     pub(crate) geometry_hits: usize,
     pub(crate) graph_hits: usize,
+    pub(crate) surface_structure_hits: usize,
     pub(crate) relation_hits: usize,
     pub(crate) coverage_hits: usize,
     pub(crate) placement_hits: usize,
@@ -26,6 +31,7 @@ struct LocalizedEntry {
     ops: std::sync::Arc<[PaintOp]>,
     payload: PaintPayloadIdentity,
     seen: bool,
+    span_liveness: Option<std::sync::Weak<std::sync::atomic::AtomicBool>>,
 }
 impl PlanningCache {
     /// Use final property observations, after layout and animation, to avoid
@@ -37,13 +43,15 @@ impl PlanningCache {
         &mut self,
         trees: &crate::view::compositor::PropertyTrees,
     ) {
-        self.pending_geometry_change = !trees.changes.is_empty()
-            && self.geometry.as_ref().is_some_and(|old| {
-                old.artifact
-                    .owner_nodes
-                    .iter()
-                    .any(|owner| !trees.changes_for(owner.owner).is_empty())
-            });
+        self.pending_geometry_change = trees
+            .changes
+            .iter()
+            .any(|(owner, changes)| !changes.is_empty() && self.geometry_owners.contains(owner));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn command_validation_counts(&self) -> (usize, usize) {
+        (self.commands.reused_chunks, self.commands.validated_chunks)
     }
 
     #[cfg(test)]
@@ -54,17 +62,34 @@ impl PlanningCache {
     /// Topology causes survive layout's flag consumption. RESOURCE/PAINT
     /// alone cannot reject geometry: equal rebuilt CPU payloads remain reusable.
     pub(crate) fn observe_recording_changes(&mut self, arena: &crate::view::node_arena::NodeArena) {
-        self.pending_geometry_change |= self.geometry.as_ref().is_some_and(|old| {
-            old.artifact.owner_nodes.iter().any(|owner| arena.pending_render_changes(owner.owner)
-                .intersects(crate::view::base_component::DirtyFlags::RECORDING_TOPOLOGY))
-        });
+        let identity = arena.mutation_identity();
+        let changed = self
+            .recording_observation
+            .as_ref()
+            .and_then(|(old, clock)| {
+                std::sync::Arc::ptr_eq(old, &identity)
+                    .then(|| arena.mutated_nodes_since(*clock))
+                    .flatten()
+            });
+        self.pending_geometry_change |= self.geometry.is_some()
+            && changed.is_none_or(|owners| {
+                owners.iter().any(|owner| {
+                    self.geometry_owners.contains(owner)
+                        && arena
+                            .pending_render_changes(*owner)
+                            .intersects(crate::view::base_component::DirtyFlags::RECORDING_TOPOLOGY)
+                })
+            });
+        self.recording_observation = Some((identity, arena.mutation_clock()));
     }
 
     pub(crate) fn begin(&mut self) {
         self.frame_geometry_change = std::mem::take(&mut self.pending_geometry_change);
         self.spans.begin();
+        self.commands.begin();
         self.geometry_hits = 0;
         self.graph_hits = 0;
+        self.surface_structure_hits = 0;
         self.relation_hits = 0;
         self.coverage_hits = 0;
         self.placement_hits = 0;
@@ -76,9 +101,20 @@ impl PlanningCache {
     }
     pub(crate) fn finish(&mut self, accepted: bool) {
         self.spans.finish(accepted);
-        self.localized.retain(|_, entry| accepted && entry.seen);
+        self.commands.finish(accepted);
+        self.localized.retain(|_, entry| {
+            accepted
+                && (entry.seen
+                    || entry
+                        .span_liveness
+                        .as_ref()
+                        .and_then(std::sync::Weak::upgrade)
+                        .is_some_and(|live| live.load(std::sync::atomic::Ordering::Relaxed)))
+        });
         if !accepted {
             self.geometry = None;
+            self.geometry_owners.clear();
+            self.recording_observation = None;
             self.graphs = None;
         }
     }
@@ -130,7 +166,7 @@ impl PlanningCache {
         &mut self,
         artifact: &PaintArtifact,
         dag: &SurfaceDag,
-    ) -> Option<ArtifactSurfaceCoverageForest> {
+    ) -> Option<std::sync::Arc<ArtifactSurfaceCoverageForest>> {
         let previous = self.geometry.as_ref()?;
         if !coverage_inputs_match(&previous.artifact, artifact)
             || !previous.surface_dag.coverage_topology_matches(dag)
@@ -144,7 +180,7 @@ impl PlanningCache {
     pub(super) fn host_placement(
         &mut self,
         artifact: &PaintArtifact,
-    ) -> Option<ArtifactSurfaceHostPlacementProjection> {
+    ) -> Option<std::sync::Arc<ArtifactSurfaceHostPlacementProjection>> {
         let previous = self.geometry.as_ref()?;
         let old = &previous.artifact;
         // Host placement consumes owner edges and the spatial graph only.
@@ -224,11 +260,9 @@ impl PlanningCache {
                 .zip(&artifact.effect_nodes)
                 .all(|(a, b)| a.id == b.id && a.owner == b.owner && a.parent == b.parent)
             || old.chunks.len() != artifact.chunks.len()
-            || !old
-                .chunks
-                .iter()
-                .zip(&artifact.chunks)
-                .all(|(a, b)| a.id == b.id && a.owner == b.owner && a.properties == b.properties)
+            || !old.chunks.equivalent_with(&artifact.chunks, |a, b| {
+                a.id == b.id && a.owner == b.owner && a.properties == b.properties
+            })
         {
             return Ok(None);
         }
@@ -244,10 +278,55 @@ impl PlanningCache {
         self.graphs = Some(graphs);
     }
 
+    /// Call only after `graphs` accepted this artifact's complete current
+    /// graph edges and validated every current numeric snapshot. That proof
+    /// plus the coverage inputs covers all candidate/request/classifier inputs,
+    /// including scroll mask scheduling and all six property dimensions.
+    pub(super) fn surface_structure(
+        &mut self,
+        artifact: &PaintArtifact,
+    ) -> Result<Option<(SurfaceDag, std::sync::Arc<ArtifactSurfaceCoverageForest>)>, SurfaceDagError>
+    {
+        let Some(previous) = &self.geometry else {
+            return Ok(None);
+        };
+        // `graphs` already compared owner order/stable IDs, all property
+        // endpoints/parent edges, and chunk IDs/owners/property states. Only
+        // numeric clip snapshots and operation offsets remain additional
+        // structural inputs (clip rebasing and command cursor/mask schedule).
+        if previous.artifact.clip_nodes != artifact.clip_nodes
+            || !previous
+                .artifact
+                .chunks
+                .equivalent_with(&artifact.chunks, |old, now| old.op_range == now.op_range)
+        {
+            return Ok(None);
+        }
+        let dag = previous.surface_dag.refresh_boundary_transfers(artifact)?;
+        self.surface_structure_hits += 1;
+        self.coverage_hits += 1;
+        crate::view::paint::work_profile::count("surface_structure_replays", 1);
+        Ok(Some((dag, previous.coverage.clone())))
+    }
+
     pub(super) fn remember_geometry(&mut self, program: &ValidatedArtifactSurfaceDagProgram) {
+        if self
+            .geometry
+            .as_ref()
+            .is_none_or(|old| old.artifact.owner_nodes != program.artifact.owner_nodes)
+        {
+            self.geometry_owners = program
+                .artifact
+                .owner_nodes
+                .iter()
+                .map(|owner| owner.owner)
+                .collect();
+        }
         // Geometry depends on chunk ids/order/ranges/bounds/property endpoints
         // and all property stores. It does not read paint payloads or revisions.
-        // Do not retain those large resource payloads in this second cache.
+        // Retain immutable chunk metadata blocks without copying unchanged
+        // chunks. Commands are not retained here; only CommandBlocks can prove
+        // their validity against the exact complete operation allocation.
         // Exhaustive destructuring makes adding an artifact field a review
         // obligation here: it must either join this key or be explicitly
         // justified as payload-only after current-input validation.
@@ -266,24 +345,7 @@ impl PlanningCache {
         } = &program.artifact;
         let mut shape = PaintArtifact {
             target: program.artifact.target,
-            chunks: program
-                .artifact
-                .chunks
-                .iter()
-                .map(|chunk| super::super::PaintChunk {
-                    id: chunk.id,
-                    owner: chunk.owner,
-                    op_range: chunk.op_range.clone(),
-                    bounds: chunk.bounds,
-                    properties: chunk.properties,
-                    content_revision: PaintContentRevision {
-                        self_paint_revision: 0,
-                        composite_revision: 0,
-                        topology_revision: 0,
-                    },
-                    payload_identity: PaintPayloadIdentity::None,
-                })
-                .collect(),
+            chunks: program.artifact.chunks.clone(),
             clip_nodes: program.artifact.clip_nodes.clone(),
             effect_nodes: program.artifact.effect_nodes.clone(),
             transform_nodes: program.artifact.transform_nodes.clone(),
@@ -346,6 +408,7 @@ impl PlanningCache {
                 ops: ops.clone(),
                 payload: payload.clone(),
                 seen: true,
+                span_liveness: None,
             },
         );
     }
@@ -361,7 +424,7 @@ fn geometry_matches(a: &PaintArtifact, b: &PaintArtifact) -> bool {
         && a.owner_nodes == b.owner_nodes
         && a.owner_property_states == b.owner_property_states
         && a.chunks.len() == b.chunks.len()
-        && a.chunks.iter().zip(&b.chunks).all(|(a, b)| {
+        && a.chunks.equivalent_with(&b.chunks, |a, b| {
             a.id == b.id
                 && a.owner == b.owner
                 && a.op_range == b.op_range
@@ -402,7 +465,7 @@ fn coverage_inputs_match(a: &PaintArtifact, b: &PaintArtifact) -> bool {
             .zip(&b.effect_nodes)
             .all(|(a, b)| a.id == b.id && a.owner == b.owner && a.parent == b.parent)
         && a.chunks.len() == b.chunks.len()
-        && a.chunks.iter().zip(&b.chunks).all(|(a, b)| {
+        && a.chunks.equivalent_with(&b.chunks, |a, b| {
             a.id == b.id
                 && a.owner == b.owner
                 && a.op_range == b.op_range
@@ -428,7 +491,7 @@ fn relationship_inputs_match(a: &PaintArtifact, b: &PaintArtifact) -> bool {
             .zip(&b.effect_nodes)
             .all(|(a, b)| a.id == b.id && a.owner == b.owner && a.parent == b.parent)
         && a.chunks.len() == b.chunks.len()
-        && a.chunks.iter().zip(&b.chunks).all(|(a, b)| {
+        && a.chunks.equivalent_with(&b.chunks, |a, b| {
             a.id == b.id
                 && a.owner == b.owner
                 && a.op_range == b.op_range

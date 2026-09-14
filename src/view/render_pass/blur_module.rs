@@ -195,8 +195,11 @@ impl GraphicsPass for BlurStagePass {
             None => ctx.viewport().offscreen_format(),
         };
         with_blur_resources_cache(|cache| {
-            let resources =
-                cache.get_or_insert_with(BLUR_RESOURCES, || create_resources(&device, format));
+            let resources = cache.get_or_insert_scoped_with(
+                ctx.viewport().render_resource_scope_id(),
+                BLUR_RESOURCES,
+                || create_resources(&device, format),
+            );
             if resources.pipeline_format != format {
                 *resources = create_resources(&device, format);
             }
@@ -515,4 +518,8 @@ pub fn clear_blur_resources_cache() {
     with_blur_resources_cache(|cache| {
         cache.clear();
     });
+}
+
+pub(super) fn release_scope(scope: u64) {
+    with_blur_resources_cache(|cache| cache.clear_scope(scope));
 }

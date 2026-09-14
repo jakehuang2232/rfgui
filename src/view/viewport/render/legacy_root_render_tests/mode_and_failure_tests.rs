@@ -138,8 +138,18 @@ fn abort_frame_discards_encoder_resets_staging_and_next_frame_submits() -> Resul
     assert!(viewport.gpu.upload_staging_belt.is_none());
     assert_eq!(profile.submit_ms, 0.0);
     assert_eq!(profile.present_ms, 0.0);
+    assert_eq!(profile.encoder_finish_ms, 0.0);
+    assert_eq!(profile.gpu_wait_ms, 0.0);
+    assert!(!profile.gpu_waited);
+    assert!(profile.abort_cleanup_ms.is_finite() && profile.abort_cleanup_ms >= 0.0);
 
-    viewport.begin_offscreen_test_frame(device, queue, 4, 4, wgpu::TextureFormat::Rgba8Unorm)?;
+    viewport.begin_offscreen_test_frame(
+        device.clone(),
+        queue.clone(),
+        4,
+        4,
+        wgpu::TextureFormat::Rgba8Unorm,
+    )?;
     assert!(
         viewport
             .upload_draw_rect_uniform(&[5, 6, 7, 8], 256, 256)
@@ -150,6 +160,36 @@ fn abort_frame_discards_encoder_resets_staging_and_next_frame_submits() -> Resul
     viewport.end_offscreen_test_frame()?;
     assert!(viewport.frame.frame_state.is_none());
     assert_eq!(viewport.frame_completion_counts_for_test(), (1, 0, 1));
+    // Aborting must not count as an in-flight submission. The third real
+    // submission reaches the existing bound, and its wait gets its own timer.
+    for expected_wait in [false, true] {
+        viewport.begin_offscreen_test_frame(
+            device.clone(),
+            queue.clone(),
+            4,
+            4,
+            wgpu::TextureFormat::Rgba8Unorm,
+        )?;
+        let started_at = crate::time::Instant::now();
+        let profile = viewport.complete_frame(FrameDisposition::SubmitAndPresent);
+        let elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+        let phases = [
+            profile.staging_finish_ms,
+            profile.encoder_finish_ms,
+            profile.submit_ms,
+            profile.resource_cleanup_ms,
+            profile.present_ms,
+            profile.gpu_wait_ms,
+        ];
+        assert!(phases.iter().all(|ms| ms.is_finite() && *ms >= 0.0));
+        assert!(phases.iter().sum::<f64>() <= elapsed_ms);
+        assert_eq!(profile.abort_cleanup_ms, 0.0);
+        assert_eq!(profile.gpu_waited, expected_wait);
+        if !expected_wait {
+            assert_eq!(profile.gpu_wait_ms, 0.0);
+        }
+    }
+    assert_eq!(viewport.frame_completion_counts_for_test(), (3, 0, 1));
     Ok(())
 }
 

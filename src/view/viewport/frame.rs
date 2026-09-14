@@ -9,8 +9,15 @@ pub(super) struct BeginFrameProfile {
 
 #[derive(Default)]
 pub(super) struct EndFrameProfile {
+    pub staging_finish_ms: f64,
+    pub encoder_finish_ms: f64,
+    /// Only queue.submit; encoder finalization and resource cleanup are separate.
     pub submit_ms: f64,
+    pub resource_cleanup_ms: f64,
     pub present_ms: f64,
+    pub gpu_wait_ms: f64,
+    pub gpu_waited: bool,
+    pub abort_cleanup_ms: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,8 +182,7 @@ pub(super) struct FrameTimings {
     /// Dirty lifecycle, retained transaction, telemetry and compile-cache finalization.
     pub finish_render_ms: f64,
     pub end_frame_ms: f64,
-    pub end_frame_submit_ms: f64,
-    pub end_frame_present_ms: f64,
+    pub end_frame: EndFrameProfile,
 
     /// Wall time between the first and final phase boundaries, independent of
     /// the phase sum. Excludes RSX construction (added separately), earlier

@@ -39,7 +39,7 @@ pub(super) fn reorder_artifact_leaf_first(arena: &NodeArena, artifact: &mut Pain
         reordered_ops.extend_from_slice(&old_ops[source]);
         chunk.op_range = start..reordered_ops.len();
     }
-    artifact.ops = reordered_ops;
+    artifact.ops = reordered_ops.into();
 }
 
 fn assert_receiver_chain_reaches_scene_root(

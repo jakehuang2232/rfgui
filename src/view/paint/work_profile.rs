@@ -78,6 +78,8 @@ pub(crate) fn finish(frame: u64, build_ms: f64) {
             return;
         }
         p.active = false;
+        let attributed_ms = p.phases.values().map(|(time, _)| time.as_secs_f64() * 1000.0).sum::<f64>();
+        let unattributed_ms = (build_ms - attributed_ms).max(0.0);
         let phases = p
             .phases
             .iter()
@@ -86,7 +88,7 @@ pub(crate) fn finish(frame: u64, build_ms: f64) {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        eprintln!("paint-cpu frame={frame} build_ms={build_ms:.6} {phases}");
+        eprintln!("paint-cpu frame={frame} build_ms={build_ms:.6} unattributed={unattributed_ms:.6}/1 {phases}");
     });
 }
 

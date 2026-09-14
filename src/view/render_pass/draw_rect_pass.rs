@@ -597,18 +597,22 @@ impl DrawRectPass {
         // Get or create the pipeline resources, then extract the bind group layout.
         // The layout is stable for the lifetime of the resources and cheap to clone.
         let bind_group_layout = with_draw_rect_resources_cache(|cache| {
-            let resources = cache.get_or_insert_with(cache_key, || {
-                create_draw_rect_resources(
-                    &device,
-                    format,
-                    sample_count,
-                    variant,
-                    stencil_class,
-                    self.color_write_enabled,
-                    self.render_mode,
-                    shape,
-                )
-            });
+            let resources = cache.get_or_insert_scoped_with(
+                ctx.viewport.render_resource_scope_id(),
+                cache_key,
+                || {
+                    create_draw_rect_resources(
+                        &device,
+                        format,
+                        sample_count,
+                        variant,
+                        stencil_class,
+                        self.color_write_enabled,
+                        self.render_mode,
+                        shape,
+                    )
+                },
+            );
             if resources.pipeline_format != format
                 || resources.pipeline_sample_count != sample_count
                 || resources.variant != variant
@@ -1078,18 +1082,22 @@ fn encode_draw_rect_into_existing_pass(
     );
     let (pipeline, bind_group_layout) = {
         with_draw_rect_resources_cache(|cache| {
-            let resources = cache.get_or_insert_with(cache_key, || {
-                create_draw_rect_resources(
-                    &device,
-                    format,
-                    sample_count,
-                    variant,
-                    stencil_class,
-                    draw.color_write_enabled,
-                    draw.render_mode,
-                    shape,
-                )
-            });
+            let resources = cache.get_or_insert_scoped_with(
+                ctx.viewport().render_resource_scope_id(),
+                cache_key,
+                || {
+                    create_draw_rect_resources(
+                        &device,
+                        format,
+                        sample_count,
+                        variant,
+                        stencil_class,
+                        draw.color_write_enabled,
+                        draw.render_mode,
+                        shape,
+                    )
+                },
+            );
             if resources.pipeline_format != format
                 || resources.pipeline_sample_count != sample_count
                 || resources.variant != variant
@@ -1614,6 +1622,10 @@ pub fn clear_draw_rect_resources_cache() {
     with_draw_rect_resources_cache(|cache| {
         cache.clear();
     });
+}
+
+pub(super) fn release_scope(scope: u64) {
+    with_draw_rect_resources_cache(|cache| cache.clear_scope(scope));
 }
 
 type CornerRadii = [[f32; 2]; 4]; // TL, TR, BR, BL

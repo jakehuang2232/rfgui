@@ -1,10 +1,10 @@
 use crate::view::frame_graph::{
     FrameGraph, GraphicsColorAttachmentOps, GraphicsPassBuilder, TextureDesc,
 };
+use crate::view::render_pass::GraphicsPass;
 use crate::view::render_pass::blur_module::{
     BlurModuleInput, BlurModuleOutput, BlurModuleParams, build_blur_module,
 };
-use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{GraphicsPassContext, render_target_ref};
@@ -12,7 +12,6 @@ use crate::view::render_pass::texture_composite_pass::{
     TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput, TextureCompositeParams,
     TextureCompositePass, TextureCompositeSourceIn,
 };
-use crate::view::render_pass::{ClearPass, GraphicsPass};
 
 const SHADOW_RESOURCES: u64 = 203;
 const SHADOW_INTERMEDIATE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -242,7 +241,13 @@ impl GraphicsPass for ShadowFillPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         if let Some(target) = builder.texture_target(&self.render_target) {
             let _ = target;
-            builder.write_color(&self.render_target, GraphicsColorAttachmentOps::load());
+            // This pass owns a newly declared shadow/mask scratch target.
+            // Clear in its attachment load instead of opening a separate
+            // clear-only pass immediately before this fill.
+            builder.write_color(
+                &self.render_target,
+                GraphicsColorAttachmentOps::clear([0.; 4]),
+            );
         }
     }
 
@@ -269,8 +274,11 @@ impl GraphicsPass for ShadowFillPass {
             return;
         }
         let pipeline = with_shadow_resources_cache(|cache| {
-            let resources =
-                cache.get_or_insert_with(SHADOW_RESOURCES, || create_resources(&device));
+            let resources = cache.get_or_insert_scoped_with(
+                ctx.viewport().render_resource_scope_id(),
+                SHADOW_RESOURCES,
+                || create_resources(&device),
+            );
             resources.fill_pipeline.clone()
         });
         encode_mesh_fill_into_pass(
@@ -368,17 +376,6 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
         RenderTargetOut::default()
     };
 
-    graph.add_graphics_pass(ClearPass::new(
-        ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-        ClearInput {
-            pass_context: spec.pass_context,
-            clear_depth_stencil: false,
-        },
-        ClearOutput {
-            render_target: shadow_layer,
-            ..Default::default()
-        },
-    ));
     let shadow_fill_color = [
         spec.params.color[0],
         spec.params.color[1],
@@ -391,17 +388,6 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
         render_target: shadow_layer,
     });
     if spec.params.clip_to_geometry {
-        graph.add_graphics_pass(ClearPass::new(
-            ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-            ClearInput {
-                pass_context: spec.pass_context,
-                clear_depth_stencil: false,
-            },
-            ClearOutput {
-                render_target: shadow_mask_layer,
-                ..Default::default()
-            },
-        ));
         graph.add_graphics_pass(ShadowFillPass {
             mesh: local_mask_mesh,
             color: [1.0, 1.0, 1.0, 1.0],
@@ -496,6 +482,10 @@ pub fn clear_shadow_resources_cache() {
     with_shadow_resources_cache(|cache| {
         cache.clear();
     });
+}
+
+pub(super) fn release_scope(scope: u64) {
+    with_shadow_resources_cache(|cache| cache.clear_scope(scope));
 }
 
 pub fn begin_shadow_resources_frame() {}

@@ -43,10 +43,12 @@ impl Inputs {
     }
 }
 
-/// Only closure topology/order survives. Every snapshot value is fetched from
-/// current PropertyTrees, including invalid generations/nonfinite values that
-/// the downstream planner must reject. No dirty flag authorizes this replay.
+/// Retain closure topology/order and exact values whose stores were not written.
+/// Changed or unproven stores are read again, including invalid generations and
+/// nonfinite values that the downstream planner must reject. Dirty flags are
+/// never an absence-of-write proof.
 pub(in super::super) struct PropertyClosureCache {
+    stamp: crate::view::compositor::property_tree::PropertyStoreStamp,
     inputs: Inputs,
     clips: Vec<ClipNodeSnapshot>,
     effects: Vec<EffectNodeSnapshot>,
@@ -59,28 +61,38 @@ pub(in super::super) struct PropertyClosureCache {
 }
 fn refresh<S: Copy>(
     old: &[S],
+    writes: Option<&rustc_hash::FxHashSet<NodeKey>>,
+    owner: impl Fn(&S) -> NodeKey,
     mut fetch: impl FnMut(&S) -> Option<S>,
     same_edges: impl Fn(&S, &S) -> bool,
 ) -> Option<Vec<S>> {
     old.iter()
         .map(|before| {
+            if writes.is_some_and(|keys| !keys.contains(&owner(before))) {
+                return Some(*before);
+            }
             let now = fetch(before)?;
             same_edges(before, &now).then_some(now)
         })
         .collect()
 }
 impl PropertyClosureCache {
-    fn replay(&self, artifact: &mut PaintArtifact, trees: &PropertyTrees) -> Option<()> {
+    fn replay(&mut self, artifact: &mut PaintArtifact, trees: &PropertyTrees) -> Option<()> {
         if !self.inputs.matches(artifact) {
             return None;
         }
+        let writes = trees.property_writes_since(&self.stamp);
         let clips = refresh(
             &self.clips,
+            writes.as_deref(),
+            |n| n.owner,
             |n| trees.clip_node_snapshot_for(n.id),
             |a, b| a.id == b.id && a.owner == b.owner && a.parent == b.parent,
         )?;
         let effects = refresh(
             &self.effects,
+            writes.as_deref(),
+            |n| n.owner,
             |n| trees.effect_node_snapshot_for(n.id),
             |a, b| a.id == b.id && a.owner == b.owner && a.parent == b.parent,
         )?;
@@ -101,11 +113,15 @@ impl PropertyClosureCache {
         }
         let transforms = refresh(
             &self.transforms,
+            writes.as_deref(),
+            |n| n.owner,
             |n| trees.transform_snapshot_for(n.id),
             |a, b| a.id == b.id && a.owner == b.owner && a.parent == b.parent,
         )?;
         let positions = refresh(
             &self.positions,
+            writes.as_deref(),
+            |n| n.owner,
             |n| trees.layout_position_snapshot_for(n.id),
             |a, b| {
                 a.id == b.id
@@ -116,11 +132,15 @@ impl PropertyClosureCache {
         )?;
         let visuals = refresh(
             &self.visuals,
+            writes.as_deref(),
+            |n| n.owner,
             |n| trees.visual_offset_snapshot_for(n.id),
             |a, b| a.id == b.id && a.owner == b.owner && a.parent == b.parent,
         )?;
         let scrolls = refresh(
             &self.scrolls,
+            writes.as_deref(),
+            |n| n.owner,
             |n| trees.scroll_snapshot_for(n.id),
             |a, b| a.id == b.id && a.owner == b.owner && a.parent == b.parent,
         )?;
@@ -128,6 +148,13 @@ impl PropertyClosureCache {
         // complete closure and bounded termination proven on the miss path.
         // Publish only after all fetches/comparisons succeed; misses retain the
         // original traversal and its exact owner-attributed rejection behavior.
+        self.clips.clone_from(&clips);
+        self.effects.clone_from(&effects);
+        self.transforms.clone_from(&transforms);
+        self.positions.clone_from(&positions);
+        self.visuals.clone_from(&visuals);
+        self.scrolls.clone_from(&scrolls);
+        self.stamp = trees.property_store_stamp();
         artifact.clip_nodes = clips;
         artifact.effect_nodes = effects;
         artifact.transform_nodes = transforms;
@@ -145,7 +172,7 @@ pub(super) fn populate(
 ) -> Result<(), Vec<FrameArtifactFallbackReason>> {
     if cache
         .property_closure
-        .as_ref()
+        .as_mut()
         .and_then(|entry| entry.replay(artifact, trees))
         .is_some()
     {
@@ -177,6 +204,7 @@ pub(super) fn populate(
         })
         .collect();
     cache.property_closure = Some(PropertyClosureCache {
+        stamp: trees.property_store_stamp(),
         inputs,
         supplied_clip_indices,
         supplied_effect_indices,

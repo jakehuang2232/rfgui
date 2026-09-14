@@ -22,6 +22,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 mod render_changes;
+mod mutation_history;
 
 use crate::view::base_component::{DirtyFlags, ElementTrait, PlacementSkipFailureReason};
 
@@ -104,6 +105,7 @@ slotmap::new_key_type! {
 pub struct Node {
     element: RefCell<Box<dyn ElementTrait>>,
     mutation_revision: Cell<u64>,
+    subtree_mutation_revision: Cell<u64>,
     pending_render_changes: Cell<DirtyFlags>,
     render_change_versions: Cell<[u64; 8]>,
     pub(crate) parent: Option<NodeKey>,
@@ -140,6 +142,7 @@ impl Node {
         Self {
             element: RefCell::new(element),
             mutation_revision: Cell::new(0),
+            subtree_mutation_revision: Cell::new(0),
             pending_render_changes: Cell::new(DirtyFlags::ALL),
             render_change_versions: Cell::new([0; 8]),
             parent: None,
@@ -154,6 +157,7 @@ impl Node {
         Self {
             element: RefCell::new(element),
             mutation_revision: Cell::new(0),
+            subtree_mutation_revision: Cell::new(0),
             pending_render_changes: Cell::new(DirtyFlags::ALL),
             render_change_versions: Cell::new([0; 8]),
             parent,
@@ -354,6 +358,7 @@ impl std::fmt::Debug for Node {
 pub struct NodeArena {
     slots: SlotMap<NodeKey, Node>,
     mutation_clock: Cell<u64>,
+    mutation_history: RefCell<mutation_history::MutationHistory>,
     mutation_identity: Arc<()>,
     /// Top-level nodes (one per RSX root). Kept here rather than on
     /// individual elements so the arena itself is enough to traverse.
@@ -372,6 +377,7 @@ pub struct NodeArena {
     /// - Callers that rebuild an element's identity in place should
     ///   refresh via [`Self::refresh_stable_id_index`].
     stable_id_index: FxHashMap<u64, NodeKey>,
+    stable_id_index_revision: u64,
     /// Deterministic insertion-order list of hosts that explicitly opted into
     /// pre-layout sync or post-layout paint preparation. Each dispatch checks
     /// its own opt-in; paint-only producers never require a topology mutation.
@@ -475,6 +481,7 @@ impl NodeArena {
         let key = self.slots.insert(node);
         if sid != 0 {
             self.stable_id_index.insert(sid, key);
+            self.stable_id_index_revision = self.stable_id_index_revision.saturating_add(1);
         }
         if requires_arena_sync {
             self.arena_sync_nodes.push(key);
@@ -495,6 +502,7 @@ impl NodeArena {
             let sid = element.stable_id();
             if sid != 0 {
                 self.stable_id_index.insert(sid, key);
+                self.stable_id_index_revision = self.stable_id_index_revision.saturating_add(1);
             }
             if element.requires_arena_sync() || element.requires_paint_resource_preparation() {
                 self.arena_sync_nodes.push(key);
@@ -507,10 +515,15 @@ impl NodeArena {
     /// children — callers must walk the subtree (use
     /// [`Self::remove_subtree`] for recursive removal).
     pub fn remove(&mut self, key: NodeKey) -> Option<Node> {
+        self.note_topology_change(key);
         let node = self.slots.remove(key)?;
         self.arena_sync_nodes.retain(|&candidate| candidate != key);
+        let index_len = self.stable_id_index.len();
         self.stable_id_index
             .retain(|_, indexed_key| *indexed_key != key);
+        if self.stable_id_index.len() != index_len {
+            self.stable_id_index_revision = self.stable_id_index_revision.saturating_add(1);
+        }
         Some(node)
     }
 
@@ -545,10 +558,15 @@ impl NodeArena {
             self.set_children(parent, siblings);
         }
 
+        let index_len = self.stable_id_index.len();
         self.stable_id_index
             .retain(|_, indexed_key| !removed_keys.contains(indexed_key));
+        if self.stable_id_index.len() != index_len {
+            self.stable_id_index_revision = self.stable_id_index_revision.saturating_add(1);
+        }
         let mut removed = 0;
         for k in to_remove {
+            self.note_topology_change(k);
             if self.slots.remove(k).is_some() {
                 removed += 1;
             }
@@ -600,13 +618,24 @@ impl NodeArena {
     /// Non-zero stable ids win by last-write order; duplicates produce a
     /// single index entry pointing at whichever slot is visited last.
     pub fn refresh_stable_id_index(&mut self) {
-        self.stable_id_index.clear();
+        let mut rebuilt =
+            FxHashMap::with_capacity_and_hasher(self.stable_id_index.len(), Default::default());
         for (key, node) in self.slots.iter() {
             let sid = node.element.borrow().stable_id();
             if sid != 0 {
-                self.stable_id_index.insert(sid, key);
+                rebuilt.insert(sid, key);
             }
         }
+        if rebuilt != self.stable_id_index {
+            self.stable_id_index = rebuilt;
+            self.stable_id_index_revision = self.stable_id_index_revision.saturating_add(1);
+        }
+    }
+
+    /// Separate from local/subtree mutations: an unvisited slot can change a
+    /// native stable-ID lookup. Exhaustion prevents equality-based reuse.
+    pub(crate) fn stable_id_index_revision(&self) -> Option<u64> {
+        (self.stable_id_index_revision != u64::MAX).then_some(self.stable_id_index_revision)
     }
 
     /// Collect every element that must render through
@@ -785,6 +814,8 @@ impl NodeArena {
         if let Some(node) = self.slots.get_mut(key) {
             node.parent = parent;
         }
+        // Both old and new ancestor chains must lose their subtree proof.
+        self.note_topology_change(key);
     }
 
     pub fn set_children(&mut self, key: NodeKey, children: Vec<NodeKey>) {
@@ -1500,3 +1531,6 @@ impl<'a> Iterator for Ancestors<'a> {
         Some(node)
     }
 }
+
+#[cfg(test)]
+mod stable_id_index_revision_tests;

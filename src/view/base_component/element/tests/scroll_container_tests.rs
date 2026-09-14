@@ -15,7 +15,9 @@ fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
     };
 
     let frame = crate::time::Instant::now();
+    assert!(element.post_layout_animation_is_noop());
     assert!(element.set_hovered(true));
+    assert!(!element.post_layout_animation_is_noop());
     assert!(element.wants_animation_frame());
     assert!(
         element
@@ -37,6 +39,7 @@ fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
     assert!(element.wants_animation_frame());
 
     let fade_frame = leave_frame + crate::time::Duration::from_millis(1_000);
+    assert!(!element.post_layout_animation_is_noop());
     assert!(
         element
             .tick_post_layout_animation_frame(fade_frame)
@@ -56,6 +59,7 @@ fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
         0.0_f32.to_bits()
     );
     assert!(!element.wants_animation_frame());
+    assert!(element.post_layout_animation_is_noop());
     assert!(
         element
             .tick_post_layout_animation_frame(
@@ -70,6 +74,7 @@ fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
         reanchor_on_first_move: false,
     });
     let drag_frame = hidden_frame + crate::time::Duration::from_millis(32);
+    assert!(!element.post_layout_animation_is_noop());
     assert!(
         element
             .tick_post_layout_animation_frame(drag_frame)

@@ -1,8 +1,6 @@
 use crate::style::{ComputedStyle, ParsedValue, PropertyId, Style};
 use crate::view::frame_graph::FrameGraph;
-use crate::view::image_resource::{
-    ImageHandle, ImageSnapshot, acquire_image_resource, snapshot_image,
-};
+use crate::view::image_resource::{ImageHandle, ImageSnapshot, acquire_image_resource, snapshot_image};
 use crate::view::render_pass::texture_composite_pass::TextureCompositeParams;
 use crate::view::sampled_texture::{SampledTextureAlphaMode, SampledTextureUpload};
 use crate::view::{ImageFit, ImageSampling, ImageSource};
@@ -979,8 +977,9 @@ impl ElementTrait for Image {
                         properties: metadata.properties,
                         content_revision: metadata.content_revision,
                         payload_identity: metadata.payload_identity,
-                    }],
-                    ops,
+                    }]
+                    .into(),
+                    ops: ops.into(),
                     clip_nodes: Vec::new(),
                     effect_nodes: Vec::new(),
                     transform_nodes: Vec::new(),

@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn compile_trace_reports_measured_topology_lookup_for_hits_and_misses() {
+    for hit in [false, true] {
+        let profile = crate::view::frame_graph::CompileProfile {
+            topology_cache_lookup_ms: 0.75,
+            topology_cache_hit: hit,
+            ..Default::default()
+        };
+        let nodes = build_compile_trace_nodes(&profile, true);
+        let matching: Vec<_> = nodes
+            .iter()
+            .filter(|node| node.name.starts_with("topology_cache"))
+            .collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].elapsed_ms, 0.75);
+        assert_eq!(
+            matching[0].name,
+            if hit {
+                "topology_cache [HIT]"
+            } else {
+                "topology_cache [MISS]"
+            }
+        );
+    }
+}
+
+#[test]
 fn layout_traversal_trace_marks_gate_counts_as_candidates() {
     let profile = super::super::frame::LayoutTraversalProfile {
         root_count: 1,

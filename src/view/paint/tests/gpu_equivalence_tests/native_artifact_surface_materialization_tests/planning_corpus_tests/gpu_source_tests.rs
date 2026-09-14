@@ -9,6 +9,7 @@ use crate::view::viewport::ViewportPaintRendererMode;
 use std::sync::Arc;
 mod lifecycle_tests;
 mod mixed_changes_tests;
+mod vertex_growth_tests;
 
 const SHADER: &str = r#"
 struct Uniform { color: vec4<f32> }
@@ -39,8 +40,14 @@ fn source(
     size: [f32; 2],
     dpr: f32,
     color: [f32; 4],
+    triangles: usize,
 ) -> GpuPaintSource {
-    let vertices: [f32; 12] = [-1., -1., 1., -1., -1., 1., -1., 1., 1., -1., 1., 1.];
+    let quad: [f32; 12] = [-1., -1., 1., -1., -1., 1., -1., 1., 1., -1., 1., 1.];
+    let vertices = quad
+        .into_iter()
+        .cycle()
+        .take(triangles * 6)
+        .collect::<Vec<_>>();
     GpuPaintSource::new(
         id,
         revision,
@@ -49,7 +56,7 @@ fn source(
         program(),
         Arc::from(bytemuck::cast_slice(&color)),
         Arc::from(bytemuck::cast_slice(&vertices)),
-        6,
+        (triangles * 3) as u32,
         1,
     )
     .unwrap()
@@ -64,6 +71,7 @@ struct GpuHost {
     visible: bool,
     source: Option<GpuPaintSource>,
     dirty: DirtyFlags,
+    triangles: usize,
 }
 impl GpuHost {
     fn new(id: u64) -> Self {
@@ -77,6 +85,7 @@ impl GpuHost {
             visible: true,
             source: None,
             dirty: DirtyFlags::ALL,
+            triangles: 2,
         }
     }
 }
@@ -92,6 +101,7 @@ impl Layoutable for GpuHost {
                 self.size,
                 c.device_scale,
                 self.color,
+                self.triangles,
             )
         });
     }

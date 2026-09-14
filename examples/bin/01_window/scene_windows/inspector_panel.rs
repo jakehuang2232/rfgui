@@ -1,12 +1,12 @@
 use crate::rfgui::style::{
     Border, ClipMode, Color, Layout, Length, Padding, Position, Transition, TransitionProperty,
 };
-use crate::rfgui::ui::{RsxNode, rsx, use_state, use_viewport};
+use crate::rfgui::ui::{Binding, RsxNode, rsx, use_state, use_viewport};
 use crate::rfgui_components::{Checkbox, Switch, Theme, use_theme};
 use rfgui::view::Element;
 use std::rc::Rc;
 
-pub fn build(theme: &Theme) -> RsxNode {
+pub fn build(theme: &Theme, animation_on: Binding<bool>) -> RsxNode {
     let dark_mode = use_state(|| true);
     let debug_geometry_overlay = use_state(|| false);
     let debug_render_time = use_state(|| false);
@@ -84,6 +84,10 @@ pub fn build(theme: &Theme) -> RsxNode {
                 label="Dark mode"
                 binding={dark_mode.binding()}
                 on_change={on_dark_mode}
+            />
+            <Switch
+                label="Animaton On"
+                binding={animation_on}
             />
             <Element style={{ layout: Layout::flow().column().no_wrap() }}>
                 <Switch

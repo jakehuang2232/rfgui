@@ -21,6 +21,39 @@ pub struct RendererTestFrame {
 }
 
 impl Viewport {
+    /// Exercise the native entry while checking the authority actually selected.
+    /// Surface acquisition retries remain normal host behavior and yield no sample.
+    #[doc(hidden)]
+    pub fn render_frame_for_performance(
+        &mut self,
+        services: crate::platform::PlatformServices<'_>,
+    ) -> RenderFrameResult {
+        let _capture = enable_paint_authority_test_capture();
+        let result = self.render_frame(services);
+        if let Some(snapshot) = take_paint_authority_test_snapshot() {
+            assert!(
+                snapshot.legacy_fallback_stage.is_none()
+                    && snapshot.terminal_failure_stage.is_none(),
+                "unexpected native window fallback/failure: {snapshot:?}"
+            );
+            assert_eq!(
+                snapshot.selected == PaintAuthorityKind::Artifact,
+                self.paint_renderer_mode() == ViewportPaintRendererMode::RetainedAuto,
+                "unexpected native window authority: {snapshot:?}"
+            );
+        }
+        result
+    }
+    /// Last production frame's CPU phases and cumulative completion counts.
+    /// Completion phases: staging, encoder finish, submit, cleanup, present, wait.
+    #[doc(hidden)]
+    pub fn renderer_performance_sample(&self) -> ([f64; 10], [f64; 6], (u64, u64, u64)) {
+        (
+            self.frame.last_cpu_phases,
+            self.frame.last_completion_phases,
+            self.frame_completion_counts_for_test(),
+        )
+    }
     /// Acquire an offscreen test target and use the normal RSX frame pipeline.
     /// `now` is one deterministic semantic animation time, not a profiling clock.
     /// Panics/errors fail the test; callers must not continue a failed frame.

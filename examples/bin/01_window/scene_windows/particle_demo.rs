@@ -1,7 +1,7 @@
 use crate::rfgui::time::Instant;
 use crate::rfgui::ui::{
     PointerButton, PointerDownEvent, PointerMoveEvent, PointerUpEvent, RsxElementNode, RsxNode,
-    ViewportHandle, component, use_viewport,
+    Binding, FromPropValue, IntoPropValue, ViewportHandle, component,
 };
 use crate::rfgui::view::base_component::PaintResourcePreparationContext;
 use crate::rfgui::view::base_component::{
@@ -323,6 +323,9 @@ pub struct ParticleCanvas {
     should_render: bool,
     dirty: DirtyFlags,
     prepared_frame: Option<u64>,
+    animation_on: Option<Binding<bool>>,
+    was_animating: bool,
+    source_scale_bits: u32,
     content_revision: u64,
     source_id: GpuPaintSourceId,
     source: Option<GpuPaintSource>,
@@ -346,6 +349,9 @@ impl ParticleCanvas {
             should_render: true,
             dirty: DirtyFlags::ALL,
             prepared_frame: None,
+            animation_on: None,
+            was_animating: true,
+            source_scale_bits: 0,
             content_revision: 0,
             source_id: GpuPaintSourceId::new(),
             source: None,
@@ -362,7 +368,14 @@ impl Layoutable for ParticleCanvas {
             return;
         }
         self.prepared_frame = Some(context.frame_number);
-        ViewportHandle.request_redraw();
+        let animating = self.animation_on.as_ref().is_none_or(|value| value.get());
+        #[cfg(any(test, feature = "renderer-perf"))]
+        let animating = animating && std::env::var("RFGUI_PERF_UPDATES").as_deref() != Ok("idle");
+        // Resume from the frozen simulation, without integrating paused time.
+        if !animating || !self.was_animating {
+            PARTICLE_SYSTEM.with(|system| system.borrow_mut().last_update = context.now);
+        }
+        self.was_animating = animating;
         if !self.should_render {
             self.source = None;
             return;
@@ -371,13 +384,28 @@ impl Layoutable for ParticleCanvas {
             (self.layout_w * context.device_scale).ceil() as u32,
             (self.layout_h * context.device_scale).ceil() as u32,
         ];
+        if !animating
+            && self.source_scale_bits == context.device_scale.to_bits()
+            && self
+                .source
+                .as_ref()
+                .is_some_and(|source| source.extent() == extent)
+        {
+            return;
+        }
+        if animating {
+            ViewportHandle.request_redraw();
+        }
         self.content_revision = self
             .content_revision
             .checked_add(1)
             .expect("source revision exhausted");
+        self.source_scale_bits = context.device_scale.to_bits();
         self.source = PARTICLE_SYSTEM.with(|system| {
             let mut system = system.borrow_mut();
-            system.update(context.now);
+            if animating {
+                system.update(context.now);
+            }
             let vertices = system.to_vertex_data(extent[0] as f32, extent[1] as f32);
             let uniforms = ParticleUniforms {
                 screen_size: extent.map(|n| n as f32),
@@ -613,22 +641,26 @@ impl ElementTrait for ParticleCanvas {
 
 impl HostBuilder for ParticleCanvas {
     fn build_descriptor(
-        _node: &RsxElementNode,
+        node: &RsxElementNode,
         path: &[u64],
         _ctx: &BuildCtx,
     ) -> Result<ElementDescriptor, String> {
         // Size defaults to 0 → filled by parent constraints during layout.
-        Ok(ElementDescriptor::leaf(Box::new(ParticleCanvas::new(
-            stable_id("ParticleCanvas", path),
-        ))))
+        let mut canvas = ParticleCanvas::new(stable_id("ParticleCanvas", path));
+        canvas.animation_on = node
+            .props
+            .iter()
+            .find(|(name, _)| *name == "animation_on")
+            .map(|(_, value)| Binding::<bool>::from_prop_value(value.clone()))
+            .transpose()?;
+        Ok(ElementDescriptor::leaf(Box::new(canvas)))
     }
 }
 
 #[component]
-pub fn ParticleDemo() -> RsxNode {
-    let viewport = use_viewport();
-    viewport.request_redraw();
+pub fn ParticleDemo(animation_on: Binding<bool>) -> RsxNode {
     host_builder_node::<ParticleCanvas>("ParticleCanvas")
+        .with_prop("animation_on", animation_on.into_prop_value())
 }
 
 #[cfg(test)]

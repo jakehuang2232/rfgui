@@ -6,6 +6,7 @@ use rfgui_components::{Theme, Window};
 #[test]
 #[ignore = "native hardware resize benchmark; run alone in release mode"]
 fn native_about_window_resize() -> Result<(), String> {
+    let _text_cache_cleanup = TextCacheCleanup;
     let (device, queue) = pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = instance

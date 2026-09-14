@@ -5,13 +5,30 @@ use rfgui::view::Viewport;
 #[path = "performance_tests/about_resize.rs"]
 mod about_resize;
 
+#[path = "performance_tests/incremental.rs"]
+mod incremental;
+
+// Release cached GPU handles while the test thread's wgpu TLS is still alive.
+struct TextCacheCleanup;
+
+impl Drop for TextCacheCleanup {
+    fn drop(&mut self) {
+        rfgui::view::render_pass::text_pass::clear_text_resources_cache();
+    }
+}
+
 /// The real demo tree through the production layout/paint entry. Window
 /// acquisition is offscreen; this does not measure host presentation latency.
 #[test]
 #[ignore = "native hardware benchmark; run alone in release mode"]
 fn native_complete_demo_warm_frames() -> Result<(), String> {
+    let _text_cache_cleanup = TextCacheCleanup;
     let (device, queue) = pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            // Match the production viewport's instance flags in debug too.
+            flags: wgpu::InstanceFlags::empty(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
@@ -116,8 +133,12 @@ fn native_complete_demo_warm_frames() -> Result<(), String> {
 #[test]
 #[ignore = "native hardware benchmark; run alone in release mode"]
 fn native_complete_demo_viewport_transitions() -> Result<(), String> {
+    let _text_cache_cleanup = TextCacheCleanup;
     let (device, queue) = pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            flags: wgpu::InstanceFlags::empty(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await

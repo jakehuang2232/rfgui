@@ -852,8 +852,9 @@ impl Element {
                 properties: metadata.properties,
                 content_revision: metadata.content_revision,
                 payload_identity: metadata.payload_identity,
-            }],
-            ops,
+            }]
+            .into(),
+            ops: ops.into(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),
@@ -904,8 +905,9 @@ impl Element {
                 properties: metadata.properties,
                 content_revision: metadata.content_revision,
                 payload_identity: metadata.payload_identity,
-            }],
-            ops,
+            }]
+            .into(),
+            ops: ops.into(),
             clip_nodes: Vec::new(),
             effect_nodes: Vec::new(),
             transform_nodes: Vec::new(),
@@ -994,9 +996,7 @@ impl Element {
         arena: Option<&crate::view::node_arena::NodeArena>,
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<crate::view::paint::PaintChunkMetadata, crate::view::paint::LegacyPaintReason> {
-        use crate::view::paint::{
-            LegacyPaintReason, PaintChunkId, PaintChunkMetadata, PaintChunkRole,
-        };
+        use crate::view::paint::{LegacyPaintReason, PaintChunkId, PaintChunkMetadata, PaintChunkRole};
         if self.resolved_transform.is_some()
             && !recording_context.authorizes_transform_surface_root(self.stable_id())
         {

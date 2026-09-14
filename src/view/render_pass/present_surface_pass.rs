@@ -117,9 +117,11 @@ impl GraphicsPass for PresentSurfacePass {
         };
         let format = ctx.viewport().surface_format();
         with_present_surface_resources_cache(|cache| {
-            let resources = cache.get_or_insert_with(PRESENT_SURFACE_RESOURCES, || {
-                PresentSurfaceResources::new(&device, format)
-            });
+            let resources = cache.get_or_insert_scoped_with(
+                ctx.viewport().render_resource_scope_id(),
+                PRESENT_SURFACE_RESOURCES,
+                || PresentSurfaceResources::new(&device, format),
+            );
             if resources.pipeline_format != format {
                 *resources = PresentSurfaceResources::new(&device, format);
             }
@@ -269,4 +271,8 @@ pub fn clear_present_surface_resources_cache() {
     with_present_surface_resources_cache(|cache| {
         cache.clear();
     });
+}
+
+pub(super) fn release_scope(scope: u64) {
+    with_present_surface_resources_cache(|cache| cache.clear_scope(scope));
 }
