@@ -644,3 +644,5 @@ fn fiber_work_removes_opacity_resets_to_default_on_text() {
         text.opacity()
     );
 }
+
+mod resource_slot_reuse_tests;

@@ -142,6 +142,7 @@ pub struct Svg {
     loading_slot: Vec<crate::view::node_arena::NodeKey>,
     error_slot: Vec<crate::view::node_arena::NodeKey>,
     active_slot: ActiveSlot,
+    slot_inputs: super::resource_slot::SlotInputs,
     active_raster_key: Option<u64>,
     active_raster_request: Option<SvgRasterRequest>,
     active_device_scale_bits: Option<u32>,
@@ -165,6 +166,27 @@ pub struct Svg {
 }
 
 impl Svg {
+    #[cfg(test)]
+    pub(crate) fn set_resource_loading_for_test(&self) {
+        crate::view::svg_resource::set_svg_document_loading_for_test(self.source_key);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_resource_error_for_test(&self) {
+        crate::view::svg_resource::set_svg_document_error_for_test(self.source_key);
+    }
+
+    pub(crate) fn set_slot_inputs_cold(
+        &mut self,
+        node: &crate::ui::RsxElementNode,
+        path: &[u64],
+        global_path: Option<crate::ui::GlobalNodePath>,
+        inherited: &crate::view::renderer_adapter::StyleCascadeContext,
+    ) {
+        self.slot_inputs =
+            super::resource_slot::SlotInputs::cold(node, path, global_path, inherited);
+    }
+
     #[cfg(test)]
     pub(crate) fn set_layout_transition_width_for_test(&mut self, width: f32) {
         self.element.set_layout_transition_width(width);
@@ -196,6 +218,10 @@ impl Svg {
             loading_slot: Vec::new(),
             error_slot: Vec::new(),
             active_slot: ActiveSlot::None,
+            slot_inputs: super::resource_slot::SlotInputs {
+                path: vec![id],
+                ..Default::default()
+            },
             active_raster_key: None,
             active_raster_request: None,
             active_device_scale_bits: None,
@@ -259,6 +285,7 @@ impl Svg {
         owner: crate::view::node_arena::NodeKey,
         new_keys: &[crate::view::node_arena::NodeKey],
     ) -> Result<(), SlotReplacementError> {
+        self.slot_inputs.loading = None;
         resource_slot::replace_slot(
             arena,
             owner,
@@ -277,6 +304,7 @@ impl Svg {
         owner: crate::view::node_arena::NodeKey,
         new_keys: &[crate::view::node_arena::NodeKey],
     ) -> Result<(), SlotReplacementError> {
+        self.slot_inputs.error = None;
         resource_slot::replace_slot(
             arena,
             owner,
@@ -1852,7 +1880,7 @@ impl ElementTrait for Svg {
         &mut self,
         arena: &mut crate::view::node_arena::NodeArena,
         self_key: crate::view::node_arena::NodeKey,
-        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        ctx: &crate::view::fiber_work::ApplyContext<'_>,
         name: &'static str,
         value: crate::ui::PropValue,
     ) -> crate::view::fiber_work::PropApplyOutcome {
@@ -1879,9 +1907,63 @@ impl ElementTrait for Svg {
                 PropApplyOutcome::Applied
             }
             "loading" | "error" => {
-                let inherited = StyleCascadeContext::default();
-                let Ok(descriptors) = convert_image_slot_desc(&value, &[], None, &inherited, name)
-                else {
+                let inherited = match arena.parent_of(self_key) {
+                    Some(parent) => crate::view::renderer_adapter::style_cascade_at_parent(
+                        arena,
+                        parent,
+                        ctx.viewport_style,
+                        ctx.viewport_width,
+                        ctx.viewport_height,
+                    ),
+                    None => StyleCascadeContext::from_viewport_style(
+                        ctx.viewport_style,
+                        ctx.viewport_width,
+                        ctx.viewport_height,
+                    ),
+                };
+                let input = super::resource_slot::StaticSlotNode::from_value(&value)
+                    .map(|node| (node, inherited.clone()));
+                let previous = if name == "loading" {
+                    &self.slot_inputs.loading
+                } else {
+                    &self.slot_inputs.error
+                };
+                if input.is_some() && &input == previous {
+                    let target = if name == "loading" {
+                        ActiveSlot::Loading
+                    } else {
+                        ActiveSlot::Error
+                    };
+                    let roots = if self.active_slot == target {
+                        self.element.children().to_vec()
+                    } else if name == "loading" {
+                        self.loading_slot.clone()
+                    } else {
+                        self.error_slot.clone()
+                    };
+                    // Even exact input equality must pass the existing liveness,
+                    // ownership, alias and active-children mirror validation.
+                    return match super::resource_slot::replace_slot(
+                        arena,
+                        self_key,
+                        &mut self.element,
+                        &mut self.loading_slot,
+                        &mut self.error_slot,
+                        &mut self.active_slot,
+                        target,
+                        &roots,
+                    ) {
+                        Ok(()) => PropApplyOutcome::Applied,
+                        Err(_) => PropApplyOutcome::RequiresColdRebuild(name),
+                    };
+                }
+                let Ok(descriptors) = convert_image_slot_desc(
+                    &value,
+                    &self.slot_inputs.path,
+                    self.slot_inputs.global_path.clone(),
+                    &inherited,
+                    name,
+                ) else {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
                 let mut new_keys: Vec<NodeKey> = Vec::with_capacity(descriptors.len());
@@ -1900,6 +1982,11 @@ impl ElementTrait for Svg {
                     }
                     eprintln!("[Svg] rejected invalid {name} slot replacement: {error:?}");
                     return PropApplyOutcome::RequiresColdRebuild(name);
+                }
+                if name == "loading" {
+                    self.slot_inputs.loading = input;
+                } else {
+                    self.slot_inputs.error = input;
                 }
                 PropApplyOutcome::Applied
             }

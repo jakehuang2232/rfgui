@@ -3,6 +3,134 @@ use rustc_hash::FxHashSet;
 use super::{DirtyFlags, Element, ElementTrait};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
+/// Immutable inputs admitted for slot reuse. Unknown hosts, callbacks and shared
+/// mutable props deliberately keep the replacement path. Style is copied by value
+/// here; the global SharedPropValue equality contract stays pointer-based.
+#[derive(Clone, PartialEq)]
+pub(super) enum StaticSlotNode {
+    Text(crate::ui::RsxNodeIdentity, String),
+    Fragment(crate::ui::RsxNodeIdentity, Vec<Self>),
+    Host(
+        crate::ui::RsxNodeIdentity,
+        std::any::TypeId,
+        Vec<(&'static str, StaticSlotProp)>,
+        Vec<Self>,
+    ),
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) enum StaticSlotProp {
+    Value(crate::ui::PropValue),
+    Style(crate::style::Style),
+}
+
+impl StaticSlotNode {
+    pub(super) fn from_value(value: &crate::ui::PropValue) -> Option<Self> {
+        use crate::ui::FromPropValue;
+        Self::from_node(&crate::ui::RsxNode::from_prop_value(value.clone()).ok()?)
+    }
+
+    fn from_node(node: &crate::ui::RsxNode) -> Option<Self> {
+        use crate::ui::{PropValue, RsxNode};
+        use crate::view::renderer_adapter::{as_element_style, as_text_style};
+        use std::any::TypeId;
+        match node {
+            RsxNode::Text(text) => Some(Self::Text(text.identity, text.content.clone())),
+            RsxNode::Fragment(f) => Some(Self::Fragment(
+                f.identity,
+                f.children
+                    .iter()
+                    .map(Self::from_node)
+                    .collect::<Option<_>>()?,
+            )),
+            RsxNode::Element(el) => {
+                let kind = el.tag_descriptor.as_ref()?.type_id;
+                let is_text = kind == TypeId::of::<crate::view::tags::Text>();
+                if !is_text && kind != TypeId::of::<crate::view::tags::Element>() {
+                    return None;
+                }
+                let props = el
+                    .props
+                    .iter()
+                    .map(|(name, value)| {
+                        let prop = if *name == "style" {
+                            StaticSlotProp::Style(if is_text {
+                                as_text_style(value, name).ok()?
+                            } else {
+                                as_element_style(value, name).ok()?
+                            })
+                        } else {
+                            match value {
+                                PropValue::Bool(_)
+                                | PropValue::I64(_)
+                                | PropValue::F64(_)
+                                | PropValue::FontSize(_)
+                                | PropValue::String(_)
+                                | PropValue::TextAlign(_) => StaticSlotProp::Value(value.clone()),
+                                _ => return None,
+                            }
+                        };
+                        Some((*name, prop))
+                    })
+                    .collect::<Option<_>>()?;
+                Some(Self::Host(
+                    el.identity,
+                    kind,
+                    props,
+                    el.children
+                        .iter()
+                        .map(Self::from_node)
+                        .collect::<Option<_>>()?,
+                ))
+            }
+            RsxNode::Component(_) | RsxNode::Provider(_) => None,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct SlotInputs {
+    pub(super) path: Vec<u64>,
+    pub(super) global_path: Option<crate::ui::GlobalNodePath>,
+    pub(super) loading: Option<(
+        StaticSlotNode,
+        crate::view::renderer_adapter::StyleCascadeContext,
+    )>,
+    pub(super) error: Option<(
+        StaticSlotNode,
+        crate::view::renderer_adapter::StyleCascadeContext,
+    )>,
+}
+
+impl SlotInputs {
+    pub(super) fn cold(
+        node: &crate::ui::RsxElementNode,
+        path: &[u64],
+        global_path: Option<crate::ui::GlobalNodePath>,
+        inherited: &crate::view::renderer_adapter::StyleCascadeContext,
+    ) -> Self {
+        let mut inputs = Self {
+            path: path.to_vec(),
+            global_path,
+            ..Self::default()
+        };
+        for (name, value) in node.props.iter() {
+            match *name {
+                "loading" => {
+                    inputs.loading =
+                        StaticSlotNode::from_value(value).map(|node| (node, inherited.clone()))
+                }
+                "error" => {
+                    inputs.error =
+                        StaticSlotNode::from_value(value).map(|node| (node, inherited.clone()))
+                }
+                _ => {}
+            }
+        }
+        inputs
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ActiveSlot {
     None,

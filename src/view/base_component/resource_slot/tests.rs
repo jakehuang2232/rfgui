@@ -280,3 +280,22 @@ fn cold_attach_rejects_nonempty_target_in_all_build_profiles() {
     ))));
     attach_slot_cold(ActiveSlot::None, &mut vec![key], Vec::new());
 }
+
+#[test]
+fn static_slot_snapshot_rejects_callback_and_unknown_shared_inputs() {
+    use crate::ui::{IntoPropValue, RsxNode, RsxTagDescriptor};
+    let node = RsxNode::tagged(
+        "Element",
+        RsxTagDescriptor::for_tag::<crate::view::tags::Element>(),
+    );
+    assert!(StaticSlotNode::from_value(&node.clone().into_prop_value()).is_some());
+    let with_callback = node
+        .clone()
+        .with_prop("on_click", crate::ui::on_click(|_| {}));
+    assert!(StaticSlotNode::from_value(&with_callback.into_prop_value()).is_none());
+    let shared = node.with_prop(
+        "unknown",
+        std::rc::Rc::new(std::cell::Cell::new(0)).into_prop_value(),
+    );
+    assert!(StaticSlotNode::from_value(&shared.into_prop_value()).is_none());
+}

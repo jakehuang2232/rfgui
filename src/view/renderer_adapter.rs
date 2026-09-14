@@ -21,7 +21,7 @@ pub(crate) use crate::ui::{
     element_runtime_name, next_identity_ordinal, stable_node_id_from_parts,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StyleCascadeContext {
     pub(crate) parent: ComputedStyle,
     active_inherited_properties: FxHashSet<PropertyId>,
@@ -563,6 +563,7 @@ pub(crate) fn convert_image_element_desc(
         stable_node_id_from_parts("Image", path, global_path.as_ref()),
         source.ok_or_else(|| "<Image> requires `source`".to_string())?,
     );
+    image.set_slot_inputs_cold(node, path, global_path.clone(), style_cascade);
     image.ingest_props(node)?;
     if let Some(style) = style {
         image.apply_style(style);
@@ -636,6 +637,7 @@ pub(crate) fn convert_svg_element_desc(
         stable_node_id_from_parts("Svg", path, global_path.as_ref()),
         source.ok_or_else(|| "<Svg> requires `source`".to_string())?,
     );
+    svg.set_slot_inputs_cold(node, path, global_path.clone(), style_cascade);
     svg.ingest_props(node)?;
     if let Some(style) = style {
         svg.apply_style(style);
