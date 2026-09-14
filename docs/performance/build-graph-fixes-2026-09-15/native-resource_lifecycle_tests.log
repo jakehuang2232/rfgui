@@ -1,0 +1,198 @@
+
+running 29 tests
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::native_single_viewport_completion_after_freeze_waits_until_next_frame ... post-freeze completion passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::native_single_viewport_legacy_resource_completion_and_generation_pixels ... resource completion Legacy passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::native_single_viewport_resource_completion_and_generation_invalidation ... resource completion RetainedAuto passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::pressure_tests::native_single_viewport_legacy_real_sampled_pressure_pixels ... real sampled pressure Legacy passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::pressure_tests::native_single_viewport_real_sampled_pressure_preserves_raster_and_recovers_source ... real sampled pressure RetainedAuto passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::pressure_tests::native_single_viewport_sampled_idle_eviction_and_active_legacy_protection ... sampled idle policy passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::slot_content_tests::native_single_viewport_legacy_nonempty_resource_slots ... Nonempty slots Legacy passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::slot_content_tests::native_single_viewport_nonempty_resource_slots ... Nonempty slots RetainedAuto passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::source_transition_tests::native_single_viewport_resource_sources_stay_retained_through_preparation ... source transition svg=false RetainedAuto initial DPR=1 frame=0 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=1 frame=1 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=2 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=1 frame=3 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=4 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=1 frame=5 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=6 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=1 frame=7 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=1 frame=8 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=1 frame=9 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=10 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=11 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=1 frame=12 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=13 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=14 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=15 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=16 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=17 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=1 frame=18 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=0 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=2 frame=1 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=2 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=2 frame=3 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=4 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=2 frame=5 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=6 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=2 frame=7 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=2 frame=8 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=2 frame=9 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=10 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=11 selected_artifact=true actions=[Reraster]
+source transition svg=false RetainedAuto initial DPR=2 frame=12 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=13 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=14 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=15 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=16 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=17 selected_artifact=true actions=[Reuse]
+source transition svg=false RetainedAuto initial DPR=2 frame=18 selected_artifact=true actions=[Reuse]
+source transition svg=false Legacy initial DPR=1 frame=0 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=1 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=2 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=3 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=4 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=5 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=6 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=7 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=8 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=9 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=10 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=11 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=12 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=13 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=14 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=15 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=16 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=17 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=1 frame=18 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=0 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=1 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=2 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=3 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=4 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=5 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=6 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=7 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=8 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=9 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=10 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=11 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=12 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=13 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=14 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=15 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=16 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=17 selected_artifact=false actions=[]
+source transition svg=false Legacy initial DPR=2 frame=18 selected_artifact=false actions=[]
+source transition svg=true RetainedAuto initial DPR=1 frame=0 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=1 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=2 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=3 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=1 frame=4 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=5 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=1 frame=6 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=7 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=8 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=1 frame=9 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=10 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=1 frame=11 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=12 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=1 frame=13 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=14 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=15 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=1 frame=16 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=1 frame=17 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=1 frame=18 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=2 frame=0 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=1 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=2 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=3 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=2 frame=4 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=5 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=2 frame=6 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=7 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=8 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=2 frame=9 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=10 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=2 frame=11 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=12 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=2 frame=13 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=14 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=15 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=2 frame=16 selected_artifact=true actions=[Reuse]
+source transition svg=true RetainedAuto initial DPR=2 frame=17 selected_artifact=true actions=[Reraster]
+source transition svg=true RetainedAuto initial DPR=2 frame=18 selected_artifact=true actions=[Reuse]
+source transition svg=true Legacy initial DPR=1 frame=0 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=1 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=2 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=3 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=4 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=5 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=6 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=7 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=8 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=9 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=10 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=11 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=12 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=13 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=14 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=15 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=16 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=17 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=1 frame=18 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=0 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=1 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=2 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=3 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=4 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=5 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=6 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=7 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=8 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=9 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=10 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=11 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=12 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=13 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=14 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=15 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=16 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=17 selected_artifact=false actions=[]
+source transition svg=true Legacy initial DPR=2 frame=18 selected_artifact=false actions=[]
+source transition acceptance: 152 frames on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::svg_resource_tests::native_single_viewport_svg_raster_generation_and_freeze ... SVG resource freeze passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ancestor_slot_tests::native_single_viewport_ancestor_state_nonempty_slots_image_artifact_dpr1 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ancestor_slot_tests::native_single_viewport_ancestor_state_nonempty_slots_image_artifact_dpr2 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ancestor_slot_tests::native_single_viewport_ancestor_state_nonempty_slots_image_legacy_dpr1 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ancestor_slot_tests::native_single_viewport_ancestor_state_nonempty_slots_image_legacy_dpr2 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ancestor_slot_tests::native_single_viewport_ancestor_state_nonempty_slots_svg_artifact_dpr1 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ancestor_slot_tests::native_single_viewport_ancestor_state_nonempty_slots_svg_artifact_dpr2 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ancestor_slot_tests::native_single_viewport_ancestor_state_nonempty_slots_svg_legacy_dpr1 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ancestor_slot_tests::native_single_viewport_ancestor_state_nonempty_slots_svg_legacy_dpr2 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ancestor_slot_tests::native_single_viewport_group_opacity_overlap_and_sibling_scope ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::native_single_viewport_legacy_resource_wrapper_effect_pixels ... resource wrapper effect Legacy passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::native_single_viewport_resource_wrapper_effect_and_reuse ... resource wrapper effect RetainedAuto passed on Apple M5 (Metal, IntegratedGpu, driver=)
+ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ready_owner_scope_tests::native_ready_owner_scope_image_artifact_dpr1 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ready_owner_scope_tests::native_ready_owner_scope_image_artifact_dpr2 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ready_owner_scope_tests::native_ready_owner_scope_image_legacy_dpr1 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ready_owner_scope_tests::native_ready_owner_scope_image_legacy_dpr2 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ready_owner_scope_tests::native_ready_owner_scope_svg_artifact_dpr1 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ready_owner_scope_tests::native_ready_owner_scope_svg_artifact_dpr2 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ready_owner_scope_tests::native_ready_owner_scope_svg_legacy_dpr1 ... ok
+test view::paint::tests::gpu_equivalence_tests::native_artifact_surface_materialization_tests::style_pipeline_tests::single_viewport_tests::resource_lifecycle_tests::wrapper_effect_tests::ready_owner_scope_tests::native_ready_owner_scope_svg_legacy_dpr2 ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 1836 filtered out; finished in 2.42s
+

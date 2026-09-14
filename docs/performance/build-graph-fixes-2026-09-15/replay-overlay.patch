@@ -1,0 +1,416 @@
+--- a/examples/bin/01_window/main/performance_tests.rs
++++ b/examples/bin/01_window/main/performance_tests.rs
+@@ -244,3 +244,6 @@
+         Err(over_budget.join("; "))
+     }
+ }
++
++#[path = "performance_tests/build_graph_diagnosis.rs"]
++mod build_graph_diagnosis;
+--- a/examples/bin/01_window/scene.rs
++++ b/examples/bin/01_window/scene.rs
+@@ -13,7 +13,7 @@
+ 
+ #[component]
+ pub fn MainScene() -> RsxNode {
+-    let animation_on = use_state(|| true);
++    let animation_on = use_state(|| false);
+     let animations_enabled = animation_on.get();
+     let window_z_order = use_state(Vec::<usize>::new);
+     let window_positions = use_state(Vec::<(f32, f32)>::new);
+--- a/examples/bin/01_window/scene_windows/inspector_panel.rs
++++ b/examples/bin/01_window/scene_windows/inspector_panel.rs
+@@ -9,7 +9,7 @@
+ pub fn build(theme: &Theme, animation_on: Binding<bool>) -> RsxNode {
+     let dark_mode = use_state(|| true);
+     let debug_geometry_overlay = use_state(|| false);
+-    let debug_render_time = use_state(|| false);
++    let debug_render_time = use_state(|| true);
+     let detail_layout = use_state(|| false);
+     let detail_compile = use_state(|| false);
+     let detail_execute = use_state(|| false);
+--- a/src/view/paint/compiler.rs
++++ b/src/view/paint/compiler.rs
+@@ -1247,6 +1247,7 @@
+ 
+ impl ArtifactSurfaceHostPlacementProjection {
+     fn try_new(artifact: &PaintArtifact) -> Result<Self, SpatialProjectionError> {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_host_placement");
+         let graph = SpatialProjectionGraph::try_new(
+             &artifact.transform_nodes,
+             &artifact.layout_position_nodes,
+--- a/src/view/paint/compiler/artifact_surface_executor.rs
++++ b/src/view/paint/compiler/artifact_surface_executor.rs
+@@ -244,6 +244,7 @@
+ pub(super) fn seal_prepared_artifact_surface_execution(
+     frame: PreparedArtifactSurfaceFrame,
+ ) -> PreparedArtifactSurfaceExecution {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_execution_seal");
+     let root_programs = frame
+         .raster_plan()
+         .roots()
+--- a/src/view/paint/compiler/planning_cache.rs
++++ b/src/view/paint/compiler/planning_cache.rs
+@@ -126,6 +126,7 @@
+         &mut self,
+         artifact: &PaintArtifact,
+     ) -> Option<ValidatedArtifactSurfaceDagProgram> {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_cache_geometry");
+         if self.frame_geometry_change {
+             crate::view::paint::work_profile::count("geometry_change_work", 1);
+             return None;
+@@ -181,6 +182,7 @@
+         &mut self,
+         artifact: &PaintArtifact,
+     ) -> Option<std::sync::Arc<ArtifactSurfaceHostPlacementProjection>> {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_cache_host_placement");
+         let previous = self.geometry.as_ref()?;
+         let old = &previous.artifact;
+         // Host placement consumes owner edges and the spatial graph only.
+@@ -204,6 +206,7 @@
+         artifact: &PaintArtifact,
+     ) -> Result<Option<super::super::surface_dag::ArtifactSurfaceInputGraphs>, TransitionError>
+     {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_cache_graphs");
+         let Some(previous) = self.geometry.as_ref() else {
+             return Ok(None);
+         };
+@@ -211,6 +214,18 @@
+             return Ok(None);
+         };
+         let old = &previous.artifact;
++        if std::env::var_os("DIAG_MUTATION_TRACE").is_some() {
++            let _scope = crate::view::paint::work_profile::scope("diag_graph_diagnostics");
++        crate::view::paint::work_profile::count("diag_graph_owner_nodes_differ", usize::from(old.owner_nodes != artifact.owner_nodes));
++        crate::view::paint::work_profile::count("diag_graph_owner_states_differ", usize::from(old.owner_property_states != artifact.owner_property_states));
++        crate::view::paint::work_profile::count("diag_graph_chunk_states_differ", usize::from(!old.chunks.equivalent_with(&artifact.chunks, |a,b|a.id==b.id && a.owner==b.owner && a.properties==b.properties)));
++        crate::view::paint::work_profile::count("diag_graph_owner_edges_changed", old.owner_nodes.iter().filter(|a| !artifact.owner_nodes.contains(a)).count());
++        if old.owner_nodes != artifact.owner_nodes {
++            let mismatch=old.chunks.iter().zip(artifact.chunks.iter()).position(|(a,b)|a.id!=b.id || a.owner!=b.owner || a.properties!=b.properties);
++            let owners_new=artifact.owner_nodes.iter().filter(|a|!old.owner_nodes.contains(a)).count();
++            eprintln!("diag-graph-mismatch owners_old={} owners_new={} new_edges={} chunk_lengths={}/{} first_chunk_diff={:?} old_chunk={:?} new_chunk={:?}",old.owner_nodes.len(),artifact.owner_nodes.len(),owners_new,old.chunks.len(),artifact.chunks.len(),mismatch,mismatch.and_then(|i|old.chunks.get(i)).map(|c|(c.id,c.properties)),mismatch.and_then(|i|artifact.chunks.get(i)).map(|c|(c.id,c.properties)));
++        }
++        }
+         // Parent graphs retain identities and edges, not numeric geometry.
+         // Current values still pass the same validators as graph construction.
+         // Reference-scroll edges and chunk order also remain part of the key:
+@@ -287,6 +302,7 @@
+         artifact: &PaintArtifact,
+     ) -> Result<Option<(SurfaceDag, std::sync::Arc<ArtifactSurfaceCoverageForest>)>, SurfaceDagError>
+     {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_cache_surface_structure");
+         let Some(previous) = &self.geometry else {
+             return Ok(None);
+         };
+@@ -310,6 +326,7 @@
+     }
+ 
+     pub(super) fn remember_geometry(&mut self, program: &ValidatedArtifactSurfaceDagProgram) {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_cache_remember_geometry");
+         if self
+             .geometry
+             .as_ref()
+--- a/src/view/paint/recording_cache/subtree_cache.rs
++++ b/src/view/paint/recording_cache/subtree_cache.rs
+@@ -226,6 +226,8 @@
+     pub(crate) fn bind(&mut self, arena: &NodeArena, roots: &[NodeKey]) {
+         let identity = arena.mutation_identity();
+         let index_revision = arena.stable_id_index_revision();
++        super::super::work_profile::count("diag_subtree_bind_index_changed", usize::from(self.index_revision != index_revision));
++        super::super::work_profile::count("diag_subtree_bind_roots_changed", usize::from(self.roots != roots));
+         if self
+             .arena
+             .as_ref()
+--- a/src/view/paint/surface_dag.rs
++++ b/src/view/paint/surface_dag.rs
+@@ -852,6 +852,7 @@
+         coverage: &ArtifactSurfaceCoverageForest,
+         policy: LayerizationPolicy,
+     ) -> Result<SurfaceDagExecutionOrder, SurfaceDagError> {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_dag_derive_materialized_execution_order");
+         match policy {
+             LayerizationPolicy::ResolveMaterializedTargets => {}
+         }
+@@ -1667,6 +1668,7 @@
+         policy: LayerizationPolicy,
+         graphs: Option<ArtifactSurfaceInputGraphs>,
+     ) -> Result<Self, SurfaceDagError> {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_dag_with_graphs");
+         let ArtifactSurfaceInputGraphs { snapshots, owners } = match graphs {
+             Some(graphs) => graphs,
+             None => ArtifactSurfaceInputGraphs {
+@@ -1703,12 +1705,14 @@
+         }
+     }
+     pub(super) fn requests(&self) -> Result<Vec<ArtifactTransitionRequest>, SurfaceDagError> {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_dag_requests");
+         derive_surface_requests_from_inputs(self)
+     }
+     pub(super) fn classify(
+         &self,
+         requests: &[ArtifactTransitionRequest],
+     ) -> Result<Vec<ClassifiedTransitionEvent>, TransitionError> {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_dag_classify");
+         super::property_transition::classify_prevalidated_artifact_transitions(
+             requests,
+             &self.snapshots,
+@@ -1720,12 +1724,14 @@
+         &self,
+         events: &[ClassifiedTransitionEvent],
+     ) -> Result<SurfaceDag, SurfaceDagError> {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_dag_reconstruct");
+         reconstruct_surface_from_inputs(self, events)
+     }
+     pub(super) fn coverage(
+         &self,
+         dag: &SurfaceDag,
+     ) -> Result<ArtifactSurfaceCoverageForest, SurfaceDagError> {
++    let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_dag_coverage");
+         derive_surface_coverage_from_inputs(self, dag)
+     }
+ }
+--- a/src/view/viewport/render.rs
++++ b/src/view/viewport/render.rs
+@@ -2210,6 +2210,7 @@
+ 
+         // --- Build frame graph ---
+         crate::view::paint::work_profile::begin();
++        crate::view::paint::work_profile::count("diag_generation_replays", self.compositor.paint_generations.native_observation_replays);
+         self.clear_debug_overlay_geometry();
+         let mut graph = FrameGraph::new();
+         let mut ctx = crate::view::base_component::UiBuildContext::new(
+@@ -2398,6 +2399,7 @@
+             }
+         }
+         if build_whole_frame_legacy {
++            let _diagnostic_scope = crate::view::paint::work_profile::scope("diag_legacy_emit");
+             self.compositor.recording_cache.finish(false);
+             self.compositor.planning_cache.finish(false);
+             for &root_key in &root_keys_for_build {
+@@ -2922,6 +2924,7 @@
+             transition_changed_after_layout =
+                 self.render_render_tree(dt, now_seconds, semantic_now);
+         }
++        let diagnostic_post_clock = self.scene.node_arena.mutation_clock();
+         let next_hover_target = self.pointer_position_viewport().and_then(|(x, y)| {
+             Self::hit_test_pointer_target(
+                 &self.scene.node_arena,
+@@ -2950,6 +2953,9 @@
+                 self.scene.node_arena = arena;
+                 result
+             };
++        if std::env::var_os("DIAG_MUTATION_TRACE").is_some() {
++            eprintln!("diag-post-hover frame={} needs_rebuild={needs_rebuild} mutations={} hover_changed={hover_changed}", self.frame.frame_number, self.scene.node_arena.mutation_clock()-diagnostic_post_clock);
++        }
+         if resource_dirty
+             || hover_changed
+             || animation_changed
+--- a/src/view/viewport/render/downstream_test_support.rs
++++ b/src/view/viewport/render/downstream_test_support.rs
+@@ -6,6 +6,8 @@
+     /// CPU milliseconds: total, begin, layout, prepare, property sync, build,
+     /// compile, execute, finish, end. Offscreen acquisition excludes host present.
+     pub cpu_ms: [f64; 10],
++    pub rsx_ms: f64,
++    pub fallback: String,
+     pub command_replays: usize,
+     pub localized_replays: usize,
+     pub geometry_replays: usize,
+@@ -21,6 +23,9 @@
+ }
+ 
+ impl Viewport {
++    pub fn diagnosis_probe(&self) -> u64 { self.scene.node_arena.mutation_clock() }
++    pub fn diagnosis_index(&self) -> Option<u64> {self.scene.node_arena.stable_id_index_revision()}
++
+     /// Exercise the native entry while checking the authority actually selected.
+     /// Surface acquisition retries remain normal host behavior and yield no sample.
+     #[doc(hidden)]
+@@ -103,12 +108,11 @@
+             ));
+         }
+         let snapshot = take_paint_authority_test_snapshot().ok_or("missing authority")?;
+-        if snapshot.legacy_fallback_stage.is_some() || snapshot.terminal_failure_stage.is_some() {
++        if snapshot.terminal_failure_stage.is_some() {
+             return Err(format!("unexpected fallback/failure: {snapshot:?}"));
+         }
+         let artifact_selected = snapshot.selected == PaintAuthorityKind::Artifact;
+-        if artifact_selected
+-            != (self.paint_renderer_mode() == ViewportPaintRendererMode::RetainedAuto)
++        if artifact_selected && self.paint_renderer_mode() != ViewportPaintRendererMode::RetainedAuto
+         {
+             return Err(format!("unexpected authority: {snapshot:?}"));
+         }
+@@ -145,6 +149,8 @@
+         persistent_targets.sort();
+         Ok(RendererTestFrame {
+             cpu_ms: self.frame.last_cpu_phases,
++            rsx_ms: self.frame.rsx_build_ms,
++            fallback: format!("{:?}", snapshot.legacy_fallback_stage),
+             target_allocations: self
+                 .frame
+                 .offscreen_render_target_pool
+--- a/examples/bin/01_window/main/performance_tests/build_graph_diagnosis.rs
++++ b/examples/bin/01_window/main/performance_tests/build_graph_diagnosis.rs
+@@ -0,0 +1,82 @@
++#[path = "build_graph_diagnosis/gpu.rs"]
++mod gpu;
++use super::*;
++use rfgui::view::viewport::PointerButton;
++#[test]
++#[ignore = "isolated diagnostic replay"]
++fn native_build_graph_diagnosis() -> Result<(), String> {
++    let _cleanup = TextCacheCleanup;
++    let mode = std::env::var("DIAG_MODE").unwrap_or_else(|_| "artifact".into());
++    let dpr: u32 = std::env::var("DIAG_DPR").unwrap_or_else(|_| "2".into()).parse().unwrap();
++    let (device, queue) = pollster::block_on(async {
++        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { flags: wgpu::InstanceFlags::empty(), ..wgpu::InstanceDescriptor::new_without_display_handle() });
++        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.map_err(|e|e.to_string())?;
++        eprintln!("diag-adapter {:?}", adapter.get_info());
++        adapter.request_device(&wgpu::DeviceDescriptor::default()).await.map_err(|e|e.to_string())
++    })?;
++    let pixel_gpu = gpu::Gpu { device: device.clone(), queue: queue.clone() };
++    let mut viewport = Viewport::new();
++    viewport.set_paint_renderer_mode(if mode == "legacy" { ViewportPaintRendererMode::Legacy } else { ViewportPaintRendererMode::RetainedAuto });
++    let mut root = rfgui::ui::rsx_scope(|| rsx! { <MainScene /> });
++    let now = Instant::now();
++    let mut previous_keys=std::collections::HashSet::new();
++    for frame in 0..150u64 {
++        let phase = if frame < 40 { "warm" } else if frame < 60 { "idle" } else if frame < 80 { "hover" } else if frame < 90 { "press" } else { "drag" };
++        let clock_before = viewport.diagnosis_probe();
++        let event_start = Instant::now();
++        if (60..80).contains(&frame) {
++            viewport.set_pointer_position_viewport(10.0, 10.0);
++            viewport.dispatch_pointer_move_event();
++        }
++        if frame == 80 {
++            viewport.set_pointer_position_viewport(120.0, 62.0);
++            viewport.dispatch_pointer_move_event();
++            viewport.set_pointer_button_pressed(PointerButton::Left, true);
++            assert!(viewport.dispatch_pointer_down_event(PointerButton::Left));
++        }
++        let step = if frame >= 90 { let n=(frame-90)%40; if n < 20 {n+1} else {39-n} } else {0};
++        if frame >= 90 {
++            viewport.set_pointer_position_viewport(120.0 + step as f32 * 2.0, 62.0 + step as f32);
++            viewport.dispatch_pointer_move_event();
++        }
++        let event_ms = event_start.elapsed().as_secs_f64()*1000.0;
++        let event_mutations = viewport.diagnosis_probe()-clock_before;
++        let build_start = Instant::now();
++        let rsx_ms = if rfgui::ui::peek_state_dirty().needs_rebuild() { root = rfgui::ui::rsx_scope(|| rsx! { <MainScene /> }); build_start.elapsed().as_secs_f64()*1000.0 } else { 0.0 };
++        let result = viewport.render_rsx_offscreen_for_test(&root, device.clone(), queue.clone(), [1280*dpr,800*dpr], dpr as f32, now + std::time::Duration::from_millis(frame*16))?;
++        let keys=viewport.node_arena().iter().map(|(k,_)|k).collect::<std::collections::HashSet<_>>();
++        let new_keys=keys.difference(&previous_keys).count();
++        if std::env::var_os("DIAG_MUTATION_TRACE").is_some() && (90..93).contains(&frame) {
++            for key in keys.difference(&previous_keys) {
++                let node=viewport.node_arena().get(*key).unwrap();
++                let mut ancestry=Vec::new();let mut parent=node.parent();
++                while let Some(k)=parent {let n=viewport.node_arena().get(k).unwrap();ancestry.push((n.element.element_type_name(),n.element.stable_id()));parent=n.parent();}
++                eprintln!("diag-new-node frame={frame} key={key:?} type={} stable={} bounds={:?} ancestry={ancestry:?}",node.element.element_type_name(),node.element.stable_id(),node.element.box_model_snapshot());
++            }
++        }
++        previous_keys=keys;
++        if std::env::var_os("DIAG_MUTATION_TRACE").is_some() && frame==91 {
++            for (key,node) in viewport.node_arena().iter().filter(|(k,_)| ["NodeKey(1892v1)","NodeKey(1896v1)","NodeKey(752v1)"].contains(&format!("{k:?}").as_str())) {
++                let mut ancestry=Vec::new();let mut parent=node.parent();
++                while let Some(k)=parent {let n=viewport.node_arena().get(k).unwrap();ancestry.push((k,n.element.element_type_name(),n.element.stable_id()));parent=n.parent();}
++                eprintln!("diag-order-node key={key:?} type={} stable={} bounds={:?} ancestry={ancestry:?}",node.element.element_type_name(),node.element.stable_id(),node.element.box_model_snapshot());
++            }
++        }
++        let index=viewport.diagnosis_index().unwrap_or(u64::MAX);
++        let mut boxes=viewport.node_arena().iter().map(|(_,node)| {let b=node.element.box_model_snapshot();(node.element.stable_id(),[b.x.to_bits(),b.y.to_bits(),b.width.to_bits(),b.height.to_bits()])}).collect::<Vec<_>>();
++        boxes.sort_unstable();
++        let mut hash=0xcbf29ce484222325u64;
++        for (_,b) in &boxes {for v in b {hash=(hash ^ *v as u64).wrapping_mul(0x100000001b3);}}
++        if frame>=90 { assert!(boxes.iter().any(|(_,b)| f32::from_bits(b[0]) == 48.0+step as f32*2.0 && f32::from_bits(b[1]) == 48.0+step as f32 && f32::from_bits(b[2]) == 360.0), "Inspector must move frame={frame}"); }
++        println!("diag-frame mode={mode} dpr={dpr} frame={frame} phase={phase} step={step} nodes={} geometry={hash:016x} artifact={} fallback={} index={index} new_keys={new_keys} event_mutations={event_mutations} event_ms={event_ms:.6} rsx_ms={:.6} reuse={} raster={} record_hits={} cpu_ms={:?}",boxes.len(),result.artifact_selected,result.fallback,rsx_ms,result.reuses,result.rerasterizations,result.command_replays,result.cpu_ms);
++        if [59,79,89,109,129,149].contains(&frame) {
++            if let Ok(dir) = std::env::var("DIAG_PIXEL_DIR") {
++                let pixels = pixel_gpu.read(&result.texture, [1280*dpr,800*dpr])?;
++                std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
++                std::fs::write(format!("{dir}/{mode}-{frame}.rgba"), pixels).map_err(|e|e.to_string())?;
++            }
++        }
++        device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e|e.to_string())?;
++    }
++    Ok(())
++}
+--- a/examples/bin/01_window/main/performance_tests/build_graph_diagnosis/gpu.rs
++++ b/examples/bin/01_window/main/performance_tests/build_graph_diagnosis/gpu.rs
+@@ -0,0 +1,76 @@
++pub struct Gpu {
++    pub device: wgpu::Device,
++    pub queue: wgpu::Queue,
++}
++impl Gpu {
++    pub fn new() -> Result<Self, String> {
++        pollster::block_on(async {
++            let i = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
++            let a = i
++                .request_adapter(&wgpu::RequestAdapterOptions::default())
++                .await
++                .map_err(|e| e.to_string())?;
++            eprintln!("native controls: {:?}", a.get_info());
++            let (device, queue) = a
++                .request_device(&wgpu::DeviceDescriptor::default())
++                .await
++                .map_err(|e| e.to_string())?;
++            Ok(Self { device, queue })
++        })
++    }
++    pub fn read(&self, t: &wgpu::Texture, [w, h]: [u32; 2]) -> Result<Vec<u8>, String> {
++        let stride = (w * 4).div_ceil(256) * 256;
++        let b = self.device.create_buffer(&wgpu::BufferDescriptor {
++            label: None,
++            size: u64::from(stride * h),
++            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
++            mapped_at_creation: false,
++        });
++        let mut e = self.device.create_command_encoder(&Default::default());
++        e.copy_texture_to_buffer(
++            wgpu::TexelCopyTextureInfo {
++                texture: t,
++                mip_level: 0,
++                origin: wgpu::Origin3d::ZERO,
++                aspect: wgpu::TextureAspect::All,
++            },
++            wgpu::TexelCopyBufferInfo {
++                buffer: &b,
++                layout: wgpu::TexelCopyBufferLayout {
++                    offset: 0,
++                    bytes_per_row: Some(stride),
++                    rows_per_image: Some(h),
++                },
++            },
++            wgpu::Extent3d {
++                width: w,
++                height: h,
++                depth_or_array_layers: 1,
++            },
++        );
++        self.queue.submit([e.finish()]);
++        let (tx, rx) = std::sync::mpsc::channel();
++        b.slice(..).map_async(wgpu::MapMode::Read, move |r| {
++            let _ = tx.send(r);
++        });
++        self.device
++            .poll(wgpu::PollType::wait_indefinitely())
++            .map_err(|e| e.to_string())?;
++        rx.recv()
++            .map_err(|e| e.to_string())?
++            .map_err(|e| e.to_string())?;
++        let data = b.slice(..).get_mapped_range().map_err(|e| e.to_string())?;
++        let mut out = Vec::new();
++        for row in data.chunks_exact(stride as usize) {
++            out.extend_from_slice(&row[..w as usize * 4]);
++        }
++        drop(data);
++        b.unmap();
++        Ok(out)
++    }
++}
++impl Drop for Gpu {
++    fn drop(&mut self) {
++        rfgui::view::render_pass::text_pass::clear_text_resources_cache();
++    }
++}

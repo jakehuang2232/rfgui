@@ -1,0 +1,722 @@
+{
+  "assets-artifact": {
+    "frames": 450,
+    "artifact_frames": 450,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 1.058833,
+          "p95": 1.3645
+        },
+        "total": {
+          "n": 60,
+          "median": 4.073625,
+          "p95": 4.537667
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 5.362999500000001,
+          "p95": 9.0015
+        },
+        "total": {
+          "n": 60,
+          "median": 9.6791875,
+          "p95": 13.63675
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1887.0,
+          "p95": 1887
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 8.759541500000001,
+          "p95": 9.390584
+        },
+        "total": {
+          "n": 180,
+          "median": 14.9506875,
+          "p95": 15.885707999999997
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 12.0,
+          "p95": 12
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 1890.0,
+          "p95": 1890
+        }
+      }
+    }
+  },
+  "assets-legacy": {
+    "frames": 450,
+    "artifact_frames": 0,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 0.42445849999999996,
+          "p95": 0.585542
+        },
+        "total": {
+          "n": 60,
+          "median": 6.4439585,
+          "p95": 7.630541999999999
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 0.424396,
+          "p95": 0.610709
+        },
+        "total": {
+          "n": 60,
+          "median": 6.9732080000000005,
+          "p95": 7.38
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1887.0,
+          "p95": 1887
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 0.41710400000000003,
+          "p95": 0.5675
+        },
+        "total": {
+          "n": 180,
+          "median": 9.328104,
+          "p95": 10.80775
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 12.0,
+          "p95": 12
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 1890.0,
+          "p95": 1890
+        }
+      }
+    }
+  },
+  "baseline-artifact": {
+    "frames": 450,
+    "artifact_frames": 450,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 0.8787499999999999,
+          "p95": 0.900292
+        },
+        "total": {
+          "n": 60,
+          "median": 3.317729,
+          "p95": 3.3674999999999997
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 4.452583000000001,
+          "p95": 7.612959
+        },
+        "total": {
+          "n": 60,
+          "median": 8.0841665,
+          "p95": 11.370084
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1887.0,
+          "p95": 1887
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 7.6729164999999995,
+          "p95": 7.904375
+        },
+        "total": {
+          "n": 180,
+          "median": 13.0060415,
+          "p95": 13.426041999999999
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 12.0,
+          "p95": 12
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 1890.0,
+          "p95": 1890
+        }
+      }
+    }
+  },
+  "baseline-legacy": {
+    "frames": 450,
+    "artifact_frames": 0,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 0.35020799999999996,
+          "p95": 0.3905
+        },
+        "total": {
+          "n": 60,
+          "median": 5.389312500000001,
+          "p95": 6.014875
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 0.3505835,
+          "p95": 0.359
+        },
+        "total": {
+          "n": 60,
+          "median": 5.8682085,
+          "p95": 5.92525
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1887.0,
+          "p95": 1887
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 0.3536045,
+          "p95": 0.364709
+        },
+        "total": {
+          "n": 180,
+          "median": 7.9522505,
+          "p95": 8.120000000000001
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 12.0,
+          "p95": 12
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 1890.0,
+          "p95": 1890
+        }
+      }
+    }
+  },
+  "slots-artifact": {
+    "frames": 450,
+    "artifact_frames": 450,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 0.8716665,
+          "p95": 0.8985
+        },
+        "total": {
+          "n": 60,
+          "median": 3.304125,
+          "p95": 3.414667
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 4.4004165,
+          "p95": 7.76175
+        },
+        "total": {
+          "n": 60,
+          "median": 8.030375,
+          "p95": 11.569417
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1887.0,
+          "p95": 1887
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 7.2936875,
+          "p95": 8.171958
+        },
+        "total": {
+          "n": 180,
+          "median": 12.5428955,
+          "p95": 13.509084
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 1890.0,
+          "p95": 1890
+        }
+      }
+    }
+  },
+  "slots-legacy": {
+    "frames": 450,
+    "artifact_frames": 0,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 0.34672899999999995,
+          "p95": 0.36079100000000003
+        },
+        "total": {
+          "n": 60,
+          "median": 5.398,
+          "p95": 5.507542
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 0.3524165,
+          "p95": 0.368209
+        },
+        "total": {
+          "n": 60,
+          "median": 5.8887295,
+          "p95": 6.0165
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1887.0,
+          "p95": 1887
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 0.356063,
+          "p95": 0.367166
+        },
+        "total": {
+          "n": 180,
+          "median": 7.9404795,
+          "p95": 8.063875
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 1890.0,
+          "p95": 1890
+        }
+      }
+    }
+  },
+  "hover-artifact": {
+    "frames": 450,
+    "artifact_frames": 450,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 1.089542,
+          "p95": 1.368291
+        },
+        "total": {
+          "n": 60,
+          "median": 4.243708,
+          "p95": 4.805541
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 1.0917085,
+          "p95": 1.3234169999999998
+        },
+        "total": {
+          "n": 60,
+          "median": 4.255208,
+          "p95": 4.611167
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1.0,
+          "p95": 1
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 9.3306665,
+          "p95": 10.29225
+        },
+        "total": {
+          "n": 180,
+          "median": 15.094332999999999,
+          "p95": 16.241083
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 4.0,
+          "p95": 4
+        }
+      }
+    }
+  },
+  "hover-legacy": {
+    "frames": 450,
+    "artifact_frames": 0,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 0.409521,
+          "p95": 0.4965
+        },
+        "total": {
+          "n": 60,
+          "median": 6.4392914999999995,
+          "p95": 6.8746670000000005
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 0.416875,
+          "p95": 0.553792
+        },
+        "total": {
+          "n": 60,
+          "median": 6.339375,
+          "p95": 6.892875
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1.0,
+          "p95": 1
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 0.39879200000000004,
+          "p95": 0.52775
+        },
+        "total": {
+          "n": 180,
+          "median": 9.0924585,
+          "p95": 9.780000000000001
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 4.0,
+          "p95": 4
+        }
+      }
+    }
+  },
+  "projection-artifact": {
+    "frames": 450,
+    "artifact_frames": 450,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 0.8518539999999999,
+          "p95": 0.864166
+        },
+        "total": {
+          "n": 60,
+          "median": 3.2827085,
+          "p95": 3.309625
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 0.8496250000000001,
+          "p95": 0.867
+        },
+        "total": {
+          "n": 60,
+          "median": 3.282479,
+          "p95": 3.31875
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1.0,
+          "p95": 1
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 2.9624375,
+          "p95": 4.909208
+        },
+        "total": {
+          "n": 180,
+          "median": 7.3954375,
+          "p95": 9.440083999999999
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 4.0,
+          "p95": 4
+        }
+      }
+    }
+  },
+  "projection-legacy": {
+    "frames": 450,
+    "artifact_frames": 0,
+    "phases": {
+      "idle": {
+        "build": {
+          "n": 60,
+          "median": 0.34591649999999996,
+          "p95": 0.351584
+        },
+        "total": {
+          "n": 60,
+          "median": 5.3692085,
+          "p95": 5.412542
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        }
+      },
+      "hover": {
+        "build": {
+          "n": 60,
+          "median": 0.3466045,
+          "p95": 0.35354199999999997
+        },
+        "total": {
+          "n": 60,
+          "median": 5.377229,
+          "p95": 5.445667
+        },
+        "new_keys": {
+          "n": 60,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 60,
+          "median": 1.0,
+          "p95": 1
+        }
+      },
+      "drag": {
+        "build": {
+          "n": 180,
+          "median": 0.345896,
+          "p95": 0.35570799999999997
+        },
+        "total": {
+          "n": 180,
+          "median": 7.483333,
+          "p95": 7.638292
+        },
+        "new_keys": {
+          "n": 180,
+          "median": 0.0,
+          "p95": 0
+        },
+        "event_mutations": {
+          "n": 180,
+          "median": 4.0,
+          "p95": 4
+        }
+      }
+    }
+  }
+}

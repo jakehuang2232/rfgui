@@ -1,0 +1,822 @@
+window-input event=1 time_ms=418.215834 kind=move logical=Some((563.46875, 557.70703))
+window-frame-input frame=0 start_ms=443.513584 gap_ms=None event=1 input_events=1
+window-perf frame=0 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=719.560042 cpu_ms=[719.001083, 0.538667, 128.239458, 0.254542, 1.5037500000000001, 22.446082999999998, 337.256125, 209.852958, 0.152667, 18.756833] completion_ms=[0.0012079999999999999, 15.526250000000001, 3.132542, 0.008833, 0.085375, 0.0] counts=(1, 1, 0) focused=Some(true) occluded=false
+window-demand frame=0 requested=true animating=false
+window-input event=2 time_ms=1164.774875 kind=move logical=Some((583.16016, 542.84375))
+window-frame-input frame=1 start_ms=1168.126459 gap_ms=Some(724.612875) event=2 input_events=1
+window-perf frame=1 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=54.557750 cpu_ms=[54.064625, 2.974167, 0.32041699999999995, 0.145208, 0.5721670000000001, 39.694666000000005, 4.253083999999999, 0.6337079999999999, 0.248875, 5.222333] completion_ms=[0.000625, 4.897458, 0.267583, 0.028834000000000002, 0.0275, 0.0] counts=(2, 2, 0) focused=Some(true) occluded=false
+window-demand frame=1 requested=true animating=false
+window-frame-input frame=2 start_ms=1228.138542 gap_ms=Some(60.012083000000004) event=2 input_events=0
+window-perf frame=2 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=17.262917 cpu_ms=[16.819084, 0.333125, 0.127375, 0.11429199999999999, 0.25887499999999997, 6.144625, 2.4802079999999997, 0.5224169999999999, 0.250917, 6.58725] completion_ms=[0.0011250000000000001, 4.947584, 1.562125, 0.021499, 0.035292, 0.019167] counts=(3, 3, 0) focused=Some(true) occluded=false
+window-demand frame=2 requested=false animating=false
+window-input event=3 time_ms=2133.390542 kind=move logical=Some((583.16016, 541.91797))
+window-input event=4 time_ms=2141.063792 kind=move logical=Some((582.70703, 538.29297))
+window-input event=5 time_ms=2148.899709 kind=move logical=Some((580.3008, 534.4453))
+window-input event=6 time_ms=2157.742084 kind=move logical=Some((577.89453, 530.59766))
+window-input event=7 time_ms=2164.834625 kind=move logical=Some((575.35156, 526.01953))
+window-frame-input frame=3 start_ms=2165.139000 gap_ms=Some(937.000458) event=7 input_events=5
+window-perf frame=3 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=11.735834 cpu_ms=[11.345457999999999, 0.395375, 0.146958, 0.158625, 0.22491699999999998, 2.777083, 1.577083, 0.47925, 0.234917, 5.35125] completion_ms=[0.000417, 4.265166, 1.008834, 0.025291, 0.0265, 0.023791] counts=(4, 4, 0) focused=Some(true) occluded=false
+window-demand frame=3 requested=true animating=false
+window-input event=8 time_ms=2177.135334 kind=move logical=Some((572.8086, 521.4414))
+window-frame-input frame=4 start_ms=2177.385709 gap_ms=Some(12.246709) event=8 input_events=1
+window-perf frame=4 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.047666 cpu_ms=[8.682625, 0.11883300000000001, 0.144708, 0.082209, 0.23258299999999998, 1.6782080000000001, 1.938167, 0.595708, 0.255917, 3.636292] completion_ms=[0.00075, 3.294333, 0.293834, 0.012416, 0.029084000000000002, 0.004542] counts=(5, 5, 0) focused=Some(true) occluded=false
+window-demand frame=4 requested=false animating=false
+window-input event=9 time_ms=2186.707917 kind=move logical=Some((569.58984, 516.0742))
+window-input event=10 time_ms=2193.599834 kind=move logical=Some((566.3711, 510.70703))
+window-input event=11 time_ms=2202.003334 kind=move logical=Some((563.5469, 504.4961))
+window-input event=12 time_ms=2210.264459 kind=move logical=Some((556.21875, 493.5039))
+window-input event=13 time_ms=2218.577959 kind=move logical=Some((548.8906, 481.78125))
+window-input event=14 time_ms=2226.952792 kind=move logical=Some((541.5625, 470.0586))
+window-input event=15 time_ms=2235.257084 kind=move logical=Some((532.09375, 456.64453))
+window-input event=16 time_ms=2243.583625 kind=move logical=Some((502.01172, 421.0664))
+window-frame-input frame=5 start_ms=2243.802667 gap_ms=Some(66.416958) event=16 input_events=8
+window-perf frame=5 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=5.701541 cpu_ms=[5.447375, 0.08541699999999999, 0.09095800000000001, 0.114208, 0.188209, 1.223125, 0.43937499999999996, 0.426458, 0.152625, 2.727] completion_ms=[0.0005, 2.089875, 0.5950420000000001, 0.004125, 0.022541, 0.01375] counts=(6, 6, 0) focused=Some(true) occluded=false
+window-demand frame=5 requested=true animating=false
+window-frame-input frame=6 start_ms=2249.582917 gap_ms=Some(5.78025) event=16 input_events=0
+window-perf frame=6 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=5.573416 cpu_ms=[5.230333, 0.07291600000000001, 0.08920900000000001, 0.062, 0.159083, 1.23725, 0.351958, 0.43229199999999995, 0.203333, 2.622292] completion_ms=[0.0005, 2.1799589999999998, 0.41812499999999997, 0.004791, 0.016167, 0.001542] counts=(7, 7, 0) focused=Some(true) occluded=false
+window-demand frame=6 requested=false animating=false
+window-input event=17 time_ms=2255.350792 kind=move logical=Some((487.16016, 407.08984))
+window-frame-input frame=7 start_ms=2255.544459 gap_ms=Some(5.961542000000001) event=17 input_events=1
+window-perf frame=7 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=35.504208 cpu_ms=[35.266125, 4.933666, 0.115625, 0.12420899999999999, 0.24320799999999998, 26.441958000000003, 0.391334, 0.390666, 0.153875, 2.471584] completion_ms=[0.000417, 2.086208, 0.35070799999999996, 0.0061259999999999995, 0.024708, 0.002084] counts=(8, 8, 0) focused=Some(true) occluded=false
+window-demand frame=7 requested=true animating=false
+window-input event=18 time_ms=2291.285125 kind=move logical=Some((409.4297, 357.39844))
+window-frame-input frame=8 start_ms=2291.579209 gap_ms=Some(36.034749999999995) event=18 input_events=1
+window-perf frame=8 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.259042 cpu_ms=[8.006124999999999, 0.051583, 0.133125, 0.16629200000000002, 0.212583, 3.9682500000000003, 0.367958, 0.35291700000000004, 0.15695800000000001, 2.5964590000000003] completion_ms=[0.0005, 2.245959, 0.323666, 0.0050420000000000005, 0.018875000000000003, 0.001458] counts=(9, 9, 0) focused=Some(true) occluded=false
+window-demand frame=8 requested=true animating=false
+window-frame-input frame=9 start_ms=2299.907125 gap_ms=Some(8.327916) event=18 input_events=0
+window-perf frame=9 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.524875 cpu_ms=[8.150457999999999, 2.1575, 0.099917, 0.112916, 0.18570899999999999, 1.9537080000000002, 0.392875, 0.38741699999999996, 0.22575, 2.6346659999999997] completion_ms=[0.000458, 2.1829169999999998, 0.386166, 0.015042, 0.044292000000000005, 0.0028339999999999997] counts=(10, 10, 0) focused=Some(true) occluded=false
+window-demand frame=9 requested=true animating=false
+window-input event=19 time_ms=2308.653625 kind=move logical=Some((349.52734, 336.6211))
+window-frame-input frame=10 start_ms=2309.000250 gap_ms=Some(9.093125) event=19 input_events=1
+window-perf frame=10 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=6.954792 cpu_ms=[6.754166, 1.528416, 0.09624999999999999, 0.116625, 0.180375, 1.302417, 0.395125, 0.454625, 0.1985, 2.481833] completion_ms=[0.00041600000000000003, 2.1397920000000004, 0.308917, 0.0052910000000000006, 0.024791999999999998, 0.00175] counts=(11, 11, 0) focused=Some(true) occluded=false
+window-demand frame=10 requested=true animating=false
+window-input event=20 time_ms=2316.178417 kind=move logical=Some((328.78516, 330.3086))
+window-frame-input frame=11 start_ms=2316.466542 gap_ms=Some(7.466292) event=20 input_events=1
+window-perf frame=11 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=12.253875 cpu_ms=[12.062625, 2.381042, 0.12012500000000001, 0.11474999999999999, 0.190167, 4.213208000000001, 1.375458, 0.419875, 0.205625, 3.042375] completion_ms=[0.001375, 2.49175, 0.503542, 0.0135, 0.017249999999999998, 0.014417] counts=(12, 12, 0) focused=Some(true) occluded=false
+window-demand frame=11 requested=true animating=false
+window-input event=21 time_ms=2329.904917 kind=move logical=Some((308.6914, 325.0664))
+window-input event=22 time_ms=2330.335334 kind=move logical=Some((291.53125, 320.16016))
+window-frame-input frame=12 start_ms=2330.420125 gap_ms=Some(13.953583) event=22 input_events=2
+window-perf frame=12 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=5.640875 cpu_ms=[5.444958, 0.051625000000000004, 0.10437500000000001, 0.123666, 0.158667, 1.531167, 0.365666, 0.429, 0.15062499999999998, 2.5301669999999996] completion_ms=[0.000375, 2.164625, 0.341083, 0.0045000000000000005, 0.017124999999999998, 0.0014160000000000002] counts=(13, 13, 0) focused=Some(true) occluded=false
+window-demand frame=12 requested=true animating=false
+window-frame-input frame=13 start_ms=2336.115875 gap_ms=Some(5.69575) event=22 input_events=0
+window-perf frame=13 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=5.527625 cpu_ms=[5.238917, 0.06129199999999999, 0.09775, 0.093625, 0.1555, 1.381625, 0.39599999999999996, 0.418583, 0.153375, 2.4811669999999997] completion_ms=[0.0005, 2.2441660000000003, 0.211959, 0.004624, 0.017167, 0.0015] counts=(14, 14, 0) focused=Some(true) occluded=false
+window-demand frame=13 requested=true animating=false
+window-frame-input frame=14 start_ms=2341.705834 gap_ms=Some(5.589959) event=22 input_events=0
+window-perf frame=14 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.799666 cpu_ms=[7.50825, 2.037417, 0.104, 0.11, 0.17754199999999998, 1.182458, 0.433542, 0.561708, 0.193583, 2.7079999999999997] completion_ms=[0.000375, 2.1599589999999997, 0.51925, 0.0051660000000000005, 0.0205, 0.001458] counts=(15, 15, 0) focused=Some(true) occluded=false
+window-demand frame=14 requested=true animating=false
+window-input event=23 time_ms=2349.709084 kind=move logical=Some((285.6289, 318.01172))
+window-frame-input frame=15 start_ms=2349.921209 gap_ms=Some(8.215375) event=23 input_events=1
+window-perf frame=15 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=12.619750 cpu_ms=[12.415875, 2.23775, 0.10091599999999999, 0.142459, 0.188333, 4.359875, 1.436417, 0.439791, 0.168292, 3.3420419999999997] completion_ms=[0.00033299999999999996, 2.705292, 0.58675, 0.014874, 0.021041999999999998, 0.013] counts=(16, 16, 0) focused=Some(true) occluded=false
+window-demand frame=15 requested=true animating=false
+window-frame-input frame=16 start_ms=2362.607542 gap_ms=Some(12.686333) event=23 input_events=0
+window-perf frame=16 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=6.332958 cpu_ms=[6.042083, 0.052833, 0.092667, 0.099416, 0.257, 1.5976670000000002, 0.39525, 0.516625, 0.142542, 2.888083] completion_ms=[0.00041600000000000003, 2.419417, 0.444917, 0.004292, 0.016583, 0.0013340000000000001] counts=(17, 17, 0) focused=Some(true) occluded=false
+window-demand frame=16 requested=true animating=false
+window-frame-input frame=17 start_ms=2369.006500 gap_ms=Some(6.3989579999999995) event=23 input_events=0
+window-perf frame=17 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=5.635750 cpu_ms=[5.360625, 0.079, 0.098084, 0.103625, 0.157666, 1.2809169999999999, 0.429333, 0.497584, 0.162208, 2.552208] completion_ms=[0.00033299999999999996, 2.314458, 0.215667, 0.004375, 0.014708, 0.001625] counts=(18, 18, 0) focused=Some(true) occluded=false
+window-demand frame=17 requested=true animating=false
+window-frame-input frame=18 start_ms=2374.696417 gap_ms=Some(5.689917) event=23 input_events=0
+window-perf frame=18 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.440792 cpu_ms=[9.171333, 3.5310829999999997, 0.10575, 0.11325, 0.20225, 1.188625, 0.40087500000000004, 0.574125, 0.161875, 2.8935] completion_ms=[0.000542, 2.339166, 0.528959, 0.0035830000000000002, 0.019167, 0.001333] counts=(19, 19, 0) focused=Some(true) occluded=false
+window-demand frame=18 requested=true animating=false
+window-frame-input frame=19 start_ms=2384.197459 gap_ms=Some(9.501042) event=23 input_events=0
+window-perf frame=19 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=6.886958 cpu_ms=[6.612791, 1.164375, 0.09674999999999999, 0.113666, 0.193917, 1.225958, 0.425334, 0.577625, 0.171458, 2.6437079999999997] completion_ms=[0.000542, 2.223041, 0.388417, 0.004125, 0.025042, 0.001666] counts=(20, 20, 0) focused=Some(true) occluded=false
+window-demand frame=19 requested=true animating=false
+window-frame-input frame=20 start_ms=2391.156959 gap_ms=Some(6.9595) event=23 input_events=0
+window-perf frame=20 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.712875 cpu_ms=[9.434833, 3.9738330000000004, 0.1115, 0.11975, 0.17666700000000002, 1.116667, 0.39975, 0.57875, 0.20616600000000002, 2.75175] completion_ms=[0.000292, 2.342791, 0.385042, 0.004166, 0.017417, 0.001167] counts=(21, 21, 0) focused=Some(true) occluded=false
+window-demand frame=20 requested=true animating=false
+window-frame-input frame=21 start_ms=2400.927917 gap_ms=Some(9.770958) event=23 input_events=0
+window-perf frame=21 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=6.576958 cpu_ms=[6.303167, 1.032042, 0.088916, 0.102667, 0.16816699999999998, 1.104333, 0.42562500000000003, 0.582708, 0.165125, 2.633584] completion_ms=[0.00033299999999999996, 2.1912920000000002, 0.411292, 0.004124999999999999, 0.02425, 0.0015409999999999998] counts=(22, 22, 0) focused=Some(true) occluded=false
+window-demand frame=21 requested=true animating=false
+window-frame-input frame=22 start_ms=2407.572000 gap_ms=Some(6.644083) event=23 input_events=0
+window-perf frame=22 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.724292 cpu_ms=[8.434959000000001, 2.755209, 0.10166599999999999, 0.10308400000000001, 0.179125, 1.077041, 0.409167, 0.571208, 0.150209, 3.08825] completion_ms=[0.000292, 2.6725, 0.38708299999999995, 0.004417, 0.021041999999999998, 0.001708] counts=(23, 23, 0) focused=Some(true) occluded=false
+window-demand frame=22 requested=true animating=false
+window-frame-input frame=23 start_ms=2416.350250 gap_ms=Some(8.77825) event=23 input_events=0
+window-perf frame=23 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.989667 cpu_ms=[7.7034579999999995, 2.336458, 0.10175000000000001, 0.099833, 0.220042, 1.149667, 0.372458, 0.572375, 0.162708, 2.688167] completion_ms=[0.00045900000000000004, 2.285916, 0.378084, 0.003833, 0.017625000000000002, 0.001375] counts=(24, 24, 0) focused=Some(true) occluded=false
+window-demand frame=23 requested=true animating=false
+window-frame-input frame=24 start_ms=2424.391625 gap_ms=Some(8.041375) event=23 input_events=0
+window-perf frame=24 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.660500 cpu_ms=[8.405125, 2.60925, 0.128833, 0.10450000000000001, 0.17891700000000002, 1.104375, 0.423667, 0.563625, 0.157833, 3.134125] completion_ms=[0.000583, 2.710708, 0.39870900000000004, 0.004666, 0.017249999999999998, 0.00125] counts=(25, 25, 0) focused=Some(true) occluded=false
+window-demand frame=24 requested=true animating=false
+window-frame-input frame=25 start_ms=2433.108209 gap_ms=Some(8.716584) event=23 input_events=0
+window-perf frame=25 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.994083 cpu_ms=[7.722292, 2.277959, 0.118125, 0.109666, 0.169834, 1.2019579999999999, 0.406083, 0.576584, 0.1545, 2.707583] completion_ms=[0.0005, 2.292125, 0.38537499999999997, 0.003541, 0.0235, 0.001625] counts=(26, 26, 0) focused=Some(true) occluded=false
+window-demand frame=25 requested=true animating=false
+window-frame-input frame=26 start_ms=2441.161292 gap_ms=Some(8.053083) event=23 input_events=0
+window-perf frame=26 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.551333 cpu_ms=[8.275333, 2.536791, 0.122209, 0.111708, 0.17316700000000002, 1.1199999999999999, 0.4045, 0.571583, 0.153, 3.082375] completion_ms=[0.00020800000000000001, 2.679375, 0.37879199999999996, 0.003208, 0.018917, 0.001] counts=(27, 27, 0) focused=Some(true) occluded=false
+window-demand frame=26 requested=true animating=false
+window-frame-input frame=27 start_ms=2449.770709 gap_ms=Some(8.609416999999999) event=23 input_events=0
+window-perf frame=27 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.844000 cpu_ms=[7.5715, 2.255708, 0.10124999999999999, 0.10625, 0.17008299999999998, 1.164125, 0.379584, 0.5632910000000001, 0.157084, 2.6741249999999996] completion_ms=[0.00025, 2.273459, 0.374541, 0.0041259999999999995, 0.019333, 0.001291] counts=(28, 28, 0) focused=Some(true) occluded=false
+window-demand frame=27 requested=true animating=false
+window-frame-input frame=28 start_ms=2457.681584 gap_ms=Some(7.910875) event=23 input_events=0
+window-perf frame=28 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.888875 cpu_ms=[8.613333, 2.6632499999999997, 0.16154200000000002, 0.11587499999999999, 0.201041, 1.1388749999999999, 0.404792, 0.5846669999999999, 0.151833, 3.191458] completion_ms=[0.000458, 2.751125, 0.42104199999999997, 0.004084, 0.012707999999999999, 0.001459] counts=(29, 29, 0) focused=Some(true) occluded=false
+window-demand frame=28 requested=true animating=false
+window-frame-input frame=29 start_ms=2466.626917 gap_ms=Some(8.945333) event=23 input_events=0
+window-perf frame=29 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.752500 cpu_ms=[7.473917, 2.053667, 0.091791, 0.09912499999999999, 0.175084, 1.2055, 0.38575000000000004, 0.5460830000000001, 0.16137500000000002, 2.755542] completion_ms=[0.000375, 2.361291, 0.37474999999999997, 0.003083, 0.014084, 0.00125] counts=(30, 30, 0) focused=Some(true) occluded=false
+window-demand frame=29 requested=true animating=false
+window-frame-input frame=30 start_ms=2474.430125 gap_ms=Some(7.803208) event=23 input_events=0
+window-perf frame=30 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.634042 cpu_ms=[8.355542, 2.576417, 0.096125, 0.109458, 0.17075, 1.174125, 0.41133400000000003, 0.564708, 0.16162500000000002, 3.091] completion_ms=[0.00041600000000000003, 2.632084, 0.429416, 0.005291, 0.021209, 0.001375] counts=(31, 31, 0) focused=Some(true) occluded=false
+window-demand frame=30 requested=true animating=false
+window-frame-input frame=31 start_ms=2483.126209 gap_ms=Some(8.696083999999999) event=23 input_events=0
+window-perf frame=31 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.977083 cpu_ms=[7.6700420000000005, 2.210458, 0.102542, 0.104917, 0.180375, 1.216541, 0.4215, 0.5690839999999999, 0.15625, 2.7083749999999998] completion_ms=[0.000542, 2.2586250000000003, 0.424, 0.003834, 0.019208, 0.001375] counts=(32, 32, 0) focused=Some(true) occluded=false
+window-demand frame=31 requested=true animating=false
+window-frame-input frame=32 start_ms=2491.171042 gap_ms=Some(8.044832999999999) event=23 input_events=0
+window-perf frame=32 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.230750 cpu_ms=[7.917833000000001, 2.500042, 0.09704099999999999, 0.125667, 0.18725, 1.1288330000000002, 0.4015, 0.5672919999999999, 0.148833, 2.761375] completion_ms=[0.00025, 2.264417, 0.47350000000000003, 0.004542, 0.016208, 0.0014160000000000002] counts=(33, 33, 0) focused=Some(true) occluded=false
+window-demand frame=32 requested=true animating=false
+window-frame-input frame=33 start_ms=2499.517292 gap_ms=Some(8.34625) event=23 input_events=0
+window-perf frame=33 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.216500 cpu_ms=[7.834125000000001, 2.4070419999999997, 0.098083, 0.104625, 0.176417, 1.20225, 0.41370799999999996, 0.548125, 0.1565, 2.7273750000000003] completion_ms=[0.000292, 2.329541, 0.375792, 0.0034159999999999998, 0.016292, 0.00125] counts=(34, 34, 0) focused=Some(true) occluded=false
+window-demand frame=33 requested=true animating=false
+window-frame-input frame=34 start_ms=2507.791667 gap_ms=Some(8.274375000000001) event=23 input_events=0
+window-perf frame=34 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.332000 cpu_ms=[8.062332999999999, 2.5866249999999997, 0.116458, 0.13487500000000002, 0.19249999999999998, 1.110625, 0.425167, 0.591208, 0.15341700000000003, 2.751458] completion_ms=[0.000458, 2.266583, 0.46591699999999997, 0.0028750000000000004, 0.013542, 0.001333] counts=(35, 35, 0) focused=Some(true) occluded=false
+window-demand frame=34 requested=true animating=false
+window-frame-input frame=35 start_ms=2516.235917 gap_ms=Some(8.44425) event=23 input_events=0
+window-perf frame=35 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.371875 cpu_ms=[7.975625, 2.400458, 0.112667, 0.10404200000000001, 0.160708, 1.2407080000000001, 0.437792, 0.560083, 0.164584, 2.794583] completion_ms=[0.00025, 2.358125, 0.413292, 0.0027910000000000005, 0.017709, 0.0013340000000000001] counts=(36, 36, 0) focused=Some(true) occluded=false
+window-demand frame=35 requested=true animating=false
+window-frame-input frame=36 start_ms=2524.663125 gap_ms=Some(8.427208) event=23 input_events=0
+window-perf frame=36 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.832709 cpu_ms=[7.562417, 2.322209, 0.092125, 0.102333, 0.19512500000000002, 1.100417, 0.417958, 0.536583, 0.150292, 2.645375] completion_ms=[0.000166, 2.239375, 0.383125, 0.00375, 0.01675, 0.0015] counts=(37, 37, 0) focused=Some(true) occluded=false
+window-demand frame=36 requested=true animating=false
+window-frame-input frame=37 start_ms=2532.556334 gap_ms=Some(7.893209) event=23 input_events=0
+window-perf frame=37 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.477083 cpu_ms=[8.197417, 2.764875, 0.095042, 0.115042, 0.176375, 1.190625, 0.397416, 0.551459, 0.1615, 2.745083] completion_ms=[0.00041600000000000003, 2.283125, 0.43104200000000004, 0.0034590000000000003, 0.024958, 0.0015] counts=(38, 38, 0) focused=Some(true) occluded=false
+window-demand frame=37 requested=true animating=false
+window-frame-input frame=38 start_ms=2541.089959 gap_ms=Some(8.533624999999999) event=23 input_events=0
+window-perf frame=38 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.153416 cpu_ms=[7.872416, 2.564875, 0.094291, 0.15025, 0.181084, 1.126208, 0.394792, 0.542416, 0.153334, 2.665166] completion_ms=[0.00029099999999999997, 2.272917, 0.367083, 0.003125, 0.019625, 0.001542] counts=(39, 39, 0) focused=Some(true) occluded=false
+window-demand frame=38 requested=true animating=false
+window-frame-input frame=39 start_ms=2549.300625 gap_ms=Some(8.210666) event=23 input_events=0
+window-perf frame=39 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.400250 cpu_ms=[8.126125, 2.686459, 0.098041, 0.112167, 0.176208, 1.193584, 0.4025, 0.541708, 0.179125, 2.736333] completion_ms=[0.000542, 2.2935, 0.417833, 0.004041, 0.018042000000000002, 0.00125] counts=(40, 40, 0) focused=Some(true) occluded=false
+window-demand frame=39 requested=true animating=false
+window-frame-input frame=40 start_ms=2557.763125 gap_ms=Some(8.4625) event=23 input_events=0
+window-perf frame=40 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.249709 cpu_ms=[7.980209, 2.5913749999999998, 0.1375, 0.118917, 0.17075, 1.12075, 0.39345800000000003, 0.570959, 0.15308300000000002, 2.723417] completion_ms=[0.00041600000000000003, 2.2785, 0.41333400000000003, 0.002874, 0.026167, 0.001459] counts=(41, 41, 0) focused=Some(true) occluded=false
+window-demand frame=40 requested=true animating=false
+window-frame-input frame=41 start_ms=2566.070625 gap_ms=Some(8.307500000000001) event=23 input_events=0
+window-perf frame=41 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.549959 cpu_ms=[8.280583, 2.7765, 0.095375, 0.118, 0.167708, 1.161375, 0.390833, 0.5777920000000001, 0.152375, 2.8406249999999997] completion_ms=[0.0005, 2.39, 0.4295, 0.0034159999999999998, 0.014834, 0.0012920000000000002] counts=(42, 42, 0) focused=Some(true) occluded=false
+window-demand frame=41 requested=true animating=false
+window-frame-input frame=42 start_ms=2574.677167 gap_ms=Some(8.606542) event=23 input_events=0
+window-perf frame=42 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.956416 cpu_ms=[7.679041, 2.301333, 0.097417, 0.10612500000000001, 0.18175, 1.2076660000000001, 0.388584, 0.52525, 0.161916, 2.709] completion_ms=[0.0005, 2.2775, 0.411167, 0.002791, 0.014375, 0.001542] counts=(43, 43, 0) focused=Some(true) occluded=false
+window-demand frame=42 requested=true animating=false
+window-frame-input frame=43 start_ms=2582.683167 gap_ms=Some(8.005999999999998) event=23 input_events=0
+window-perf frame=43 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.640541 cpu_ms=[8.379833, 2.958, 0.109291, 0.12079200000000001, 0.171833, 1.1913340000000001, 0.38170800000000005, 0.556583, 0.147042, 2.74325] completion_ms=[0.00041600000000000003, 2.31725, 0.401209, 0.003583, 0.0185, 0.001291] counts=(44, 44, 0) focused=Some(true) occluded=false
+window-demand frame=43 requested=true animating=false
+window-frame-input frame=44 start_ms=2591.382000 gap_ms=Some(8.698832999999999) event=23 input_events=0
+window-perf frame=44 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.874417 cpu_ms=[7.608375, 2.260167, 0.093458, 0.103459, 0.167458, 1.155042, 0.384791, 0.544, 0.156709, 2.743291] completion_ms=[0.00025, 2.34425, 0.377417, 0.003, 0.016541999999999998, 0.001084] counts=(45, 45, 0) focused=Some(true) occluded=false
+window-demand frame=44 requested=true animating=false
+window-frame-input frame=45 start_ms=2599.310834 gap_ms=Some(7.928833999999999) event=23 input_events=0
+window-perf frame=45 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.842292 cpu_ms=[8.571541, 3.2234999999999996, 0.104625, 0.132041, 0.201042, 1.158042, 0.411416, 0.51925, 0.144459, 2.6771659999999997] completion_ms=[0.000167, 2.2681250000000004, 0.38345799999999997, 0.003667, 0.019292, 0.001542] counts=(46, 46, 0) focused=Some(true) occluded=false
+window-demand frame=45 requested=true animating=false
+window-frame-input frame=46 start_ms=2608.219792 gap_ms=Some(8.908958) event=23 input_events=0
+window-perf frame=46 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.752958 cpu_ms=[7.458708, 2.0778749999999997, 0.090542, 0.106333, 0.169375, 1.179292, 0.451541, 0.570542, 0.15270799999999998, 2.6605000000000003] completion_ms=[0.000375, 2.2390000000000003, 0.40025, 0.0024170000000000003, 0.016249999999999997, 0.001375] counts=(47, 47, 0) focused=Some(true) occluded=false
+window-demand frame=46 requested=true animating=false
+window-frame-input frame=47 start_ms=2616.036292 gap_ms=Some(7.8165000000000004) event=23 input_events=0
+window-perf frame=47 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.089500 cpu_ms=[8.820208, 3.30975, 0.13554100000000002, 0.12774999999999997, 0.192459, 1.148708, 0.413833, 0.534709, 0.14925, 2.808208] completion_ms=[0.00025, 2.387167, 0.399917, 0.0029579999999999997, 0.015875, 0.00125] counts=(48, 48, 0) focused=Some(true) occluded=false
+window-demand frame=47 requested=true animating=false
+window-frame-input frame=48 start_ms=2625.182042 gap_ms=Some(9.14575) event=23 input_events=0
+window-perf frame=48 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.390833 cpu_ms=[7.128583, 1.83975, 0.0955, 0.095208, 0.163417, 1.244375, 0.386416, 0.536459, 0.15170799999999998, 2.6157500000000002] completion_ms=[0.000375, 2.2225420000000002, 0.373291, 0.0030009999999999998, 0.014208, 0.0012920000000000002] counts=(49, 49, 0) focused=Some(true) occluded=false
+window-demand frame=48 requested=true animating=false
+window-frame-input frame=49 start_ms=2632.619917 gap_ms=Some(7.437875) event=23 input_events=0
+window-perf frame=49 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.317708 cpu_ms=[9.054, 3.761666, 0.104792, 0.12562500000000001, 0.165417, 1.081, 0.451291, 0.5595, 0.148875, 2.655834] completion_ms=[0.000375, 2.249917, 0.381166, 0.0041670000000000006, 0.017875000000000002, 0.001166] counts=(50, 50, 0) focused=Some(true) occluded=false
+window-demand frame=49 requested=true animating=false
+window-frame-input frame=50 start_ms=2642.003834 gap_ms=Some(9.383917) event=23 input_events=0
+window-perf frame=50 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.333541 cpu_ms=[7.0613339999999996, 1.63475, 0.096125, 0.104292, 0.179292, 1.184583, 0.40454199999999996, 0.578541, 0.158334, 2.7208750000000004] completion_ms=[0.000334, 2.2855000000000003, 0.416833, 0.0036249999999999998, 0.012333, 0.001375] counts=(51, 51, 0) focused=Some(true) occluded=false
+window-demand frame=50 requested=true animating=false
+window-frame-input frame=51 start_ms=2649.405000 gap_ms=Some(7.401166) event=23 input_events=0
+window-perf frame=51 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.633625 cpu_ms=[9.35825, 4.078167, 0.111791, 0.11745900000000001, 0.17533300000000002, 1.145875, 0.43925000000000003, 0.5674579999999999, 0.14024999999999999, 2.582667] completion_ms=[0.000375, 2.187667, 0.37304200000000004, 0.002832, 0.016708999999999998, 0.0011250000000000001] counts=(52, 52, 0) focused=Some(true) occluded=false
+window-demand frame=51 requested=true animating=false
+window-frame-input frame=52 start_ms=2659.097584 gap_ms=Some(9.692584) event=23 input_events=0
+window-perf frame=52 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=6.832375 cpu_ms=[6.558209, 1.178459, 0.08650000000000001, 0.096541, 0.170167, 1.164417, 0.489125, 0.616125, 0.1435, 2.613375] completion_ms=[0.000209, 2.1945829999999997, 0.39466700000000005, 0.004167, 0.017333, 0.001333] counts=(53, 53, 0) focused=Some(true) occluded=false
+window-demand frame=52 requested=true animating=false
+window-frame-input frame=53 start_ms=2665.995209 gap_ms=Some(6.897625) event=23 input_events=0
+window-perf frame=53 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.751458 cpu_ms=[8.482209, 2.729584, 0.103791, 0.108875, 0.181625, 1.0866669999999998, 0.394542, 0.531833, 0.154875, 3.190417] completion_ms=[0.000375, 2.747166, 0.420375, 0.004041, 0.015458999999999999, 0.00175] counts=(54, 54, 0) focused=Some(true) occluded=false
+window-demand frame=53 requested=true animating=false
+window-frame-input frame=54 start_ms=2674.805667 gap_ms=Some(8.810458) event=23 input_events=0
+window-perf frame=54 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.792458 cpu_ms=[7.524625, 2.2075, 0.097833, 0.10258300000000001, 0.170125, 1.1637089999999999, 0.387708, 0.565542, 0.167708, 2.6619170000000003] completion_ms=[0.000417, 2.261791, 0.378542, 0.003541, 0.015542000000000002, 0.001209] counts=(55, 55, 0) focused=Some(true) occluded=false
+window-demand frame=54 requested=true animating=false
+window-frame-input frame=55 start_ms=2682.656709 gap_ms=Some(7.8510420000000005) event=23 input_events=0
+window-perf frame=55 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.715125 cpu_ms=[8.439125, 2.688584, 0.147125, 0.11620799999999999, 0.183458, 1.115625, 0.393542, 0.559625, 0.147833, 3.087125] completion_ms=[0.0005, 2.6194170000000003, 0.44587499999999997, 0.003499, 0.015667, 0.0014169999999999999] counts=(56, 56, 0) focused=Some(true) occluded=false
+window-demand frame=55 requested=true animating=false
+window-frame-input frame=56 start_ms=2691.426125 gap_ms=Some(8.769416) event=23 input_events=0
+window-perf frame=56 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.779042 cpu_ms=[7.507959, 2.232709, 0.102791, 0.10375, 0.172917, 1.158833, 0.381459, 0.5395000000000001, 0.15795800000000002, 2.6580419999999996] completion_ms=[0.000458, 2.263, 0.374542, 0.003458, 0.014124999999999999, 0.0012920000000000002] counts=(57, 57, 0) focused=Some(true) occluded=false
+window-demand frame=56 requested=true animating=false
+window-frame-input frame=57 start_ms=2699.266500 gap_ms=Some(7.840375) event=23 input_events=0
+window-perf frame=57 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.311375 cpu_ms=[7.986333, 2.706375, 0.11491599999999999, 0.114375, 0.176542, 1.083042, 0.386958, 0.53825, 0.141458, 2.724417] completion_ms=[0.000292, 2.273208, 0.43033299999999997, 0.003376, 0.015083, 0.001375] counts=(58, 58, 0) focused=Some(true) occluded=false
+window-demand frame=57 requested=true animating=false
+window-frame-input frame=58 start_ms=2707.626417 gap_ms=Some(8.359917) event=23 input_events=0
+window-perf frame=58 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.269083 cpu_ms=[7.879959, 2.6150420000000003, 0.09608299999999999, 0.102667, 0.16179200000000002, 1.12575, 0.392875, 0.535916, 0.16858399999999998, 2.68125] completion_ms=[0.00033299999999999996, 2.267125, 0.389625, 0.0029170000000000003, 0.018792, 0.0015] counts=(59, 59, 0) focused=Some(true) occluded=false
+window-demand frame=58 requested=true animating=false
+window-frame-input frame=59 start_ms=2715.967584 gap_ms=Some(8.341167) event=23 input_events=0
+window-perf frame=59 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.487250 cpu_ms=[8.097958, 2.743416, 0.13520900000000002, 0.111041, 0.185959, 1.1232080000000002, 0.38949999999999996, 0.5315, 0.143125, 2.735] completion_ms=[0.000417, 2.2912079999999997, 0.409917, 0.004125, 0.026625, 0.0018750000000000001] counts=(60, 60, 0) focused=Some(true) occluded=false
+window-demand frame=59 requested=true animating=false
+window-frame-input frame=60 start_ms=2724.575792 gap_ms=Some(8.608208) event=23 input_events=0
+window-perf frame=60 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.068500 cpu_ms=[7.742833999999999, 2.403792, 0.090458, 0.1005, 0.18000000000000002, 1.220542, 0.388833, 0.527542, 0.151125, 2.6800420000000003] completion_ms=[0.000542, 2.276, 0.384083, 0.0027919999999999998, 0.014708, 0.001] counts=(61, 61, 0) focused=Some(true) occluded=false
+window-demand frame=60 requested=true animating=false
+window-frame-input frame=61 start_ms=2732.709375 gap_ms=Some(8.133583) event=23 input_events=0
+window-perf frame=61 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.242292 cpu_ms=[7.976834, 2.6755839999999997, 0.124, 0.10074999999999999, 0.192125, 1.1275, 0.392375, 0.526416, 0.138542, 2.699542] completion_ms=[0.000625, 2.237041, 0.435875, 0.003667, 0.020041999999999997, 0.001625] counts=(62, 62, 0) focused=Some(true) occluded=false
+window-demand frame=61 requested=true animating=false
+window-frame-input frame=62 start_ms=2741.009000 gap_ms=Some(8.299624999999999) event=23 input_events=0
+window-perf frame=62 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.317125 cpu_ms=[8.032917000000001, 2.659583, 0.096209, 0.1155, 0.176708, 1.162333, 0.388959, 0.553458, 0.168917, 2.71125] completion_ms=[0.000166, 2.27575, 0.411792, 0.003249, 0.018459, 0.0011250000000000001] counts=(63, 63, 0) focused=Some(true) occluded=false
+window-demand frame=62 requested=true animating=false
+window-frame-input frame=63 start_ms=2749.385042 gap_ms=Some(8.376042) event=23 input_events=0
+window-perf frame=63 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.266791 cpu_ms=[8.000208, 2.668542, 0.14387499999999998, 0.111625, 0.17425000000000002, 1.0965, 0.381083, 0.5984999999999999, 0.153542, 2.672291] completion_ms=[0.000542, 2.2708749999999998, 0.377958, 0.003626, 0.016791, 0.0014160000000000002] counts=(64, 64, 0) focused=Some(true) occluded=false
+window-demand frame=63 requested=true animating=false
+window-frame-input frame=64 start_ms=2757.721292 gap_ms=Some(8.33625) event=23 input_events=0
+window-perf frame=64 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.423875 cpu_ms=[8.157916, 2.701708, 0.1035, 0.114333, 0.17133400000000001, 1.175375, 0.414583, 0.579625, 0.155875, 2.7415830000000003] completion_ms=[0.00041600000000000003, 2.315, 0.403084, 0.0029159999999999998, 0.018125, 0.001542] counts=(65, 65, 0) focused=Some(true) occluded=false
+window-demand frame=64 requested=true animating=false
+window-frame-input frame=65 start_ms=2766.196792 gap_ms=Some(8.4755) event=23 input_events=0
+window-perf frame=65 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.194958 cpu_ms=[7.941291, 2.5095, 0.0935, 0.106708, 0.20620799999999997, 1.117, 0.41854199999999997, 0.6096250000000001, 0.158083, 2.722125] completion_ms=[0.000417, 2.3244160000000003, 0.378917, 0.002666, 0.013667, 0.001167] counts=(66, 66, 0) focused=Some(true) occluded=false
+window-demand frame=65 requested=true animating=false
+window-frame-input frame=66 start_ms=2774.455875 gap_ms=Some(8.259083) event=23 input_events=0
+window-perf frame=66 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.557459 cpu_ms=[8.29325, 2.806375, 0.105917, 0.113792, 0.175, 1.2157909999999998, 0.424875, 0.578834, 0.163, 2.709666] completion_ms=[0.000292, 2.288208, 0.39775, 0.003459, 0.017750000000000002, 0.00125] counts=(67, 67, 0) focused=Some(true) occluded=false
+window-demand frame=66 requested=true animating=false
+window-frame-input frame=67 start_ms=2783.080417 gap_ms=Some(8.624542) event=23 input_events=0
+window-perf frame=67 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.852542 cpu_ms=[7.557582999999999, 2.221167, 0.09320800000000001, 0.104875, 0.16924999999999998, 1.168583, 0.38837499999999997, 0.54525, 0.152417, 2.714458] completion_ms=[0.000375, 2.286083, 0.395709, 0.004167, 0.025541, 0.001458] counts=(68, 68, 0) focused=Some(true) occluded=false
+window-demand frame=67 requested=true animating=false
+window-frame-input frame=68 start_ms=2790.991042 gap_ms=Some(7.910625) event=23 input_events=0
+window-perf frame=68 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.818666 cpu_ms=[8.531959, 3.122292, 0.103125, 0.127, 0.1775, 1.117708, 0.39599999999999996, 0.563667, 0.145208, 2.779459] completion_ms=[0.000167, 2.376833, 0.376417, 0.003417, 0.020583, 0.001375] counts=(69, 69, 0) focused=Some(true) occluded=false
+window-demand frame=68 requested=true animating=false
+window-frame-input frame=69 start_ms=2799.873167 gap_ms=Some(8.882125) event=23 input_events=0
+window-perf frame=69 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.707333 cpu_ms=[7.440417, 2.11275, 0.094209, 0.105541, 0.18475, 1.19075, 0.42374999999999996, 0.5415840000000001, 0.147083, 2.64] completion_ms=[0.00033299999999999996, 2.238584, 0.37725, 0.0035830000000000002, 0.017917000000000002, 0.001166] counts=(70, 70, 0) focused=Some(true) occluded=false
+window-demand frame=69 requested=true animating=false
+window-frame-input frame=70 start_ms=2807.643709 gap_ms=Some(7.770542) event=23 input_events=0
+window-perf frame=70 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.823625 cpu_ms=[9.545041000000001, 4.092208, 0.112458, 0.11349999999999999, 0.175542, 1.147833, 0.447292, 0.589625, 0.14308300000000002, 2.7234999999999996] completion_ms=[0.000292, 2.30725, 0.39608299999999996, 0.003417, 0.014124999999999999, 0.0015] counts=(71, 71, 0) focused=Some(true) occluded=false
+window-demand frame=70 requested=true animating=false
+window-frame-input frame=71 start_ms=2817.525334 gap_ms=Some(9.881625) event=23 input_events=0
+window-perf frame=71 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=6.752125 cpu_ms=[6.458209, 1.0801669999999999, 0.083708, 0.098584, 0.166458, 1.13225, 0.47341700000000003, 0.580958, 0.15045799999999998, 2.692209] completion_ms=[0.0005, 2.285125, 0.385583, 0.002709, 0.016333, 0.001166] counts=(72, 72, 0) focused=Some(true) occluded=false
+window-demand frame=71 requested=true animating=false
+window-frame-input frame=72 start_ms=2824.340292 gap_ms=Some(6.814958000000001) event=23 input_events=0
+window-perf frame=72 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.663417 cpu_ms=[9.385958, 4.075208, 0.105542, 0.112167, 0.17512499999999998, 1.141291, 0.391625, 0.602167, 0.141083, 2.64175] completion_ms=[0.000375, 2.237208, 0.382625, 0.003291, 0.015834, 0.0012920000000000002] counts=(73, 73, 0) focused=Some(true) occluded=false
+window-demand frame=72 requested=true animating=false
+window-frame-input frame=73 start_ms=2834.064917 gap_ms=Some(9.724625000000001) event=23 input_events=0
+window-perf frame=73 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=6.856542 cpu_ms=[6.590667, 1.241334, 0.092416, 0.098959, 0.17225000000000001, 1.149416, 0.434584, 0.627583, 0.151458, 2.622667] completion_ms=[0.00025, 2.226875, 0.37583300000000003, 0.002667, 0.014875000000000001, 0.001333] counts=(74, 74, 0) focused=Some(true) occluded=false
+window-demand frame=73 requested=true animating=false
+window-frame-input frame=74 start_ms=2840.974917 gap_ms=Some(6.91) event=23 input_events=0
+window-perf frame=74 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.751416 cpu_ms=[9.493666, 4.041458, 0.10450000000000001, 0.123667, 0.246791, 1.208334, 0.49895799999999996, 0.525, 0.138792, 2.606166] completion_ms=[0.00025, 2.221792, 0.365333, 0.003042, 0.013917, 0.0011250000000000001] counts=(75, 75, 0) focused=Some(true) occluded=false
+window-demand frame=74 requested=true animating=false
+window-frame-input frame=75 start_ms=2850.782334 gap_ms=Some(9.807417000000001) event=23 input_events=0
+window-perf frame=75 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=6.913625 cpu_ms=[6.624333, 1.173542, 0.089416, 0.10012499999999999, 0.16275, 1.1525420000000002, 0.453667, 0.601625, 0.154333, 2.736333] completion_ms=[0.000375, 2.327417, 0.39233300000000004, 0.002792, 0.011583000000000001, 0.001084] counts=(76, 76, 0) focused=Some(true) occluded=false
+window-demand frame=75 requested=true animating=false
+window-frame-input frame=76 start_ms=2857.747292 gap_ms=Some(6.964958) event=23 input_events=0
+window-perf frame=76 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.610333 cpu_ms=[8.337417, 2.5855840000000003, 0.10875, 0.128708, 0.17758300000000002, 1.1399590000000002, 0.41812499999999997, 0.553125, 0.169458, 3.0561249999999998] completion_ms=[0.00045900000000000004, 2.651166, 0.381917, 0.003459, 0.016583, 0.001041] counts=(77, 77, 0) focused=Some(true) occluded=false
+window-demand frame=76 requested=true animating=false
+window-frame-input frame=77 start_ms=2866.413292 gap_ms=Some(8.666) event=23 input_events=0
+window-perf frame=77 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.883458 cpu_ms=[7.613208, 2.2465829999999998, 0.095417, 0.10341700000000001, 0.16612500000000002, 1.152416, 0.373292, 0.5585, 0.179333, 2.738125] completion_ms=[0.000417, 2.330291, 0.38741699999999996, 0.003333, 0.01475, 0.0012079999999999999] counts=(78, 78, 0) focused=Some(true) occluded=false
+window-demand frame=77 requested=true animating=false
+window-frame-input frame=78 start_ms=2874.347625 gap_ms=Some(7.934333) event=23 input_events=0
+window-perf frame=78 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.664459 cpu_ms=[8.396875, 2.6342499999999998, 0.141042, 0.108208, 0.174292, 1.104625, 0.425041, 0.5634589999999999, 0.15612499999999999, 3.089833] completion_ms=[0.000916, 2.688875, 0.380167, 0.003666, 0.014167, 0.001042] counts=(79, 79, 0) focused=Some(true) occluded=false
+window-demand frame=78 requested=true animating=false
+window-frame-input frame=79 start_ms=2883.062042 gap_ms=Some(8.714417000000001) event=23 input_events=0
+window-perf frame=79 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.890583 cpu_ms=[7.625708, 2.318708, 0.102334, 0.098625, 0.18875, 1.156333, 0.39575, 0.5656669999999999, 0.145375, 2.654166] completion_ms=[0.00033299999999999996, 2.251458, 0.384292, 0.002292, 0.014124999999999999, 0.0011250000000000001] counts=(80, 80, 0) focused=Some(true) occluded=false
+window-demand frame=79 requested=true animating=false
+window-frame-input frame=80 start_ms=2891.005125 gap_ms=Some(7.943083) event=23 input_events=0
+window-perf frame=80 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.845917 cpu_ms=[8.558417, 2.697667, 0.133875, 0.10433300000000001, 0.17775000000000002, 1.144583, 0.445459, 0.606375, 0.218916, 3.029459] completion_ms=[0.000583, 2.6310000000000002, 0.375625, 0.003416, 0.016834, 0.000959] counts=(81, 81, 0) focused=Some(true) occluded=false
+window-demand frame=80 requested=true animating=false
+window-frame-input frame=81 start_ms=2899.893709 gap_ms=Some(8.888584) event=23 input_events=0
+window-perf frame=81 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.806708 cpu_ms=[7.536625, 2.115708, 0.092459, 0.105208, 0.164208, 1.1757499999999999, 0.387834, 0.584291, 0.164459, 2.746708] completion_ms=[0.0005, 2.300208, 0.422, 0.003999, 0.017584, 0.001625] counts=(82, 82, 0) focused=Some(true) occluded=false
+window-demand frame=81 requested=true animating=false
+window-frame-input frame=82 start_ms=2907.768375 gap_ms=Some(7.874666) event=23 input_events=0
+window-perf frame=82 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.606167 cpu_ms=[8.328333, 2.561125, 0.096625, 0.141542, 0.1855, 1.1253330000000001, 0.453292, 0.5760000000000001, 0.15279099999999998, 3.036125] completion_ms=[0.00020800000000000001, 2.5717090000000002, 0.439875, 0.0037080000000000004, 0.018875000000000003, 0.001] counts=(83, 83, 0) focused=Some(true) occluded=false
+window-demand frame=82 requested=true animating=false
+window-frame-input frame=83 start_ms=2916.432125 gap_ms=Some(8.66375) event=23 input_events=0
+window-perf frame=83 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.918250 cpu_ms=[7.6530000000000005, 2.259459, 0.101, 0.132333, 0.160833, 1.163667, 0.411708, 0.574792, 0.152917, 2.696291] completion_ms=[0.000458, 2.287875, 0.38949999999999996, 0.002792, 0.0135, 0.0012079999999999999] counts=(84, 84, 0) focused=Some(true) occluded=false
+window-demand frame=83 requested=true animating=false
+window-frame-input frame=84 start_ms=2924.408500 gap_ms=Some(7.976375000000001) event=23 input_events=0
+window-perf frame=84 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.430417 cpu_ms=[8.159625, 2.5702089999999997, 0.087875, 0.105208, 0.202208, 1.132625, 0.39258400000000004, 0.5381659999999999, 0.139042, 2.991708] completion_ms=[0.000292, 2.528083, 0.441958, 0.0032920000000000002, 0.015917, 0.001084] counts=(85, 85, 0) focused=Some(true) occluded=false
+window-demand frame=84 requested=true animating=false
+window-frame-input frame=85 start_ms=2932.887042 gap_ms=Some(8.478542000000001) event=23 input_events=0
+window-perf frame=85 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.106417 cpu_ms=[7.823625000000001, 2.442541, 0.102667, 0.102375, 0.18329199999999998, 1.152625, 0.408375, 0.566, 0.164083, 2.701667] completion_ms=[0.00025, 2.292666, 0.385084, 0.003833, 0.017625000000000002, 0.001375] counts=(86, 86, 0) focused=Some(true) occluded=false
+window-demand frame=85 requested=true animating=false
+window-frame-input frame=86 start_ms=2941.055750 gap_ms=Some(8.168708) event=23 input_events=0
+window-perf frame=86 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.447334 cpu_ms=[8.062875, 2.602166, 0.149, 0.110042, 0.175042, 1.081958, 0.4, 0.56225, 0.14891700000000002, 2.8335] completion_ms=[0.000375, 2.313833, 0.456208, 0.014542, 0.041749999999999995, 0.004458] counts=(87, 87, 0) focused=Some(true) occluded=false
+window-demand frame=86 requested=true animating=false
+window-frame-input frame=87 start_ms=2949.629542 gap_ms=Some(8.573792000000001) event=23 input_events=0
+window-perf frame=87 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.139667 cpu_ms=[7.825749999999999, 2.360292, 0.09929199999999999, 0.102208, 0.172625, 1.251917, 0.393333, 0.524208, 0.15095899999999998, 2.770916] completion_ms=[0.000209, 2.298583, 0.450083, 0.00325, 0.016249999999999997, 0.001708] counts=(88, 88, 0) focused=Some(true) occluded=false
+window-demand frame=87 requested=true animating=false
+window-frame-input frame=88 start_ms=2957.827500 gap_ms=Some(8.197958) event=23 input_events=0
+window-perf frame=88 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.184375 cpu_ms=[7.9038330000000006, 2.533667, 0.09033300000000001, 0.115958, 0.180292, 1.116167, 0.356208, 0.574167, 0.148, 2.789041] completion_ms=[0.00025, 2.2730829999999997, 0.492625, 0.003626, 0.017416, 0.00125] counts=(89, 89, 0) focused=Some(true) occluded=false
+window-demand frame=88 requested=true animating=false
+window-frame-input frame=89 start_ms=2966.060209 gap_ms=Some(8.232709) event=23 input_events=0
+window-perf frame=89 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.275125 cpu_ms=[7.930750000000001, 2.552041, 0.089792, 0.10437500000000001, 0.165875, 1.1470420000000001, 0.406416, 0.575542, 0.16691699999999998, 2.72275] completion_ms=[0.0005, 2.2887910000000002, 0.402959, 0.003499, 0.024709000000000002, 0.0015409999999999998] counts=(90, 90, 0) focused=Some(true) occluded=false
+window-demand frame=89 requested=true animating=false
+window-frame-input frame=90 start_ms=2974.393500 gap_ms=Some(8.333291) event=23 input_events=0
+window-perf frame=90 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.450584 cpu_ms=[8.177916999999999, 2.651417, 0.097667, 0.112958, 0.207333, 1.1832500000000001, 0.403584, 0.5657080000000001, 0.155458, 2.800542] completion_ms=[0.00033299999999999996, 2.317875, 0.461583, 0.002875, 0.015917, 0.001083] counts=(91, 91, 0) focused=Some(true) occluded=false
+window-demand frame=90 requested=true animating=false
+window-frame-input frame=91 start_ms=2982.914000 gap_ms=Some(8.5205) event=23 input_events=0
+window-perf frame=91 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.498542 cpu_ms=[8.123999999999999, 2.297208, 0.097125, 0.106708, 0.177084, 1.209625, 0.409666, 0.565125, 0.203209, 3.05825] completion_ms=[0.001, 2.651875, 0.38375, 0.003333, 0.015792, 0.0014160000000000002] counts=(92, 92, 0) focused=Some(true) occluded=false
+window-demand frame=91 requested=true animating=false
+window-frame-input frame=92 start_ms=2991.472792 gap_ms=Some(8.558792) event=23 input_events=0
+window-perf frame=92 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.874000 cpu_ms=[7.567667, 2.192958, 0.103667, 0.11325, 0.170125, 1.20675, 0.381917, 0.5509160000000001, 0.15720900000000002, 2.690875] completion_ms=[0.0005, 2.2897920000000003, 0.374291, 0.004459, 0.019416, 0.0013340000000000001] counts=(93, 93, 0) focused=Some(true) occluded=false
+window-demand frame=92 requested=true animating=false
+window-frame-input frame=93 start_ms=2999.414667 gap_ms=Some(7.941875) event=23 input_events=0
+window-perf frame=93 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.721333 cpu_ms=[8.436083, 2.5881659999999997, 0.136584, 0.11654099999999999, 0.175, 1.145459, 0.43524999999999997, 0.542666, 0.15845900000000002, 3.1379580000000002] completion_ms=[0.000583, 2.69575, 0.418625, 0.003541, 0.016416999999999998, 0.001833] counts=(94, 94, 0) focused=Some(true) occluded=false
+window-demand frame=93 requested=true animating=false
+window-frame-input frame=94 start_ms=3008.190542 gap_ms=Some(8.775875000000001) event=23 input_events=0
+window-perf frame=94 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.903083 cpu_ms=[7.6140419999999995, 2.1316669999999998, 0.094291, 0.10370900000000001, 0.17975, 1.1707079999999999, 0.394958, 0.558125, 0.164625, 2.816209] completion_ms=[0.0005, 2.4085, 0.389, 0.0032500000000000003, 0.012833, 0.001375] counts=(95, 95, 0) focused=Some(true) occluded=false
+window-demand frame=94 requested=true animating=false
+window-frame-input frame=95 start_ms=3016.155500 gap_ms=Some(7.964957999999999) event=23 input_events=0
+window-perf frame=95 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.598167 cpu_ms=[8.326709, 2.5074170000000002, 0.097292, 0.1035, 0.16612500000000002, 1.214166, 0.419459, 0.560916, 0.144375, 3.1134589999999998] completion_ms=[0.00025, 2.6020000000000003, 0.486792, 0.003541, 0.019334, 0.000917] counts=(96, 96, 0) focused=Some(true) occluded=false
+window-demand frame=95 requested=true animating=false
+window-frame-input frame=96 start_ms=3024.808459 gap_ms=Some(8.652959) event=23 input_events=0
+window-perf frame=96 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.848875 cpu_ms=[7.578625000000001, 2.190791, 0.095584, 0.106375, 0.171291, 1.186375, 0.39220900000000003, 0.550041, 0.153917, 2.732042] completion_ms=[0.000375, 2.294125, 0.40870799999999996, 0.0041259999999999995, 0.022458000000000002, 0.001333] counts=(97, 97, 0) focused=Some(true) occluded=false
+window-demand frame=96 requested=true animating=false
+window-frame-input frame=97 start_ms=3032.749334 gap_ms=Some(7.940875) event=23 input_events=0
+window-perf frame=97 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.354667 cpu_ms=[8.033166, 2.559291, 0.096042, 0.13262500000000002, 0.173208, 1.139125, 0.433792, 0.543458, 0.15075, 2.804875] completion_ms=[0.00033299999999999996, 2.305667, 0.471458, 0.004084, 0.02025, 0.001958] counts=(98, 98, 0) focused=Some(true) occluded=false
+window-demand frame=97 requested=true animating=false
+window-frame-input frame=98 start_ms=3041.529209 gap_ms=Some(8.779874999999999) event=23 input_events=0
+window-perf frame=98 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.881708 cpu_ms=[7.502958, 2.077291, 0.10029199999999999, 0.10087499999999999, 0.172792, 1.269708, 0.406875, 0.539958, 0.157709, 2.677458] completion_ms=[0.000334, 2.293916, 0.35783400000000004, 0.007456999999999999, 0.015458999999999999, 0.001375] counts=(99, 99, 0) focused=Some(true) occluded=false
+window-demand frame=98 requested=true animating=false
+window-frame-input frame=99 start_ms=3049.476750 gap_ms=Some(7.947541000000001) event=23 input_events=0
+window-perf frame=99 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.518833 cpu_ms=[8.250167, 2.5774169999999996, 0.13799999999999998, 0.12487500000000001, 0.19325, 1.110458, 0.397292, 0.708458, 0.208834, 2.7915829999999997] completion_ms=[0.000375, 2.303875, 0.467875, 0.003291, 0.01425, 0.0012079999999999999] counts=(100, 100, 0) focused=Some(true) occluded=false
+window-demand frame=99 requested=true animating=false
+window-frame-input frame=100 start_ms=3058.053417 gap_ms=Some(8.576667) event=23 input_events=0
+window-perf frame=100 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.007167 cpu_ms=[7.590625, 2.1130839999999997, 0.10058299999999999, 0.102833, 0.167209, 1.231, 0.435083, 0.555167, 0.15625, 2.729416] completion_ms=[0.00033299999999999996, 2.303, 0.405375, 0.003293, 0.015666, 0.001084] counts=(101, 101, 0) focused=Some(true) occluded=false
+window-demand frame=100 requested=true animating=false
+window-frame-input frame=101 start_ms=3066.114209 gap_ms=Some(8.060792000000001) event=23 input_events=0
+window-perf frame=101 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.174708 cpu_ms=[7.872542, 2.522625, 0.092792, 0.1025, 0.207, 1.123666, 0.444417, 0.546917, 0.144666, 2.687959] completion_ms=[0.000292, 2.274125, 0.389583, 0.0030840000000000004, 0.018083, 0.001542] counts=(102, 102, 0) focused=Some(true) occluded=false
+window-demand frame=101 requested=true animating=false
+window-frame-input frame=102 start_ms=3074.352334 gap_ms=Some(8.238125) event=23 input_events=0
+window-perf frame=102 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.267250 cpu_ms=[7.9584589999999995, 2.6384999999999996, 0.095709, 0.115208, 0.18325, 1.178625, 0.388667, 0.529875, 0.14725, 2.681375] completion_ms=[0.000292, 2.278667, 0.38333300000000003, 0.00325, 0.013583, 0.0015] counts=(103, 103, 0) focused=Some(true) occluded=false
+window-demand frame=102 requested=true animating=false
+window-frame-input frame=103 start_ms=3082.675750 gap_ms=Some(8.323416) event=23 input_events=0
+window-perf frame=103 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.260625 cpu_ms=[7.978208, 2.6605410000000003, 0.14650000000000002, 0.114375, 0.181792, 1.1410420000000001, 0.38475, 0.5455, 0.14966600000000002, 2.654042] completion_ms=[0.00033299999999999996, 2.2381670000000002, 0.384292, 0.0035410000000000003, 0.024916999999999998, 0.002] counts=(104, 104, 0) focused=Some(true) occluded=false
+window-demand frame=103 requested=true animating=false
+window-frame-input frame=104 start_ms=3090.997375 gap_ms=Some(8.321625) event=23 input_events=0
+window-perf frame=104 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.538834 cpu_ms=[8.265709, 2.898584, 0.103791, 0.111834, 0.15425, 1.1674579999999999, 0.455167, 0.5121249999999999, 0.15675, 2.7057499999999997] completion_ms=[0.000334, 2.30375, 0.384041, 0.002459, 0.01325, 0.001333] counts=(105, 105, 0) focused=Some(true) occluded=false
+window-demand frame=104 requested=true animating=false
+window-frame-input frame=105 start_ms=3099.584750 gap_ms=Some(8.587375) event=23 input_events=0
+window-perf frame=105 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.112625 cpu_ms=[7.837000000000001, 2.4064170000000003, 0.09608299999999999, 0.10475, 0.174125, 1.1750420000000001, 0.446833, 0.5542499999999999, 0.150084, 2.729416] completion_ms=[0.000334, 2.339291, 0.366875, 0.003668, 0.017041, 0.001167] counts=(106, 106, 0) focused=Some(true) occluded=false
+window-demand frame=105 requested=true animating=false
+window-frame-input frame=106 start_ms=3107.777167 gap_ms=Some(8.192417) event=23 input_events=0
+window-perf frame=106 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.704000 cpu_ms=[8.419417000000001, 3.048667, 0.098583, 0.117375, 0.1905, 1.1168339999999999, 0.434208, 0.541792, 0.155416, 2.7160420000000003] completion_ms=[0.00045900000000000004, 2.3319159999999997, 0.365417, 0.003541, 0.012584, 0.001291] counts=(107, 107, 0) focused=Some(true) occluded=false
+window-demand frame=106 requested=true animating=false
+window-frame-input frame=107 start_ms=3116.531250 gap_ms=Some(8.754083) event=23 input_events=0
+window-perf frame=107 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.699917 cpu_ms=[7.426709, 2.095334, 0.08841600000000001, 0.10183400000000001, 0.180958, 1.228208, 0.36537499999999995, 0.5008750000000001, 0.14425000000000002, 2.721459] completion_ms=[0.00020800000000000001, 2.265042, 0.432583, 0.004126, 0.017207999999999998, 0.0015] counts=(108, 108, 0) focused=Some(true) occluded=false
+window-demand frame=107 requested=true animating=false
+window-frame-input frame=108 start_ms=3124.296917 gap_ms=Some(7.7656670000000005) event=23 input_events=0
+window-perf frame=108 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.552291 cpu_ms=[9.284583000000001, 3.915958, 0.10166700000000001, 0.11983300000000001, 0.177167, 1.137333, 0.426375, 0.558, 0.17133299999999999, 2.676917] completion_ms=[0.00045900000000000004, 2.2962909999999996, 0.360167, 0.00325, 0.014542000000000001, 0.0015409999999999998] counts=(109, 109, 0) focused=Some(true) occluded=false
+window-demand frame=108 requested=true animating=false
+window-frame-input frame=109 start_ms=3133.904000 gap_ms=Some(9.607083000000001) event=23 input_events=0
+window-perf frame=109 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.151750 cpu_ms=[6.882333, 1.381583, 0.088292, 0.096833, 0.17891700000000002, 1.1958330000000001, 0.428167, 0.600708, 0.149125, 2.762875] completion_ms=[0.00075, 2.339416, 0.40075, 0.003709, 0.016249999999999997, 0.001084] counts=(110, 110, 0) focused=Some(true) occluded=false
+window-demand frame=109 requested=true animating=false
+window-frame-input frame=110 start_ms=3141.111792 gap_ms=Some(7.207792) event=23 input_events=0
+window-perf frame=110 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.447667 cpu_ms=[9.172708, 3.873291, 0.111084, 0.119458, 0.167625, 1.068667, 0.399125, 0.537166, 0.161334, 2.7349580000000002] completion_ms=[0.00020800000000000001, 2.343833, 0.371917, 0.002917, 0.014124999999999999, 0.001333] counts=(111, 111, 0) focused=Some(true) occluded=false
+window-demand frame=110 requested=true animating=false
+window-frame-input frame=111 start_ms=3150.612917 gap_ms=Some(9.501124999999998) event=23 input_events=0
+window-perf frame=111 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.079792 cpu_ms=[6.779833, 1.364292, 0.090125, 0.108291, 0.1895, 1.171375, 0.40299999999999997, 0.601667, 0.183625, 2.6679579999999996] completion_ms=[0.00075, 2.257959, 0.38554099999999997, 0.00375, 0.017875000000000002, 0.0012920000000000002] counts=(112, 112, 0) focused=Some(true) occluded=false
+window-demand frame=111 requested=true animating=false
+window-frame-input frame=112 start_ms=3157.745584 gap_ms=Some(7.132667) event=23 input_events=0
+window-perf frame=112 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=34.096250 cpu_ms=[33.834083, 4.040833, 0.10012499999999999, 0.11237499999999999, 0.162042, 25.844875, 0.342292, 0.471416, 0.142875, 2.61725] completion_ms=[0.000334, 2.208041, 0.387625, 0.004167, 0.01525, 0.00125] counts=(113, 113, 0) focused=Some(true) occluded=false
+window-demand frame=112 requested=true animating=false
+window-frame-input frame=113 start_ms=3191.900542 gap_ms=Some(34.154958) event=23 input_events=0
+window-perf frame=113 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=11.189625 cpu_ms=[10.908083000000001, 0.04725, 0.091333, 0.11045899999999999, 0.144875, 6.6395, 0.39187500000000003, 0.491625, 0.152583, 2.838583] completion_ms=[0.000375, 2.421791, 0.3835, 0.004292, 0.026417000000000003, 0.001333] counts=(114, 114, 0) focused=Some(true) occluded=false
+window-demand frame=113 requested=true animating=false
+window-frame-input frame=114 start_ms=3203.159875 gap_ms=Some(11.259333) event=23 input_events=0
+window-perf frame=114 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.476000 cpu_ms=[9.175583, 0.049666999999999996, 0.09775, 0.103125, 0.189166, 4.668875, 0.35966699999999996, 0.5395000000000001, 0.145042, 3.022791] completion_ms=[0.0007080000000000001, 2.465459, 0.503291, 0.007709, 0.039333, 0.0018750000000000001] counts=(115, 115, 0) focused=Some(true) occluded=false
+window-demand frame=114 requested=true animating=false
+window-frame-input frame=115 start_ms=3212.694667 gap_ms=Some(9.534792) event=23 input_events=0
+window-perf frame=115 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.771958 cpu_ms=[8.474208, 0.043417000000000004, 0.086166, 0.10179200000000001, 0.152667, 3.935625, 0.345708, 0.491625, 0.161958, 3.15525] completion_ms=[0.0005, 2.488834, 0.639708, 0.004917, 0.018791, 0.0015] counts=(116, 116, 0) focused=Some(true) occluded=false
+window-demand frame=115 requested=true animating=false
+window-frame-input frame=116 start_ms=3221.538834 gap_ms=Some(8.844167) event=23 input_events=0
+window-perf frame=116 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=13.556833 cpu_ms=[13.28525, 5.441916, 0.12449999999999999, 0.119375, 0.162209, 3.45825, 0.355375, 0.53475, 0.168875, 2.92] completion_ms=[0.00029099999999999997, 2.506834, 0.39358299999999996, 0.0029580000000000006, 0.014542000000000001, 0.001083] counts=(117, 117, 0) focused=Some(true) occluded=false
+window-demand frame=116 requested=true animating=false
+window-frame-input frame=117 start_ms=3235.143250 gap_ms=Some(13.604415999999999) event=23 input_events=0
+window-perf frame=117 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.354417 cpu_ms=[8.085083, 0.214791, 0.09579199999999999, 0.10091699999999999, 0.171666, 3.714209, 0.350041, 0.49204200000000003, 0.151208, 2.794417] completion_ms=[0.000292, 2.367042, 0.40287500000000004, 0.004166, 0.017875000000000002, 0.00125] counts=(118, 118, 0) focused=Some(true) occluded=false
+window-demand frame=117 requested=true animating=false
+window-frame-input frame=118 start_ms=3243.566459 gap_ms=Some(8.423209) event=23 input_events=0
+window-perf frame=118 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.844291 cpu_ms=[8.558708, 0.11508299999999999, 0.08616700000000001, 0.095583, 0.168959, 3.793, 0.382, 0.5785, 0.221416, 3.1180000000000003] completion_ms=[0.0005, 2.6854169999999997, 0.41120799999999996, 0.0037920000000000002, 0.014624999999999999, 0.001375] counts=(119, 119, 0) focused=Some(true) occluded=false
+window-demand frame=118 requested=true animating=false
+window-frame-input frame=119 start_ms=3252.469584 gap_ms=Some(8.903125) event=23 input_events=0
+window-perf frame=119 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.372166 cpu_ms=[8.096416, 0.053, 0.095125, 0.096416, 0.17316700000000002, 4.010208, 0.352292, 0.472583, 0.13808399999999998, 2.705541] completion_ms=[0.000375, 2.2816669999999997, 0.401333, 0.003251, 0.016333, 0.001542] counts=(120, 120, 0) focused=Some(true) occluded=false
+window-demand frame=119 requested=true animating=false
+window-frame-input frame=120 start_ms=3260.895792 gap_ms=Some(8.426207999999999) event=23 input_events=0
+window-perf frame=120 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.169083 cpu_ms=[8.891667, 0.046042, 0.092125, 0.096125, 0.160083, 4.0685, 0.387209, 0.5705, 0.25012500000000004, 3.220958] completion_ms=[0.001708, 2.791083, 0.408625, 0.003958, 0.013417, 0.0012920000000000002] counts=(121, 121, 0) focused=Some(true) occluded=false
+window-demand frame=120 requested=true animating=false
+window-frame-input frame=121 start_ms=3270.124459 gap_ms=Some(9.228667) event=23 input_events=0
+window-perf frame=121 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.636959 cpu_ms=[9.357709, 0.998584, 0.08825000000000001, 0.105083, 0.167792, 3.837291, 0.3595, 0.5654170000000001, 0.156792, 3.079] completion_ms=[0.0005, 2.488375, 0.549292, 0.004458, 0.029459, 0.006041] counts=(122, 122, 0) focused=Some(true) occluded=false
+window-demand frame=121 requested=true animating=false
+window-frame-input frame=122 start_ms=3279.836042 gap_ms=Some(9.711583) event=23 input_events=0
+window-perf frame=122 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.405042 cpu_ms=[9.115333, 0.130833, 0.094459, 0.114541, 0.153167, 4.30475, 0.43524999999999997, 0.558458, 0.234125, 3.08975] completion_ms=[0.001041, 2.632584, 0.429625, 0.004791, 0.018084000000000003, 0.002334] counts=(123, 123, 0) focused=Some(true) occluded=false
+window-demand frame=122 requested=true animating=false
+window-frame-input frame=123 start_ms=3289.298500 gap_ms=Some(9.462458) event=23 input_events=0
+window-perf frame=123 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=12.545417 cpu_ms=[12.257041999999998, 4.312583, 0.099042, 0.106417, 0.171416, 3.72025, 0.352167, 0.494458, 0.133459, 2.86725] completion_ms=[0.00025, 2.321959, 0.496833, 0.010666, 0.030917000000000004, 0.003834] counts=(124, 124, 0) focused=Some(true) occluded=false
+window-demand frame=123 requested=true animating=false
+window-frame-input frame=124 start_ms=3301.905834 gap_ms=Some(12.607334) event=23 input_events=0
+window-perf frame=124 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.730000 cpu_ms=[8.31325, 0.241708, 0.092042, 0.101, 0.169625, 3.908458, 0.35583400000000004, 0.493125, 0.16262500000000002, 2.788833] completion_ms=[0.000541, 2.357959, 0.40670799999999996, 0.003958, 0.017124999999999998, 0.001542] counts=(125, 125, 0) focused=Some(true) occluded=false
+window-demand frame=124 requested=true animating=false
+window-frame-input frame=125 start_ms=3310.689834 gap_ms=Some(8.784) event=23 input_events=0
+window-perf frame=125 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.339083 cpu_ms=[8.042709, 0.037, 0.09804199999999999, 0.09816699999999999, 0.155583, 3.878875, 0.353917, 0.476291, 0.17275, 2.772084] completion_ms=[0.000375, 2.291042, 0.46287500000000004, 0.003542, 0.011833, 0.001459] counts=(126, 126, 0) focused=Some(true) occluded=false
+window-demand frame=125 requested=true animating=false
+window-frame-input frame=126 start_ms=3319.220125 gap_ms=Some(8.530291) event=23 input_events=0
+window-perf frame=126 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.936459 cpu_ms=[8.593542, 0.586833, 0.089292, 0.095125, 0.152542, 3.9397909999999996, 0.371875, 0.487375, 0.14645899999999998, 2.72425] completion_ms=[0.00025, 2.305542, 0.40037500000000004, 0.003042, 0.0125, 0.0015] counts=(127, 127, 0) focused=Some(true) occluded=false
+window-demand frame=126 requested=true animating=false
+window-frame-input frame=127 start_ms=3328.205625 gap_ms=Some(8.9855) event=23 input_events=0
+window-perf frame=127 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.494250 cpu_ms=[8.200042, 0.033459, 0.098625, 0.095166, 0.236, 3.6789169999999998, 0.368583, 0.490875, 0.134292, 3.064125] completion_ms=[0.00025, 2.4454580000000004, 0.59175, 0.004416, 0.019292, 0.001708] counts=(128, 128, 0) focused=Some(true) occluded=false
+window-demand frame=127 requested=true animating=false
+window-frame-input frame=128 start_ms=3336.832167 gap_ms=Some(8.626541999999999) event=23 input_events=0
+window-perf frame=128 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.728041 cpu_ms=[8.353417, 0.044875, 0.103833, 0.10425, 0.183959, 3.970625, 0.360625, 0.501125, 0.153625, 2.9305] completion_ms=[0.000458, 2.5009170000000003, 0.408375, 0.0038750000000000004, 0.0145, 0.001333] counts=(129, 129, 0) focused=Some(true) occluded=false
+window-demand frame=128 requested=true animating=false
+window-frame-input frame=129 start_ms=3345.628167 gap_ms=Some(8.796) event=23 input_events=0
+window-perf frame=129 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.457708 cpu_ms=[8.181084, 0.035292, 0.171875, 0.138917, 0.179541, 3.630417, 0.361958, 0.508417, 0.147958, 3.0067090000000003] completion_ms=[0.000292, 2.590792, 0.393833, 0.004166, 0.014959, 0.001625] counts=(130, 130, 0) focused=Some(true) occluded=false
+window-demand frame=129 requested=true animating=false
+window-frame-input frame=130 start_ms=3354.152834 gap_ms=Some(8.524666999999999) event=23 input_events=0
+window-perf frame=130 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.115917 cpu_ms=[8.8425, 0.040209, 0.10254100000000001, 0.10029199999999999, 0.16262500000000002, 4.3445, 0.351833, 0.505459, 0.151041, 3.084] completion_ms=[0.000334, 2.564291, 0.498042, 0.003874, 0.015333999999999999, 0.001375] counts=(131, 131, 0) focused=Some(true) occluded=false
+window-demand frame=130 requested=true animating=false
+window-frame-input frame=131 start_ms=3363.327125 gap_ms=Some(9.174291) event=23 input_events=0
+window-perf frame=131 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=13.561250 cpu_ms=[13.287166, 5.333540999999999, 0.1015, 0.105875, 0.16, 3.519459, 0.34775, 0.540833, 0.18083300000000002, 2.997375] completion_ms=[0.000542, 2.562166, 0.409667, 0.004667, 0.017708, 0.0012079999999999999] counts=(132, 132, 0) focused=Some(true) occluded=false
+window-demand frame=131 requested=true animating=false
+window-frame-input frame=132 start_ms=3376.944959 gap_ms=Some(13.617834) event=23 input_events=0
+window-perf frame=132 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.240208 cpu_ms=[7.955749999999999, 0.081042, 0.08366599999999999, 0.09545899999999999, 0.15062499999999998, 3.790541, 0.357792, 0.486458, 0.1525, 2.757667] completion_ms=[0.000209, 2.3687080000000003, 0.36770800000000003, 0.003251, 0.015708, 0.0012079999999999999] counts=(133, 133, 0) focused=Some(true) occluded=false
+window-demand frame=132 requested=true animating=false
+window-frame-input frame=133 start_ms=3385.231750 gap_ms=Some(8.286791) event=23 input_events=0
+window-perf frame=133 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.864334 cpu_ms=[8.580541, 0.172791, 0.088625, 0.097042, 0.17466700000000002, 3.828541, 0.37116699999999997, 0.54775, 0.21579199999999998, 3.084166] completion_ms=[0.000417, 2.645167, 0.418833, 0.0038329999999999996, 0.01375, 0.001291] counts=(134, 134, 0) focused=Some(true) occluded=false
+window-demand frame=133 requested=true animating=false
+window-frame-input frame=134 start_ms=3394.142042 gap_ms=Some(8.910292) event=23 input_events=0
+window-perf frame=134 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.329500 cpu_ms=[8.043125, 0.038667, 0.094125, 0.10370800000000001, 0.17683400000000002, 3.813, 0.358, 0.48895799999999995, 0.14720799999999998, 2.822625] completion_ms=[0.000375, 2.3874579999999996, 0.402167, 0.0035, 0.026125000000000002, 0.001833] counts=(135, 135, 0) focused=Some(true) occluded=false
+window-demand frame=134 requested=true animating=false
+window-frame-input frame=135 start_ms=3402.531209 gap_ms=Some(8.389166999999999) event=23 input_events=0
+window-perf frame=135 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.819583 cpu_ms=[8.545208, 0.04575, 0.093625, 0.096166, 0.16195900000000002, 3.8317910000000004, 0.370292, 0.5259579999999999, 0.15933399999999998, 3.2603329999999997] completion_ms=[0.00025, 2.812833, 0.423417, 0.004166, 0.017542, 0.0011250000000000001] counts=(136, 136, 0) focused=Some(true) occluded=false
+window-demand frame=135 requested=true animating=false
+window-frame-input frame=136 start_ms=3411.404375 gap_ms=Some(8.873166) event=23 input_events=0
+window-perf frame=136 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.312709 cpu_ms=[8.0245, 0.042667000000000004, 0.095291, 0.101917, 0.18208300000000002, 3.705542, 0.366833, 0.523292, 0.150083, 2.856792] completion_ms=[0.000542, 2.4493750000000003, 0.384625, 0.0037920000000000002, 0.015666, 0.0014160000000000002] counts=(137, 137, 0) focused=Some(true) occluded=false
+window-demand frame=136 requested=true animating=false
+window-frame-input frame=137 start_ms=3419.780750 gap_ms=Some(8.376375) event=23 input_events=0
+window-perf frame=137 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.727833 cpu_ms=[8.448583000000001, 0.040791999999999995, 0.092, 0.099416, 0.16179200000000002, 3.7868329999999997, 0.385125, 0.574167, 0.18637499999999999, 3.122083] completion_ms=[0.00041600000000000003, 2.699542, 0.401125, 0.003667, 0.014957999999999999, 0.0014169999999999999] counts=(138, 138, 0) focused=Some(true) occluded=false
+window-demand frame=137 requested=true animating=false
+window-frame-input frame=138 start_ms=3428.552834 gap_ms=Some(8.772084) event=23 input_events=0
+window-perf frame=138 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.407084 cpu_ms=[8.094000000000001, 0.055417, 0.14704099999999998, 0.112584, 0.19124999999999998, 3.621416, 0.380709, 0.5092500000000001, 0.150416, 2.925917] completion_ms=[0.000375, 2.5053330000000003, 0.39875, 0.003834, 0.015125, 0.0015409999999999998] counts=(139, 139, 0) focused=Some(true) occluded=false
+window-demand frame=138 requested=true animating=false
+window-frame-input frame=139 start_ms=3437.030709 gap_ms=Some(8.477875) event=23 input_events=0
+window-perf frame=139 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.819500 cpu_ms=[8.501332999999999, 0.064, 0.171542, 0.12587500000000001, 0.168125, 3.6607499999999997, 0.406166, 0.633625, 0.23025, 3.041] completion_ms=[0.0011250000000000001, 2.558125, 0.443625, 0.0071259999999999995, 0.026916000000000002, 0.0022500000000000003] counts=(140, 140, 0) focused=Some(true) occluded=false
+window-demand frame=139 requested=true animating=false
+window-frame-input frame=140 start_ms=3445.930917 gap_ms=Some(8.900208) event=23 input_events=0
+window-perf frame=140 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.424625 cpu_ms=[8.103124999999999, 0.035584, 0.122, 0.10500000000000001, 0.184791, 3.626542, 0.35320799999999997, 0.48741700000000004, 0.14008299999999999, 3.0485] completion_ms=[0.00029099999999999997, 2.4825, 0.521792, 0.007376000000000001, 0.033041, 0.0022500000000000003] counts=(141, 141, 0) focused=Some(true) occluded=false
+window-demand frame=140 requested=true animating=false
+window-frame-input frame=141 start_ms=3454.416500 gap_ms=Some(8.485583) event=23 input_events=0
+window-perf frame=141 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.790458 cpu_ms=[8.5085, 0.041083, 0.091917, 0.104125, 0.165041, 3.617959, 0.402916, 0.560875, 0.174, 3.350584] completion_ms=[0.000542, 2.7534579999999997, 0.567083, 0.0047079999999999995, 0.022667000000000003, 0.001333] counts=(142, 142, 0) focused=Some(true) occluded=false
+window-demand frame=141 requested=true animating=false
+window-frame-input frame=142 start_ms=3463.260334 gap_ms=Some(8.843834) event=23 input_events=0
+window-perf frame=142 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.369000 cpu_ms=[8.089333, 0.041417, 0.089125, 0.10562500000000001, 0.171833, 3.61475, 0.36225, 0.5195420000000001, 0.1415, 3.043291] completion_ms=[0.000292, 2.613333, 0.405792, 0.004084, 0.017207999999999998, 0.001084] counts=(143, 143, 0) focused=Some(true) occluded=false
+window-demand frame=142 requested=true animating=false
+window-frame-input frame=143 start_ms=3471.678875 gap_ms=Some(8.418541) event=23 input_events=0
+window-perf frame=143 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.753125 cpu_ms=[8.481833, 0.034125, 0.094333, 0.10875, 0.152959, 3.655208, 0.399208, 0.6407919999999999, 0.195458, 3.201] completion_ms=[0.000792, 2.693833, 0.484125, 0.004334, 0.015041, 0.001834] counts=(144, 144, 0) focused=Some(true) occluded=false
+window-demand frame=143 requested=true animating=false
+window-frame-input frame=144 start_ms=3480.488584 gap_ms=Some(8.809709) event=23 input_events=0
+window-perf frame=144 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.438833 cpu_ms=[8.164833999999999, 0.035542, 0.10070799999999999, 0.10579200000000001, 0.165625, 3.623542, 0.37324999999999997, 0.542458, 0.175917, 3.042] completion_ms=[0.0005, 2.606709, 0.412125, 0.0042910000000000005, 0.016, 0.00125] counts=(145, 145, 0) focused=Some(true) occluded=false
+window-demand frame=144 requested=true animating=false
+window-frame-input frame=145 start_ms=3488.991625 gap_ms=Some(8.503041) event=23 input_events=0
+window-perf frame=145 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=13.333625 cpu_ms=[13.070333, 4.756958, 0.09833299999999999, 0.121667, 0.172625, 4.218833, 0.347167, 0.517208, 0.141875, 2.6956670000000003] completion_ms=[0.000375, 2.276042, 0.39649999999999996, 0.0031660000000000004, 0.016583999999999998, 0.0018750000000000001] counts=(146, 146, 0) focused=Some(true) occluded=false
+window-demand frame=145 requested=true animating=false
+window-frame-input frame=146 start_ms=3502.379459 gap_ms=Some(13.387834) event=23 input_events=0
+window-perf frame=146 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.284666 cpu_ms=[8.008667, 0.039292, 0.08820800000000001, 0.105125, 0.174, 3.8943329999999996, 0.351709, 0.486541, 0.156834, 2.712625] completion_ms=[0.000417, 2.287292, 0.403041, 0.0032500000000000003, 0.016249999999999997, 0.0013340000000000001] counts=(147, 147, 0) focused=Some(true) occluded=false
+window-demand frame=146 requested=true animating=false
+window-frame-input frame=147 start_ms=3510.730334 gap_ms=Some(8.350875) event=23 input_events=0
+window-perf frame=147 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=11.521167 cpu_ms=[11.248875, 0.047666, 0.091042, 0.091583, 0.152125, 5.848084, 1.454291, 0.439542, 0.166167, 2.958375] completion_ms=[0.00041600000000000003, 2.35575, 0.551375, 0.023334, 0.018375, 0.008624999999999999] counts=(148, 148, 0) focused=Some(true) occluded=false
+window-demand frame=147 requested=true animating=false
+window-frame-input frame=148 start_ms=3522.307625 gap_ms=Some(11.577291) event=23 input_events=0
+window-perf frame=148 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.066875 cpu_ms=[7.800833, 0.042917000000000004, 0.095958, 0.107042, 0.158416, 3.662542, 0.35291700000000004, 0.472333, 0.21325, 2.695458] completion_ms=[0.00045900000000000004, 2.3406249999999997, 0.331416, 0.004208, 0.016334, 0.00125] counts=(149, 149, 0) focused=Some(true) occluded=false
+window-demand frame=148 requested=true animating=false
+window-frame-input frame=149 start_ms=3530.440667 gap_ms=Some(8.133042) event=23 input_events=0
+window-perf frame=149 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=11.451417 cpu_ms=[11.182833, 4.854041, 0.104292, 0.11916700000000001, 0.173416, 2.4224170000000003, 0.347125, 0.43975, 0.14508300000000002, 2.5775419999999998] completion_ms=[0.000375, 2.205083, 0.34662499999999996, 0.004915999999999999, 0.018334, 0.00125] counts=(150, 150, 0) focused=Some(true) occluded=false
+window-demand frame=149 requested=true animating=false
+window-frame-input frame=150 start_ms=3541.954500 gap_ms=Some(11.513833) event=23 input_events=0
+window-perf frame=150 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.955667 cpu_ms=[7.678541, 1.758666, 0.08808400000000001, 0.10325000000000001, 0.157916, 1.558042, 0.409875, 0.548417, 0.15825, 2.896041] completion_ms=[0.000292, 2.3915, 0.48020799999999997, 0.004917, 0.016958, 0.001167] counts=(151, 151, 0) focused=Some(true) occluded=false
+window-demand frame=150 requested=true animating=false
+window-frame-input frame=151 start_ms=3549.965917 gap_ms=Some(8.011417) event=23 input_events=0
+window-perf frame=151 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.824792 cpu_ms=[7.541416, 2.045416, 0.091209, 0.096125, 0.182875, 1.669958, 0.404333, 0.418167, 0.152417, 2.480916] completion_ms=[0.000417, 2.118458, 0.341917, 0.004084, 0.013958, 0.00125] counts=(152, 152, 0) focused=Some(true) occluded=false
+window-demand frame=151 requested=true animating=false
+window-frame-input frame=152 start_ms=3557.852250 gap_ms=Some(7.8863330000000005) event=23 input_events=0
+window-perf frame=152 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.541792 cpu_ms=[8.17675, 2.456166, 0.097042, 0.11654199999999999, 0.18641600000000003, 1.610625, 0.43687499999999996, 0.417417, 0.144708, 2.7109590000000003] completion_ms=[0.000334, 2.221625, 0.438083, 0.012167, 0.032, 0.003166] counts=(153, 153, 0) focused=Some(true) occluded=false
+window-demand frame=152 requested=true animating=false
+window-frame-input frame=153 start_ms=3566.473000 gap_ms=Some(8.62075) event=23 input_events=0
+window-perf frame=153 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.939709 cpu_ms=[7.627959, 2.137375, 0.096959, 0.1025, 0.160416, 1.61125, 0.4165, 0.42062499999999997, 0.158167, 2.524167] completion_ms=[0.000375, 2.1645420000000004, 0.33566599999999996, 0.0036669999999999997, 0.017750000000000002, 0.001458] counts=(154, 154, 0) focused=Some(true) occluded=false
+window-demand frame=153 requested=true animating=false
+window-frame-input frame=154 start_ms=3574.468542 gap_ms=Some(7.9955419999999995) event=23 input_events=0
+window-perf frame=154 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.206792 cpu_ms=[7.933000000000001, 2.539, 0.097916, 0.10325000000000001, 0.182084, 1.559041, 0.417125, 0.443042, 0.153, 2.438542] completion_ms=[0.000375, 2.068625, 0.345291, 0.003584, 0.018000000000000002, 0.001625] counts=(155, 155, 0) focused=Some(true) occluded=false
+window-demand frame=154 requested=true animating=false
+window-frame-input frame=155 start_ms=3582.734959 gap_ms=Some(8.266417) event=23 input_events=0
+window-perf frame=155 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.373958 cpu_ms=[8.100708, 2.594458, 0.096167, 0.102875, 0.176375, 1.621667, 0.408833, 0.42658300000000005, 0.153167, 2.520583] completion_ms=[0.000375, 2.135583, 0.3625, 0.003542, 0.016416999999999998, 0.0014160000000000002] counts=(156, 156, 0) focused=Some(true) occluded=false
+window-demand frame=155 requested=true animating=false
+window-frame-input frame=156 start_ms=3591.166292 gap_ms=Some(8.431332999999999) event=23 input_events=0
+window-perf frame=156 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.242833 cpu_ms=[7.976624999999999, 2.500416, 0.102209, 0.111416, 0.198875, 1.618459, 0.403333, 0.455375, 0.16262500000000002, 2.423917] completion_ms=[0.000875, 2.07275, 0.329125, 0.003499, 0.015583999999999999, 0.0012079999999999999] counts=(157, 157, 0) focused=Some(true) occluded=false
+window-demand frame=156 requested=true animating=false
+window-frame-input frame=157 start_ms=3599.461500 gap_ms=Some(8.295208) event=23 input_events=0
+window-perf frame=157 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.528750 cpu_ms=[8.27875, 2.7889579999999996, 0.099417, 0.105666, 0.175167, 1.64425, 0.39675000000000005, 0.419833, 0.159, 2.489709] completion_ms=[0.000375, 2.0975, 0.37116699999999997, 0.0026660000000000004, 0.016125, 0.001167] counts=(158, 158, 0) focused=Some(true) occluded=false
+window-demand frame=157 requested=true animating=false
+window-frame-input frame=158 start_ms=3608.043542 gap_ms=Some(8.582042) event=23 input_events=0
+window-perf frame=158 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=11.426458 cpu_ms=[11.077125, 2.255542, 0.088042, 0.102375, 0.165708, 3.8020419999999997, 1.313125, 0.347916, 0.156292, 2.846083] completion_ms=[0.00041600000000000003, 2.097542, 0.6900419999999999, 0.023584, 0.022916, 0.011125] counts=(159, 159, 0) focused=Some(true) occluded=false
+window-demand frame=158 requested=true animating=false
+window-frame-input frame=159 start_ms=3619.539417 gap_ms=Some(11.495875) event=23 input_events=0
+window-perf frame=159 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=5.301583 cpu_ms=[4.966875, 0.040958999999999995, 0.09608299999999999, 0.064375, 0.157167, 1.598083, 0.393417, 0.367, 0.152291, 2.0975] completion_ms=[0.00025, 1.90225, 0.170875, 0.003583, 0.018042000000000002, 0.001667] counts=(160, 160, 0) focused=Some(true) occluded=false
+window-demand frame=159 requested=false animating=false
+window-input event=24 time_ms=21238.607542 kind=move logical=Some((184.16667, 61.166664))
+window-frame-input frame=160 start_ms=21239.632542 gap_ms=Some(17620.093125) event=24 input_events=1
+window-perf frame=160 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=14.417500 cpu_ms=[13.753959, 0.225917, 0.285958, 0.170542, 0.309, 2.6265, 0.454833, 0.612292, 0.23325, 8.835667] completion_ms=[0.000458, 7.617999999999999, 1.140625, 0.017707999999999998, 0.052917, 0.003875] counts=(161, 161, 0) focused=Some(true) occluded=false
+window-demand frame=160 requested=true animating=false
+window-frame-input frame=161 start_ms=21254.294917 gap_ms=Some(14.662375) event=24 input_events=0
+window-perf frame=161 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=12.109167 cpu_ms=[11.428291999999999, 0.12895800000000002, 0.405792, 0.280625, 0.49762500000000004, 3.445125, 0.49870800000000004, 0.547125, 0.2335, 5.390834] completion_ms=[0.000458, 4.907542, 0.44412500000000005, 0.007499, 0.027334, 0.002167] counts=(162, 162, 0) focused=Some(true) occluded=false
+window-demand frame=161 requested=true animating=false
+window-frame-input frame=162 start_ms=21266.537417 gap_ms=Some(12.2425) event=24 input_events=0
+window-perf frame=162 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=25.738125 cpu_ms=[25.345042000000003, 18.707042, 0.13075, 0.138708, 0.209209, 1.5505829999999998, 0.45679200000000003, 0.6076659999999999, 0.31125, 3.233042] completion_ms=[0.001, 2.776875, 0.419, 0.006999, 0.025459000000000002, 0.002375] counts=(163, 163, 0) focused=Some(true) occluded=false
+window-demand frame=162 requested=true animating=false
+window-frame-input frame=163 start_ms=21292.373375 gap_ms=Some(25.835957999999998) event=24 input_events=0
+window-perf frame=163 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.501833 cpu_ms=[16.112292, 9.713125, 0.1315, 0.133334, 0.201625, 1.361458, 0.40675, 0.439417, 0.16695800000000002, 3.558125] completion_ms=[0.000542, 2.796416, 0.7277089999999999, 0.007541, 0.021917, 0.001916] counts=(164, 164, 0) focused=Some(true) occluded=false
+window-demand frame=163 requested=true animating=false
+window-frame-input frame=164 start_ms=21309.018875 gap_ms=Some(16.645500000000002) event=24 input_events=0
+window-perf frame=164 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.313667 cpu_ms=[7.91275, 1.259333, 0.11479199999999999, 0.120917, 0.198458, 1.400458, 0.41783400000000004, 0.463583, 0.19716699999999998, 3.740208] completion_ms=[0.00045900000000000004, 3.362041, 0.34816699999999995, 0.0065, 0.01975, 0.001958] counts=(165, 165, 0) focused=Some(true) occluded=false
+window-demand frame=164 requested=true animating=false
+window-frame-input frame=165 start_ms=21317.402084 gap_ms=Some(8.383209) event=24 input_events=0
+window-perf frame=165 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.551292 cpu_ms=[8.160874999999999, 1.7391660000000002, 0.11695900000000001, 0.126375, 0.190958, 1.261833, 0.394875, 0.431459, 0.211166, 3.688084] completion_ms=[0.000875, 2.931459, 0.698625, 0.017958000000000002, 0.035457999999999996, 0.002209] counts=(166, 166, 0) focused=Some(true) occluded=false
+window-demand frame=165 requested=true animating=false
+window-frame-input frame=166 start_ms=21326.242542 gap_ms=Some(8.840458) event=24 input_events=0
+window-perf frame=166 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.155792 cpu_ms=[15.785, 9.812209000000001, 0.11808300000000001, 0.12362500000000001, 0.17450000000000002, 1.209625, 0.39441699999999996, 0.412333, 0.276375, 3.263833] completion_ms=[0.0011250000000000001, 2.683958, 0.545, 0.005708, 0.024666999999999998, 0.001958] counts=(167, 167, 0) focused=Some(true) occluded=false
+window-demand frame=166 requested=true animating=false
+window-frame-input frame=167 start_ms=21342.599959 gap_ms=Some(16.357416999999998) event=24 input_events=0
+window-perf frame=167 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.174958 cpu_ms=[7.823166, 2.0713329999999996, 0.098458, 0.116125, 0.18320899999999998, 1.212666, 0.395709, 0.41979099999999997, 0.186917, 3.1389579999999997] completion_ms=[0.0007080000000000001, 2.68525, 0.416458, 0.007208, 0.026292, 0.002042] counts=(168, 168, 0) focused=Some(true) occluded=false
+window-demand frame=167 requested=true animating=false
+window-frame-input frame=168 start_ms=21350.854625 gap_ms=Some(8.254666) event=24 input_events=0
+window-perf frame=168 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=15.478375 cpu_ms=[15.157084, 9.412375, 0.12525, 0.13012500000000002, 0.173542, 1.179333, 0.360667, 0.394875, 0.167875, 3.213042] completion_ms=[0.000541, 2.5705419999999997, 0.603375, 0.008166, 0.026542, 0.0022919999999999998] counts=(169, 169, 0) focused=Some(true) occluded=false
+window-demand frame=168 requested=true animating=false
+window-frame-input frame=169 start_ms=21366.524792 gap_ms=Some(15.670167) event=24 input_events=0
+window-perf frame=169 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.133041 cpu_ms=[7.712417, 1.962417, 0.101167, 0.10308300000000001, 0.175917, 1.2132079999999998, 0.361792, 0.421125, 0.184416, 3.189292] completion_ms=[0.000542, 2.772291, 0.384167, 0.005625000000000001, 0.022875, 0.0022500000000000003] counts=(170, 170, 0) focused=Some(true) occluded=false
+window-demand frame=169 requested=true animating=false
+window-input event=25 time_ms=21375.040875 kind=move logical=Some((184.16667, 61.166664))
+window-input event=26 time_ms=21375.176125 kind=down logical=Some((184.16667, 61.166664))
+window-input event=27 time_ms=21375.268625 kind=move logical=Some((650.0, 70.916664))
+window-input event=28 time_ms=21375.368250 kind=move logical=Some((650.0, 70.916664))
+window-input event=29 time_ms=21375.409834 kind=up logical=Some((650.0, 70.916664))
+window-frame-input frame=170 start_ms=21375.488209 gap_ms=Some(8.963417) event=29 input_events=5
+window-perf frame=170 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=30.365000 cpu_ms=[22.682750000000002, 0.06179199999999999, 1.814541, 0.114209, 1.664416, 13.054042, 2.135292, 0.388958, 0.211917, 3.237583] completion_ms=[0.00045900000000000004, 2.111, 1.035125, 0.032833, 0.038583, 0.018792] counts=(171, 171, 0) focused=Some(true) occluded=false
+window-demand frame=170 requested=true animating=false
+window-frame-input frame=171 start_ms=21406.255417 gap_ms=Some(30.767208) event=29 input_events=0
+window-perf frame=171 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.962792 cpu_ms=[7.34525, 0.127833, 0.205208, 0.190292, 0.340833, 2.8994590000000002, 0.37125, 0.415833, 0.186833, 2.6077090000000003] completion_ms=[0.000625, 2.2855000000000003, 0.282708, 0.008291, 0.025334, 0.003167] counts=(172, 172, 0) focused=Some(true) occluded=false
+window-demand frame=171 requested=true animating=false
+window-frame-input frame=172 start_ms=21414.504334 gap_ms=Some(8.248917) event=29 input_events=0
+window-perf frame=172 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=10.922125 cpu_ms=[10.51375, 4.3058749999999995, 0.117542, 0.12224999999999998, 0.176666, 1.248334, 0.3735, 0.429166, 0.22733399999999998, 3.513083] completion_ms=[0.000792, 2.9746249999999996, 0.5077499999999999, 0.005084, 0.021083, 0.002125] counts=(173, 173, 0) focused=Some(true) occluded=false
+window-demand frame=172 requested=true animating=false
+window-frame-input frame=173 start_ms=21425.628000 gap_ms=Some(11.123666) event=29 input_events=0
+window-perf frame=173 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.029542 cpu_ms=[15.627374999999999, 9.580833, 0.11204199999999999, 0.128792, 0.185583, 1.198417, 0.37483299999999997, 0.39379200000000003, 0.22170800000000002, 3.431375] completion_ms=[0.001459, 2.914958, 0.480042, 0.005625000000000001, 0.026125000000000002, 0.001792] counts=(174, 174, 0) focused=Some(true) occluded=false
+window-demand frame=173 requested=true animating=false
+window-frame-input frame=174 start_ms=21441.949667 gap_ms=Some(16.321667) event=29 input_events=0
+window-perf frame=174 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.751583 cpu_ms=[7.238792, 1.522708, 0.098584, 0.11325, 0.173541, 1.211875, 0.382625, 0.423292, 0.157625, 3.155292] completion_ms=[0.0007080000000000001, 2.5412920000000003, 0.577125, 0.006, 0.025707999999999998, 0.0029579999999999997] counts=(175, 175, 0) focused=Some(true) occluded=false
+window-demand frame=174 requested=true animating=false
+window-frame-input frame=175 start_ms=21449.854917 gap_ms=Some(7.9052500000000006) event=29 input_events=0
+window-perf frame=175 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.370875 cpu_ms=[7.9150409999999995, 2.241958, 0.098208, 0.107792, 0.18375, 1.184333, 0.38579199999999997, 0.417167, 0.163083, 3.132958] completion_ms=[0.000625, 2.659083, 0.44291699999999995, 0.005874000000000001, 0.021041999999999998, 0.002167] counts=(176, 176, 0) focused=Some(true) occluded=false
+window-demand frame=175 requested=true animating=false
+window-frame-input frame=176 start_ms=21458.584167 gap_ms=Some(8.729249999999999) event=29 input_events=0
+window-perf frame=176 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.539875 cpu_ms=[16.219082999999998, 10.032, 0.115667, 0.125083, 0.185458, 1.158334, 0.371541, 0.4685, 0.174209, 3.588291] completion_ms=[0.000583, 3.006, 0.543875, 0.005417, 0.028833, 0.0015] counts=(177, 177, 0) focused=Some(true) occluded=false
+window-demand frame=176 requested=true animating=false
+window-frame-input frame=177 start_ms=21475.268625 gap_ms=Some(16.684458) event=29 input_events=0
+window-perf frame=177 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.518834 cpu_ms=[7.009292, 1.505958, 0.092375, 0.12062500000000001, 0.17650000000000002, 1.225792, 0.381917, 0.416583, 0.170167, 2.919375] completion_ms=[0.0007080000000000001, 2.488459, 0.370458, 0.014458, 0.039167, 0.003375] counts=(178, 178, 0) focused=Some(true) occluded=false
+window-demand frame=177 requested=true animating=false
+window-frame-input frame=178 start_ms=21483.169792 gap_ms=Some(7.901167000000001) event=29 input_events=0
+window-perf frame=178 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.599250 cpu_ms=[8.151542, 2.1901669999999998, 0.091083, 0.107333, 0.167375, 1.176792, 0.36691700000000005, 0.423458, 0.183667, 3.44475] completion_ms=[0.000292, 2.810042, 0.602958, 0.007084, 0.021208, 0.002125] counts=(179, 179, 0) focused=Some(true) occluded=false
+window-demand frame=178 requested=true animating=false
+window-frame-input frame=179 start_ms=21491.937584 gap_ms=Some(8.767792) event=29 input_events=0
+window-perf frame=179 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.335375 cpu_ms=[15.997041999999999, 9.937750000000001, 0.11691700000000001, 0.125, 0.180208, 1.159, 0.360834, 0.38825, 0.18170799999999998, 3.547375] completion_ms=[0.000959, 2.9256249999999997, 0.5915, 0.0061660000000000005, 0.020375, 0.001625] counts=(180, 180, 0) focused=Some(true) occluded=false
+window-demand frame=179 requested=true animating=false
+window-frame-input frame=180 start_ms=21508.499292 gap_ms=Some(16.561708000000003) event=29 input_events=0
+window-perf frame=180 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.848250 cpu_ms=[7.378542, 1.6734580000000001, 0.095834, 0.10708300000000001, 0.19266699999999998, 1.287125, 0.3905, 0.425375, 0.169375, 3.037125] completion_ms=[0.000791, 2.602709, 0.37033299999999997, 0.013708999999999999, 0.041958, 0.004458] counts=(181, 181, 0) focused=Some(true) occluded=false
+window-demand frame=180 requested=true animating=false
+window-frame-input frame=181 start_ms=21516.583167 gap_ms=Some(8.083875) event=29 input_events=0
+window-perf frame=181 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.587375 cpu_ms=[8.181542, 2.236875, 0.10070799999999999, 0.1115, 0.175625, 1.2265, 0.392709, 0.439083, 0.187, 3.3115419999999998] completion_ms=[0.000875, 2.852166, 0.421875, 0.008667000000000001, 0.023625, 0.002208] counts=(182, 182, 0) focused=Some(true) occluded=false
+window-demand frame=181 requested=true animating=false
+window-frame-input frame=182 start_ms=21525.353917 gap_ms=Some(8.770750000000001) event=29 input_events=0
+window-perf frame=182 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.404541 cpu_ms=[16.0635, 10.072, 0.115625, 0.134291, 0.19287500000000002, 1.26075, 0.387167, 0.42216699999999996, 0.189333, 3.289292] completion_ms=[0.000375, 2.816542, 0.429541, 0.00825, 0.030542, 0.002458] counts=(183, 183, 0) focused=Some(true) occluded=false
+window-demand frame=182 requested=true animating=false
+window-frame-input frame=183 start_ms=21541.907042 gap_ms=Some(16.553124999999998) event=29 input_events=0
+window-perf frame=183 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.220417 cpu_ms=[7.897875, 1.885958, 0.110042, 0.11654199999999999, 0.18662499999999999, 1.249625, 0.379791, 0.435209, 0.205458, 3.328625] completion_ms=[0.00075, 2.699375, 0.583666, 0.009208000000000001, 0.030792, 0.003084] counts=(184, 184, 0) focused=Some(true) occluded=false
+window-demand frame=183 requested=true animating=false
+window-frame-input frame=184 start_ms=21550.322667 gap_ms=Some(8.415625) event=29 input_events=0
+window-perf frame=184 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.332666 cpu_ms=[16.00225, 9.883, 0.113542, 0.12741599999999997, 0.19295900000000002, 1.172166, 0.36225, 0.406459, 0.250208, 3.49425] completion_ms=[0.0011250000000000001, 2.836625, 0.6262909999999999, 0.0050420000000000005, 0.022458000000000002, 0.0015] counts=(185, 185, 0) focused=Some(true) occluded=false
+window-demand frame=184 requested=true animating=false
+window-frame-input frame=185 start_ms=21566.885250 gap_ms=Some(16.562583) event=29 input_events=0
+window-perf frame=185 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.790875 cpu_ms=[7.2932500000000005, 1.6165, 0.095166, 0.11425, 0.18745900000000001, 1.168916, 0.388959, 0.422458, 0.185625, 3.113917] completion_ms=[0.000584, 2.6725410000000003, 0.408667, 0.006208000000000001, 0.022584, 0.002042] counts=(186, 186, 0) focused=Some(true) occluded=false
+window-demand frame=185 requested=true animating=false
+window-frame-input frame=186 start_ms=21574.967750 gap_ms=Some(8.0825) event=29 input_events=0
+window-perf frame=186 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.379667 cpu_ms=[8.018542, 2.269125, 0.105667, 0.11029199999999999, 0.17375, 1.153541, 0.363875, 0.397, 0.16483399999999998, 3.280458] completion_ms=[0.000542, 2.923875, 0.324416, 0.005001, 0.023208, 0.001959] counts=(187, 187, 0) focused=Some(true) occluded=false
+window-demand frame=186 requested=true animating=false
+window-frame-input frame=187 start_ms=21583.574292 gap_ms=Some(8.606542) event=29 input_events=0
+window-perf frame=187 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.184375 cpu_ms=[15.818916999999999, 10.041042000000001, 0.11558299999999999, 0.12175000000000001, 0.168667, 1.157667, 0.35362499999999997, 0.391416, 0.1625, 3.306667] completion_ms=[0.0005, 2.77625, 0.486292, 0.005874, 0.032334, 0.003333] counts=(188, 188, 0) focused=Some(true) occluded=false
+window-demand frame=187 requested=true animating=false
+window-frame-input frame=188 start_ms=21600.023167 gap_ms=Some(16.448875) event=29 input_events=0
+window-perf frame=188 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.171583 cpu_ms=[7.769916, 1.9127079999999999, 0.095875, 0.107833, 0.185917, 1.2355420000000001, 0.394458, 0.421958, 0.19, 3.2256250000000004] completion_ms=[0.000458, 2.764625, 0.433292, 0.004375, 0.019833, 0.002] counts=(189, 189, 0) focused=Some(true) occluded=false
+window-demand frame=188 requested=true animating=false
+window-frame-input frame=189 start_ms=21608.340459 gap_ms=Some(8.317292) event=29 input_events=0
+window-perf frame=189 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.643958 cpu_ms=[16.361, 10.453875, 0.11625, 0.13045900000000002, 0.17475, 1.162666, 0.3685, 0.459042, 0.18075, 3.314708] completion_ms=[0.00075, 2.668167, 0.616125, 0.005958, 0.020792, 0.001667] counts=(190, 190, 0) focused=Some(true) occluded=false
+window-demand frame=189 requested=true animating=false
+window-frame-input frame=190 start_ms=21625.272334 gap_ms=Some(16.931874999999998) event=29 input_events=0
+window-perf frame=190 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.681000 cpu_ms=[7.305042, 1.637917, 0.100625, 0.115375, 0.18279099999999998, 1.206167, 0.395917, 0.432666, 0.188167, 3.045417] completion_ms=[0.0006670000000000001, 2.7819160000000003, 0.234334, 0.006833, 0.017875000000000002, 0.0018750000000000001] counts=(191, 191, 0) focused=Some(true) occluded=false
+window-demand frame=190 requested=true animating=false
+window-frame-input frame=191 start_ms=21633.125917 gap_ms=Some(7.853583) event=29 input_events=0
+window-perf frame=191 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.992666 cpu_ms=[8.626625, 2.419416, 0.21825, 0.190584, 0.207791, 1.2168750000000002, 0.375834, 0.40487500000000004, 0.197875, 3.395125] completion_ms=[0.000583, 2.993458, 0.373292, 0.005667000000000001, 0.019125, 0.0018750000000000001] counts=(192, 192, 0) focused=Some(true) occluded=false
+window-demand frame=191 requested=true animating=false
+window-frame-input frame=192 start_ms=21642.292625 gap_ms=Some(9.166708000000002) event=29 input_events=0
+window-perf frame=192 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=15.752834 cpu_ms=[15.31275, 9.505292, 0.119875, 0.12587500000000001, 0.188875, 1.2112500000000002, 0.38425, 0.395042, 0.174583, 3.2077080000000002] completion_ms=[0.000958, 2.7304999999999997, 0.440625, 0.006208, 0.026375, 0.001709] counts=(193, 193, 0) focused=Some(true) occluded=false
+window-demand frame=192 requested=true animating=false
+window-frame-input frame=193 start_ms=21658.212750 gap_ms=Some(15.920125) event=29 input_events=0
+window-perf frame=193 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.048292 cpu_ms=[7.687374999999999, 2.027125, 0.093916, 0.108084, 0.17029100000000003, 1.18725, 0.375334, 0.40325, 0.19245800000000002, 3.129667] completion_ms=[0.000458, 2.692917, 0.410375, 0.004208, 0.019417, 0.0014160000000000002] counts=(194, 194, 0) focused=Some(true) occluded=false
+window-demand frame=193 requested=true animating=false
+window-frame-input frame=194 start_ms=21666.442625 gap_ms=Some(8.229875) event=29 input_events=0
+window-perf frame=194 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.718000 cpu_ms=[16.402917, 10.502333, 0.11620899999999999, 0.121708, 0.170375, 1.1238750000000002, 0.360333, 0.440084, 0.167083, 3.4009169999999997] completion_ms=[0.0014160000000000002, 2.742875, 0.6292500000000001, 0.004501, 0.020832999999999997, 0.0012920000000000002] counts=(195, 195, 0) focused=Some(true) occluded=false
+window-demand frame=194 requested=true animating=false
+window-frame-input frame=195 start_ms=21683.450917 gap_ms=Some(17.008292) event=29 input_events=0
+window-perf frame=195 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.943583 cpu_ms=[7.499209, 1.7362499999999998, 0.09129200000000001, 0.104417, 0.179083, 1.2563749999999998, 0.399042, 0.421, 0.26887500000000003, 3.042875] completion_ms=[0.00075, 2.741041, 0.26058400000000004, 0.009625, 0.026208000000000002, 0.003042] counts=(196, 196, 0) focused=Some(true) occluded=false
+window-demand frame=195 requested=true animating=false
+window-frame-input frame=196 start_ms=21691.582750 gap_ms=Some(8.131833) event=29 input_events=0
+window-perf frame=196 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.216750 cpu_ms=[7.892417000000001, 2.2138750000000003, 0.08841700000000001, 0.10595800000000001, 0.166667, 1.108167, 0.35958300000000004, 0.39554199999999995, 0.150916, 3.3032920000000003] completion_ms=[0.0006670000000000001, 2.730041, 0.529334, 0.006457, 0.033209, 0.002334] counts=(197, 197, 0) focused=Some(true) occluded=false
+window-demand frame=196 requested=true animating=false
+window-frame-input frame=197 start_ms=21699.963834 gap_ms=Some(8.381084000000001) event=29 input_events=0
+window-perf frame=197 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.730584 cpu_ms=[16.410375000000002, 10.314874999999999, 0.11283299999999999, 0.133459, 0.183291, 1.1657499999999998, 0.364, 0.4165, 0.209709, 3.509958] completion_ms=[0.0005, 2.8620419999999998, 0.61425, 0.005542, 0.024208, 0.0018750000000000001] counts=(198, 198, 0) focused=Some(true) occluded=false
+window-demand frame=197 requested=true animating=false
+window-frame-input frame=198 start_ms=21716.900792 gap_ms=Some(16.936957999999997) event=29 input_events=0
+window-perf frame=198 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.715958 cpu_ms=[7.152375, 1.52275, 0.09787499999999999, 0.117834, 0.196625, 1.243666, 0.38108400000000003, 0.422541, 0.164167, 3.005833] completion_ms=[0.0005, 2.770667, 0.210375, 0.005167, 0.016166, 0.0015] counts=(199, 199, 0) focused=Some(true) occluded=false
+window-demand frame=198 requested=true animating=false
+window-frame-input frame=199 start_ms=21724.790125 gap_ms=Some(7.889333) event=29 input_events=0
+window-perf frame=199 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.425834 cpu_ms=[8.024750000000001, 2.3165, 0.093084, 0.112166, 0.1815, 1.1508340000000001, 0.371791, 0.40462499999999996, 0.153542, 3.240708] completion_ms=[0.000417, 2.630583, 0.5694170000000001, 0.009625000000000002, 0.026041, 0.0022919999999999998] counts=(200, 200, 0) focused=Some(true) occluded=false
+window-demand frame=199 requested=true animating=false
+window-frame-input frame=200 start_ms=21733.407750 gap_ms=Some(8.617625) event=29 input_events=0
+window-perf frame=200 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.214042 cpu_ms=[15.794415999999998, 10.090166, 0.11316699999999999, 0.13487500000000002, 0.169833, 1.13375, 0.366292, 0.450667, 0.194041, 3.141625] completion_ms=[0.001375, 2.619083, 0.49925, 0.0040420000000000005, 0.016167, 0.001167] counts=(201, 201, 0) focused=Some(true) occluded=false
+window-demand frame=200 requested=true animating=false
+window-frame-input frame=201 start_ms=21749.766000 gap_ms=Some(16.35825) event=29 input_events=0
+window-perf frame=201 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.721375 cpu_ms=[7.4065, 2.102125, 0.094084, 0.110916, 0.194459, 1.222583, 0.393042, 0.401166, 0.170292, 2.7178329999999997] completion_ms=[0.0005, 2.4928749999999997, 0.199625, 0.004666999999999999, 0.017583, 0.001666] counts=(202, 202, 0) focused=Some(true) occluded=false
+window-demand frame=201 requested=true animating=false
+window-frame-input frame=202 start_ms=21757.639375 gap_ms=Some(7.873375) event=29 input_events=0
+window-perf frame=202 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.616375 cpu_ms=[8.228875, 2.574375, 0.0975, 0.10058399999999999, 0.179875, 1.186166, 0.371875, 0.417209, 0.27745800000000004, 3.023833] completion_ms=[0.000959, 2.583291, 0.406667, 0.004958, 0.02525, 0.001709] counts=(203, 203, 0) focused=Some(true) occluded=false
+window-demand frame=202 requested=true animating=false
+window-frame-input frame=203 start_ms=21766.415125 gap_ms=Some(8.77575) event=29 input_events=0
+window-perf frame=203 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.721625 cpu_ms=[16.325375, 10.371167, 0.107833, 0.12595900000000002, 0.176541, 1.1470420000000001, 0.360542, 0.46825, 0.2845, 3.283541] completion_ms=[0.002, 2.618708, 0.611667, 0.009708, 0.036625000000000005, 0.002667] counts=(204, 204, 0) focused=Some(true) occluded=false
+window-demand frame=203 requested=true animating=false
+window-frame-input frame=204 start_ms=21783.414792 gap_ms=Some(16.999667) event=29 input_events=0
+window-perf frame=204 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.448916 cpu_ms=[7.006708000000001, 1.651042, 0.091791, 0.105292, 0.164208, 1.230084, 0.371166, 0.393292, 0.14962499999999998, 2.850208] completion_ms=[0.00075, 2.5834170000000003, 0.23266699999999998, 0.006542, 0.022458000000000002, 0.002916] counts=(205, 205, 0) focused=Some(true) occluded=false
+window-demand frame=204 requested=true animating=false
+window-frame-input frame=205 start_ms=21791.000042 gap_ms=Some(7.58525) event=29 input_events=0
+window-perf frame=205 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.309875 cpu_ms=[8.004833, 2.547667, 0.095916, 0.102625, 0.16975, 1.147375, 0.357292, 0.398625, 0.1625, 3.023083] completion_ms=[0.000625, 2.580667, 0.407708, 0.008208, 0.02275, 0.0020829999999999998] counts=(206, 206, 0) focused=Some(true) occluded=false
+window-demand frame=205 requested=true animating=false
+window-frame-input frame=206 start_ms=21799.476042 gap_ms=Some(8.475999999999999) event=29 input_events=0
+window-perf frame=206 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.861833 cpu_ms=[16.391750000000002, 10.597000000000001, 0.115166, 0.1235, 0.173917, 1.123292, 0.363791, 0.433334, 0.32554099999999997, 3.136209] completion_ms=[0.001834, 2.531375, 0.581333, 0.003708, 0.01525, 0.0015] counts=(207, 207, 0) focused=Some(true) occluded=false
+window-demand frame=206 requested=true animating=false
+window-frame-input frame=207 start_ms=21816.613875 gap_ms=Some(17.137833) event=29 input_events=0
+window-perf frame=207 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.667958 cpu_ms=[7.2767919999999995, 1.844875, 0.08825000000000001, 0.11225, 0.167667, 1.260125, 0.36450000000000005, 0.396708, 0.216584, 2.825833] completion_ms=[0.001791, 2.555625, 0.241542, 0.005292, 0.018958, 0.0015409999999999998] counts=(208, 208, 0) focused=Some(true) occluded=false
+window-demand frame=207 requested=true animating=false
+window-frame-input frame=208 start_ms=21824.450334 gap_ms=Some(7.8364590000000005) event=29 input_events=0
+window-perf frame=208 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.412084 cpu_ms=[7.996875, 2.44575, 0.101875, 0.113125, 0.17845799999999998, 1.173125, 0.380167, 0.425083, 0.186875, 2.9924169999999997] completion_ms=[0.000625, 2.47275, 0.47808300000000004, 0.009167, 0.027166, 0.002542] counts=(209, 209, 0) focused=Some(true) occluded=false
+window-demand frame=208 requested=true animating=false
+window-frame-input frame=209 start_ms=21833.101625 gap_ms=Some(8.651291) event=29 input_events=0
+window-perf frame=209 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.416167 cpu_ms=[16.085458, 10.394125, 0.120333, 0.127208, 0.18470899999999998, 1.185041, 0.383542, 0.438583, 0.317959, 2.933958] completion_ms=[0.001375, 2.479625, 0.42475, 0.004666999999999999, 0.021333, 0.001459] counts=(210, 210, 0) focused=Some(true) occluded=false
+window-demand frame=209 requested=true animating=false
+window-frame-input frame=210 start_ms=21849.771834 gap_ms=Some(16.670209) event=29 input_events=0
+window-perf frame=210 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.017083 cpu_ms=[7.590084, 1.982667, 0.08791700000000001, 0.108416, 0.168917, 1.171667, 0.390208, 0.410125, 0.160583, 3.109584] completion_ms=[0.000458, 2.682709, 0.387791, 0.006874999999999999, 0.027375, 0.002375] counts=(211, 211, 0) focused=Some(true) occluded=false
+window-demand frame=210 requested=true animating=false
+window-frame-input frame=211 start_ms=21857.985667 gap_ms=Some(8.213833000000001) event=29 input_events=0
+window-perf frame=211 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.347000 cpu_ms=[8.020375, 2.488958, 0.092125, 0.110083, 0.194542, 1.1486669999999999, 0.371291, 0.40487500000000004, 0.15420899999999998, 3.055625] completion_ms=[0.000458, 2.5444579999999997, 0.468959, 0.008541000000000002, 0.029167000000000002, 0.002375] counts=(212, 212, 0) focused=Some(true) occluded=false
+window-demand frame=211 requested=true animating=false
+window-frame-input frame=212 start_ms=21866.490125 gap_ms=Some(8.504458) event=29 input_events=0
+window-perf frame=212 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.110042 cpu_ms=[15.754875000000002, 10.25975, 0.10358400000000001, 0.12470800000000001, 0.171292, 1.145041, 0.367209, 0.38804099999999997, 0.150667, 3.044583] completion_ms=[0.00029099999999999997, 2.5275839999999996, 0.48095800000000005, 0.0105, 0.020874999999999998, 0.001958] counts=(213, 213, 0) focused=Some(true) occluded=false
+window-demand frame=212 requested=true animating=false
+window-frame-input frame=213 start_ms=21882.922500 gap_ms=Some(16.432375) event=29 input_events=0
+window-perf frame=213 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.167209 cpu_ms=[7.728958, 2.215, 0.09325, 0.106083, 0.17341700000000002, 1.215917, 0.357375, 0.438, 0.167458, 2.962458] completion_ms=[0.0005, 2.5755830000000004, 0.354375, 0.004625, 0.02375, 0.002125] counts=(214, 214, 0) focused=Some(true) occluded=false
+window-demand frame=213 requested=true animating=false
+window-frame-input frame=214 start_ms=21891.273959 gap_ms=Some(8.351459) event=29 input_events=0
+window-perf frame=214 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.392791 cpu_ms=[7.981624999999999, 2.479542, 0.09883299999999999, 0.106708, 0.177334, 1.139791, 0.365917, 0.398667, 0.158041, 3.056792] completion_ms=[0.000417, 2.5425, 0.467208, 0.011542, 0.028416999999999998, 0.0047079999999999995] counts=(215, 215, 0) focused=Some(true) occluded=false
+window-demand frame=214 requested=true animating=false
+window-frame-input frame=215 start_ms=21899.975709 gap_ms=Some(8.701749999999999) event=29 input_events=0
+window-perf frame=215 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.369458 cpu_ms=[15.922583000000001, 10.179875, 0.115125, 0.141125, 0.17375, 1.204625, 0.378, 0.410083, 0.219167, 3.1008329999999997] completion_ms=[0.000791, 2.6290839999999998, 0.412458, 0.015584, 0.037708, 0.002417] counts=(216, 216, 0) focused=Some(true) occluded=false
+window-demand frame=215 requested=true animating=false
+window-frame-input frame=216 start_ms=21916.562709 gap_ms=Some(16.587) event=29 input_events=0
+window-perf frame=216 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.538125 cpu_ms=[7.130834, 1.9300840000000001, 0.091375, 0.10166599999999999, 0.163292, 1.165625, 0.370875, 0.422583, 0.168125, 2.717209] completion_ms=[0.00041600000000000003, 2.2612919999999996, 0.423125, 0.006083000000000001, 0.022500000000000003, 0.002125] counts=(217, 217, 0) focused=Some(true) occluded=false
+window-demand frame=216 requested=true animating=false
+window-frame-input frame=217 start_ms=21924.280292 gap_ms=Some(7.717583) event=29 input_events=0
+window-perf frame=217 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.244917 cpu_ms=[8.768958, 2.990042, 0.18212499999999998, 0.16641599999999998, 0.283209, 1.32125, 0.375958, 0.411042, 0.162666, 2.8762499999999998] completion_ms=[0.000542, 2.4658330000000004, 0.361708, 0.009958999999999999, 0.031875, 0.003167] counts=(218, 218, 0) focused=Some(true) occluded=false
+window-demand frame=217 requested=true animating=false
+window-frame-input frame=218 start_ms=21933.810917 gap_ms=Some(9.530624999999999) event=29 input_events=0
+window-perf frame=218 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=15.497042 cpu_ms=[15.114417, 9.746583, 0.11825000000000001, 0.125125, 0.172292, 1.216, 0.358083, 0.42483400000000004, 0.176458, 2.7767920000000004] completion_ms=[0.000875, 2.416916, 0.32787499999999997, 0.005501, 0.022458000000000002, 0.001959] counts=(219, 219, 0) focused=Some(true) occluded=false
+window-demand frame=218 requested=true animating=false
+window-frame-input frame=219 start_ms=21951.312417 gap_ms=Some(17.5015) event=29 input_events=0
+window-perf frame=219 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=15.551750 cpu_ms=[15.080541, 8.7575, 0.218416, 0.199084, 0.239083, 1.351583, 0.36900000000000005, 0.427542, 0.2275, 3.290833] completion_ms=[0.00075, 2.572333, 0.6807920000000001, 0.008666, 0.024083999999999998, 0.002084] counts=(220, 220, 0) focused=Some(true) occluded=false
+window-demand frame=219 requested=true animating=false
+window-frame-input frame=220 start_ms=21967.050084 gap_ms=Some(15.737667) event=29 input_events=0
+window-perf frame=220 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.582750 cpu_ms=[7.188166, 1.804416, 0.182792, 0.12425000000000001, 0.18325, 1.202667, 0.373208, 0.41974999999999996, 0.171292, 2.7265409999999997] completion_ms=[0.000792, 2.429208, 0.250417, 0.009749999999999998, 0.031, 0.003166] counts=(221, 221, 0) focused=Some(true) occluded=false
+window-demand frame=220 requested=true animating=false
+window-frame-input frame=221 start_ms=21974.991917 gap_ms=Some(7.941833000000001) event=29 input_events=0
+window-perf frame=221 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.470375 cpu_ms=[16.027791999999998, 10.124375, 0.119792, 0.127458, 0.174167, 1.2386249999999999, 0.38766700000000004, 0.41525, 0.174416, 3.2660419999999997] completion_ms=[0.000375, 2.752875, 0.485333, 0.004292, 0.0205, 0.001583] counts=(222, 222, 0) focused=Some(true) occluded=false
+window-demand frame=221 requested=true animating=false
+window-frame-input frame=222 start_ms=21991.693875 gap_ms=Some(16.701957999999998) event=29 input_events=0
+window-perf frame=222 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.718875 cpu_ms=[7.268667000000001, 1.900292, 0.096875, 0.105666, 0.173375, 1.188917, 0.38699999999999996, 0.421208, 0.162917, 2.832417] completion_ms=[0.0005, 2.414041, 0.366625, 0.010917999999999999, 0.035040999999999996, 0.003291] counts=(223, 223, 0) focused=Some(true) occluded=false
+window-demand frame=222 requested=true animating=false
+window-frame-input frame=223 start_ms=21999.730375 gap_ms=Some(8.0365) event=29 input_events=0
+window-perf frame=223 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.522625 cpu_ms=[16.014666000000002, 10.41825, 0.107, 0.125416, 0.171834, 1.183666, 0.351709, 0.39399999999999996, 0.16837500000000002, 3.094416] completion_ms=[0.0005, 2.50125, 0.539917, 0.013000999999999999, 0.032666, 0.002541] counts=(224, 224, 0) focused=Some(true) occluded=false
+window-demand frame=223 requested=true animating=false
+window-frame-input frame=224 start_ms=22016.465417 gap_ms=Some(16.735042) event=29 input_events=0
+window-perf frame=224 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.083208 cpu_ms=[7.665292, 1.9824170000000003, 0.10245800000000001, 0.111834, 0.16899999999999998, 1.166583, 0.392458, 0.424209, 0.16625, 3.150083] completion_ms=[0.000458, 2.632667, 0.481291, 0.005208999999999999, 0.026583, 0.002375] counts=(225, 225, 0) focused=Some(true) occluded=false
+window-demand frame=224 requested=true animating=false
+window-frame-input frame=225 start_ms=22024.778875 gap_ms=Some(8.313457999999999) event=29 input_events=0
+window-perf frame=225 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.705584 cpu_ms=[16.361041999999998, 10.6155, 0.214584, 0.14958300000000002, 0.16349999999999998, 1.1677499999999998, 0.354167, 0.397083, 0.158833, 3.140042] completion_ms=[0.00029099999999999997, 2.627875, 0.472084, 0.007666, 0.027125, 0.0029170000000000003] counts=(226, 226, 0) focused=Some(true) occluded=false
+window-demand frame=225 requested=true animating=false
+window-frame-input frame=226 start_ms=22041.675834 gap_ms=Some(16.896959) event=29 input_events=0
+window-perf frame=226 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.221584 cpu_ms=[7.834707999999999, 2.200708, 0.139084, 0.112875, 0.180041, 1.189917, 0.379875, 0.416875, 0.16825, 3.0470829999999998] completion_ms=[0.000458, 2.445125, 0.562917, 0.012041, 0.024292, 0.001375] counts=(227, 227, 0) focused=Some(true) occluded=false
+window-demand frame=226 requested=true animating=false
+window-frame-input frame=227 start_ms=22050.260875 gap_ms=Some(8.585041) event=29 input_events=0
+window-perf frame=227 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.713375 cpu_ms=[16.144209, 9.875874999999999, 0.23566700000000002, 0.219958, 0.295584, 1.2409999999999999, 0.393291, 0.42012499999999997, 0.15925, 3.3034589999999997] completion_ms=[0.000584, 2.650583, 0.596917, 0.013541000000000001, 0.036292, 0.00325] counts=(228, 228, 0) focused=Some(true) occluded=false
+window-demand frame=227 requested=true animating=false
+window-frame-input frame=228 start_ms=22067.197584 gap_ms=Some(16.936709) event=29 input_events=0
+window-perf frame=228 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=15.589041 cpu_ms=[15.171624999999999, 9.627875, 0.108417, 0.121375, 0.16162500000000002, 1.155083, 0.34445899999999996, 0.39641600000000005, 0.14754199999999998, 3.108833] completion_ms=[0.00029099999999999997, 2.587084, 0.468208, 0.006667, 0.039375, 0.004791] counts=(229, 229, 0) focused=Some(true) occluded=false
+window-demand frame=228 requested=true animating=false
+window-frame-input frame=229 start_ms=22083.144125 gap_ms=Some(15.946541000000002) event=29 input_events=0
+window-perf frame=229 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.290459 cpu_ms=[7.773375, 2.219958, 0.098208, 0.10475, 0.172042, 1.16325, 0.361375, 0.424083, 0.1725, 3.057209] completion_ms=[0.00025, 2.5128749999999997, 0.49870899999999996, 0.005416, 0.032417, 0.005292000000000001] counts=(230, 230, 0) focused=Some(true) occluded=false
+window-demand frame=229 requested=true animating=false
+window-frame-input frame=230 start_ms=22091.724667 gap_ms=Some(8.580542) event=29 input_events=0
+window-perf frame=230 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.375292 cpu_ms=[15.952957999999999, 10.207458, 0.233667, 0.192958, 0.187667, 1.188166, 0.39058400000000004, 0.401625, 0.150083, 3.00075] completion_ms=[0.000458, 2.449083, 0.5219590000000001, 0.005083, 0.020832999999999997, 0.0018750000000000001] counts=(231, 231, 0) focused=Some(true) occluded=false
+window-demand frame=230 requested=true animating=false
+window-frame-input frame=231 start_ms=22108.302042 gap_ms=Some(16.577375) event=29 input_events=0
+window-perf frame=231 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.208125 cpu_ms=[7.811667, 1.984792, 0.140125, 0.15812500000000002, 0.285375, 1.229125, 0.39433300000000004, 0.414958, 0.14162499999999997, 3.063209] completion_ms=[0.0005, 2.492542, 0.509416, 0.014625, 0.04075, 0.003125] counts=(232, 232, 0) focused=Some(true) occluded=false
+window-demand frame=231 requested=true animating=false
+window-frame-input frame=232 start_ms=22116.682667 gap_ms=Some(8.380624999999998) event=29 input_events=0
+window-perf frame=232 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.207083 cpu_ms=[15.736625, 10.065625, 0.211708, 0.149417, 0.183708, 1.1881249999999999, 0.362959, 0.4205, 0.17962499999999998, 2.974958] completion_ms=[0.000584, 2.485541, 0.460542, 0.004625, 0.020874999999999998, 0.001666] counts=(233, 233, 0) focused=Some(true) occluded=false
+window-demand frame=232 requested=true animating=false
+window-frame-input frame=233 start_ms=22133.080792 gap_ms=Some(16.398125) event=29 input_events=0
+window-perf frame=233 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.435917 cpu_ms=[16.132707999999997, 10.572125, 0.20525, 0.166167, 0.17391600000000002, 1.183625, 0.363375, 0.394125, 0.155084, 2.919041] completion_ms=[0.000417, 2.4133750000000003, 0.4785, 0.004708, 0.019084, 0.001958] counts=(234, 234, 0) focused=Some(true) occluded=false
+window-demand frame=233 requested=true animating=false
+window-frame-input frame=234 start_ms=22149.651334 gap_ms=Some(16.570542) event=29 input_events=0
+window-perf frame=234 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=9.443834 cpu_ms=[8.965791000000001, 2.0474159999999997, 0.104917, 0.119125, 0.29291700000000004, 2.1466250000000002, 0.398208, 0.412833, 0.18575, 3.258] completion_ms=[0.000458, 2.605084, 0.607333, 0.010291999999999999, 0.03125, 0.0024159999999999997] counts=(235, 235, 0) focused=Some(true) occluded=false
+window-demand frame=234 requested=true animating=false
+window-frame-input frame=235 start_ms=22159.390959 gap_ms=Some(9.739625) event=29 input_events=0
+window-perf frame=235 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.229708 cpu_ms=[15.905208, 9.06475, 0.20741600000000002, 0.206292, 0.287, 1.9038329999999999, 0.397542, 0.423333, 0.272209, 3.142833] completion_ms=[0.0012079999999999999, 2.6313750000000002, 0.482333, 0.005, 0.019542, 0.0020829999999999998] counts=(236, 236, 0) focused=Some(true) occluded=false
+window-demand frame=235 requested=true animating=false
+window-frame-input frame=236 start_ms=22175.798834 gap_ms=Some(16.407874999999997) event=29 input_events=0
+window-perf frame=236 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.348041 cpu_ms=[15.975916999999999, 9.548417, 0.169666, 0.130834, 0.18625, 1.602958, 0.382083, 0.40175, 0.175375, 3.378584] completion_ms=[0.000458, 2.796209, 0.539083, 0.010041999999999999, 0.0295, 0.0022500000000000003] counts=(237, 237, 0) focused=Some(true) occluded=false
+window-demand frame=236 requested=true animating=false
+window-frame-input frame=237 start_ms=22192.398584 gap_ms=Some(16.59975) event=29 input_events=0
+window-perf frame=237 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.746750 cpu_ms=[16.402375, 9.463167, 0.24016700000000002, 0.199208, 0.312417, 1.600083, 0.382542, 0.463291, 0.232625, 3.5088749999999997] completion_ms=[0.001584, 2.826125, 0.637833, 0.007791, 0.030209000000000003, 0.0029579999999999997] counts=(238, 238, 0) focused=Some(true) occluded=false
+window-demand frame=237 requested=true animating=false
+window-frame-input frame=238 start_ms=22209.340584 gap_ms=Some(16.942) event=29 input_events=0
+window-perf frame=238 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.376125 cpu_ms=[7.034292, 1.068208, 0.181459, 0.17704099999999998, 0.210542, 1.599458, 0.41591700000000004, 0.401833, 0.168542, 2.811292] completion_ms=[0.0005, 2.472625, 0.313666, 0.004667, 0.01675, 0.001666] counts=(239, 239, 0) focused=Some(true) occluded=false
+window-demand frame=238 requested=true animating=false
+window-frame-input frame=239 start_ms=22217.015250 gap_ms=Some(7.674666) event=29 input_events=0
+window-perf frame=239 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.497583 cpu_ms=[15.877208, 9.762375, 0.162708, 0.115625, 0.16504200000000002, 1.564, 0.400542, 0.398, 0.185, 3.123916] completion_ms=[0.000375, 2.666917, 0.40087500000000004, 0.01025, 0.0385, 0.00425] counts=(240, 240, 0) focused=Some(true) occluded=false
+window-demand frame=239 requested=true animating=false
+window-frame-input frame=240 start_ms=22233.725875 gap_ms=Some(16.710625) event=29 input_events=0
+window-perf frame=240 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.716000 cpu_ms=[16.293125, 9.664625, 0.19175, 0.19366699999999998, 0.266208, 1.747875, 0.363792, 0.385917, 0.173791, 3.3055] completion_ms=[0.000375, 2.67975, 0.584209, 0.00825, 0.028374999999999997, 0.003459] counts=(241, 241, 0) focused=Some(true) occluded=false
+window-demand frame=240 requested=true animating=false
+window-frame-input frame=241 start_ms=22250.709500 gap_ms=Some(16.983625) event=29 input_events=0
+window-perf frame=241 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.834959 cpu_ms=[7.352625, 1.310875, 0.094417, 0.106375, 0.174416, 1.508459, 0.377083, 0.435625, 0.164292, 3.181083] completion_ms=[0.0005, 2.542417, 0.573708, 0.013751000000000001, 0.044708, 0.003791] counts=(242, 242, 0) focused=Some(true) occluded=false
+window-demand frame=241 requested=true animating=false
+window-frame-input frame=242 start_ms=22258.773667 gap_ms=Some(8.064167000000001) event=29 input_events=0
+window-perf frame=242 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.185041 cpu_ms=[15.866667000000001, 9.868542, 0.119292, 0.118291, 0.17275, 1.575542, 0.400417, 0.41770799999999997, 0.173542, 3.020583] completion_ms=[0.000458, 2.630083, 0.36241700000000004, 0.004958, 0.020125, 0.0015] counts=(243, 243, 0) focused=Some(true) occluded=false
+window-demand frame=242 requested=true animating=false
+window-frame-input frame=243 start_ms=22275.138084 gap_ms=Some(16.364417) event=29 input_events=0
+window-perf frame=243 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.762041 cpu_ms=[8.179416999999999, 1.7, 0.104125, 0.14612499999999998, 0.269584, 1.824083, 0.371542, 0.411583, 0.152667, 3.1997079999999998] completion_ms=[0.000458, 2.5743329999999998, 0.5698749999999999, 0.011583999999999999, 0.036458000000000004, 0.003417] counts=(244, 244, 0) focused=Some(true) occluded=false
+window-demand frame=243 requested=true animating=false
+window-frame-input frame=244 start_ms=22284.136250 gap_ms=Some(8.998166) event=29 input_events=0
+window-perf frame=244 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.199084 cpu_ms=[15.810208, 9.456042, 0.130333, 0.124167, 0.169166, 1.518792, 0.387625, 0.417375, 0.24912499999999999, 3.357583] completion_ms=[0.001666, 2.907209, 0.415875, 0.005749000000000001, 0.022834, 0.002417] counts=(245, 245, 0) focused=Some(true) occluded=false
+window-demand frame=244 requested=true animating=false
+window-frame-input frame=245 start_ms=22300.608167 gap_ms=Some(16.471916999999998) event=29 input_events=0
+window-perf frame=245 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.120333 cpu_ms=[15.724749999999998, 9.673833, 0.11462499999999999, 0.14525000000000002, 0.181792, 1.5704580000000001, 0.384375, 0.410458, 0.163917, 3.0800419999999997] completion_ms=[0.000458, 2.68275, 0.347417, 0.009750000000000002, 0.035916, 0.002084] counts=(246, 246, 0) focused=Some(true) occluded=false
+window-demand frame=245 requested=true animating=false
+window-frame-input frame=246 start_ms=22317.003084 gap_ms=Some(16.394917) event=29 input_events=0
+window-perf frame=246 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.261583 cpu_ms=[7.933292, 1.765625, 0.202125, 0.158375, 0.30529199999999995, 1.495083, 0.361375, 0.404417, 0.201208, 3.039792] completion_ms=[0.0005, 2.545709, 0.466333, 0.008709000000000001, 0.016166, 0.001375] counts=(247, 247, 0) focused=Some(true) occluded=false
+window-demand frame=246 requested=true animating=false
+window-frame-input frame=247 start_ms=22325.834125 gap_ms=Some(8.831040999999999) event=29 input_events=0
+window-perf frame=247 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=15.931417 cpu_ms=[15.571833999999999, 9.499167, 0.253167, 0.147791, 0.1685, 1.522459, 0.39554100000000003, 0.410667, 0.17862499999999998, 2.995917] completion_ms=[0.00041600000000000003, 2.5248340000000002, 0.440041, 0.0050420000000000005, 0.022500000000000003, 0.002042] counts=(248, 248, 0) focused=Some(true) occluded=false
+window-demand frame=247 requested=true animating=false
+window-frame-input frame=248 start_ms=22341.908584 gap_ms=Some(16.074459) event=29 input_events=0
+window-perf frame=248 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=17.094459 cpu_ms=[16.722583999999998, 9.929333999999999, 0.207291, 0.198042, 0.278333, 1.7780420000000001, 0.381833, 0.38987499999999997, 0.173084, 3.38675] completion_ms=[0.00033299999999999996, 2.717625, 0.6138330000000001, 0.012542, 0.036042, 0.003417] counts=(249, 249, 0) focused=Some(true) occluded=false
+window-demand frame=248 requested=true animating=false
+window-frame-input frame=249 start_ms=22359.394292 gap_ms=Some(17.485708) event=29 input_events=0
+window-perf frame=249 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.489083 cpu_ms=[7.072125000000001, 0.732166, 0.088625, 0.11254199999999999, 0.281375, 1.640542, 0.39354100000000003, 0.435, 0.17962499999999998, 3.2087090000000003] completion_ms=[0.000541, 2.6735, 0.503625, 0.006125, 0.022125, 0.001708] counts=(250, 250, 0) focused=Some(true) occluded=false
+window-demand frame=249 requested=true animating=false
+window-frame-input frame=250 start_ms=22367.153167 gap_ms=Some(7.758875) event=29 input_events=0
+window-perf frame=250 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.066333 cpu_ms=[15.682167, 9.638917000000001, 0.119417, 0.11825000000000001, 0.199666, 1.561542, 0.41075, 0.41274999999999995, 0.17975, 3.041125] completion_ms=[0.000541, 2.545584, 0.466125, 0.005707, 0.020084, 0.001958] counts=(251, 251, 0) focused=Some(true) occluded=false
+window-demand frame=250 requested=true animating=false
+window-frame-input frame=251 start_ms=22383.498459 gap_ms=Some(16.345292) event=29 input_events=0
+window-perf frame=251 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.663875 cpu_ms=[16.086583, 10.0385, 0.24620799999999998, 0.138042, 0.18904100000000001, 1.456, 0.362292, 0.397833, 0.156084, 3.102583] completion_ms=[0.00025, 2.648167, 0.418333, 0.0052499999999999995, 0.02425, 0.004084] counts=(252, 252, 0) focused=Some(true) occluded=false
+window-demand frame=251 requested=true animating=false
+window-frame-input frame=252 start_ms=22400.473125 gap_ms=Some(16.974666) event=29 input_events=0
+window-perf frame=252 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.298375 cpu_ms=[7.87325, 1.570208, 0.137375, 0.11933400000000001, 0.17675, 1.543958, 0.3755, 0.450583, 0.21825, 3.281292] completion_ms=[0.0005, 2.675, 0.5640419999999999, 0.010041999999999999, 0.027041000000000003, 0.003042] counts=(253, 253, 0) focused=Some(true) occluded=false
+window-demand frame=252 requested=true animating=false
+window-frame-input frame=253 start_ms=22409.036792 gap_ms=Some(8.563667) event=29 input_events=0
+window-perf frame=253 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=15.978291 cpu_ms=[15.534708, 9.522457999999999, 0.185333, 0.129959, 0.165041, 1.5061250000000002, 0.40291699999999997, 0.423917, 0.179916, 3.019042] completion_ms=[0.000875, 2.6380000000000003, 0.330708, 0.011291999999999998, 0.032666999999999995, 0.0035] counts=(254, 254, 0) focused=Some(true) occluded=false
+window-demand frame=253 requested=true animating=false
+window-frame-input frame=254 start_ms=22425.363292 gap_ms=Some(16.3265) event=29 input_events=0
+window-perf frame=254 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.265417 cpu_ms=[15.766499999999999, 9.828958, 0.111709, 0.138541, 0.18445899999999998, 1.5112079999999999, 0.36833299999999997, 0.395584, 0.17966600000000002, 3.048042] completion_ms=[0.0006659999999999999, 2.6620839999999997, 0.329333, 0.011500000000000002, 0.039417, 0.00275] counts=(255, 255, 0) focused=Some(true) occluded=false
+window-demand frame=254 requested=true animating=false
+window-frame-input frame=255 start_ms=22441.915667 gap_ms=Some(16.552375) event=29 input_events=0
+window-perf frame=255 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=8.621000 cpu_ms=[8.139541, 1.900541, 0.206417, 0.16658299999999998, 0.209042, 1.508375, 0.37375, 0.42862500000000003, 0.175917, 3.170291] completion_ms=[0.000542, 2.5751250000000003, 0.534042, 0.017458, 0.037042000000000005, 0.003459] counts=(256, 256, 0) focused=Some(true) occluded=false
+window-demand frame=255 requested=true animating=false
+window-frame-input frame=256 start_ms=22450.803500 gap_ms=Some(8.887832999999999) event=29 input_events=0
+window-perf frame=256 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.251542 cpu_ms=[15.813917, 9.50425, 0.241875, 0.22495800000000002, 0.211125, 1.5354590000000001, 0.392208, 0.39087500000000003, 0.190875, 3.122292] completion_ms=[0.000791, 2.640959, 0.419875, 0.013958, 0.041458, 0.0026249999999999997] counts=(257, 257, 0) focused=Some(true) occluded=false
+window-demand frame=256 requested=true animating=false
+window-frame-input frame=257 start_ms=22467.268959 gap_ms=Some(16.465459000000003) event=29 input_events=0
+window-perf frame=257 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=16.317958 cpu_ms=[15.917375000000002, 9.6565, 0.12795800000000002, 0.128458, 0.175959, 1.510916, 0.380459, 0.405791, 0.17737499999999998, 3.353959] completion_ms=[0.000542, 2.747792, 0.5595, 0.015208000000000001, 0.028, 0.002] counts=(258, 258, 0) focused=Some(true) occluded=false
+window-demand frame=257 requested=true animating=false
+window-frame-input frame=258 start_ms=22483.899125 gap_ms=Some(16.630166) event=29 input_events=0
+window-perf frame=258 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=7.901959 cpu_ms=[7.405292, 1.436792, 0.088125, 0.12025, 0.165625, 1.479916, 0.364709, 0.405291, 0.17791700000000002, 3.1666670000000003] completion_ms=[0.0005, 2.5266249999999997, 0.577167, 0.010957999999999999, 0.04425, 0.004084] counts=(259, 259, 0) focused=Some(true) occluded=false
+window-demand frame=258 requested=true animating=false
+window-frame-input frame=259 start_ms=22492.008834 gap_ms=Some(8.109709) event=29 input_events=0
+window-perf frame=259 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=20.557917 cpu_ms=[20.150375, 9.955208, 0.15729200000000002, 0.13104100000000002, 0.16525, 4.697459, 1.513208, 0.306583, 0.257834, 2.9665] completion_ms=[0.000625, 2.287333, 0.6154170000000001, 0.027082000000000002, 0.019959, 0.015416] counts=(260, 260, 0) focused=Some(true) occluded=false
+window-demand frame=259 requested=true animating=false
+window-frame-input frame=260 start_ms=22512.754917 gap_ms=Some(20.746083) event=29 input_events=0
+window-perf frame=260 nodes=1900 logical=(1280.0, 800.0) physical=(2560, 1600) wall_ms=6.282417 cpu_ms=[5.913708, 0.038583, 0.08462499999999999, 0.063917, 0.176666, 2.063, 0.499584, 0.48833299999999996, 0.302583, 2.196417] completion_ms=[0.001375, 2.023209, 0.145666, 0.003293, 0.020041, 0.002041] counts=(261, 261, 0) focused=Some(true) occluded=false
+window-demand frame=260 requested=false animating=false
+window-input event=30 time_ms=40598.733500 kind=move logical=Some((650.0, 70.916664))
+window-input event=31 time_ms=40615.231709 kind=move logical=Some((650.0, 70.916664))
+window-input event=32 time_ms=40615.576250 kind=down logical=Some((650.0, 70.916664))
+window-input event=33 time_ms=40615.707625 kind=move logical=Some((260.0, 81.75))
+window-input event=34 time_ms=40615.809250 kind=move logical=Some((260.0, 81.75))
+window-input event=35 time_ms=40615.858750 kind=up logical=Some((260.0, 81.75))
+
+thread 'main' (14597528) panicked at src/view/viewport/render/downstream_test_support.rs:39:13:
+unexpected native window fallback/failure: PaintAuthorityTelemetrySnapshot { authority_label: "retained-auto:legacy", selected: Legacy, rejection_labels: ["artifact:[LegacyBoundary(MissingPreparedInlineRoot)]"], legacy_fallback_stage: Some(Selection), terminal_failure_stage: None, resident_release_count: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

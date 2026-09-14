@@ -1,0 +1,114 @@
+{
+  "baseline-artifact": [
+    {
+      "run": "baseline-0-artifact.log",
+      "drag_build_median_ms": 7.664937
+    },
+    {
+      "run": "baseline-3-artifact.log",
+      "drag_build_median_ms": 7.714
+    },
+    {
+      "run": "baseline-4-artifact.log",
+      "drag_build_median_ms": 7.6202085
+    }
+  ],
+  "baseline-legacy": [
+    {
+      "run": "baseline-1-legacy.log",
+      "drag_build_median_ms": 0.3540835
+    },
+    {
+      "run": "baseline-2-legacy.log",
+      "drag_build_median_ms": 0.35633349999999997
+    },
+    {
+      "run": "baseline-5-legacy.log",
+      "drag_build_median_ms": 0.3509375
+    }
+  ],
+  "slots-artifact": [
+    {
+      "run": "slots-0-artifact.log",
+      "drag_build_median_ms": 7.2878125
+    },
+    {
+      "run": "slots-3-artifact.log",
+      "drag_build_median_ms": 7.290729000000001
+    },
+    {
+      "run": "slots-4-artifact.log",
+      "drag_build_median_ms": 7.308187500000001
+    }
+  ],
+  "slots-legacy": [
+    {
+      "run": "slots-1-legacy.log",
+      "drag_build_median_ms": 0.353625
+    },
+    {
+      "run": "slots-2-legacy.log",
+      "drag_build_median_ms": 0.35427050000000004
+    },
+    {
+      "run": "slots-5-legacy.log",
+      "drag_build_median_ms": 0.359396
+    }
+  ],
+  "hover-artifact": [
+    {
+      "run": "hover-0-artifact.log",
+      "drag_build_median_ms": 9.192021
+    },
+    {
+      "run": "hover-3-artifact.log",
+      "drag_build_median_ms": 9.5120415
+    },
+    {
+      "run": "hover-4-artifact.log",
+      "drag_build_median_ms": 9.297292
+    }
+  ],
+  "hover-legacy": [
+    {
+      "run": "hover-1-legacy.log",
+      "drag_build_median_ms": 0.393896
+    },
+    {
+      "run": "hover-2-legacy.log",
+      "drag_build_median_ms": 0.40989600000000004
+    },
+    {
+      "run": "hover-5-legacy.log",
+      "drag_build_median_ms": 0.408354
+    }
+  ],
+  "projection-artifact": [
+    {
+      "run": "projection-0-artifact.log",
+      "drag_build_median_ms": 2.936292
+    },
+    {
+      "run": "projection-3-artifact.log",
+      "drag_build_median_ms": 2.9614375
+    },
+    {
+      "run": "projection-4-artifact.log",
+      "drag_build_median_ms": 2.985958
+    }
+  ],
+  "projection-legacy": [
+    {
+      "run": "projection-1-legacy.log",
+      "drag_build_median_ms": 0.3465835
+    },
+    {
+      "run": "projection-2-legacy.log",
+      "drag_build_median_ms": 0.34479150000000003
+    },
+    {
+      "run": "projection-5-legacy.log",
+      "drag_build_median_ms": 0.34581249999999997
+    }
+  ]
+}
