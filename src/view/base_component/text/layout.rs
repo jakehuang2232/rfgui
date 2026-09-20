@@ -55,6 +55,7 @@ impl Layoutable for Text {
     }
 
     fn measure(&mut self, constraints: LayoutConstraints, _arena: &mut NodeArena) {
+        crate::ui::work_profile::count(|p| p.measure_calls += 1);
         if !self.dirty_flags.intersects(DirtyFlags::LAYOUT)
             && self.last_layout_constraints == Some(constraints)
             && !self.needs_standalone_preparation()
@@ -133,6 +134,7 @@ impl Layoutable for Text {
     }
 
     fn place(&mut self, placement: LayoutPlacement, _arena: &mut NodeArena) {
+        crate::ui::work_profile::count(|p| p.place_calls += 1);
         if !self.dirty_flags.intersects(
             DirtyFlags::PLACE
                 .union(DirtyFlags::BOX_MODEL)

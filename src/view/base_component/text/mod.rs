@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::style::{ColorLike, Cursor, HexColor, TextWrap, Transform, TransformKind, TransformOrigin};
+use crate::style::{
+    ColorLike, Cursor, HexColor, TextWrap, Transform, TransformKind, TransformOrigin,
+};
 use crate::view::inline_formatting_context::{
     InlineFormattingContext, InlineIfcAlignment, InlineIfcTextPassPaintInput,
 };
@@ -1266,6 +1268,13 @@ impl ElementTrait for Text {
         ))
     }
 
+    fn dirty_observation_is_tracked(&self) -> bool {
+        // Preparation may fill a shared OnceCell through a read-only handle.
+        // Until it is filled, observe the derived RESOURCE/LAYOUT flags live.
+        // Invalidating an already prepared context requires mutable host access.
+        !self.needs_standalone_preparation()
+    }
+
     fn local_dirty_flags(&self) -> super::DirtyFlags {
         if self.needs_standalone_preparation() {
             self.dirty_flags
@@ -1299,6 +1308,10 @@ impl ElementTrait for Text {
 
     fn ingest_props(&mut self, node: &crate::ui::RsxElementNode) -> Result<(), String> {
         Text::ingest_props_impl(self, node)
+    }
+
+    fn prop_preserves_child_identity(&self, _name: &str) -> bool {
+        true
     }
 
     fn apply_prop(

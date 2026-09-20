@@ -1,8 +1,11 @@
 //! Opt-in downstream integration-test observation. No selector overrides or
 //! fallback exemptions: controls run their real RSX reconciliation and renderer.
 use super::*;
+mod diagnostics;
+pub use diagnostics::RendererTestDiagnostics;
 
 pub struct RendererTestFrame {
+    pub diagnostics: Option<RendererTestDiagnostics>,
     /// CPU milliseconds: total, begin, layout, prepare, property sync, build,
     /// compile, execute, finish, end. Offscreen acquisition excludes host present.
     pub cpu_ms: [f64; 10],
@@ -21,6 +24,12 @@ pub struct RendererTestFrame {
 }
 
 impl Viewport {
+    /// Opt-in fine-grained CPU diagnostics; time these separately from benchmarks.
+    pub fn set_renderer_diagnostics_for_test(&mut self, enabled: bool) {
+        self.frame.diagnostics_enabled = enabled;
+        self.frame.last_diagnostics = None;
+    }
+
     /// Exercise the native entry while checking the authority actually selected.
     /// Surface acquisition retries remain normal host behavior and yield no sample.
     #[doc(hidden)]
@@ -70,6 +79,7 @@ impl Viewport {
         if !dpr.is_finite() || dpr <= 0.0 || size.contains(&0) {
             return Err("invalid test viewport".into());
         }
+        self.frame.last_diagnostics = None;
         let allocations_before = self
             .frame
             .offscreen_render_target_pool
@@ -95,7 +105,7 @@ impl Viewport {
         let _capture = enable_paint_authority_test_capture();
         let _ = crate::view::paint::take_last_production_actions_for_test();
         let before = self.frame_completion_counts_for_test();
-        self.render_rsx_at(root, now)?;
+        self.render_rsx_at(root, now, None)?;
         let after = self.frame_completion_counts_for_test();
         if self.frame.frame_state.is_some() || after != (before.0 + 1, before.1, before.2) {
             return Err(format!(
@@ -144,6 +154,7 @@ impl Viewport {
         }
         persistent_targets.sort();
         Ok(RendererTestFrame {
+            diagnostics: self.frame.last_diagnostics.take(),
             cpu_ms: self.frame.last_cpu_phases,
             target_allocations: self
                 .frame

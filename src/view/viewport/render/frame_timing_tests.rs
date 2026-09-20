@@ -78,7 +78,10 @@ fn frame_timing_lists_measured_phases_without_a_residual_bucket() {
 #[test]
 fn frame_timing_details_do_not_double_count_rsx_relayout_or_new_phases() {
     let timings = FrameTimings {
-        rsx_build_ms: 2.5,
+        frontend: FrontendProfile {
+            rsx_build_ms: 2.5,
+            ..Default::default()
+        },
         layout_ms: 0.2,
         post_layout_transition_ms: 0.122,
         relayout_ms: 0.1,
@@ -222,4 +225,28 @@ pub(super) fn assert_frame_accounting(t: &FrameTimings) {
         "frame phase sum differs from wall time: phases={phases:?}, sum={sum}, total={}",
         t.total_ms
     );
+}
+
+#[test]
+fn frontend_intervals_are_additive_but_unwrap_is_nested_in_build() {
+    let t = FrameTimings {
+        frontend: FrontendProfile {
+            state_flush_ms: 0.3,
+            rsx_build_ms: 2.5,
+            scene_update_ms: 1.7,
+            work: crate::ui::UiWorkProfile {
+                unwrap_ms: 2.0,
+                reconcile_ms: 0.4,
+                incremental_commit_ms: 0.5,
+                ..Default::default()
+            },
+        },
+        ..complete_frame_timings()
+    };
+    let trace = plain_trace(&t, &ViewportDebugOptions::default());
+    assert!(trace.starts_with("render_frame #3043 22.197ms"), "{trace}");
+    let child_sum: f64 = top_level_lines(&trace).into_iter().map(displayed_ms).sum();
+    assert!((child_sum - 22.197).abs() < 1e-9, "{trace}");
+    assert!(trace.contains("scene_update 1.700ms"));
+    assert!(trace.contains("unwrap nodes=0 components=0 memo_hits=0 2.000ms"));
 }

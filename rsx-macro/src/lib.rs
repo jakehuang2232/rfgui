@@ -67,7 +67,19 @@ impl Parse for MultipleNodes {
 }
 
 #[proc_macro_attribute]
-pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let memo = if attr.is_empty() {
+        true
+    } else if attr.to_string() == "no_memo" {
+        false
+    } else {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "expected #[component] or #[component(no_memo)]",
+        )
+        .to_compile_error()
+        .into();
+    };
     // Two accepted forms:
     //   1. `#[component] fn Foo(...) -> RsxNode { ... }`
     //      — generates the whole component (struct + RsxComponent + RsxTag +
@@ -79,10 +91,15 @@ pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
     //        for hand-written components without rewriting them as a fn.
     let item2: proc_macro2::TokenStream = item.clone().into();
     if let Ok(input_impl) = syn::parse2::<syn::ItemImpl>(item2) {
-        return expand_component_impl(input_impl).into();
+        return expand_component_impl(input_impl, memo).into();
     }
     let input_fn = syn::parse_macro_input!(item as ItemFn);
-    expand_component(input_fn).into()
+    if memo {
+        expand_component(input_fn)
+    } else {
+        expand_component_with_memo(input_fn, false)
+    }
+    .into()
 }
 
 #[proc_macro_attribute]
@@ -904,7 +921,7 @@ fn close_tag_has_args(path: &Path) -> bool {
         .any(|seg| !matches!(seg.arguments, syn::PathArguments::None))
 }
 
-fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStream {
+fn expand_component_impl(mut input_impl: syn::ItemImpl, memo: bool) -> proc_macro2::TokenStream {
     let rfgui = rfgui_path();
     // Validate that this is `impl <...> RsxTag for T`.
     let trait_ok = input_impl
@@ -977,6 +994,11 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStr
     // debug output; matches existing behaviour of `stringify!(#comp_name)`
     // in the fn-form expansion.
     let type_name_str = quote!(#self_ty).to_string().replace(' ', "");
+    let props_eq = if memo {
+        quote!(::core::option::Option::Some(<#self_ty>::__rsx_vtable_props_eq_shim))
+    } else {
+        quote!(::core::option::Option::None)
+    };
 
     quote! {
         #input_impl
@@ -984,6 +1006,13 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStr
         // P2/P5: compile-time type-erased dispatch shims. Mono per T.
         #[allow(non_snake_case, dead_code)]
         impl #impl_generics #self_ty #where_clause {
+            #[doc(hidden)]
+            unsafe fn __rsx_vtable_props_eq_shim(a: ::core::ptr::NonNull<()>, b: ::core::ptr::NonNull<()>) -> bool {
+                let a: &#strict_props_ty = unsafe { &*a.as_ptr().cast() };
+                let b: &#strict_props_ty = unsafe { &*b.as_ptr().cast() };
+                use #rfgui::ui::MemoCompareValue as _;
+                (&&#rfgui::ui::MemoCompare(a)).memo_eq(b)
+            }
             #[doc(hidden)]
             unsafe fn __rsx_vtable_render_shim(
                 props: ::core::ptr::NonNull<()>,
@@ -1023,7 +1052,7 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStr
                     render: <#self_ty>::__rsx_vtable_render_shim,
                     drop_props: <#self_ty>::__rsx_vtable_drop_props_shim,
                     clone_props: <#self_ty>::__rsx_vtable_clone_props_shim,
-                    props_eq: ::core::option::Option::None,
+                    props_eq: #props_eq,
                     type_name: #type_name_str,
                 };
         }
@@ -1031,6 +1060,10 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl) -> proc_macro2::TokenStr
 }
 
 fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
+    expand_component_with_memo(input_fn, true)
+}
+
+fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::TokenStream {
     let rfgui = rfgui_path();
     if input_fn.sig.asyncness.is_some()
         || input_fn.sig.constness.is_some()
@@ -1073,6 +1106,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
     };
 
     let mut prop_fields = Vec::new();
+    let mut prop_comparisons = Vec::new();
     let mut helper_args = Punctuated::<FnArg, Token![,]>::new();
     let mut helper_call_args = Vec::new();
     let mut accepts_children = false;
@@ -1112,6 +1146,8 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
             ty.clone()
         };
         prop_fields.push(quote!(pub #field_ident: #props_field_ty));
+        prop_comparisons
+            .push(quote!((&&#rfgui::ui::MemoCompare(&a.#field_ident)).memo_eq(&b.#field_ident)));
         let (init_inner, is_already_option) = match option_inner_type(&props_field_ty) {
             Some(inner) => (inner.clone(), true),
             None => (props_field_ty.clone(), false),
@@ -1144,6 +1180,13 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
         helper_call_args.push(quote!(props.#field_ident));
     }
 
+    let props_eq = if memo {
+        quote!(::core::option::Option::Some(
+            <Self>::__rsx_vtable_props_eq_shim
+        ))
+    } else {
+        quote!(::core::option::Option::None)
+    };
     let body = &input_fn.block;
     let helper_generics = &input_fn.sig.generics;
 
@@ -1249,6 +1292,16 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
         #[allow(non_snake_case, dead_code)]
         impl #impl_generics #comp_name #ty_generics #where_clause {
             #[doc(hidden)]
+            unsafe fn __rsx_vtable_props_eq_shim(a: ::core::ptr::NonNull<()>, b: ::core::ptr::NonNull<()>) -> bool {
+                #[allow(unused_variables)]
+                let a: &#props_name #ty_generics = unsafe { &*a.as_ptr().cast() };
+                #[allow(unused_variables)]
+                let b: &#props_name #ty_generics = unsafe { &*b.as_ptr().cast() };
+                #[allow(unused_imports)]
+                use #rfgui::ui::MemoCompareValue as _;
+                true #(&& #prop_comparisons)*
+            }
+            #[doc(hidden)]
             unsafe fn __rsx_vtable_render_shim(
                 props: ::core::ptr::NonNull<()>,
                 children: ::std::vec::Vec<#rfgui::ui::RsxNode>,
@@ -1286,7 +1339,7 @@ fn expand_component(input_fn: ItemFn) -> proc_macro2::TokenStream {
                     render: <Self>::__rsx_vtable_render_shim,
                     drop_props: <Self>::__rsx_vtable_drop_props_shim,
                     clone_props: <Self>::__rsx_vtable_clone_props_shim,
-                    props_eq: ::core::option::Option::None,
+                    props_eq: #props_eq,
                     type_name: ::core::stringify!(#comp_name),
                 };
         }

@@ -173,6 +173,14 @@ pub(crate) fn place_axis_children(inputs: PlaceAxisChildrenInputs<'_>, arena: &m
                             } else {
                                 item_main
                             };
+                            if let Some(native) = child.as_any_mut().downcast_mut::<Element>() {
+                                native.restore_reusable_axis_assignment(
+                                    is_row,
+                                    item_target_main,
+                                    line_cross,
+                                    cross_size == CrossSize::Stretch,
+                                );
+                            }
                             if is_row {
                                 child.set_layout_width(item_target_main);
                             } else {
@@ -273,6 +281,15 @@ fn flex_axis_child_replay(
     child_parent_hit_test_clip: Option<Rect>,
 ) -> FlexAxisChildReplay {
     if !matches!(layout, Layout::Flex { .. }) || !is_row || gap.abs() > f32::EPSILON {
+        with_layout_place_profile(|p| {
+            if !matches!(layout, Layout::Flex { .. }) {
+                p.axis_replay_reject_layout += 1;
+            } else if !is_row {
+                p.axis_replay_reject_axis += 1;
+            } else {
+                p.axis_replay_reject_gap += 1;
+            }
+        });
         return FlexAxisChildReplay::Place;
     }
     let Some(child_parent_hit_test_clip) = child_parent_hit_test_clip else {

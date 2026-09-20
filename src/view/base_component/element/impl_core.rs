@@ -795,6 +795,7 @@ impl Element {
             last_parent_layout_y: y,
             layout_assigned_width: None,
             layout_assigned_height: None,
+            reusable_measure_assignment: None,
             is_hovered: false,
             event_handlers: None,
             layout_dirty: true,

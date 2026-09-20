@@ -4,7 +4,7 @@ pub(super) trait PendingState {
     fn dirty(&self) -> UiDirtyState;
     // Detach all queues before running any user updater. Writes made by an
     // updater belong to the next batch, even when they target another slot.
-    fn prepare(self: Rc<Self>) -> Box<dyn FnOnce()>;
+    fn prepare(self: Rc<Self>) -> Box<dyn FnOnce() -> Option<ChangedState>>;
 }
 
 impl<T: Clone + PartialEq + 'static> PendingState for BindingPropPayload<T> {
@@ -16,12 +16,16 @@ impl<T: Clone + PartialEq + 'static> PendingState for BindingPropPayload<T> {
         }
     }
 
-    fn prepare(self: Rc<Self>) -> Box<dyn FnOnce()> {
+    fn prepare(self: Rc<Self>) -> Box<dyn FnOnce() -> Option<ChangedState>> {
         self.scheduled.set(false);
         let actions = std::mem::take(&mut *self.pending.borrow_mut());
+        crate::ui::work_profile::count(|p| {
+            p.state_targets += 1;
+            p.state_actions += actions.len();
+        });
         Box::new(move || {
             if !self.alive.get() {
-                return;
+                return None;
             }
             let previous = self.value.borrow().clone();
             let mut next = (*previous).clone();
@@ -32,12 +36,18 @@ impl<T: Clone + PartialEq + 'static> PendingState for BindingPropPayload<T> {
                 }
             }
             if next != *previous {
+                crate::ui::work_profile::count(|p| p.changed_targets += 1);
                 if let Some(cell) = &self.legacy_cell {
                     *cell.borrow_mut() = next.clone();
                 }
                 *self.value.borrow_mut() = Rc::new(next);
-                notify_state_changed(self.dirty_state, self.owner_component.clone());
+                return Some(ChangedState {
+                    target: self.target,
+                    dirty: self.dirty_state,
+                    owner: self.owner_component.clone(),
+                });
             }
+            None
         })
     }
 }
@@ -77,18 +87,28 @@ pub fn flush_state_updates() {
     {
         return;
     }
-    struct Guard;
+    let _profile = crate::ui::work_profile::scope(crate::ui::work_profile::Phase::StateFlush);
+    struct Guard {
+        changes: Vec<ChangedState>,
+    }
     impl Drop for Guard {
         fn drop(&mut self) {
+            // Publish invalidation once after all commits. On unwind, values
+            // already committed must still invalidate their old memo output.
+            dependencies::publish_changes(&self.changes);
             FLUSHING_STATE.set(false);
         }
     }
-    let _guard = Guard;
+    let mut guard = Guard {
+        changes: Vec::new(),
+    };
     WAKE_REQUESTED.set(false);
     let pending = PENDING_STATE.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
     let commits: Vec<_> = pending.into_iter().map(|state| state.prepare()).collect();
     for commit in commits {
-        commit();
+        if let Some(change) = commit() {
+            guard.changes.push(change);
+        }
     }
 }
 

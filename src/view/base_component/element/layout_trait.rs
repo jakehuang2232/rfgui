@@ -55,6 +55,77 @@ impl Element {
         constraints: LayoutConstraints,
         arena: &NodeArena,
     ) -> bool {
+        self.layout_assigned_width.is_none()
+            && self.layout_assigned_height.is_none()
+            && self.can_reuse_measure_output(constraints, arena)
+    }
+
+    pub(crate) fn clear_measure_assignment(&mut self) {
+        self.reusable_measure_assignment = None;
+        with_layout_place_profile(|p| {
+            p.assignment_clears += usize::from(
+                self.layout_assigned_width.is_some() || self.layout_assigned_height.is_some(),
+            )
+        });
+        self.layout_assigned_width = None;
+        self.layout_assigned_height = None;
+    }
+
+    /// Caller has proved `can_reuse_measure_output` for the current proposal
+    /// and subtree. Retain only assignment provenance, never dirty validity.
+    pub(crate) fn clear_reusable_measure_assignment(&mut self) {
+        let previous = self.reusable_measure_assignment.or_else(|| {
+            (self.last_layout_placement.is_some()
+                && !self.active_layout_transition_runtime_state()
+                && !self
+                    .dirty_flags
+                    .intersects(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT)))
+            .then_some([self.layout_assigned_width, self.layout_assigned_height])
+        });
+        self.clear_measure_assignment();
+        self.reusable_measure_assignment = previous;
+    }
+
+    /// Restore bookkeeping, not geometry. Normal setters, placement, IFC and
+    /// paint gates still run. A removed cross-axis assignment is a mismatch.
+    pub(crate) fn restore_reusable_axis_assignment(
+        &mut self,
+        is_row: bool,
+        main: f32,
+        cross: f32,
+        stretch: bool,
+    ) {
+        let Some(previous) = self.reusable_measure_assignment.take() else {
+            return;
+        };
+        if self.layout_dirty
+            || self.active_layout_transition_runtime_state()
+            || self
+                .dirty_flags
+                .intersects(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT))
+        {
+            return;
+        }
+        let mut next = [self.layout_assigned_width, self.layout_assigned_height];
+        next[usize::from(!is_row)] = Some(main.max(0.0));
+        if stretch && self.flex_props().allows_cross_stretch(is_row) {
+            next[usize::from(is_row)] = Some(cross.max(0.0));
+        }
+        if previous.map(|v| v.map(f32::to_bits)) != next.map(|v| v.map(f32::to_bits)) {
+            return;
+        }
+        self.layout_assigned_width = next[0];
+        self.layout_assigned_height = next[1];
+        with_layout_place_profile(|p| p.assignment_restores += 1);
+    }
+
+    /// Same early-return contract as measure, after its mandatory assignment
+    /// reset. Axis layout assigns dimensions again during placement.
+    pub(crate) fn can_reuse_measure_output(
+        &self,
+        constraints: LayoutConstraints,
+        arena: &NodeArena,
+    ) -> bool {
         let context = constraints.context();
         let proposal = LayoutProposal {
             width: context.width,
@@ -64,9 +135,7 @@ impl Element {
             percent_base_width: context.percent_base_width,
             percent_base_height: context.percent_base_height,
         };
-        self.layout_assigned_width.is_none()
-            && self.layout_assigned_height.is_none()
-            && !self.layout_dirty
+        !self.layout_dirty
             && self.last_layout_proposal == Some(proposal)
             && !self
                 .children
@@ -98,8 +167,9 @@ impl Layoutable for Element {
         constraints: LayoutConstraints,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
-        self.layout_assigned_width = None;
-        self.layout_assigned_height = None;
+        let _profile = layout_profile_scope(LayoutPlaceTiming::MeasureBody);
+        crate::ui::work_profile::count(|p| p.measure_calls += 1);
+        self.clear_measure_assignment();
         let context = constraints.context();
         let proposal = LayoutProposal {
             width: context.width,
@@ -230,9 +300,11 @@ impl Layoutable for Element {
             } else {
                 let child_keys: Vec<crate::view::node_arena::NodeKey> = self.children.clone();
                 for child_key in child_keys {
-                    arena.with_element_taken(child_key, |child, arena| {
-                        child.measure(child_constraints, arena);
-                    });
+                    crate::view::layout::measure::measure_child_if_needed(
+                        arena,
+                        child_key,
+                        child_constraints,
+                    );
                 }
             }
 
@@ -278,6 +350,9 @@ impl Layoutable for Element {
         placement: LayoutPlacement,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        let _profile = layout_profile_scope(LayoutPlaceTiming::PlaceBody);
+        self.reusable_measure_assignment = None;
+        crate::ui::work_profile::count(|p| p.place_calls += 1);
         // O(1) cache read per child; see refresh_subtree_dirty_cache.
         let placement_dirty_mask = DirtyPassMask::PLACEMENT;
         let child_placement_dirty = record_refreshed_layout_gate_child_candidates(
@@ -299,8 +374,23 @@ impl Layoutable for Element {
                     Some(self.current_child_hit_test_clip_rect()),
                 ))
         {
+            with_layout_place_profile(|p| p.place_returned_clean += 1);
             return;
         }
+        with_layout_place_profile(|p| {
+            p.place_self_dirty += usize::from(self.dirty_flags.intersects(placement_dirty_mask));
+            p.place_descendant_dirty += usize::from(child_placement_dirty);
+            p.place_ifc_dirty += usize::from(inline_ifc_layout_call_site_dirty);
+            p.place_input_changed += usize::from(self.last_layout_placement != Some(placement));
+            p.place_clip_changed += usize::from(
+                !self.hit_test_clip_matches_current_placement(placement)
+                    || (!self.children.is_empty()
+                        && !rect_approx_eq(
+                            self.last_child_hit_test_clip_rect,
+                            Some(self.current_child_hit_test_clip_rect()),
+                        )),
+            );
+        });
 
         self.begin_place_scope(placement);
         with_layout_place_profile(|profile| {
@@ -421,6 +511,18 @@ impl Layoutable for Element {
     fn set_layout_width(&mut self, width: f32) {
         let width = width.max(0.0);
         if self.layout_assigned_width != Some(width) {
+            with_layout_place_profile(|p| {
+                p.assignment_dirty_calls += 1;
+                // Observation only: equal placed size is not a reuse proof
+                // for transitions, percentage constraints, or inline packages.
+                p.assignment_dirty_same_placed_size +=
+                    usize::from(self.layout_state.layout_size.width.to_bits() == width.to_bits());
+                p.assignment_dirty_previously_clean += usize::from(
+                    !self
+                        .dirty_flags
+                        .intersects(DirtyPassMask::PLACEMENT.union(DirtyPassMask::PAINT)),
+                );
+            });
             self.layout_assigned_width = Some(width);
             self.mark_place_dirty();
         }
@@ -429,6 +531,18 @@ impl Layoutable for Element {
     fn set_layout_height(&mut self, height: f32) {
         let height = height.max(0.0);
         if self.layout_assigned_height != Some(height) {
+            with_layout_place_profile(|p| {
+                p.assignment_dirty_calls += 1;
+                // Observation only: equal placed size is not a reuse proof
+                // for transitions, percentage constraints, or inline packages.
+                p.assignment_dirty_same_placed_size +=
+                    usize::from(self.layout_state.layout_size.height.to_bits() == height.to_bits());
+                p.assignment_dirty_previously_clean += usize::from(
+                    !self
+                        .dirty_flags
+                        .intersects(DirtyPassMask::PLACEMENT.union(DirtyPassMask::PAINT)),
+                );
+            });
             self.layout_assigned_height = Some(height);
             self.mark_place_dirty();
         }

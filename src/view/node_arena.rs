@@ -21,8 +21,8 @@ use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::ops::Deref;
 use std::sync::Arc;
 
-mod render_changes;
 mod mutation_history;
+mod render_changes;
 
 use crate::view::base_component::{DirtyFlags, ElementTrait, PlacementSkipFailureReason};
 
@@ -106,6 +106,9 @@ pub struct Node {
     element: RefCell<Box<dyn ElementTrait>>,
     mutation_revision: Cell<u64>,
     subtree_mutation_revision: Cell<u64>,
+    /// Revision certified by a complete observation of tracked hosts and
+    /// coherent child/parent links. None also covers unknown/external hosts.
+    dirty_observation_revision: Cell<Option<u64>>,
     pending_render_changes: Cell<DirtyFlags>,
     render_change_versions: Cell<[u64; 8]>,
     pub(crate) parent: Option<NodeKey>,
@@ -143,6 +146,7 @@ impl Node {
             element: RefCell::new(element),
             mutation_revision: Cell::new(0),
             subtree_mutation_revision: Cell::new(0),
+            dirty_observation_revision: Cell::new(None),
             pending_render_changes: Cell::new(DirtyFlags::ALL),
             render_change_versions: Cell::new([0; 8]),
             parent: None,
@@ -158,6 +162,7 @@ impl Node {
             element: RefCell::new(element),
             mutation_revision: Cell::new(0),
             subtree_mutation_revision: Cell::new(0),
+            dirty_observation_revision: Cell::new(None),
             pending_render_changes: Cell::new(DirtyFlags::ALL),
             render_change_versions: Cell::new([0; 8]),
             parent,
@@ -878,8 +883,10 @@ impl NodeArena {
         }
     }
 
-    /// Post-order walk rooted at `key` that refreshes
-    /// [`Node::cached_subtree_dirty`] on every visited node. Each cache
+    /// Post-order refresh rooted at `key`. A subtree is reused only when its
+    /// host observations and coherent parent links have been certified and its
+    /// mutation revision has not changed; unknown hosts remain live observations.
+    /// Updates [`Node::cached_subtree_dirty`] on every observed node. Each cache
     /// entry is `element.local_dirty_flags() ∪ arena_local_dirty ∪
     /// union(child.cached_subtree_dirty)`.
     ///
@@ -887,40 +894,69 @@ impl NodeArena {
     /// measure/place hot loops can read the cache in O(1) instead of
     /// walking the whole subtree per node (the O(N²) trap that bit the
     /// arena refactor).
-    pub fn refresh_subtree_dirty_cache(
-        &self,
-        key: NodeKey,
-    ) -> crate::view::base_component::DirtyFlags {
-        use crate::view::base_component::DirtyFlags;
+    pub fn refresh_subtree_dirty_cache(&self, key: NodeKey) -> DirtyFlags {
         let Some(node) = self.slots.get(key) else {
             return DirtyFlags::NONE;
         };
-        // Read only the count before recursion. Child keys are fetched one at
-        // a time so this twice-per-layout-pass walk does not allocate a cloned
-        // Vec for every container.
-        let (child_count, mut aggregate, mut placement_eligibility) = {
+        let revision = self.subtree_mutation_revision(key);
+        if revision.is_some() && node.dirty_observation_revision.get() == revision {
+            crate::ui::work_profile::count(|p| p.dirty_subtree_reuses += 1);
+            return node.cached_subtree_dirty.get();
+        }
+        crate::ui::work_profile::count(|p| p.dirty_observations += 1);
+        let (mut aggregate, mut placement_eligibility, mut tracked) = {
             let element = node.element.borrow();
             (
-                node.children.len(),
                 element
                     .local_dirty_flags()
                     .union(node.arena_local_dirty.get()),
                 element.placement_eligibility_metadata(),
+                element.dirty_observation_is_tracked(),
             )
         };
-        // Preserve local causes before layout consumes its own work flags.
-        // Descendant causes remain owned by their nodes, not copied to parents.
+        // Preserve local render causes before layout consumes work flags.
+        // A cached descendant's causes were already observed on its last miss.
         self.observe_render_causes(key, aggregate);
-        for index in 0..child_count {
-            if let Some(child) = self.child_key_at(key, index) {
-                aggregate = aggregate.union(self.refresh_subtree_dirty_cache(child));
-                placement_eligibility =
-                    placement_eligibility.union(self.cached_placement_eligibility_metadata(child));
-            }
+        for &child in &node.children {
+            aggregate = aggregate.union(self.refresh_subtree_dirty_cache(child));
+            placement_eligibility =
+                placement_eligibility.union(self.cached_placement_eligibility_metadata(child));
+            // Parent links carry invalidation. Never certify a subtree whose
+            // wiring cannot carry a later child's mutation back to this node.
+            tracked &= self.slots.get(child).is_some_and(|child_node| {
+                child_node.parent == Some(key)
+                    && child_node.dirty_observation_revision.get().is_some()
+            });
         }
         node.cached_subtree_dirty.set(aggregate);
         node.cached_placement_eligibility.set(placement_eligibility);
+        node.dirty_observation_revision
+            .set(if tracked { revision } else { None });
         aggregate
+    }
+
+    /// Bookkeeping clears change dirty observations without changing paint
+    /// content. Invalidate this proof independently of the render journal.
+    fn invalidate_dirty_observation(&self, key: NodeKey) {
+        let mut next = Some(key);
+        for _ in 0..self.slots.len() {
+            let Some(node) = next.and_then(|key| self.slots.get(key)) else {
+                break;
+            };
+            node.dirty_observation_revision.set(None);
+            next = node.parent;
+        }
+    }
+
+    fn subtract_arena_dirty(&self, key: NodeKey, flags: DirtyFlags) {
+        if let Some(node) = self.slots.get(key) {
+            let old = node.arena_local_dirty.get();
+            let new = old.without(flags);
+            if new != old {
+                node.arena_local_dirty.set(new);
+                self.invalidate_dirty_observation(key);
+            }
+        }
     }
 
     /// Fast read of Phase 5b cached placement eligibility metadata.
@@ -1059,11 +1095,7 @@ impl NodeArena {
             return;
         }
 
-        let Some(node) = self.slots.get(key) else {
-            return;
-        };
-        node.arena_local_dirty
-            .set(node.arena_local_dirty.get().without(flags));
+        self.subtract_arena_dirty(key, flags);
         self.repair_cached_subtree_dirty_ancestors(key);
     }
 
@@ -1085,10 +1117,7 @@ impl NodeArena {
         }
 
         for node_key in &subtree {
-            if let Some(node) = self.slots.get(*node_key) {
-                node.arena_local_dirty
-                    .set(node.arena_local_dirty.get().without(flags));
-            }
+            self.subtract_arena_dirty(*node_key, flags);
         }
 
         for node_key in &subtree {
@@ -1163,10 +1192,7 @@ impl NodeArena {
         let mut dirty_subtree = Vec::new();
         collect_dirty_postorder(self, key, flags, &mut dirty_subtree);
         for node_key in &dirty_subtree {
-            if let Some(node) = self.slots.get(*node_key) {
-                node.arena_local_dirty
-                    .set(node.arena_local_dirty.get().without(flags));
-            }
+            self.subtract_arena_dirty(*node_key, flags);
         }
         for node_key in &dirty_subtree {
             let Some(node) = self.slots.get(*node_key) else {

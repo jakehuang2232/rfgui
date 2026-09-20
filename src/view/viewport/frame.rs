@@ -136,6 +136,28 @@ impl FrameState {
     }
 }
 
+/// CPU front-end intervals preceding layout/paint. Direct `render_rsx`
+/// callers build externally, so `rsx_build_ms` is zero for that entry point.
+/// Work detail is enabled by render tracing, renderer-test-support, unit tests,
+/// or an enclosing `ui::profile_ui_work` scope. It nests inside these intervals.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrontendProfile {
+    /// Time entering the state frame (including pending queue flush).
+    pub state_flush_ms: f64,
+    /// App::build, including component expansion and build-scope cleanup.
+    pub rsx_build_ms: f64,
+    /// Reconcile, commit, input synchronization and pre-layout animations.
+    pub scene_update_ms: f64,
+    /// Inclusive subphase timings and actual work counts; do not add to totals.
+    pub work: crate::ui::UiWorkProfile,
+}
+impl FrontendProfile {
+    /// Sum of disjoint front-end intervals, excluding layout and rendering.
+    pub fn total_ms(&self) -> f64 {
+        self.state_flush_ms + self.rsx_build_ms + self.scene_update_ms
+    }
+}
+
 /// Collects all per-frame profiling timings so they can be passed to trace
 /// tree construction without scattering ~20 individual variables.
 #[derive(Default)]
@@ -189,9 +211,9 @@ pub(super) struct FrameTimings {
     /// reconciliation and later trace formatting/printing.
     pub total_ms: f64,
 
-    /// Time spent in `App::build()` producing the RSX tree.  Measured in
-    /// `render_frame` and injected before the trace tree is built.
-    pub rsx_build_ms: f64,
+    /// State/build/scene intervals preceding this renderer invocation.
+    /// Nested diagnostics are observations, not additional additive phases.
+    pub frontend: FrontendProfile,
 
     pub frame_number: u64,
 }
@@ -234,6 +256,7 @@ mod timing_tests;
 /// Fine-grained traversal timings inside one layout pass.
 #[derive(Clone, Copy, Default)]
 pub(super) struct LayoutTraversalProfile {
+    pub work: crate::ui::work_profile::UiWorkProfile,
     pub root_count: usize,
     pub sync_registered_elements_ms: f64,
     pub dirty_refresh_before_measure_ms: f64,

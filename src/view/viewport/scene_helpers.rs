@@ -277,27 +277,43 @@ impl Viewport {
         crate::view::renderer_adapter::resolve_path(arena, root_keys[root_index], &arena_path)
     }
 
-    pub(super) fn try_apply_placement_updates(&mut self, root: &RsxNode) -> Result<bool, String> {
+    /// Consume the same root-relative patches as the incremental translator.
+    /// All patches are validated before any mutation; reorder/structural work
+    /// stays on the general path so old/new root indices cannot be confused.
+    pub(super) fn try_apply_placement_updates(
+        &mut self,
+        root: &RsxNode,
+        patches: &[crate::ui::RootedPatch],
+    ) -> Result<bool, String> {
+        let _profile = crate::ui::work_profile::scope(crate::ui::work_profile::Phase::Placement);
         let Some(previous_root) = self.scene.last_rsx_root.as_ref() else {
             return Ok(false);
         };
-        let patches = reconcile(Some(previous_root), root);
-        if patches.is_empty() {
-            self.scene.last_rsx_root = Some(root.clone());
-            return Ok(true);
+        if !patches
+            .iter()
+            .all(|p| matches!(p.patch, Patch::UpdateElementProps { .. }))
+        {
+            return Ok(false);
         }
-
-        let mut updates = Vec::new();
-        for patch in &patches {
+        let old_roots = Self::root_set(previous_root);
+        let new_roots = Self::root_set(root);
+        if old_roots.len() != self.scene.ui_root_keys.len() || new_roots.len() != old_roots.len() {
+            return Ok(false);
+        }
+        let mut updates = Vec::with_capacity(patches.len());
+        for rooted in patches {
             let Patch::UpdateElementProps {
                 path,
                 changed,
                 removed,
-            } = patch
+            } = &rooted.patch
             else {
+                unreachable!("validated patch kind");
+            };
+            let Some(old_root) = old_roots.get(rooted.root_index) else {
                 return Ok(false);
             };
-            let old_node = Self::rsx_node_by_index_path(previous_root, path)
+            let old_node = Self::rsx_node_by_index_path(old_root, path)
                 .ok_or_else(|| "invalid old RSX node path".to_string())?;
             let RsxNode::Element(old_element) = old_node else {
                 return Ok(false);
@@ -305,11 +321,19 @@ impl Viewport {
             if !Self::is_placement_only_update(&old_element.props, changed, removed)? {
                 return Ok(false);
             }
-            // Same schema-mismatch guard as in `is_placement_only_update`.
             let Ok(style) = Self::extract_style_from_value(&changed[0].1) else {
                 return Ok(false);
             };
             let style = style.unwrap_or_default();
+            let full_path;
+            let path = if matches!(root, RsxNode::Fragment(_)) {
+                full_path = std::iter::once(rooted.root_index)
+                    .chain(path.iter().copied())
+                    .collect::<Vec<_>>();
+                &full_path
+            } else {
+                path
+            };
             let Some(target_key) = Self::arena_key_for_rsx_path(
                 &self.scene.node_arena,
                 &self.scene.ui_root_keys,
@@ -320,7 +344,6 @@ impl Viewport {
             };
             updates.push((target_key, style));
         }
-
         for (target_key, style) in &updates {
             if !Self::apply_placement_style_by_node_key(&self.scene.node_arena, *target_key, style)
             {
@@ -344,6 +367,9 @@ impl Viewport {
     }
 
     pub(super) fn refresh_frame_box_models(&mut self) {
+        let _profile = crate::view::base_component::layout_profile_scope(
+            crate::view::base_component::LayoutPlaceTiming::BoxModels,
+        );
         self.compositor.frame_box_models.clear();
         #[cfg(test)]
         {
@@ -372,14 +398,16 @@ impl Viewport {
                     .compositor
                     .frame_box_model_cache
                     .get(&root_key)
-                    .expect("cache entry checked")
-                    .clone();
+                    .expect("cache entry checked");
                 #[cfg(test)]
                 {
                     self.compositor.box_model_refresh_stats.reused_roots += 1;
                     self.compositor.box_model_refresh_stats.reused_snapshots += snapshots.len();
                 }
-                self.compositor.frame_box_models.extend(snapshots);
+                crate::ui::work_profile::count(|p| p.box_model_reused_snapshots += snapshots.len());
+                self.compositor
+                    .frame_box_models
+                    .extend_from_slice(snapshots);
                 continue;
             }
 
@@ -414,6 +442,7 @@ pub(crate) fn collect_box_models(
         arena: &crate::view::node_arena::NodeArena,
         out: &mut Vec<BoxModelSnapshot>,
     ) {
+        crate::ui::work_profile::count(|p| p.box_model_reads += 1);
         out.push(node.box_model_snapshot());
         for child_key in node.children() {
             if let Some(child_node) = arena.get(*child_key) {
@@ -454,6 +483,9 @@ fn clear_subtree_dirty_flags_by_key(
     root_key: crate::view::node_arena::NodeKey,
     flags: DirtyFlags,
 ) -> bool {
+    let _profile = crate::view::base_component::layout_profile_scope(
+        crate::view::base_component::LayoutPlaceTiming::DirtyClear,
+    );
     let children = arena.children_of(root_key);
     if !arena.clear_element_dirty_flags(root_key, flags) {
         return false;

@@ -564,6 +564,41 @@ thread_local! {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LayoutPlaceProfile {
+    pub measure_body_ms: f64,
+    pub place_body_ms: f64,
+    pub box_models_ms: f64,
+    pub axis_solve_ms: f64,
+    pub inline_ifc_measure_ms: f64,
+    pub inline_ifc_collect_ms: f64,
+    pub inline_ifc_candidate_ms: f64,
+    pub inline_ifc_geometry_ms: f64,
+    pub dirty_clear_ms: f64,
+    pub property_sync_ms: f64,
+    pub generation_sync_ms: f64,
+    pub change_capture_ms: f64,
+    pub axis_solve_calls: usize,
+    pub assignment_clears: usize,
+    pub assignment_restores: usize,
+    pub assignment_dirty_calls: usize,
+    pub assignment_dirty_same_placed_size: usize,
+    pub assignment_dirty_previously_clean: usize,
+    pub ifc_candidate_calls: usize,
+    pub ifc_candidate_rebuilt: usize,
+    pub axis_replay_reject_layout: usize,
+    pub axis_replay_reject_axis: usize,
+    pub axis_replay_reject_gap: usize,
+    pub place_returned_clean: usize,
+    // Non-exclusive reasons: one executed place can have several causes.
+    pub place_self_dirty: usize,
+    pub place_descendant_dirty: usize,
+    pub place_ifc_dirty: usize,
+    pub place_input_changed: usize,
+    pub place_clip_changed: usize,
+    pub ifc_rebuild_paint_dirty: usize,
+    pub ifc_rebuild_children_changed: usize,
+    pub ifc_rebuild_viewport_changed: usize,
+    pub ifc_rebuild_width_changed: usize,
+
     pub node_count: usize,
     pub place_self_ms: f64,
     pub place_children_ms: f64,
@@ -589,7 +624,8 @@ pub(crate) struct LayoutPlaceProfile {
     pub placement_skip_failures: PlacementSkipFailureCounters,
     pub axis_placement_eligibility: AxisPlacementEligibilityProfile,
     /// Inline-IFC measure outcomes: cheap reuse (no collect), content-size
-    /// short-circuit (collect, no geometry), full reshape.
+    /// short-circuit (collect, no geometry), full geometry/plan rebuild.
+    /// Full geometry does not imply a shaping-cache miss.
     pub ifc_measure_cheap: usize,
     pub ifc_measure_shortcircuit: usize,
     pub ifc_measure_full: usize,
@@ -744,7 +780,7 @@ thread_local! {
 
 /// Gate for the layout/place profiling instrumentation. When disabled
 /// (the default), the hot loops skip every timestamp and counter update;
-/// the viewport enables it only while the render-time trace is on.
+/// the viewport enables it for render-time tracing or opt-in test diagnostics.
 /// Thread-local like the profile itself, so parallel tests stay isolated.
 pub(crate) fn set_layout_place_profile_enabled(enabled: bool) {
     LAYOUT_PLACE_PROFILE_ENABLED.with(|cell| cell.set(enabled));
@@ -811,6 +847,19 @@ pub(crate) fn with_layout_place_profile(f: impl FnOnce(&mut LayoutPlaceProfile))
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum LayoutPlaceTiming {
+    MeasureBody,
+    PlaceBody,
+    BoxModels,
+    AxisSolve,
+    InlineIfcMeasure,
+    InlineIfcCollect,
+    InlineIfcCandidate,
+    InlineIfcGeometry,
+    DirtyClear,
+    PropertySync,
+    GenerationSync,
+    ChangeCapture,
+
     PlaceSelf,
     PlaceChildren,
     PlaceFlexChildren,
@@ -868,6 +917,21 @@ impl Drop for LayoutPlaceTimingGuard {
             (scope.metric, (elapsed_ms - scope.child_elapsed_ms).max(0.0))
         });
         with_layout_place_profile(|profile| match metric {
+            LayoutPlaceTiming::MeasureBody => profile.measure_body_ms += exclusive_ms,
+            LayoutPlaceTiming::PlaceBody => profile.place_body_ms += exclusive_ms,
+            LayoutPlaceTiming::BoxModels => profile.box_models_ms += exclusive_ms,
+            LayoutPlaceTiming::AxisSolve => profile.axis_solve_ms += exclusive_ms,
+            LayoutPlaceTiming::InlineIfcMeasure => profile.inline_ifc_measure_ms += exclusive_ms,
+            LayoutPlaceTiming::InlineIfcCollect => profile.inline_ifc_collect_ms += exclusive_ms,
+            LayoutPlaceTiming::InlineIfcCandidate => {
+                profile.inline_ifc_candidate_ms += exclusive_ms
+            }
+            LayoutPlaceTiming::InlineIfcGeometry => profile.inline_ifc_geometry_ms += exclusive_ms,
+            LayoutPlaceTiming::DirtyClear => profile.dirty_clear_ms += exclusive_ms,
+            LayoutPlaceTiming::PropertySync => profile.property_sync_ms += exclusive_ms,
+            LayoutPlaceTiming::GenerationSync => profile.generation_sync_ms += exclusive_ms,
+            LayoutPlaceTiming::ChangeCapture => profile.change_capture_ms += exclusive_ms,
+
             LayoutPlaceTiming::PlaceSelf => profile.place_self_ms += exclusive_ms,
             LayoutPlaceTiming::PlaceChildren => profile.place_children_ms += exclusive_ms,
             LayoutPlaceTiming::PlaceFlexChildren => profile.place_flex_children_ms += exclusive_ms,
@@ -886,6 +950,23 @@ impl Drop for LayoutPlaceTimingGuard {
             LayoutPlaceTiming::RecomputeHitTest => profile.recompute_hit_test_ms += exclusive_ms,
         });
     }
+}
+
+/// Shares the existing exclusive timing stack. Disabled scopes read no clock.
+pub(crate) fn layout_profile_scope(metric: LayoutPlaceTiming) -> impl Drop {
+    LayoutPlaceTimingGuard::new(metric)
+}
+
+pub(crate) fn enable_layout_profile_scoped(enabled: bool) -> impl Drop {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            set_layout_place_profile_enabled(self.0);
+        }
+    }
+    let old = layout_place_profile_enabled();
+    set_layout_place_profile_enabled(enabled);
+    Restore(old)
 }
 
 pub(crate) fn profile_layout_place_time<R>(metric: LayoutPlaceTiming, f: impl FnOnce() -> R) -> R {
@@ -3258,6 +3339,15 @@ pub trait ElementTrait:
         None
     }
 
+    /// Opt into reuse of dirty flags and placement metadata between tracked
+    /// arena mutations. Both getters must depend only on host-local state
+    /// changed through mutable arena access. External/shared changes must be
+    /// synchronized through the arena before layout. Unknown hosts are observed
+    /// every pass. This does not certify paint signatures or resource identity.
+    fn dirty_observation_is_tracked(&self) -> bool {
+        false
+    }
+
     fn local_dirty_flags(&self) -> DirtyFlags {
         DirtyFlags::ALL
     }
@@ -3438,6 +3528,14 @@ pub trait ElementTrait:
         inherited: &crate::view::renderer_adapter::StyleCascadeContext,
     ) -> Result<Vec<crate::view::renderer_adapter::ElementDescriptor>, String> {
         crate::view::renderer_adapter::walk_children_descriptors(node, path, global_path, inherited)
+    }
+
+    /// Whether applying or resetting this prop preserves every existing
+    /// descendant host identity. Opt in only when the setter cannot replace
+    /// child/slot subtrees. Unknown hosts conservatively transfer scroll from
+    /// the affected subtree before incremental prop application.
+    fn prop_preserves_child_identity(&self, _name: &str) -> bool {
+        false
     }
 
     /// 軌 1 #11: dispatch a single changed prop to this host. Each host
@@ -4828,6 +4926,7 @@ fn inline_ifc_root_geometry(
     node_order: &[NodeKey],
     root_key: NodeKey,
 ) -> Option<InlineIfcRootGeometry> {
+    let _profile = layout_profile_scope(LayoutPlaceTiming::InlineIfcGeometry);
     #[cfg(test)]
     tests::inline_ifc_preflight_tests::note_geometry_rebuild();
     let context = context?;
@@ -5215,6 +5314,7 @@ impl ElementInlineIfcMetadataCollector {
         input: ElementInlineIfcMetadataCollectorInput,
         root: &Element,
     ) -> Option<ElementInlineIfcMetadataCollectorOutput> {
+        let _profile = layout_profile_scope(LayoutPlaceTiming::InlineIfcCollect);
         if !root.is_owning_inline_ifc_root_role() {
             return None;
         }
@@ -5588,6 +5688,9 @@ pub struct Element {
     last_parent_layout_y: f32,
     layout_assigned_width: Option<f32>,
     layout_assigned_height: Option<f32>,
+    /// Assignment inputs temporarily removed by a reusable measure. Consumed
+    /// only when both axes are restored exactly; never proves paint validity.
+    reusable_measure_assignment: Option<[Option<f32>; 2]>,
     is_hovered: bool,
     event_handlers: Option<Box<ElementEventHandlers>>,
     layout_dirty: bool,
@@ -6443,6 +6546,13 @@ impl Element {
                     && install.viewport_height == placement.viewport_height;
                 let applied_width_unchanged =
                     install.applied_inner_width.to_bits() == inner_width.to_bits();
+                with_layout_place_profile(|p| {
+                    p.ifc_rebuild_paint_dirty += usize::from(!paint_clean);
+                    p.ifc_rebuild_children_changed +=
+                        usize::from(install.children_snapshot != self.children);
+                    p.ifc_rebuild_viewport_changed += usize::from(!viewport_unchanged);
+                    p.ifc_rebuild_width_changed += usize::from(!applied_width_unchanged);
+                });
                 if install.children_snapshot == self.children
                     && viewport_unchanged
                     && applied_width_unchanged
@@ -6601,10 +6711,15 @@ impl Element {
             ),
             self,
         )?;
-        let candidate = self
-            .inline_ifc_layout_call_site
-            .cache
-            .update(&collected.root_source);
+        let candidate = profile_layout_place_time(LayoutPlaceTiming::InlineIfcCandidate, || {
+            self.inline_ifc_layout_call_site
+                .cache
+                .update(&collected.root_source)
+        });
+        with_layout_place_profile(|p| {
+            p.ifc_candidate_calls += 1;
+            p.ifc_candidate_rebuilt += usize::from(candidate.rebuilt);
+        });
         let geometry = inline_ifc_root_geometry(
             self.inline_ifc_layout_call_site
                 .cache
@@ -6939,6 +7054,7 @@ impl Element {
         viewport_width: f32,
         viewport_height: f32,
     ) -> Option<(f32, f32)> {
+        let _profile = layout_profile_scope(LayoutPlaceTiming::InlineIfcMeasure);
         if !self.is_owning_inline_ifc_root_role() {
             self.inline_ifc_layout_call_site.pending = None;
             return None;
@@ -6969,7 +7085,7 @@ impl Element {
                 && layout_clean
             {
                 self.inline_ifc_layout_call_site.pending = None;
-                LAYOUT_PLACE_PROFILE.with(|p| p.borrow_mut().ifc_measure_cheap += 1);
+                with_layout_place_profile(|p| p.ifc_measure_cheap += 1);
                 return Some(install.content_size);
             }
         }
@@ -6990,10 +7106,15 @@ impl Element {
             self.inline_ifc_layout_call_site.pending = None;
             return None;
         };
-        let candidate = self
-            .inline_ifc_layout_call_site
-            .cache
-            .update(&collected.root_source);
+        let candidate = profile_layout_place_time(LayoutPlaceTiming::InlineIfcCandidate, || {
+            self.inline_ifc_layout_call_site
+                .cache
+                .update(&collected.root_source)
+        });
+        with_layout_place_profile(|p| {
+            p.ifc_candidate_calls += 1;
+            p.ifc_candidate_rebuilt += usize::from(candidate.rebuilt);
+        });
         // If the shaping and children are identical to the current install,
         // the geometry/plan are unchanged — return the cached content size
         // and leave `pending` clear so place reuses the existing plan. This
@@ -7004,11 +7125,11 @@ impl Element {
                 && !paint_dirty
             {
                 self.inline_ifc_layout_call_site.pending = None;
-                LAYOUT_PLACE_PROFILE.with(|p| p.borrow_mut().ifc_measure_shortcircuit += 1);
+                with_layout_place_profile(|p| p.ifc_measure_shortcircuit += 1);
                 return Some(install.content_size);
             }
         }
-        LAYOUT_PLACE_PROFILE.with(|p| p.borrow_mut().ifc_measure_full += 1);
+        with_layout_place_profile(|p| p.ifc_measure_full += 1);
         let Some(geometry) = inline_ifc_root_geometry(
             self.inline_ifc_layout_call_site
                 .cache
@@ -8184,6 +8305,10 @@ impl ElementTrait for Element {
         self.should_append_to_root_viewport_render()
     }
 
+    fn dirty_observation_is_tracked(&self) -> bool {
+        true
+    }
+
     fn local_dirty_flags(&self) -> DirtyFlags {
         self.dirty_flags
     }
@@ -8303,6 +8428,10 @@ impl ElementTrait for Element {
             }
         }
         Ok(())
+    }
+
+    fn prop_preserves_child_identity(&self, _name: &str) -> bool {
+        true
     }
 
     fn apply_prop(
@@ -8457,3 +8586,8 @@ impl Element {
 mod retained_test_support;
 #[cfg(test)]
 pub(crate) use retained_test_support::root_effect_stable_key;
+
+#[cfg(test)]
+mod layout_profile_tests;
+#[cfg(test)]
+mod assignment_reuse_tests;

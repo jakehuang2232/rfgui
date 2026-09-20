@@ -18,6 +18,7 @@ impl Layoutable for TextArea {
         constraints: LayoutConstraints,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        crate::ui::work_profile::count(|p| p.measure_calls += 1);
         // Clean fast path: nothing feeding the unified IFC changed, the
         // subtree carries no LAYOUT dirt, and the constraints match the
         // previous full measure — every derived size is already correct,
@@ -115,6 +116,7 @@ impl Layoutable for TextArea {
         placement: LayoutPlacement,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        crate::ui::work_profile::count(|p| p.place_calls += 1);
         // `measure` clamps the viewport to its incoming max-height, but an
         // auto-height parent can then grow from TextArea's measured content.
         // By place time `layout_size.height` is the final assigned height
@@ -133,7 +135,9 @@ impl Layoutable for TextArea {
         let x = placement.parent_x + placement.visual_offset_x + self.flow_offset.x;
         let y = placement.parent_y + placement.visual_offset_y + self.flow_offset.y;
         self.spatial_placement = Some(crate::view::base_component::SpatialPlacementSnapshot::new(
-            crate::view::base_component::SpatialPositionReferenceSnapshot::LayoutParent(self.parent_id),
+            crate::view::base_component::SpatialPositionReferenceSnapshot::LayoutParent(
+                self.parent_id,
+            ),
             [self.flow_offset.x, self.flow_offset.y],
             [
                 placement.parent_x + self.flow_offset.x,

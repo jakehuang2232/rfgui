@@ -26,6 +26,7 @@ pub(crate) use render::{
 #[cfg(test)]
 mod retained_auto_census_tests;
 pub(crate) mod scene_helpers;
+mod scroll_transfer;
 #[cfg(test)]
 mod state_queue_tests;
 #[cfg(any())]
@@ -49,7 +50,7 @@ use crate::ui::{
     BlurEvent, ClickEvent, EventCommand, EventMeta, FocusEvent, FromPropValue, ImePreeditEvent,
     KeyDownEvent, KeyEventData, KeyUpEvent, NodeId, Patch, PointerButtons as UiPointerButtons,
     PointerDownEvent, PointerEventData, PointerMoveEvent, PointerUpEvent, PropValue, RsxNode,
-    TextInputEvent, peek_state_dirty, reconcile, take_state_dirty,
+    TextInputEvent, peek_state_dirty, take_state_dirty,
 };
 use crate::view::ElementStylePropSchema;
 use crate::view::frame_graph::texture_resource::TextureDesc;
@@ -76,11 +77,11 @@ pub use self::dispatch::{
     dispatch_scroll_from_hit_test, get_scroll_offset_by_id, nearest_viewport_clip_ancestor_id,
     set_scroll_offset_by_id,
 };
-pub use self::frame::FrameParts;
 use self::frame::{
     BeginFrameProfile, EndFrameProfile, FrameDisposition, FrameState, FrameStats, FrameTimings,
     LayoutPassResult,
 };
+pub use self::frame::{FrameParts, FrontendProfile};
 use self::input::{DragState, InputState, PendingClick, is_valid_click_candidate};
 pub use self::input::{PointerButton, ViewportDebugOptions};
 use self::transitions_tick::{TransitionHostAdapter, active_channels_by_node};
@@ -319,6 +320,10 @@ impl SceneState {
 /// overlay geometry buffers. Non-pub; the viewport re-exposes whatever the
 /// outside world needs through existing accessor methods.
 struct FrameRuntime {
+    #[cfg(feature = "renderer-test-support")]
+    diagnostics_enabled: bool,
+    #[cfg(feature = "renderer-test-support")]
+    last_diagnostics: Option<render::downstream_test_support::RendererTestDiagnostics>,
     gpu_paint_sources: FxHashMap<u64, gpu_paint::CachedSource>,
     retained_raster_diagnostics: Vec<gpu_paint::RasterDiagnostic>,
     frame_state: Option<FrameState>,
@@ -345,10 +350,8 @@ struct FrameRuntime {
     debug_overlay_vertices: Vec<super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
     debug_overlay_indices: Vec<u32>,
     last_retained_auto_debug: Option<crate::view::debug::DebugRetainedAutoCaptureInput>,
-    /// Stash for `App::build()` elapsed time (ms) so the render trace tree
-    /// can include RSX build cost.  Set in `render_frame`, consumed in
-    /// `render_render_tree`.
-    rsx_build_ms: f64,
+    /// Front-end observations for the latest render attempt.
+    frontend: FrontendProfile,
     frame_number: u64,
 }
 
@@ -363,6 +366,10 @@ struct FrameCompletionCounts {
 impl FrameRuntime {
     fn new(trace_fps: bool) -> Self {
         Self {
+            #[cfg(feature = "renderer-test-support")]
+            diagnostics_enabled: false,
+            #[cfg(feature = "renderer-test-support")]
+            last_diagnostics: None,
             frame_state: None,
             offscreen_render_target_pool: OffscreenRenderTargetPool::new(),
             sampled_texture_cache: FxHashMap::default(),
@@ -388,7 +395,7 @@ impl FrameRuntime {
             debug_overlay_vertices: Vec::new(),
             debug_overlay_indices: Vec::new(),
             last_retained_auto_debug: None,
-            rsx_build_ms: 0.0,
+            frontend: FrontendProfile::default(),
             frame_number: 0,
         }
     }
@@ -1063,6 +1070,6 @@ pub(crate) use render::SingleViewportFrameObservation;
 
 #[cfg(feature = "renderer-test-support")]
 #[doc(hidden)]
-pub use render::downstream_test_support::RendererTestFrame;
+pub use render::downstream_test_support::{RendererTestDiagnostics, RendererTestFrame};
 
 mod gpu_paint;

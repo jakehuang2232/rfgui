@@ -17,6 +17,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::{Rc, Weak};
 
+mod dependencies;
+use dependencies::{ChangedState, StateTargetId};
 mod scheduler;
 use scheduler::{PendingState, request_state_wakeup};
 pub use scheduler::{batch_state_updates, flush_state_updates};
@@ -60,6 +62,7 @@ impl UiDirtyState {
 /// A shared update target. Handles share this allocation, while each render
 /// retains its own immutable `Rc<T>` snapshot.
 struct BindingPropPayload<T: 'static> {
+    target: StateTargetId,
     value: RefCell<Rc<T>>,
     legacy_cell: Option<Rc<RefCell<T>>>,
     prop_view: RefCell<Weak<BindingPropView<T>>>,
@@ -88,6 +91,7 @@ impl<T> BindingPropPayload<T> {
         alive: Rc<Cell<bool>>,
     ) -> Self {
         Self {
+            target: StateTargetId::new(),
             value: RefCell::new(Rc::new(value)),
             legacy_cell: None,
             prop_view: RefCell::new(Weak::new()),
@@ -145,7 +149,7 @@ impl<T: 'static> Binding<T> {
     }
 
     fn from_payload(prop_payload: Rc<BindingPropPayload<T>>) -> Self {
-        record_state_dependency(prop_payload.owner_component.as_ref());
+        record_state_dependency(prop_payload.target);
         let snapshot = prop_payload.value.borrow().clone();
         Self {
             prop_payload,
@@ -173,13 +177,14 @@ impl<T: Clone + PartialEq + 'static> Binding<T> {
     }
 
     pub fn get(&self) -> T {
-        record_state_dependency(self.prop_payload.owner_component.as_ref());
+        record_state_dependency(self.prop_payload.target);
         (*self.snapshot).clone()
     }
 
     /// Imperative host bridge: read the last committed value, never pending
     /// actions. Use for native input sessions; render code should use `get`.
     pub fn get_committed(&self) -> T {
+        record_state_dependency(self.prop_payload.target);
         (**self.prop_payload.value.borrow()).clone()
     }
 
@@ -216,7 +221,7 @@ pub struct State<T: 'static> {
 
 impl<T: Clone + PartialEq + 'static> State<T> {
     pub fn get(&self) -> T {
-        record_state_dependency(self.payload.owner_component.as_ref());
+        record_state_dependency(self.payload.target);
         (*self.snapshot).clone()
     }
 
@@ -229,6 +234,7 @@ impl<T: Clone + PartialEq + 'static> State<T> {
     }
 
     pub fn binding(&self) -> Binding<T> {
+        record_state_dependency(self.payload.target);
         Binding {
             prop_payload: self.payload.clone(),
             snapshot: self.snapshot.clone(),
@@ -302,7 +308,10 @@ struct StateStore {
     /// were registered during that render, so we can keep them alive on a
     /// memo hit without re-entering the render function.
     memo_cache: FxHashMap<ComponentKey, MemoEntry>,
-    /// Components whose own state slots changed since their last render.
+    /// Reverse indexes contain only cached memo consumers / resolved ancestors.
+    target_consumers: FxHashMap<StateTargetId, FxHashSet<ComponentKey>>,
+    component_memos: FxHashMap<ComponentKey, FxHashSet<ComponentKey>>,
+    /// Memos invalidated since their last successful render.
     /// A memo hit for a key in this set is forbidden — we must re-render.
     dirty_memo_components: FxHashSet<ComponentKey>,
 }
@@ -310,6 +319,8 @@ struct StateStore {
 /// A cached component render. `props` holds a type-erased clone of the last
 /// props value, compared via the monomorphized `props_eq` function pointer.
 struct MemoEntry {
+    context_dependencies: super::context::ContextDependencies,
+    volatile: bool,
     props: Box<dyn Any>,
     node: crate::ui::RsxNode,
     props_eq: fn(&dyn Any, &dyn Any) -> bool,
@@ -317,7 +328,7 @@ struct MemoEntry {
     live_global_keys: FxHashSet<GlobalKey>,
     live_timer_hooks: FxHashSet<TimerHookKey>,
     live_mount_hooks: FxHashSet<MountHookKey>,
-    state_dependencies: FxHashSet<ComponentKey>,
+    state_dependencies: FxHashSet<StateTargetId>,
     live_viewport_pointer_hooks: FxHashSet<ViewportPointerHookKey>,
 }
 
@@ -327,11 +338,14 @@ struct MemoEntry {
 /// resulting [`MemoEntry`].
 #[derive(Default)]
 struct MemoFrame {
+    context_boundary: u64,
+    context_dependencies: super::context::ContextDependencies,
+    volatile: bool,
     live_keys: FxHashSet<ComponentKey>,
     live_global_keys: FxHashSet<GlobalKey>,
     live_timer_hooks: FxHashSet<TimerHookKey>,
     live_mount_hooks: FxHashSet<MountHookKey>,
-    state_dependencies: FxHashSet<ComponentKey>,
+    state_dependencies: FxHashSet<StateTargetId>,
     live_viewport_pointer_hooks: FxHashSet<ViewportPointerHookKey>,
 }
 
@@ -482,14 +496,35 @@ thread_local! {
     static MEMO_STACK: RefCell<Vec<MemoFrame>> = const { RefCell::new(Vec::new()) };
 }
 
-fn record_state_dependency(owner: Option<&ComponentKey>) {
-    if let Some(owner) = owner {
-        MEMO_STACK.with(|stack| {
-            if let Some(frame) = stack.borrow_mut().last_mut() {
-                frame.state_dependencies.insert(owner.clone());
+/// Reads inside a provider created by a memo belong to that memo's output,
+/// not its external inputs. Record absence as well as present publications.
+pub(crate) fn record_context_dependency(tid: TypeId, publication: Option<(&Rc<dyn Any>, u64)>) {
+    MEMO_STACK.with(|stack| {
+        for frame in stack.borrow_mut().iter_mut() {
+            if publication.is_none_or(|(_, epoch)| epoch <= frame.context_boundary) {
+                frame
+                    .context_dependencies
+                    .0
+                    .insert(tid, publication.map(|(value, _)| value.clone()));
             }
-        });
-    }
+        }
+    });
+}
+
+pub(crate) fn record_volatile_render() {
+    MEMO_STACK.with(|stack| {
+        for frame in stack.borrow_mut().iter_mut() {
+            frame.volatile = true;
+        }
+    });
+}
+
+fn record_state_dependency(target: StateTargetId) {
+    MEMO_STACK.with(|stack| {
+        if let Some(frame) = stack.borrow_mut().last_mut() {
+            frame.state_dependencies.insert(target);
+        }
+    });
 }
 
 fn memo_stack_record_component_key(key: &ComponentKey) {
@@ -538,6 +573,7 @@ pub struct GlobalState<T: 'static> {
 
 impl<T: Clone + PartialEq + 'static> GlobalState<T> {
     fn from_payload(payload: Rc<BindingPropPayload<T>>) -> Self {
+        record_state_dependency(payload.target);
         let snapshot = payload.value.borrow().clone();
         Self { payload, snapshot }
     }
@@ -545,7 +581,7 @@ impl<T: Clone + PartialEq + 'static> GlobalState<T> {
         Self::from_payload(self.payload.clone())
     }
     pub fn get(&self) -> T {
-        record_state_dependency(self.payload.owner_component.as_ref());
+        record_state_dependency(self.payload.target);
         (*self.snapshot).clone()
     }
     pub fn set(&self, value: T) {
@@ -555,6 +591,7 @@ impl<T: Clone + PartialEq + 'static> GlobalState<T> {
         self.payload.enqueue(StateUpdate::Update(Box::new(updater)));
     }
     pub fn binding(&self) -> Binding<T> {
+        record_state_dependency(self.payload.target);
         Binding {
             prop_payload: self.payload.clone(),
             snapshot: self.snapshot.clone(),
@@ -637,6 +674,7 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
     let out = f();
     let mut retired_slots = Vec::new();
     let mut retired_mounts = Vec::new();
+    let mut retired_memos = Vec::new();
 
     STORE.with(|store| {
         let mut store = store.borrow_mut();
@@ -666,7 +704,21 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
                 .global_component_keys
                 .retain(|key, _| live_global.contains(key));
             // Prune memo cache of components that did not render this build.
-            store.memo_cache.retain(|k, _| live.contains(k));
+            let retired: Vec<_> = store
+                .memo_cache
+                .keys()
+                .filter(|key| !live.contains(*key))
+                .cloned()
+                .collect();
+            for key in retired {
+                if let Some(entry) = store.remove_memo(&key) {
+                    retired_memos.push(entry);
+                }
+            }
+            store.dirty_memo_components.retain(|key| live.contains(key));
+            shrink_map_if_sparse(&mut store.target_consumers);
+            shrink_map_if_sparse(&mut store.component_memos);
+            shrink_set_if_sparse(&mut store.dirty_memo_components);
             shrink_map_if_sparse(&mut store.slots);
             shrink_map_if_sparse(&mut store.global_component_keys);
             shrink_map_if_sparse(&mut store.memo_cache);
@@ -728,6 +780,7 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
     });
 
     // User destructors and mount cleanups must run without a borrowed store.
+    drop(retired_memos);
     drop(retired_slots);
     drop(retired_mounts);
     if current_build_depth() == 0 {
@@ -780,17 +833,8 @@ fn current_rsx_key() -> Option<RsxKey> {
     COMPONENT_KEY_STACK.with(|stack| stack.borrow().last().cloned().flatten())
 }
 
-/// Compute the `ComponentKey` for the next component invocation using the
-/// same path algorithm as [`render_component`]. Advances parent/root cursors
-/// as a side effect, so this must be called exactly once per component.
-fn next_component_key<T: 'static>() -> ComponentKey {
-    next_component_key_by_type_id(TypeId::of::<T>())
-}
-
-/// Type-id-driven variant for the React parity walker (P2). Identical path
-/// algorithm to [`next_component_key`] but accepts a runtime `TypeId` so a
-/// type-erased `ComponentNodeInner` can compute its own key during the
-/// `unwrap_components` traversal.
+/// Compute a component key from the current parent/root cursor exactly once
+/// per invocation, for both the typed API and the type-erased walker.
 fn next_component_key_by_type_id(type_id: TypeId) -> ComponentKey {
     const KEYED_PATH_MARKER: usize = usize::MAX;
     const GLOBAL_KEYED_PATH_MARKER: usize = usize::MAX - 1;
@@ -900,7 +944,18 @@ where
     T: 'static,
     P: PartialEq + Clone + 'static,
 {
-    let key = next_component_key::<T>();
+    render_memoized_component_by_type_id(TypeId::of::<T>(), props, |props| {
+        crate::ui::unwrap_components(render(props))
+    })
+}
+
+/// The walker supplies fully resolved output, including component identity.
+pub(crate) fn render_memoized_component_by_type_id<P: PartialEq + 'static>(
+    type_id: TypeId,
+    props: P,
+    render: impl FnOnce(&P) -> crate::ui::RsxNode,
+) -> crate::ui::RsxNode {
+    let key = next_component_key_by_type_id(type_id);
     let current_key = current_rsx_key();
 
     // Register this component as live regardless of memo hit / miss — it
@@ -922,12 +977,14 @@ where
     // Can we take the fast path? Only if: the component is NOT dirty AND the
     // cached props match the new props.
     let cached_hit = STORE.with(|store| {
-        let mut store = store.borrow_mut();
-        let was_dirty = store.dirty_memo_components.remove(&key);
-        if was_dirty {
+        let store = store.borrow();
+        if store.dirty_memo_components.contains(&key) {
             return None;
         }
         let entry = store.memo_cache.get(&key)?;
+        if entry.volatile || !entry.context_dependencies.matches_current() {
+            return None;
+        }
         let eq = (entry.props_eq)(&*entry.props, &props as &dyn Any);
         if !eq {
             return None;
@@ -940,10 +997,13 @@ where
             entry.live_mount_hooks.clone(),
             entry.state_dependencies.clone(),
             entry.live_viewport_pointer_hooks.clone(),
+            entry.context_dependencies.clone(),
         ))
     });
 
-    if let Some((node, lk, lgk, lth, lmh, deps, lvph)) = cached_hit {
+    if let Some((node, lk, lgk, lth, lmh, deps, lvph, contexts)) = cached_hit {
+        contexts.replay();
+        crate::ui::work_profile::count(|p| p.memo_hits += 1);
         // Replay descendants — both into the thread-local live sets that
         // `build_scope` uses for GC, and into any enclosing memo frame.
         STORE.with(|store| {
@@ -990,10 +1050,17 @@ where
         return node;
     }
 
+    // Keep a failed render dirty, including a props miss followed by a panic.
+    // Only successful publication below can make this memo reusable again.
+    STORE.with(|store| store.borrow_mut().dirty_memo_components.insert(key.clone()));
+
     // Miss — run the render closure under a fresh `MemoFrame` so we can
     // capture every descendant key that gets registered.
     MEMO_STACK.with(|stack| {
-        stack.borrow_mut().push(MemoFrame::default());
+        stack.borrow_mut().push(MemoFrame {
+            context_boundary: super::context::current_epoch(),
+            ..Default::default()
+        });
     });
     CONTEXT.with(|context| {
         context.borrow_mut().frames.push(Frame {
@@ -1011,7 +1078,7 @@ where
     // cached copy — the walker later panics on `Rc::try_unwrap`. Unwrap
     // eagerly inside the memo frame so the component's render subtree
     // is fully flattened before caching and returning.
-    let node = crate::ui::unwrap_components(render(&props));
+    let node = render(&props);
 
     CONTEXT.with(|context| {
         let _ = context.borrow_mut().frames.pop();
@@ -1044,10 +1111,12 @@ where
         }
     });
 
-    STORE.with(|store| {
-        store.borrow_mut().memo_cache.insert(
+    let retired = STORE.with(|store| {
+        store.borrow_mut().replace_memo(
             key,
             MemoEntry {
+                context_dependencies: frame.context_dependencies,
+                volatile: frame.volatile,
                 props: Box::new(props),
                 node: node.clone(),
                 props_eq: memo_props_eq::<P>,
@@ -1058,8 +1127,9 @@ where
                 state_dependencies: frame.state_dependencies,
                 live_viewport_pointer_hooks: frame.live_viewport_pointer_hooks,
             },
-        );
+        )
     });
+    drop(retired);
 
     node
 }
@@ -1284,7 +1354,23 @@ fn has_viewport_pointer_state_hooks() -> bool {
 
 fn notify_viewport_pointer_state_changed() {
     if has_viewport_pointer_state_hooks() {
-        notify_state_changed(UiDirtyState::REBUILD, None);
+        STATE_DIRTY.with(|dirty| dirty.set(dirty.get().union(UiDirtyState::REBUILD)));
+        let owners = VIEWPORT_POINTER_STATE_HOOKS.with(|hooks| {
+            hooks
+                .borrow()
+                .iter()
+                .map(|key| key.component.clone())
+                .collect::<FxHashSet<_>>()
+        });
+        STORE.with(|store| {
+            let mut store = store.borrow_mut();
+            let mut affected = FxHashSet::default();
+            for owner in owners {
+                store.collect_owner_memos(&owner, &mut affected);
+            }
+            store.invalidate_memos(affected);
+        });
+        request_state_wakeup();
     }
 }
 
@@ -1577,36 +1663,9 @@ pub fn take_state_dirty() -> UiDirtyState {
     })
 }
 
-fn notify_state_changed(dirty_state: UiDirtyState, owner: Option<ComponentKey>) {
-    STATE_DIRTY.with(|dirty| dirty.set(dirty.get().union(dirty_state)));
-    if dirty_state.needs_rebuild() {
-        STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            match owner {
-                Some(key) => {
-                    // Cached ancestors contain resolved child output. Also
-                    // invalidate memos which read this slot through a binding.
-                    store.memo_cache.retain(|cached_key, entry| {
-                        cached_key != &key
-                            && !entry.live_keys.contains(&key)
-                            && !entry.state_dependencies.contains(&key)
-                    });
-                    store.dirty_memo_components.insert(key);
-                }
-                None => {
-                    // Conservative flush: unowned state (global state, free
-                    // bindings) could affect anything we have cached.
-                    store.memo_cache.clear();
-                    store.dirty_memo_components.clear();
-                }
-            }
-        });
-    }
-    request_state_wakeup();
-}
-
 impl<T: Clone + PartialEq + 'static> IntoPropValue for Binding<T> {
     fn into_prop_value(self) -> PropValue {
+        record_state_dependency(self.prop_payload.target);
         let cached = self.prop_payload.prop_view.borrow().upgrade();
         let view = cached
             .filter(|view| Rc::ptr_eq(&view.snapshot, &self.snapshot))
@@ -1628,6 +1687,7 @@ impl<T: Clone + PartialEq + 'static> FromPropValue for Binding<T> {
             PropValue::Shared(shared) => {
                 let erased = shared.value();
                 if let Ok(view) = Rc::downcast::<BindingPropView<T>>(erased.clone()) {
+                    record_state_dependency(view.payload.target);
                     return Ok(Self {
                         prop_payload: view.payload.clone(),
                         snapshot: view.snapshot.clone(),

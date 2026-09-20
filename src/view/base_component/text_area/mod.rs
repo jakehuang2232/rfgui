@@ -1611,6 +1611,10 @@ impl ElementTrait for TextArea {
         self.parent_id = parent_id;
     }
 
+    fn dirty_observation_is_tracked(&self) -> bool {
+        true
+    }
+
     fn local_dirty_flags(&self) -> DirtyFlags {
         self.dirty_flags
     }
@@ -1729,7 +1733,9 @@ impl ElementTrait for TextArea {
     fn ingest_props(&mut self, node: &crate::ui::RsxElementNode) -> Result<(), String> {
         use crate::ui::FromPropValue;
         use crate::view::base_component::as_blur_handler;
-        use crate::view::renderer_adapter::{as_binding_string, as_bool, as_owned_string, as_usize};
+        use crate::view::renderer_adapter::{
+            as_binding_string, as_bool, as_owned_string, as_usize,
+        };
         for (key, value) in node.props.iter() {
             match *key {
                 // Cold-path-owned: identity, layered style, explicit

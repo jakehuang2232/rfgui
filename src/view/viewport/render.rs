@@ -1318,6 +1318,19 @@ fn build_layout_pass_trace_children(
 ) -> Vec<TraceRenderNode> {
     vec![
         TraceRenderNode::new(
+            format!(
+                "layout_work (dirty_reads={}, subtree_reuses={}, measure_calls={}, measure_reuses={}, place_calls={}, box_reads={}, box_reuses={})",
+                traversal_profile.work.dirty_observations,
+                traversal_profile.work.dirty_subtree_reuses,
+                traversal_profile.work.measure_calls,
+                traversal_profile.work.measure_reuses,
+                traversal_profile.work.place_calls,
+                traversal_profile.work.box_model_reads,
+                traversal_profile.work.box_model_reused_snapshots
+            ),
+            0.0,
+        ),
+        TraceRenderNode::new(
             "sync_registered_elements".to_string(),
             traversal_profile.sync_registered_elements_ms,
         ),
@@ -1393,8 +1406,10 @@ impl Viewport {
         &mut self,
         sync_registered_elements: bool,
     ) -> LayoutPassResult {
+        let work_before = crate::ui::work_profile::snapshot();
         self.compositor.frame_box_models.clear();
         crate::view::base_component::reset_text_measure_profile();
+        crate::view::base_component::reset_layout_place_profile();
         crate::view::base_component::reset_layout_gate_candidate_profile();
 
         // Take the arena out of the scene so we can pass it by &mut into
@@ -1468,7 +1483,6 @@ impl Viewport {
         let text_measure_profile = crate::view::base_component::take_text_measure_profile();
 
         let place_started_at = Instant::now();
-        crate::view::base_component::reset_layout_place_profile();
         let placement = crate::view::base_component::LayoutPlacement {
             parent_x: 0.0,
             parent_y: 0.0,
@@ -1520,7 +1534,6 @@ impl Viewport {
         }
         traversal_profile.place_roots_ms = place_roots_started_at.elapsed().as_secs_f64() * 1000.0;
         let place_ms = place_started_at.elapsed().as_secs_f64() * 1000.0;
-        let place_profile = crate::view::base_component::take_layout_place_profile();
         let gate_profile = crate::view::base_component::take_layout_gate_candidate_profile();
         traversal_profile.measure_candidate_clean_children =
             gate_profile.measure_candidate_clean_children;
@@ -1528,13 +1541,16 @@ impl Viewport {
         traversal_profile.placement_candidate_clean_children =
             gate_profile.placement_candidate_clean_children;
         traversal_profile.placement_dirty_children = gate_profile.placement_dirty_children;
-        traversal_profile.skipped_child_place_calls = place_profile.skipped_child_place_calls;
 
         self.scene.node_arena = arena;
         let collect_started_at = Instant::now();
         self.refresh_frame_box_models();
         let collect_box_models_ms = collect_started_at.elapsed().as_secs_f64() * 1000.0;
         traversal_profile.collect_box_models_ms = collect_box_models_ms;
+        let place_profile = crate::view::base_component::take_layout_place_profile();
+        traversal_profile.skipped_child_place_calls = place_profile.skipped_child_place_calls;
+
+        traversal_profile.work = crate::ui::work_profile::snapshot().since(work_before);
 
         LayoutPassResult {
             measure_ms,
@@ -2069,12 +2085,66 @@ impl Viewport {
 
         // Each first-level phase spans consecutive wall-clock boundaries,
         // including caller bookkeeping and failed attempts. Nested profiles
-        // retain their narrower diagnostic scopes. RSX is outside total_ms.
+        // retain their narrower diagnostic scopes. Front-end intervals are
+        // outside the renderer-only total_ms; unwrap nests inside RSX build.
         TraceRenderNode::with_children(
             format!("render_frame #{}", t.frame_number),
-            t.rsx_build_ms + t.total_ms,
+            t.frontend.total_ms() + t.total_ms,
             vec![
-                TraceRenderNode::new("rsx_build", t.rsx_build_ms),
+                TraceRenderNode::new(
+                    format!(
+                        "state_frame targets={} actions={} changed={} memo_visits={} memo_invalidated={}",
+                        t.frontend.work.state_targets,
+                        t.frontend.work.state_actions,
+                        t.frontend.work.changed_targets,
+                        t.frontend.work.memo_invalidation_visits,
+                        t.frontend.work.memo_invalidations
+                    ),
+                    t.frontend.state_flush_ms,
+                ),
+                TraceRenderNode::with_children(
+                    "rsx_build",
+                    t.frontend.rsx_build_ms,
+                    vec![TraceRenderNode::new(
+                        format!(
+                            "unwrap nodes={} components={} memo_hits={}",
+                            t.frontend.work.unwrap_nodes,
+                            t.frontend.work.component_renders,
+                            t.frontend.work.memo_hits
+                        ),
+                        t.frontend.work.unwrap_ms,
+                    )],
+                ),
+                TraceRenderNode::with_children(
+                    "scene_update",
+                    t.frontend.scene_update_ms,
+                    vec![
+                        TraceRenderNode::new(
+                            format!(
+                                "reconcile calls={} nodes={} shared={} patches={}",
+                                t.frontend.work.reconcile_calls,
+                                t.frontend.work.reconciled_nodes,
+                                t.frontend.work.shared_subtree_hits,
+                                t.frontend.work.patches
+                            ),
+                            t.frontend.work.reconcile_ms,
+                        ),
+                        TraceRenderNode::new("placement", t.frontend.work.placement_ms),
+                        TraceRenderNode::new(
+                            format!("translate works={}", t.frontend.work.fiber_works),
+                            t.frontend.work.translate_ms,
+                        ),
+                        TraceRenderNode::new(
+                            format!(
+                                "incremental_commit scroll_save={} scroll_restore={}",
+                                t.frontend.work.scroll_save_nodes,
+                                t.frontend.work.scroll_restore_nodes
+                            ),
+                            t.frontend.work.incremental_commit_ms,
+                        ),
+                        TraceRenderNode::new("cold_commit", t.frontend.work.cold_commit_ms),
+                    ],
+                ),
                 begin_frame,
                 layout,
                 TraceRenderNode::new("prepare_paint", t.prepare_paint_ms),
@@ -2117,7 +2187,7 @@ impl Viewport {
             begin_frame_acquire_ms: begin_frame_profile.acquire_ms,
             begin_frame_create_view_ms: begin_frame_profile.create_view_ms,
             begin_frame_create_encoder_ms: begin_frame_profile.create_encoder_ms,
-            rsx_build_ms: self.frame.rsx_build_ms,
+            frontend: self.frame.frontend,
             frame_number,
             ..Default::default()
         };
@@ -2126,8 +2196,18 @@ impl Viewport {
         crate::view::base_component::set_text_measure_profile_enabled(
             self.debug_options.trace_render_time,
         );
-        crate::view::base_component::set_layout_place_profile_enabled(
-            self.debug_options.trace_render_time,
+        let diagnostic_enabled = {
+            #[cfg(feature = "renderer-test-support")]
+            {
+                self.frame.diagnostics_enabled
+            }
+            #[cfg(not(feature = "renderer-test-support"))]
+            {
+                false
+            }
+        };
+        let _layout_profile = crate::view::base_component::enable_layout_profile_scoped(
+            self.debug_options.trace_render_time || diagnostic_enabled,
         );
         let layout_started_at = Instant::now();
         let layout_result = self.run_layout_pass();
@@ -2648,6 +2728,17 @@ impl Viewport {
         #[cfg(test)]
         frame_timing_tests::assert_frame_accounting(&timings);
 
+        #[cfg(feature = "renderer-test-support")]
+        {
+            self.frame.last_diagnostics = diagnostic_enabled.then(|| {
+                downstream_test_support::RendererTestDiagnostics::capture(
+                    &timings,
+                    &self.compositor,
+                    crate::view::base_component::take_layout_place_profile(),
+                )
+            });
+        }
+
         // --- Trace output ---
         if self.debug_options.trace_render_time {
             if let Some(telemetry) = paint_authority_telemetry.as_ref() {
@@ -2665,7 +2756,6 @@ impl Viewport {
             println!("{}", format_trace_render_tree(&trace_root));
         }
         crate::view::base_component::set_text_measure_profile_enabled(false);
-        crate::view::base_component::set_layout_place_profile_enabled(false);
         self.frame.frame_stats.record_frame(profile_start.elapsed());
         // Only persist the graph when compile succeeded; a failed compile
         // leaves the graph in an inconsistent state.
@@ -2677,15 +2767,37 @@ impl Viewport {
         // The sole semantic engine-time sample for this viewport frame. Every
         // retained animation tick and paint-resource freeze observes this
         // exact value; profiling clocks below remain observational only.
-        self.render_rsx_at(root, crate::time::Instant::now())
+        self.render_rsx_at(root, crate::time::Instant::now(), None)
     }
 
     fn render_rsx_at(
         &mut self,
         root: &RsxNode,
         semantic_now: crate::time::Instant,
+        app_profile: Option<(FrontendProfile, crate::ui::UiWorkProfile, Instant)>,
     ) -> Result<(), String> {
+        let _capture = crate::ui::work_profile::capture(
+            self.debug_options.trace_render_time
+                || cfg!(any(test, feature = "renderer-test-support")),
+        );
+        let before = app_profile
+            .as_ref()
+            .map_or_else(crate::ui::work_profile::snapshot, |(_, before, _)| *before);
+        self.frame.frontend = FrontendProfile::default();
+        let flush_start = Instant::now();
         let _state_frame = crate::ui::begin_state_frame();
+        let (mut frontend, scene_start) = if let Some((frontend, _, start)) = app_profile {
+            (frontend, start)
+        } else {
+            let scene_start = Instant::now();
+            (
+                FrontendProfile {
+                    state_flush_ms: (scene_start - flush_start).as_secs_f64() * 1000.0,
+                    ..Default::default()
+                },
+                scene_start,
+            )
+        };
         let state_dirty = take_state_dirty();
         // Apply any viewport mutations that component event handlers
         // enqueued via `use_viewport()` during the previous tick. Must
@@ -2697,11 +2809,37 @@ impl Viewport {
         self.is_animating = false;
         let resource_dirty = crate::view::image_resource::take_image_redraw_dirty()
             || crate::view::svg_resource::take_svg_redraw_dirty();
-        let root_changed = self.scene.last_rsx_root.as_ref() != Some(root);
+        // Pointer equality certifies an unchanged tree. Otherwise reconcile
+        // once, without an earlier structural equality walk. Placement and the
+        // general translator consume the same root-relative patch schedule.
+        let rooted_patches = self.scene.last_rsx_root.as_ref().map(|previous| {
+            if RsxNode::ptr_eq(previous, root) {
+                return Vec::new();
+            }
+            crate::ui::reconcile_multi(Some(&unpack_root_set(previous)), &unpack_root_set(root))
+        });
+        crate::ui::work_profile::count(|p| {
+            p.patches += rooted_patches.as_ref().map_or(0, Vec::len)
+        });
+        let root_changed = rooted_patches
+            .as_ref()
+            .is_none_or(|patches| !patches.is_empty());
+        if !root_changed {
+            // A newly allocated but equal tree is now the accepted snapshot.
+            // Subsequent redraws can use pointer equality instead of diffing
+            // it again against the older allocation.
+            self.scene.last_rsx_root = Some(root.clone());
+        }
         let mut needs_rebuild = state_dirty.needs_rebuild() || root_changed;
-        if root_changed && self.try_apply_placement_updates(root)? {
+        if root_changed
+            && let Some(patches) = &rooted_patches
+            && self.try_apply_placement_updates(root, patches)?
+        {
             needs_rebuild = false;
         }
+        // Keep pre-commit scroll state until a possibly partial failed batch
+        // has completed its cold recovery too.
+        let mut incremental_scroll_offsets = FxHashMap::default();
         // Incremental Fiber-commit path.
         //
         // Only engaged when ALL of:
@@ -2725,7 +2863,8 @@ impl Viewport {
             // the arena stores (Fragment root → N arena roots).
             let old_roots = unpack_root_set(previous_root);
             let new_roots = unpack_root_set(root);
-            let rooted_patches = crate::ui::reconcile_multi(Some(&old_roots), &new_roots);
+            let translate_profile =
+                crate::ui::work_profile::scope(crate::ui::work_profile::Phase::Translate);
             let descriptor_ctx = crate::view::fiber_work::DescriptorContext {
                 new_rsx_root: root,
                 // 軌 1 #6: pass the previous tree so the translator
@@ -2737,7 +2876,7 @@ impl Viewport {
                 viewport_height: self.logical_height,
             };
             let translated = crate::view::fiber_work::translate_rooted_patches_all_or_nothing(
-                rooted_patches,
+                rooted_patches.unwrap_or_default(),
                 self.scene.node_arena.stable_id_index(),
                 &self.scene.node_arena,
                 &self.scene.ui_root_keys,
@@ -2745,19 +2884,18 @@ impl Viewport {
                 &new_roots,
                 Some(&descriptor_ctx),
             );
+            drop(translate_profile);
             if let Some(works) = translated {
+                crate::ui::work_profile::count(|p| p.fiber_works += works.len());
                 let all_committable = works
                     .iter()
                     .all(|w| w.is_committable(&self.scene.node_arena));
                 if all_committable {
-                    // Cross-parent keyed moves can translate as delete+create;
-                    // preserve host scroll state by stable id across the batch.
-                    let mut incremental_scroll_offsets = FxHashMap::default();
-                    Self::save_scroll_states(
-                        &self.scene.node_arena,
-                        &self.scene.ui_root_keys,
-                        &mut incremental_scroll_offsets,
+                    let _commit_profile = crate::ui::work_profile::scope(
+                        crate::ui::work_profile::Phase::IncrementalCommit,
                     );
+                    incremental_scroll_offsets =
+                        Self::save_replaced_scroll_states(&self.scene.node_arena, &works);
                     let apply_ctx = crate::view::fiber_work::ApplyContext {
                         viewport_style: &self.style,
                         viewport_width: self.logical_width,
@@ -2775,9 +2913,8 @@ impl Viewport {
                             // the arena after a committed batch.
                             let refreshed_roots = self.scene.node_arena.roots().to_vec();
                             self.scene.ui_root_keys = refreshed_roots;
-                            Self::restore_scroll_states(
+                            Self::restore_replaced_scroll_states(
                                 &self.scene.node_arena,
-                                &self.scene.ui_root_keys,
                                 &incremental_scroll_offsets,
                             );
                             self.scene.last_rsx_root = Some(root.clone());
@@ -2801,6 +2938,8 @@ impl Viewport {
             }
         }
         if needs_rebuild {
+            let _commit_profile =
+                crate::ui::work_profile::scope(crate::ui::work_profile::Phase::ColdCommit);
             // Clear and save current scroll states
             self.scene.scroll_offsets.clear();
             Self::save_scroll_states(
@@ -2808,6 +2947,7 @@ impl Viewport {
                 &self.scene.ui_root_keys,
                 &mut self.scene.scroll_offsets,
             );
+            self.scene.scroll_offsets.extend(incremental_scroll_offsets);
             let layout_snapshots =
                 crate::view::viewport::transitions_tick::collect_layout_transition_snapshots(
                     &self.scene.node_arena,
@@ -2830,6 +2970,10 @@ impl Viewport {
             if converted_descriptors.is_empty() {
                 eprintln!("[render_rsx] no valid root nodes converted; keep previous render tree");
                 self.scene.last_rsx_root = Some(root.clone());
+                drop(_commit_profile);
+                frontend.scene_update_ms = scene_start.elapsed().as_secs_f64() * 1000.0;
+                frontend.work = crate::ui::work_profile::snapshot().since(before);
+                self.frame.frontend = frontend;
                 return Ok(());
             }
             // Approach-C: drop the previous arena subtree and commit the
@@ -2916,6 +3060,9 @@ impl Viewport {
         let transition_changed_before_render = canceled_tracks
             || reconciled_transition_state
             || self.run_pre_layout_transitions(dt, now_seconds);
+        frontend.scene_update_ms = scene_start.elapsed().as_secs_f64() * 1000.0;
+        frontend.work = crate::ui::work_profile::snapshot().since(before);
+        self.frame.frontend = frontend;
         let mut transition_changed_after_layout = false;
         if !self.scene.ui_root_keys.is_empty() {
             transition_changed_after_layout =
@@ -2980,7 +3127,19 @@ impl Viewport {
         &mut self,
         services: crate::platform::PlatformServices<'_>,
     ) -> super::RenderFrameResult {
+        let _capture = crate::ui::work_profile::capture(
+            self.debug_options.trace_render_time
+                || cfg!(any(test, feature = "renderer-test-support")),
+        );
+        let before = crate::ui::work_profile::snapshot();
+        let flush_start = Instant::now();
         let _state_frame = crate::ui::begin_state_frame();
+        let build_start = Instant::now();
+        let mut frontend = FrontendProfile {
+            state_flush_ms: (build_start - flush_start).as_secs_f64() * 1000.0,
+            ..Default::default()
+        };
+        self.frame.frontend = FrontendProfile::default();
         if self.app.is_none() {
             return super::RenderFrameResult::Ok;
         }
@@ -2989,18 +3148,21 @@ impl Viewport {
             self.needs_rebuild = true;
         }
 
+        let mut scene_start = build_start;
         if self.needs_rebuild || self.cached_rsx.is_none() {
-            let build_start = Instant::now();
             let rsx = self.with_app(services, |app, ctx| app.build(ctx));
-            self.frame.rsx_build_ms = build_start.elapsed().as_secs_f64() * 1000.0;
             self.cached_rsx = Some(rsx);
             self.needs_rebuild = false;
-        } else {
-            self.frame.rsx_build_ms = 0.0;
+            scene_start = Instant::now();
+            frontend.rsx_build_ms = (scene_start - build_start).as_secs_f64() * 1000.0;
         }
 
         if let Some(rsx) = self.cached_rsx.clone() {
-            let _ = self.render_rsx(&rsx);
+            let _ = self.render_rsx_at(
+                &rsx,
+                crate::time::Instant::now(),
+                Some((frontend, before, scene_start)),
+            );
         }
 
         if self.cached_rsx.is_some() && self.frame_box_models().is_empty() {
@@ -3008,6 +3170,13 @@ impl Viewport {
         } else {
             super::RenderFrameResult::Ok
         }
+    }
+
+    /// Front-end CPU observations from the latest render attempt. Detailed
+    /// work counts require tracing or `ui::profile_ui_work`; failed attempts
+    /// without a completed scene update report a cleared sample.
+    pub fn frontend_profile(&self) -> FrontendProfile {
+        self.frame.frontend
     }
 
     /// Forward an `AppEvent` to the held `App::on_event`.

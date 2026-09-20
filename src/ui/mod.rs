@@ -4,6 +4,8 @@ pub(crate) mod component;
 mod context;
 mod event;
 mod node_id;
+pub(crate) mod work_profile;
+pub use work_profile::{UiWorkProfile, profile_ui_work};
 mod provider;
 mod reconciler;
 mod render_backend;

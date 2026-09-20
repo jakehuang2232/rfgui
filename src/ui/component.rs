@@ -544,8 +544,8 @@ pub struct ComponentVTable {
     /// struct and the corresponding shim.
     pub clone_props: unsafe fn(NonNull<()>) -> NonNull<()>,
     /// Structural equality of two boxed `T::Props`. `None` opts out of
-    /// memoization (each render re-invokes `render`). Emitted as
-    /// `Some(_)` only when the user derives `PartialEq` on the props struct.
+    /// memoization (each render re-invokes `render`). Generated comparators
+    /// compare supported fields and conservatively miss for unknown types.
     pub props_eq: Option<unsafe fn(NonNull<()>, NonNull<()>) -> bool>,
     pub type_name: &'static str,
 }
@@ -683,6 +683,8 @@ pub fn rsx_scope(f: impl FnOnce() -> RsxNode) -> RsxNode {
 }
 
 pub fn unwrap_components(node: RsxNode) -> RsxNode {
+    let _profile = crate::ui::work_profile::scope(crate::ui::work_profile::Phase::Unwrap);
+    crate::ui::work_profile::count(|p| p.unwrap_nodes += 1);
     match node {
         RsxNode::Text(_) => node,
         RsxNode::Element(mut element_rc) => {
@@ -716,48 +718,7 @@ pub fn unwrap_components(node: RsxNode) -> RsxNode {
                 });
             walked_child
         }
-        RsxNode::Component(inner) => {
-            let parts = inner.into_render_parts();
-            let ComponentRenderParts {
-                identity,
-                type_id,
-                key,
-                children,
-                props,
-                vtable,
-            } = parts;
-            with_component_key(key, || {
-                crate::ui::render_component_by_type_id(type_id, || {
-                    // Safety: `props` was produced by `Box::into_raw(Box::new(T::Props))`
-                    // during Component construction, and `vtable.render` is the
-                    // monomorphized shim that `Box::from_raw`s it back to the
-                    // exact same T. `children` is owned here after
-                    // `into_render_parts` — the shim consumes both.
-                    let rendered = unsafe { (vtable.render)(props, children) };
-                    let mut walked = unwrap_components(rendered);
-                    walked.set_identity(identity);
-                    // Mirror pre-P2 `build_tag_node` behaviour: stamp the
-                    // outer component's `RsxTagDescriptor` onto the
-                    // rendered root. Preserves `tag_descriptor == Outer`
-                    // semantics consumers rely on (e.g. `<Window>` wraps
-                    // `<WindowView>` — tree root's descriptor remains
-                    // `Window`, not `WindowView`).
-                    if let RsxNode::Element(el) = &mut walked {
-                        // Phase 6b: preserve the rendered root's
-                        // `host_builder` so dispatch still works after
-                        // the outer component's `type_id`/`type_name`
-                        // is stamped for stable identity.
-                        let inner_builder = el.tag_descriptor.and_then(|d| d.host_builder);
-                        std::rc::Rc::make_mut(el).tag_descriptor = Some(RsxTagDescriptor {
-                            type_id,
-                            type_name: identity.invocation_type,
-                            host_builder: inner_builder,
-                        });
-                    }
-                    walked
-                })
-            })
-        }
+        RsxNode::Component(inner) => memo::render_deferred(inner),
     }
 }
 
@@ -965,3 +926,7 @@ impl From<GlobalKey> for RsxKey {
         Self::Global(value)
     }
 }
+
+mod memo;
+#[doc(hidden)]
+pub use memo::{MemoCompare, MemoCompareValue};

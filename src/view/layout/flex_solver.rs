@@ -63,6 +63,11 @@ pub(crate) fn compute_flex_info(
     inputs: FlexSolverInputs<'_>,
     arena: &mut NodeArena,
 ) -> FlexLayoutInfo {
+    let _profile = crate::view::base_component::layout_profile_scope(
+        crate::view::base_component::LayoutPlaceTiming::AxisSolve,
+    );
+    crate::view::base_component::with_layout_place_profile(|p| p.axis_solve_calls += 1);
+
     let FlexSolverInputs {
         layout_kind: _layout_kind,
         children,

@@ -12,11 +12,17 @@ impl Viewport {
     pub(super) fn sync_compositor_property_trees(&mut self) {
         let arena = &self.scene.node_arena;
         let roots = &self.scene.ui_root_keys;
-        self.compositor.property_trees.sync(arena, roots);
+        crate::view::base_component::profile_layout_place_time(
+            crate::view::base_component::LayoutPlaceTiming::PropertySync,
+            || self.compositor.property_trees.sync(arena, roots),
+        );
 
         let property_trees = &self.compositor.property_trees;
         let tracker = &mut self.compositor.paint_generations;
-        let visited = tracker.sync_arena(arena, roots, property_trees);
+        let visited = crate::view::base_component::profile_layout_place_time(
+            crate::view::base_component::LayoutPlaceTiming::GenerationSync,
+            || tracker.sync_arena(arena, roots, property_trees),
+        );
         if self.debug_options.trace_compile_detail {
             let mut changed = property_trees.changes.iter().collect::<Vec<_>>();
             changed.sort_by_key(|(key, _)| **key);

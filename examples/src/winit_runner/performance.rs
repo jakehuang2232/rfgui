@@ -59,6 +59,16 @@ impl WindowPerformance {
         occluded: bool,
     ) {
         let (cpu, completion, counts) = viewport.renderer_performance_sample();
+        let frontend = viewport.frontend_profile();
+        // Preserve the renderer-only cpu_ms columns. Front-end intervals and
+        // inclusive work details are separate, so consumers cannot double count.
+        let frontend_ms = [
+            frontend.total_ms(),
+            frontend.state_flush_ms,
+            frontend.rsx_build_ms,
+            frontend.scene_update_ms,
+        ];
+        let frontend_work = frontend.work;
         assert_eq!(counts.2, self.counts.2, "window frame aborted");
         if counts.0 == self.counts.0 {
             return;
@@ -85,7 +95,7 @@ impl WindowPerformance {
             );
         }
         println!(
-            "window-perf frame={} nodes={} logical={:?} physical={:?} wall_ms={wall_ms:.6} cpu_ms={cpu:?} completion_ms={completion:?} counts={counts:?} focused={focused:?} occluded={occluded}",
+            "window-perf frame={} nodes={} logical={:?} physical={:?} wall_ms={wall_ms:.6} cpu_ms={cpu:?} frontend_ms={frontend_ms:?} frontend_work={frontend_work:?} completion_ms={completion:?} counts={counts:?} focused={focused:?} occluded={occluded}",
             self.frames,
             viewport.node_arena().len(),
             viewport.logical_size(),

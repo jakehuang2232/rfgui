@@ -191,6 +191,8 @@ thread_local! {
 // ---------------------------------------------------------------------------
 
 pub fn reconcile(old: Option<&RsxNode>, new: &RsxNode) -> Vec<Patch> {
+    let _profile = crate::ui::work_profile::scope(crate::ui::work_profile::Phase::Reconcile);
+    crate::ui::work_profile::count(|p| p.reconcile_calls += 1);
     let Some(old) = old else {
         return vec![Patch::ReplaceRoot(new.clone())];
     };
@@ -214,6 +216,8 @@ pub fn reconcile(old: Option<&RsxNode>, new: &RsxNode) -> Vec<Patch> {
 ///   `ReplaceAllRoots(new.clone())` (wholesale root-set swap).
 /// - Otherwise per-root reconcile; emitted patches tagged with `root_index = i`.
 pub fn reconcile_multi(old: Option<&[&RsxNode]>, new: &[&RsxNode]) -> Vec<RootedPatch> {
+    let _profile = crate::ui::work_profile::scope(crate::ui::work_profile::Phase::Reconcile);
+    crate::ui::work_profile::count(|p| p.reconcile_calls += 1);
     let Some(old) = old else {
         return vec![RootedPatch {
             root_index: 0,
@@ -301,11 +305,13 @@ pub fn reconcile_multi(old: Option<&[&RsxNode]>, new: &[&RsxNode]) -> Vec<Rooted
 // ---------------------------------------------------------------------------
 
 fn reconcile_node(old: &RsxNode, new: &RsxNode, path: &mut Vec<usize>, patches: &mut Vec<Patch>) {
+    crate::ui::work_profile::count(|p| p.reconciled_nodes += 1);
     // Fast path: if both variants hold the exact same `Rc` allocation, the
     // entire subtree is guaranteed structurally identical — no patches needed.
     // Enables memoized components (Step D) and any caller that reuses an
     // `Rc<RsxNode>` across renders to skip subtree reconciliation entirely.
     if RsxNode::ptr_eq(old, new) {
+        crate::ui::work_profile::count(|p| p.shared_subtree_hits += 1);
         return;
     }
 

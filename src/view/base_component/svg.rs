@@ -1822,6 +1822,10 @@ impl ElementTrait for Svg {
         self.element.compositor_spatial_placement_snapshot()
     }
 
+    fn dirty_observation_is_tracked(&self) -> bool {
+        true
+    }
+
     fn local_dirty_flags(&self) -> super::DirtyFlags {
         self.element.local_dirty_flags()
     }
@@ -1869,6 +1873,10 @@ impl ElementTrait for Svg {
             return Err("<Svg> does not accept children; use loading/error props".to_string());
         }
         Ok(Vec::new())
+    }
+
+    fn prop_preserves_child_identity(&self, name: &str) -> bool {
+        !matches!(name, "loading" | "error")
     }
 
     fn apply_prop(
@@ -2048,6 +2056,7 @@ impl Layoutable for Svg {
         constraints: LayoutConstraints,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        crate::ui::work_profile::count(|p| p.measure_calls += 1);
         if !self.prepared_by_arena_sync {
             self.refresh_frozen_resources(arena);
         }
@@ -2064,6 +2073,7 @@ impl Layoutable for Svg {
         placement: LayoutPlacement,
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
+        crate::ui::work_profile::count(|p| p.place_calls += 1);
         self.element.place(placement, arena);
     }
 

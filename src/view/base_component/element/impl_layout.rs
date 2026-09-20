@@ -1552,6 +1552,7 @@ impl Element {
         assign_width: bool,
         assign_height: bool,
     ) {
+        self.reusable_measure_assignment = None;
         if assign_width {
             self.layout_assigned_width = Some(target_width.max(0.0));
         }

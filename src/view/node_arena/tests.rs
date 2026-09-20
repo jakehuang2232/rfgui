@@ -223,3 +223,5 @@ mod deferred_queue_tests;
 mod dirty_propagation_tests;
 mod invalidation_tests;
 mod topology_tests;
+
+mod dirty_observation_tests;

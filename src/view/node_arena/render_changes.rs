@@ -126,10 +126,14 @@ impl NodeArena {
     /// The existing layout prepass preserves consumed local causes; this also
     /// observes post-layout resource preparation without consuming it.
     pub(crate) fn capture_render_changes(&self) -> RenderChangeCapture {
+        let _profile = crate::view::base_component::layout_profile_scope(
+            crate::view::base_component::LayoutPlaceTiming::ChangeCapture,
+        );
         let owners = self
             .slots
             .iter()
             .map(|(key, node)| {
+                crate::ui::work_profile::count(|p| p.render_change_observations += 1);
                 self.observe_render_causes(key, self.pending_render_changes(key));
                 (
                     key,
@@ -173,12 +177,18 @@ impl NodeArena {
         let Some(node) = self.slots.get(key) else {
             return false;
         };
+        crate::ui::work_profile::count(|p| p.dirty_clear_visits += 1);
         let native_bookkeeping = {
             let element = node.element.borrow();
             element.as_any().is::<Element>() || element.as_any().is::<Text>()
         };
         if native_bookkeeping {
-            node.element.borrow_mut().clear_local_dirty_flags(flags);
+            let mut element = node.element.borrow_mut();
+            let before = element.local_dirty_flags();
+            element.clear_local_dirty_flags(flags);
+            if element.local_dirty_flags() != before {
+                self.invalidate_dirty_observation(key);
+            }
         } else if let Some(mut node) = self.get_mut(key) {
             node.element.clear_local_dirty_flags(flags);
         }

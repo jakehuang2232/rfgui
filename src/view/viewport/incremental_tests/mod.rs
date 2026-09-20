@@ -10,3 +10,7 @@ mod common;
 mod dirty;
 mod interaction;
 mod placement;
+
+mod update_pipeline_tests;
+
+mod layout_reuse_tests;

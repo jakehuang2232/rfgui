@@ -40,21 +40,52 @@ pub(crate) fn measure_axis_children(inputs: MeasureChildrenInputs<'_>, arena: &m
         viewport_height,
     } = inputs;
 
+    let constraints = LayoutConstraints {
+        max_width: child_available_width,
+        max_height: child_available_height,
+        viewport_width,
+        viewport_height,
+        percent_base_width: child_percent_base_width,
+        percent_base_height: child_percent_base_height,
+    };
     for child_key in children.iter().copied() {
-        arena.with_element_taken(child_key, |child, arena| {
-            child.measure(
-                LayoutConstraints {
-                    max_width: child_available_width,
-                    max_height: child_available_height,
-                    viewport_width,
-                    viewport_height,
-                    percent_base_width: child_percent_base_width,
-                    percent_base_height: child_percent_base_height,
-                },
-                arena,
-            );
-        });
+        measure_child_if_needed(arena, child_key, constraints);
     }
+}
+
+/// The layout pass has refreshed dirty aggregates. Preserve native measured
+/// geometry only when the exact existing no-op contract holds, including
+/// proposals and assigned dimensions. Unknown hosts still receive measure.
+pub(crate) fn measure_child_if_needed(
+    arena: &mut NodeArena,
+    key: NodeKey,
+    constraints: LayoutConstraints,
+) {
+    let reuse = arena.get(key).and_then(|node| {
+        let element = node
+            .element
+            .as_any()
+            .downcast_ref::<crate::view::base_component::Element>()?;
+        element
+            .can_reuse_measure_output(constraints, arena)
+            .then(|| element.measure_is_noop(constraints, arena))
+    });
+    if let Some(no_mutation) = reuse {
+        if !no_mutation {
+            // Preserve measure's assignment reset even when its geometry is
+            // reusable. This remains tracked mutable access, not a dirty clear.
+            if let Some(mut node) = arena.get_mut(key) {
+                node.element
+                    .as_any_mut()
+                    .downcast_mut::<crate::view::base_component::Element>()
+                    .expect("native host checked above")
+                    .clear_reusable_measure_assignment();
+            }
+        }
+        crate::ui::work_profile::count(|p| p.measure_reuses += 1);
+        return;
+    }
+    arena.with_element_taken(key, |child, arena| child.measure(constraints, arena));
 }
 
 /// Inputs to `measure_axis`.
