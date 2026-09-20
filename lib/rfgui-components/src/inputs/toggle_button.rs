@@ -99,7 +99,7 @@ fn ToggleButtonView(
                         if let Some(h) = user_on_click.as_ref() {
                             h.call(event);
                         }
-                        let next = if binding.get().as_ref() == Some(&v) {
+                        let next = if binding.get_committed().as_ref() == Some(&v) {
                             None
                         } else {
                             Some(v.clone())

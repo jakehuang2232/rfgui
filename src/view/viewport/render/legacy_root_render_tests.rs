@@ -979,167 +979,6 @@ fn prepared_scroll_text_area_scene() -> (
     )
 }
 
-fn prepared_focused_atomic_projection_scroll_text_area_scene_with_preedit(
-    preedit: Option<(&str, Option<(usize, usize)>)>,
-) -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    prepared_atomic_projection_scroll_text_area_scene_with(
-        20.0,
-        "before projected after",
-        true,
-        None,
-        preedit,
-    )
-}
-
-fn prepared_atomic_projection_scroll_text_area_scene_with(
-    outer_scroll_y: f32,
-    content: &'static str,
-    focused: bool,
-    selection: Option<(usize, usize)>,
-    preedit: Option<(&str, Option<(usize, usize)>)>,
-) -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    let width = 108.0;
-    let content_height = 300.0;
-    let mut arena = new_test_arena();
-    let mut text_area = TextArea::with_stable_id(0xd3_a1c3);
-    text_area.set_text(content.to_string());
-    text_area.font_size = 17.5;
-    text_area.line_height = 1.3;
-    text_area.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
-        render.range(7..16, |_text_area| crate::ui::RsxNode::text("projected"));
-    }));
-    text_area.is_focused = focused;
-    text_area.caret_visible = focused;
-    text_area.cursor_char = if preedit.is_some() { 8 } else { 7 };
-    if let Some((anchor, focus)) = selection {
-        text_area.selection_anchor_char = Some(anchor);
-        text_area.selection_focus_char = Some(focus);
-    }
-    if let Some((preedit, cursor)) = preedit {
-        text_area.ime_preedit = preedit.to_string();
-        text_area.ime_preedit_cursor = cursor;
-        text_area.children_dirty = true;
-        text_area.bump_unified_ifc_source_revision();
-        text_area.dirty_flags = DirtyFlags::ALL;
-    }
-
-    let text_area = commit_element(&mut arena, Box::new(text_area));
-    arena.with_element_taken(text_area, |element, _arena| {
-        element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .unwrap()
-            .set_self_node_key(text_area);
-    });
-    measure_and_place(
-        &mut arena,
-        text_area,
-        LayoutConstraints {
-            max_width: width,
-            max_height: 240.0,
-            viewport_width: 320.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(240.0),
-        },
-        LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: width,
-            available_height: 240.0,
-            viewport_width: 320.0,
-            viewport_height: 240.0,
-            percent_base_width: Some(320.0),
-            percent_base_height: Some(240.0),
-        },
-    );
-
-    let wrapper = commit_element(
-        &mut arena,
-        Box::new(Element::new_with_id(
-            0xe2_a3c1,
-            0.0,
-            -outer_scroll_y,
-            width,
-            content_height,
-        )),
-    );
-    let root = commit_element(
-        &mut arena,
-        Box::new(Element::new_with_id(0xe2_a3c0, 0.0, 0.0, width, 80.0)),
-    );
-    arena.set_parent(text_area, Some(wrapper));
-    arena.set_children(wrapper, vec![text_area]);
-    arena.set_parent(wrapper, Some(root));
-    arena.set_children(root, vec![wrapper]);
-    arena.with_element_taken(text_area, |element, arena| {
-        element.place(
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: -outer_scroll_y,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: width,
-                available_height: 240.0,
-                viewport_width: 320.0,
-                viewport_height: 240.0,
-                percent_base_width: Some(320.0),
-                percent_base_height: Some(240.0),
-            },
-            arena,
-        );
-    });
-
-    let mut wrapper_style = Style::new();
-    wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    crate::view::test_support::get_element_mut::<Element>(&arena, wrapper)
-        .apply_style(wrapper_style);
-
-    let mut root_style = Style::new();
-    root_style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-    );
-    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
-        root_element.apply_style(root_style);
-        root_element.layout_state.content_size = Size {
-            width,
-            height: content_height,
-        };
-        root_element.set_scroll_offset((0.0, outer_scroll_y));
-        root_element.clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-
-    let mut stack = vec![wrapper];
-    while let Some(key) = stack.pop() {
-        stack.extend(arena.children_of(key));
-        arena
-            .get_mut(key)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    arena.refresh_subtree_dirty_cache(root);
-    let roots = vec![root];
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    (arena, roots, properties, generations)
-}
-
 fn prepared_scroll_text_area_scene_with(
     outer_scroll_y: f32,
     local_scroll_y: f32,
@@ -1261,9 +1100,7 @@ fn assert_generic_primary(
         );
     };
     assert!(trace.rejections.is_empty());
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
-        panic!("must bypass the old root-effect artifact compiler");
-    };
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
     let count = frame.raster_plan().nodes().len();
     let mut viewport = Viewport::new();
     assert_eq!(
@@ -1433,9 +1270,7 @@ fn assert_native_root_opacity_artifact(
         panic!("{host}: complete recording must select Artifact")
     };
     assert!(trace.rejections.is_empty());
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
-        panic!("{host}: generic sealed payload required")
-    };
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
     assert!(frame.residents().is_canonical());
     let resident_count = frame.residents().len();
     let mut viewport = Viewport::new();
@@ -1483,9 +1318,7 @@ fn assert_native_artifact_surface_authority(
             .any(|rejection| matches!(rejection, AutoAuthorityRejection::ArtifactPrepare { .. })),
         "{host}: selected Artifact cannot contain its own terminal rejection: {trace:?}"
     );
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
-        panic!("{host}: generic no-scroll authority must carry an artifact surface frame")
-    };
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
     assert!(
         !frame.raster_plan().nodes().is_empty(),
         "{host}: detached surfaces"
@@ -1993,9 +1826,7 @@ fn selected_artifact_surface(
             auto_authority_trace(&decision).rejections
         )
     };
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
-        panic!("{host}: production selector must carry a generic surface frame")
-    };
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
     let surface_count = frame.raster_plan().nodes().len();
     assert_ne!(surface_count, 0, "{host}: detached surface count");
     assert!(frame.raster_plan().nodes().iter().all(|node| matches!(

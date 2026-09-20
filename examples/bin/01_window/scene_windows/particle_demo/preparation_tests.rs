@@ -67,7 +67,7 @@ fn animation_switch_freezes_particles_resizes_and_resumes_without_catching_up() 
     canvas.prepare_paint_resources(context);
     let first = canvas.source.clone().unwrap();
     let frozen = PARTICLE_SYSTEM.with(|s| (s.borrow().elapsed, s.borrow().particles.len()));
-    animation_on.set(false);
+    crate::rfgui::ui::batch_state_updates(|| animation_on.set(false));
     context.frame_number += 1;
     context.now += std::time::Duration::from_secs(10);
     canvas.prepare_paint_resources(context);
@@ -92,7 +92,7 @@ fn animation_switch_freezes_particles_resizes_and_resumes_without_catching_up() 
     canvas.prepare_paint_resources(context);
     assert_eq!(canvas.source.as_ref().unwrap().extent(), [100, 64]);
     assert!(canvas.source.as_ref().unwrap().revision() > before_scale);
-    animation_on.set(true);
+    crate::rfgui::ui::batch_state_updates(|| animation_on.set(true));
     context.frame_number += 1;
     context.now += std::time::Duration::from_secs(60);
     canvas.prepare_paint_resources(context);

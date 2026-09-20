@@ -49,7 +49,7 @@ fn accordion_click_updates_expanded_binding() {
     let mut viewport = rfgui::view::Viewport::new();
     click_once(&mut arena, roots[0], &mut viewport, 10.0, 10.0);
 
-    assert!(expanded.get());
+    assert!(expanded.snapshot().get());
 }
 
 #[test]

@@ -373,10 +373,14 @@ fn TreeViewView<V: Clone + PartialEq + std::hash::Hash + 'static>(
     let theme = use_theme().0;
 
     let fallback_expanded = use_state(|| default_expanded_items.clone().unwrap_or_default());
-    let expanded = expanded_binding.unwrap_or_else(|| fallback_expanded.binding());
+    let expanded = expanded_binding
+        .unwrap_or_else(|| fallback_expanded.binding())
+        .snapshot();
 
     let fallback_selected = use_state(|| default_selected_item.clone());
-    let selected = selected_binding.unwrap_or_else(|| fallback_selected.binding());
+    let selected = selected_binding
+        .unwrap_or_else(|| fallback_selected.binding())
+        .snapshot();
 
     // DnD state. `pending_drag` and `dragging` are non-reactive cells —
     // mutating them must NOT trigger a rebuild, otherwise the rebuild
@@ -518,13 +522,14 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
         if !is_branch {
             return;
         }
-        let mut next = expanded_binding.get();
-        if let Some(pos) = next.iter().position(|x| x == &value_for_click) {
-            next.remove(pos);
-        } else {
-            next.push(value_for_click.clone());
-        }
-        expanded_binding.set(next);
+        let value = value_for_click.clone();
+        expanded_binding.update(move |next| {
+            if let Some(pos) = next.iter().position(|x| x == &value) {
+                next.remove(pos);
+            } else {
+                next.push(value);
+            }
+        });
     });
 
     let row_pad_left =
@@ -774,7 +779,7 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
                 DropPosition::After
             };
             let next = Some((value.clone(), position));
-            if drop_target.get() != next {
+            if drop_target.get_committed() != next {
                 drop_target.set(next);
             }
             event.accept(DragEffect::Move);
@@ -786,7 +791,7 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
         let value = value.clone();
         on_drag_leave(move |_event| {
             if drop_target
-                .get()
+                .get_committed()
                 .as_ref()
                 .is_some_and(|(target, _)| target == &value)
             {
@@ -803,7 +808,7 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
         let value = value.clone();
         on_drop(move |_event| {
             let source = dragging.borrow().clone();
-            let target = drop_target.get();
+            let target = drop_target.get_committed();
             *dragging.borrow_mut() = None;
             *pending.borrow_mut() = None;
             drop_target.set(None);

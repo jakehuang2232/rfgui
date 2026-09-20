@@ -585,7 +585,7 @@ fn stage_c_surface_dag_accepts_a_leaf_first_nested_scroll_chain() {
 pub(super) struct PlainRootFixture {
     pub(super) arena: NodeArena,
     pub(super) roots: Vec<NodeKey>,
-    pub(super) property_roots: [NodeKey; 2],
+
     pub(super) properties: PropertyTrees,
     pub(super) generations: PaintGenerationTracker,
 }
@@ -684,7 +684,7 @@ pub(super) fn plain_root_fixture() -> PlainRootFixture {
     PlainRootFixture {
         arena,
         roots,
-        property_roots: [property_a, property_b],
+
         properties,
         generations,
     }

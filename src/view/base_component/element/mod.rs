@@ -1085,16 +1085,6 @@ impl BuildState {
         self.target
     }
 
-    #[cfg(test)]
-    pub(crate) fn opaque_rect_order_for_test(&self) -> u32 {
-        self.dfs_opaque_rect_order
-    }
-
-    #[cfg(test)]
-    pub(crate) fn target_pair_count_for_test(&self) -> usize {
-        self.target_pairs.len()
-    }
-
     pub(crate) fn opaque_rect_order(&self) -> u32 {
         self.dfs_opaque_rect_order
     }

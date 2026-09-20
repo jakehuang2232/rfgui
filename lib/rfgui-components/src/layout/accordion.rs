@@ -61,6 +61,7 @@ fn AccordionView(
     disabled: bool,
     children: Vec<RsxNode>,
 ) -> RsxNode {
+    let expanded_binding = expanded_binding.map(|binding| binding.snapshot());
     let theme = use_theme().0;
     let fallback_expanded = use_state(|| default_expanded);
     let is_expanded = expanded_binding
@@ -73,7 +74,7 @@ fn AccordionView(
         if disabled {
             return;
         }
-        expanded_state.set(!expanded_state.get());
+        expanded_state.update(|expanded| *expanded = !*expanded);
     });
 
     let content_border = Border::uniform(Length::px(0.0), theme.color.border.as_ref())

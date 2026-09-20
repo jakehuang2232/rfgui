@@ -4,7 +4,6 @@ use crate::view::compositor::property_tree::*;
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::any::Any;
 use std::sync::Arc;
 
 use slotmap::Key;
@@ -14,11 +13,9 @@ use crate::style::{
     ScrollDirection, Style, Transform,
 };
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyPassMask, ElementTrait, EventTarget, Image,
-    LayoutConstraints, LayoutPlacement, Layoutable, Rect, Renderable, Size, Svg, Text,
-    UiBuildContext,
+    DirtyPassMask, ElementTrait, EventTarget, Image, LayoutConstraints, LayoutPlacement, Rect,
+    Size, Svg, Text,
 };
-use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::Node;
 use crate::view::paint::{
     ArtifactTransitionRequest, LayerizationPolicy, PaintChunk, PaintChunkId, PaintChunkRole,
@@ -28,79 +25,6 @@ use crate::view::paint::{
 };
 use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
 use crate::view::{ImageSource, SvgSource};
-
-struct UnknownHost {
-    id: u64,
-    width: f32,
-    height: f32,
-}
-
-impl Layoutable for UnknownHost {
-    fn measure(&mut self, _constraints: LayoutConstraints, _arena: &mut NodeArena) {}
-    fn place(&mut self, _placement: LayoutPlacement, _arena: &mut NodeArena) {}
-    fn measured_size(&self) -> (f32, f32) {
-        (self.width, self.height)
-    }
-    fn set_layout_width(&mut self, width: f32) {
-        self.width = width;
-    }
-    fn set_layout_height(&mut self, height: f32) {
-        self.height = height;
-    }
-}
-
-impl EventTarget for UnknownHost {}
-
-impl Renderable for UnknownHost {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        let mut pass = crate::view::render_pass::draw_rect_pass::DrawRectPass::new(
-            crate::view::render_pass::draw_rect_pass::RectPassParams {
-                position: [0.0, 0.0],
-                size: [self.width, self.height],
-                fill_color: [0.2, 0.4, 0.6, 0.5],
-                opacity: 1.0,
-                ..Default::default()
-            },
-            Default::default(),
-            Default::default(),
-        );
-        pass.set_render_mode(crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly);
-        ctx.emit_draw_rect_pass(graph, pass);
-        ctx.into_state()
-    }
-}
-
-impl ElementTrait for UnknownHost {
-    fn stable_id(&self) -> u64 {
-        self.id
-    }
-
-    fn box_model_snapshot(&self) -> BoxModelSnapshot {
-        BoxModelSnapshot {
-            node_id: self.id,
-            parent_id: None,
-            x: 0.0,
-            y: 0.0,
-            width: self.width,
-            height: self.height,
-            border_radius: 0.0,
-            should_render: true,
-        }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
 
 fn exact_transform_fixture_at_origin_with_ids(
     root_id: u64,
@@ -292,18 +216,6 @@ fn nested_exact_transform_fixture() -> (
         properties,
         generations,
     )
-}
-
-struct GeneralPropertySceneFixture {
-    arena: NodeArena,
-    roots: Vec<NodeKey>,
-    outer: NodeKey,
-    inner_a: NodeKey,
-    deep: NodeKey,
-    inner_b: NodeKey,
-    second_root: NodeKey,
-    properties: PropertyTrees,
-    generations: PaintGenerationTracker,
 }
 
 #[derive(Clone, Copy)]
@@ -1282,21 +1194,6 @@ fn stage_c_visible_overlay_fixture() -> (
     (arena, roots, properties, generations)
 }
 
-/// Two scroll hosts on one ancestor path, plus the inner host's key.
-pub(crate) fn nested_scroll_fixture() -> (
-    NodeArena,
-    NodeKey,
-    NodeKey,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    let (arena, root, properties, generations) =
-        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::NestedScroll);
-    let outer = arena.children_of(root)[0];
-    let inner = arena.children_of(outer)[0];
-    (arena, root, inner, properties, generations)
-}
-
 pub(crate) fn same_owner_transform_scroll_fixture()
 -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
     property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::CoLocatedTransformScroll)
@@ -2001,7 +1898,6 @@ fn planning_only_nested_effect_fixture() -> (
     (arena, root, child, grandchild, properties, generations)
 }
 
-mod stage_c_retained_semantic_baseline_tests;
 mod stage_c_scroll_capability_corpus_tests;
 mod stage_c_surface_candidate_tests;
 mod stage_c_surface_coverage_tests;

@@ -44,7 +44,7 @@ where
     ValueType: Clone + PartialEq + 'static,
 {
     fn render(props: SelectProps<DataType, ValueType>, _children: Vec<RsxNode>) -> RsxNode {
-        let selected_value = props.value.get();
+        let selected_value = props.value.snapshot().get();
         let selected_index =
             resolve_selected_index(&props.data, &selected_value, props.to_value, props.to_label);
         let selected_label = resolve_option_text(&props.data, selected_index, props.to_label);
@@ -154,7 +154,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
                 return;
             }
             if key == Key::Enter || key == Key::NumberPadEnter {
-                open_binding.set(!open_binding.get());
+                open_binding.update(|open| *open = !*open);
                 event.meta.stop_propagation();
                 return;
             }
@@ -179,7 +179,7 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
         let was_focused_on_pointer_down_binding = was_focused_on_pointer_down_binding.clone();
         let open_binding = open_binding.clone();
         ClickHandlerProp::new(move |event| {
-            if was_focused_on_pointer_down_binding.get() {
+            if was_focused_on_pointer_down_binding.get_committed() {
                 event.meta.viewport().set_focus(None);
             } else {
                 open_binding.set(true);

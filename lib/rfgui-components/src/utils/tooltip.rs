@@ -93,8 +93,10 @@ impl TooltipRef {
         self.open.update(|v| *v = !*v);
     }
 
+    /// Read committed visibility for this imperative handle. Pending show /
+    /// hide requests become visible when the enclosing event batch commits.
     pub fn visible(&self) -> bool {
-        self.open.get()
+        self.open.get_committed()
     }
 }
 

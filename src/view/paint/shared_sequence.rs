@@ -66,6 +66,8 @@ impl<T: Clone> SharedSequence<T> {
             Storage::Shared(_) => self.append_shared(vec![value].into()),
         }
     }
+
+    #[cfg(test)]
     pub(crate) fn insert(&mut self, index: usize, value: T) {
         self.deref_mut().insert(index, value);
     }
@@ -158,6 +160,7 @@ impl<T: Clone> SharedSequence<T> {
             Storage::Shared(storage) => storage.blocks.clone(),
         }
     }
+    #[cfg(test)]
     pub(crate) fn into_blocks(self) -> Vec<Arc<[T]>> {
         match self.storage {
             Storage::Owned(values) if values.is_empty() => Vec::new(),
@@ -184,9 +187,7 @@ impl<T: Clone> SharedSequence<T> {
     pub(crate) fn first(&self) -> Option<&T> {
         self.item(0)
     }
-    pub(crate) fn last(&self) -> Option<&T> {
-        self.len().checked_sub(1).and_then(|index| self.item(index))
-    }
+
     pub(crate) fn as_slice(&self) -> &[T] {
         self.deref().as_slice()
     }

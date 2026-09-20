@@ -54,7 +54,6 @@ fn retained_auto_exact_scroll_selects_artifact_and_never_baked_host() {
             "exact scroll topology rejected Artifact: {:?}",
             trace.rejections
         ),
-        _ => panic!("exact scroll topology selected a non-scroll authority"),
     };
     assert!(trace.rejections.is_empty());
     assert_eq!(properties.scrolls.len(), 1);

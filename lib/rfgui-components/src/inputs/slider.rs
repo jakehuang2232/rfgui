@@ -45,7 +45,7 @@ impl RsxComponent<SliderProps> for Slider {
 
         let fallback_value = use_state(|| value);
         let value_binding = if has_binding {
-            binding
+            binding.snapshot()
         } else {
             fallback_value.binding()
         };
@@ -92,7 +92,7 @@ impl RsxComponent<SliderProps> for Slider {
             let binding = value_binding.clone();
             let dragging_binding = dragging_binding.clone();
             Some(on_pointer_move(move |event| {
-                if !dragging_binding.get() || !event.pointer.buttons.left {
+                if !dragging_binding.get_committed() || !event.pointer.buttons.left {
                     return;
                 }
 

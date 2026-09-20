@@ -182,7 +182,7 @@ pub fn TreeViewSection(theme: Theme) -> RsxNode {
     let tree_on_move: Rc<dyn Fn(TreeMoveEvent<String>)> = {
         let tree_nodes_state = tree_nodes_state.clone();
         Rc::new(move |ev| {
-            tree_nodes_state.update(|nodes| {
+            tree_nodes_state.update(move |nodes| {
                 apply_tree_move(nodes, &ev);
                 fn dump(ns: &[TreeNode], depth: usize) {
                     for n in ns {

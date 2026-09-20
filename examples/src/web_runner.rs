@@ -89,6 +89,13 @@ struct Runner {
 
 impl Runner {
     fn new(app: Box<dyn App>, config: AppConfig) -> Self {
+        let redraw = WebRedrawRequester::default();
+        let state_redraw = Rc::downgrade(&redraw.flag);
+        rfgui::ui::set_redraw_callback(move || {
+            if let Some(flag) = state_redraw.upgrade() {
+                flag.set(true);
+            }
+        });
         Self {
             pending_app: Rc::new(RefCell::new(Some(app))),
             config,
@@ -96,7 +103,7 @@ impl Runner {
             viewport: Rc::new(RefCell::new(None)),
             clipboard: InMemoryClipboard::default(),
             cursor_sink: None,
-            redraw: WebRedrawRequester::default(),
+            redraw,
             last_mouse_logical: None,
             cursor_in_window: false,
             ime_composing: Rc::new(Cell::new(false)),

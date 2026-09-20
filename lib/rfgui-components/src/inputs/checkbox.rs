@@ -32,7 +32,7 @@ impl RsxComponent<CheckboxProps> for Checkbox {
         let checkbox_theme = &theme.component.checkbox;
         let fallback_checked = use_state(|| checked);
         let checked_binding = if has_binding {
-            binding
+            binding.snapshot()
         } else {
             fallback_checked.binding()
         };
@@ -45,7 +45,7 @@ impl RsxComponent<CheckboxProps> for Checkbox {
             if disabled {
                 return;
             }
-            let next = !checked_binding.get();
+            let next = !checked_binding.get_committed();
             checked_binding.set(next);
             if let Some(cb) = &on_change {
                 cb(next);

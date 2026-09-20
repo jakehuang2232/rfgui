@@ -188,11 +188,6 @@ impl Svg {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_layout_transition_width_for_test(&mut self, width: f32) {
-        self.element.set_layout_transition_width(width);
-    }
-
-    #[cfg(test)]
     pub(crate) fn set_document_loading_for_transform_test(&self) {
         crate::view::svg_resource::set_svg_document_loading_for_test(self.source_key);
     }

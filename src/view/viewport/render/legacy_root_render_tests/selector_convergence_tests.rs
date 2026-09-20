@@ -44,34 +44,6 @@ fn fixture(
     (arena, roots, properties, generations, ctx, budget)
 }
 
-fn select(
-    f: &(
-        NodeArena,
-        Vec<NodeKey>,
-        PropertyTrees,
-        PaintGenerationTracker,
-        UiBuildContext,
-        u64,
-    ),
-    before: bool,
-    capture: bool,
-) -> AutoAuthorityDecision {
-    let (arena, roots, properties, generations, ctx, budget) = f;
-    let _ = before;
-    super::super::select_retained_auto_frame(
-        arena,
-        roots,
-        properties,
-        generations,
-        ctx,
-        8192,
-        *budget,
-        capture,
-        None,
-        None,
-    )
-}
-
 #[test]
 fn retained_auto_rejects_once_with_capture_independent_stage() {
     for case in [

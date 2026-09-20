@@ -264,13 +264,13 @@ fn WindowView(
         .unwrap_or_else(|| color_like_to_color(theme.color.layer.surface.as_ref()));
 
     {
-        let interaction_for_move = interaction.binding();
+        let drag_state = interaction.binding();
         let position_for_move = position_state.binding();
         let size_for_move = size.binding();
         let on_move_for_move = on_move.clone();
         let on_resize_for_move = on_resize.clone();
         let controlled = position.is_some();
-        use_viewport_pointer_move(move |move_event| match interaction_for_move.get() {
+        use_viewport_pointer_move(move |move_event| match drag_state.get_committed() {
             WindowInteraction::Dragging {
                 start_mouse_x,
                 start_mouse_y,
@@ -370,7 +370,7 @@ fn WindowView(
             if up_event.pointer.button != Some(PointerButton::Left) {
                 return;
             }
-            if let WindowInteraction::Resizing { .. } = interaction_for_up.get() {
+            if let WindowInteraction::Resizing { .. } = interaction_for_up.get_committed() {
                 viewport.set_cursor(None);
             }
             interaction_for_up.set(WindowInteraction::Idle);
@@ -411,7 +411,7 @@ fn WindowView(
                 .set_focus(Some(event.meta.current_target_id()));
             event.viewport.set_cursor(Some(edge.cursor()));
             let (start_x, start_y) = current_position;
-            let (start_width, start_height) = size.get();
+            let (start_width, start_height) = size.get_committed();
             interaction.set(WindowInteraction::Resizing {
                 edge,
                 start_mouse_x: event.pointer.viewport_x,

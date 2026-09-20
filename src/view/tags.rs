@@ -403,7 +403,8 @@ impl RsxComponent<TextAreaProjectionSegmentPropSchema> for TextAreaProjectionSeg
 }
 
 impl RsxComponent<TextAreaPropSchema> for TextArea {
-    fn render(props: TextAreaPropSchema, children: Vec<RsxNode>) -> RsxNode {
+    fn render(mut props: TextAreaPropSchema, children: Vec<RsxNode>) -> RsxNode {
+        props.binding = props.binding.map(|binding| binding.snapshot());
         let mut resolved_content = props
             .binding
             .as_ref()

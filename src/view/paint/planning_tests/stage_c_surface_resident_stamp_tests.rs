@@ -212,9 +212,9 @@ fn co_located_surface_roles_seal_to_three_distinct_generic_resident_keys() {
     );
     assert_eq!(
         keys.iter()
-            .filter_map(|key| match key {
-                RetainedSurfaceResidentKey::Surface { role, .. } => Some(*role),
-                _ => None,
+            .map(|key| {
+                let RetainedSurfaceResidentKey::Surface { role, .. } = key;
+                *role
             })
             .collect::<FxHashSet<_>>(),
         FxHashSet::from_iter([

@@ -1,11 +1,6 @@
 use crate::view::node_arena::InvalidationContext;
 
 impl Element {
-    #[cfg(test)]
-    pub(crate) fn set_stable_id_for_test(&mut self, stable_id: u64) {
-        self.core.id = stable_id;
-    }
-
     const SHOULD_RENDER_OVERSCAN_PX: f32 = 24.0;
 
     fn has_visible_background(&self) -> bool {
@@ -940,15 +935,21 @@ impl Element {
 
     pub(crate) fn mark_place_dirty(&mut self) {
         // Placement does not by itself change resource identity or child order.
-        self.mark_local_dirty(DirtyPassMask::PLACEMENT
-            .union(DirtyFlags::PAINT).union(DirtyFlags::COMPOSITE));
+        self.mark_local_dirty(
+            DirtyPassMask::PLACEMENT
+                .union(DirtyFlags::PAINT)
+                .union(DirtyFlags::COMPOSITE),
+        );
     }
 
     #[allow(dead_code)]
     pub(crate) fn mark_place_dirty_with(&mut self, cx: &mut InvalidationContext<'_>) {
         self.mark_place_dirty();
-        cx.invalidate(DirtyPassMask::PLACEMENT
-            .union(DirtyFlags::PAINT).union(DirtyFlags::COMPOSITE));
+        cx.invalidate(
+            DirtyPassMask::PLACEMENT
+                .union(DirtyFlags::PAINT)
+                .union(DirtyFlags::COMPOSITE),
+        );
     }
 
     pub(crate) fn mark_paint_dirty(&mut self) {

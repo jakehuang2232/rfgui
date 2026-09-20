@@ -22,7 +22,7 @@ fn non_component_scope_does_not_reset_use_state_slots() {
             value
         })
     });
-    assert_eq!(state_before.get(), 7);
+    assert_eq!(state_before.get(), 0); // The captured render snapshot stays fixed.
     let _ = take_state_dirty();
 
     let _ = build_scope(|| {
@@ -54,7 +54,7 @@ fn host_tag_only_build_scope_does_not_prune_user_state() {
             value
         })
     });
-    assert_eq!(state.get(), 99);
+    assert_eq!(state.get(), 0);
     let _ = take_state_dirty();
 
     // Simulate handler-triggered `rsx!` producing only host tags.
@@ -131,7 +131,7 @@ fn global_key_component_keeps_state_when_parent_changes() {
         let _right = crate::ui::render_component::<u16, _>(|| 0_i32);
         left
     });
-    assert_eq!(first, 42);
+    assert_eq!(first, 5);
 
     let second = build_scope(|| {
         let _left = crate::ui::render_component::<u8, _>(|| 0_i32);

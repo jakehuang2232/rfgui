@@ -288,298 +288,7 @@ fn legacy_graph(with_border: bool) -> Result<FrameGraph, String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GpuScrollbarCase {
     Hidden,
-    Opaque,
-    Translucent,
 }
-
-impl GpuScrollbarCase {
-    const ALL: [Self; 3] = [Self::Hidden, Self::Opaque, Self::Translucent];
-}
-
-fn focused_atomic_projection_scroll_fixture(
-    caret_visible: bool,
-    preedit: Option<(&str, Option<(usize, usize)>)>,
-) -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    let width = 60.0;
-    let height = 40.0;
-    let content_height = 120.0;
-    let mut text_area = crate::view::base_component::TextArea::new();
-    text_area.content = "before projected after".to_string();
-    text_area.font_size = 14.0;
-    text_area.line_height = 1.25;
-    text_area.is_focused = true;
-    text_area.caret_visible = caret_visible;
-    text_area.cursor_char = if preedit.is_some() { 8 } else { 7 };
-    if let Some((preedit, cursor)) = preedit {
-        text_area.ime_preedit = preedit.to_string();
-        text_area.ime_preedit_cursor = cursor;
-        text_area.children_dirty = true;
-        text_area.bump_unified_ifc_source_revision();
-        text_area.dirty_flags = DirtyFlags::ALL;
-    }
-    text_area.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
-        render.range(7..16, |_text_area| crate::ui::RsxNode::text("projected"));
-    }));
-
-    let mut arena = NodeArena::new();
-    let text_area = arena.insert(Node::new(Box::new(text_area)));
-    arena.with_element_taken(text_area, |element, _| {
-        element
-            .as_any_mut()
-            .downcast_mut::<crate::view::base_component::TextArea>()
-            .unwrap()
-            .set_self_node_key(text_area);
-    });
-    crate::view::test_support::measure_and_place(
-        &mut arena,
-        text_area,
-        LayoutConstraints {
-            max_width: width,
-            max_height: content_height,
-            viewport_width: WIDTH as f32,
-            viewport_height: HEIGHT as f32,
-            percent_base_width: Some(WIDTH as f32),
-            percent_base_height: Some(HEIGHT as f32),
-        },
-        LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: width,
-            available_height: content_height,
-            viewport_width: WIDTH as f32,
-            viewport_height: HEIGHT as f32,
-            percent_base_width: Some(WIDTH as f32),
-            percent_base_height: Some(HEIGHT as f32),
-        },
-    );
-
-    let wrapper = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0x5c_4301,
-        0.0,
-        0.0,
-        width,
-        content_height,
-    ))));
-    let root = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0x5c_4300, 0.0, 0.0, width, height,
-    ))));
-    arena.set_parent(text_area, Some(wrapper));
-    arena.set_children(wrapper, vec![text_area]);
-    arena.set_parent(wrapper, Some(root));
-    arena.set_children(root, vec![wrapper]);
-    arena.with_element_taken(text_area, |element, arena| {
-        element.place(
-            LayoutPlacement {
-                parent_x: 0.0,
-                parent_y: 0.0,
-                visual_offset_x: 0.0,
-                visual_offset_y: 0.0,
-                available_width: width,
-                available_height: content_height,
-                viewport_width: WIDTH as f32,
-                viewport_height: HEIGHT as f32,
-                percent_base_width: Some(WIDTH as f32),
-                percent_base_height: Some(HEIGHT as f32),
-            },
-            arena,
-        );
-    });
-
-    let mut wrapper_style = Style::new();
-    wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    crate::view::test_support::get_element_mut::<Element>(&arena, wrapper)
-        .apply_style(wrapper_style);
-
-    let mut root_style = Style::new();
-    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    root_style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-    );
-    {
-        let mut root = crate::view::test_support::get_element_mut::<Element>(&arena, root);
-        root.apply_style(root_style);
-        root.layout_state.content_size = Size {
-            width,
-            height: content_height,
-        };
-        root.set_scroll_offset((0.0, 0.0));
-        root.clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    for key in [wrapper, text_area] {
-        arena
-            .get_mut(key)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    arena.refresh_subtree_dirty_cache(root);
-
-    let roots = vec![root];
-    let mut properties = PropertyTrees::default();
-    properties.sync(&arena, &roots);
-    assert!(
-        properties.validation_errors.is_empty(),
-        "focused atomic projection fixture property errors: {:?}",
-        properties.validation_errors
-    );
-    let mut generations = PaintGenerationTracker::default();
-    generations.sync(&arena, &roots, &properties);
-    assert!(generations.matches_live_snapshot(&arena, &roots, &properties));
-    (arena, roots, properties, generations)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ScrollForestContentVersion {
-    Baseline,
-    FirstRootMutated,
-}
-
-const SCROLL_FOREST_MAX_DIMENSION: u32 = 2048;
-const SCROLL_FOREST_PAIR_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
-const SCROLL_FOREST_ROOT_Y: f32 = 8.0;
-const SCROLL_FOREST_ROOT_WIDTH: f32 = 27.0;
-const SCROLL_FOREST_ROOT_HEIGHT: f32 = 40.0;
-const SCROLL_FOREST_ROOT_X: [f32; 2] = [4.0, 36.0];
-const SCROLL_FOREST_OFFSETS: [f32; 2] = [20.0, 1000.0];
-const SCROLL_FOREST_CONTENT_HEIGHTS: [f32; 2] = [300.0, 3000.0];
-const SCROLL_FOREST_TRANSITIONS: [f32; 2] = [36.0, 1024.0];
-
-fn scroll_forest_gpu_fixture(
-    version: ScrollForestContentVersion,
-) -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    let mut arena = NodeArena::new();
-    let mut roots = Vec::with_capacity(2);
-    for ordinal in 0..2 {
-        let stable_base = 0x5c_2100 + ordinal as u64 * 0x10;
-        let root_x = SCROLL_FOREST_ROOT_X[ordinal];
-        let offset_y = SCROLL_FOREST_OFFSETS[ordinal];
-        let content_height = SCROLL_FOREST_CONTENT_HEIGHTS[ordinal];
-        let transition_percent = SCROLL_FOREST_TRANSITIONS[ordinal] / content_height * 100.0;
-        let (host_color, first_color, second_color) = match (ordinal, version) {
-            (0, ScrollForestContentVersion::Baseline) => (
-                Color::rgb(18, 28, 42),
-                Color::rgb(224, 36, 28),
-                Color::rgb(30, 196, 72),
-            ),
-            (0, ScrollForestContentVersion::FirstRootMutated) => (
-                Color::rgb(18, 28, 42),
-                Color::rgb(208, 36, 196),
-                Color::rgb(24, 188, 208),
-            ),
-            (1, _) => (
-                Color::rgb(38, 30, 18),
-                Color::rgb(24, 72, 224),
-                Color::rgb(224, 188, 24),
-            ),
-            _ => unreachable!("the forest fixture has exactly two roots"),
-        };
-
-        let mut root = Element::new_with_id(
-            stable_base,
-            root_x,
-            SCROLL_FOREST_ROOT_Y,
-            SCROLL_FOREST_ROOT_WIDTH,
-            SCROLL_FOREST_ROOT_HEIGHT,
-        );
-        let mut root_style = Style::new();
-        root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        root_style.insert(
-            PropertyId::ScrollDirection,
-            ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-        );
-        root_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(host_color),
-        );
-        root.apply_style(root_style);
-
-        let mut content = Element::new_with_id(
-            stable_base + 1,
-            root_x,
-            SCROLL_FOREST_ROOT_Y - offset_y,
-            SCROLL_FOREST_ROOT_WIDTH,
-            content_height,
-        );
-        let gradient = Gradient::linear(SideOrCorner::Bottom)
-            .stop(first_color.clone(), Some(Length::percent(0.0)))
-            .stop(
-                first_color.clone(),
-                Some(Length::percent(transition_percent)),
-            )
-            .stop(
-                second_color.clone(),
-                Some(Length::percent(transition_percent)),
-            )
-            .stop(second_color, Some(Length::percent(100.0)))
-            .build();
-        let mut content_style = Style::new();
-        content_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        content_style.insert(
-            PropertyId::BackgroundColor,
-            ParsedValue::color_like(first_color),
-        );
-        content_style.set_background_image(gradient);
-        content.apply_style(content_style);
-
-        let root = arena.insert(Node::new(Box::new(root)));
-        let content = arena.insert(Node::new(Box::new(content)));
-        arena.set_parent(content, Some(root));
-        arena.push_child(root, content);
-        {
-            let mut root_node = arena.get_mut(root).unwrap();
-            let root_element = root_node
-                .element
-                .as_any_mut()
-                .downcast_mut::<Element>()
-                .unwrap();
-            root_element.layout_state.content_size = Size {
-                width: SCROLL_FOREST_ROOT_WIDTH,
-                height: content_height,
-            };
-            root_element.set_scroll_offset((0.0, offset_y));
-            root_element
-                .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        }
-        arena
-            .get_mut(content)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-        arena.refresh_subtree_dirty_cache(root);
-        roots.push(root);
-    }
-
-    let mut properties = PropertyTrees::default();
-    properties.sync(&arena, &roots);
-    assert!(
-        properties.validation_errors.is_empty(),
-        "GPU scroll-forest fixture property errors: {:?}",
-        properties.validation_errors
-    );
-    let mut generations = PaintGenerationTracker::default();
-    generations.sync(&arena, &roots, &properties);
-    assert!(generations.matches_live_snapshot(&arena, &roots, &properties));
-    (arena, roots, properties, generations)
-}
-
-type ScrollForestResident = (
-    crate::view::frame_graph::PersistentTextureKey,
-    crate::view::frame_graph::TextureDesc,
-);
 
 fn transformed_rect_fixture() -> (NodeArena, NodeKey) {
     let mut element = Element::new_with_id(0xc3_a001, 10.0, 8.0, 28.0, 20.0);
@@ -605,96 +314,6 @@ fn transformed_rect_fixture() -> (NodeArena, NodeKey) {
     let place = LayoutPlacement {
         parent_x: 0.0,
         parent_y: 0.0,
-        visual_offset_x: 0.0,
-        visual_offset_y: 0.0,
-        available_width: WIDTH as f32,
-        available_height: HEIGHT as f32,
-        viewport_width: WIDTH as f32,
-        viewport_height: HEIGHT as f32,
-        percent_base_width: Some(WIDTH as f32),
-        percent_base_height: Some(HEIGHT as f32),
-    };
-    measure_and_place(&mut arena, root, measure, place);
-    (arena, root)
-}
-
-fn nested_transformed_rect_fixture(
-    parent_translate_x: f32,
-    child_translate_y: f32,
-) -> (NodeArena, NodeKey) {
-    let styled_element = |id, x, y, width, height, color| {
-        let mut element = Element::new_with_id(id, x, y, width, height);
-        let mut style = Style::new();
-        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(color));
-        element.apply_style(style);
-        element
-    };
-
-    let mut arena = new_test_arena();
-    let mut root = styled_element(0xc5_b001, 4.0, 5.0, 42.0, 30.0, Color::rgb(25, 55, 105));
-    let mut root_transform = Style::new();
-    root_transform.set_transform(Transform::new([Translate::x(Length::px(
-        parent_translate_x,
-    ))]));
-    root.apply_style(root_transform);
-    let root = commit_element(&mut arena, Box::new(root));
-    commit_child(
-        &mut arena,
-        root,
-        Box::new(styled_element(
-            0xc5_b002,
-            1.0,
-            1.0,
-            5.0,
-            5.0,
-            Color::rgb(35, 175, 80),
-        )),
-    );
-    let mut child = styled_element(0xc5_b003, 7.0, 6.0, 20.0, 14.0, Color::rgb(205, 60, 25));
-    let mut child_transform = Style::new();
-    child_transform.set_transform(Transform::new([Translate::xy(
-        Length::Zero,
-        Length::px(child_translate_y),
-    )]));
-    child.apply_style(child_transform);
-    let child = commit_child(&mut arena, root, Box::new(child));
-    commit_child(
-        &mut arena,
-        child,
-        Box::new(styled_element(
-            0xc5_b004,
-            2.0,
-            2.0,
-            6.0,
-            5.0,
-            Color::rgb(230, 185, 30),
-        )),
-    );
-    commit_child(
-        &mut arena,
-        root,
-        Box::new(styled_element(
-            0xc5_b005,
-            29.0,
-            20.0,
-            7.0,
-            6.0,
-            Color::rgb(125, 75, 195),
-        )),
-    );
-
-    let measure = LayoutConstraints {
-        max_width: WIDTH as f32,
-        max_height: HEIGHT as f32,
-        viewport_width: WIDTH as f32,
-        viewport_height: HEIGHT as f32,
-        percent_base_width: Some(WIDTH as f32),
-        percent_base_height: Some(HEIGHT as f32),
-    };
-    let place = LayoutPlacement {
-        parent_x: 4.0,
-        parent_y: 5.0,
         visual_offset_x: 0.0,
         visual_offset_y: 0.0,
         available_width: WIDTH as f32,
@@ -786,21 +405,6 @@ fn translated_pixels(source: &[u8], delta: [i32; 2]) -> Vec<u8> {
     translated
 }
 
-fn legacy_nested_transformed_rect_graph_with_transforms(
-    scale_factor: f32,
-    outer_scissor: Option<[u32; 4]>,
-    parent_translate_x: f32,
-    child_translate_y: f32,
-) -> Result<FrameGraph, String> {
-    let (mut arena, root) = nested_transformed_rect_fixture(parent_translate_x, child_translate_y);
-    let (mut graph, ctx, target) = transformed_graph_prelude(scale_factor, outer_scissor);
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .ok_or_else(|| "legacy nested transformed rect root disappeared".to_string())?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
 fn set_nested_scroll_gpu_position(element: &mut Element, x: f32, y: f32) {
     element.layout_state.layout_position.x = x;
     element.layout_state.layout_position.y = y;
@@ -816,49 +420,8 @@ fn set_nested_scroll_gpu_position(element: &mut Element, x: f32, y: f32) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NestedScrollGpuLeafKind {
     Rect,
-    Image,
+
     Svg,
-    Text,
-}
-
-impl NestedScrollGpuLeafKind {
-    const GPU_CLOSURE: [Self; 2] = [Self::Image, Self::Svg];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Rect => "rect",
-            Self::Image => "image",
-            Self::Svg => "svg",
-            Self::Text => "text",
-        }
-    }
-
-    fn expected_cold_composite_count(self) -> usize {
-        match self {
-            Self::Image | Self::Svg => 3,
-            Self::Rect | Self::Text => 2,
-        }
-    }
-}
-
-fn nested_scroll_gpu_image_pixels() -> Arc<[u8]> {
-    static PIXELS: std::sync::OnceLock<Arc<[u8]>> = std::sync::OnceLock::new();
-    PIXELS
-        .get_or_init(|| {
-            let mut pixels = Vec::with_capacity(4 * 4 * 4);
-            for y in 0..4 {
-                for x in 0..4 {
-                    let rgba = if (x + y) % 2 == 0 {
-                        [232, 48, 28, 255]
-                    } else {
-                        [248, 168, 24, 255]
-                    };
-                    pixels.extend_from_slice(&rgba);
-                }
-            }
-            Arc::from(pixels)
-        })
-        .clone()
 }
 
 fn nested_scroll_gpu_svg_source() -> SvgSource {
@@ -955,23 +518,7 @@ fn install_nested_scroll_gpu_leaf(
     let stable_id = 0x1251_02;
     let replacement: Box<dyn ElementTrait> = match kind {
         NestedScrollGpuLeafKind::Rect => unreachable!(),
-        NestedScrollGpuLeafKind::Image => {
-            let mut image = Image::new_with_id(
-                stable_id,
-                ImageSource::Rgba {
-                    width: 4,
-                    height: 4,
-                    pixels: nested_scroll_gpu_image_pixels(),
-                },
-            );
-            image.set_fit(crate::view::ImageFit::Fill);
-            let mut style = Style::new();
-            style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-            style.insert(PropertyId::Width, ParsedValue::Length(Length::px(100.0)));
-            style.insert(PropertyId::Height, ParsedValue::Length(Length::px(600.0)));
-            image.apply_style(style);
-            Box::new(image)
-        }
+
         NestedScrollGpuLeafKind::Svg => {
             let source = nested_scroll_gpu_svg_source();
             let mut svg = Svg::new_with_id(stable_id, source);
@@ -982,14 +529,6 @@ fn install_nested_scroll_gpu_leaf(
             style.insert(PropertyId::Height, ParsedValue::Length(Length::px(600.0)));
             svg.apply_style(style);
             Box::new(svg)
-        }
-        NestedScrollGpuLeafKind::Text => {
-            let mut text = Text::new_with_id(stable_id, 0.0, 0.0, 100.0, 600.0, "R1");
-            text.set_font("sans-serif");
-            text.set_font_size(24.0);
-            text.set_color(Color::rgb(248, 224, 32));
-            text.set_opacity(1.0);
-            Box::new(text)
         }
     };
     *arena.get_mut(leaf).expect("nested GPU leaf exists").element = replacement;
@@ -1045,24 +584,6 @@ fn nested_scroll_gpu_leaf_fixture(
     generations.sync(&arena, &[outer], &properties);
     assert_eq!(properties.scrolls.len(), 2);
     (arena, outer, properties, generations)
-}
-
-fn legacy_nested_scroll_leaf_graph(
-    kind: NestedScrollGpuLeafKind,
-    outer_offset_y: f32,
-    inner_offset_y: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<FrameGraph, String> {
-    let (mut arena, outer, _, _) =
-        nested_scroll_gpu_leaf_fixture(kind, outer_offset_y, inner_offset_y);
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, outer_scissor);
-    arena
-        .with_element_taken(outer, |element, arena| {
-            element.build(&mut graph, arena, ctx)
-        })
-        .ok_or_else(|| "legacy nested-scroll root disappeared".to_string())?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
 }
 
 fn root_group_overlap_rects() -> [RectPassParams; 2] {
@@ -1910,13 +1431,6 @@ impl DirectScrollTransformGpuCase {
         scroll_offset_y: 16.0,
         translation: [3.0, 0.0],
     };
-    const TRANSFORM_ONLY: Self = Self {
-        label: "transform-only",
-        scroll_offset_y: 16.0,
-        translation: [9.0, 4.0],
-    };
-
-    const GRAPH_BUILD_CASES: [Self; 3] = [Self::BASELINE, Self::SCROLL_ONLY, Self::TRANSFORM_ONLY];
 }
 
 const DIRECT_SCROLL_TRANSFORM_SCROLLPORT: [u32; 2] = [48, 40];
@@ -2015,19 +1529,6 @@ fn legacy_direct_scroll_transform_graph(
     Ok(graph)
 }
 
-type DirectScrollTransformResident = (
-    crate::view::frame_graph::PersistentTextureKey,
-    crate::view::frame_graph::TextureDesc,
-);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DirectScrollTransformCompositeShape {
-    bounds_bits: [u32; 4],
-    quad_position_bits: [[u32; 2]; 4],
-    uv_bounds_bits: Option<[u32; 4]>,
-    scissor_rect: Option<[u32; 4]>,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct DirectScrollTransformGradientCoverage {
     red: usize,
@@ -2084,235 +1585,6 @@ fn validate_direct_scroll_transform_gradient_coverage(
     Ok(coverage)
 }
 
-#[derive(Clone, Copy, Debug)]
-enum DirectPropertyScrollGpuGrammar {
-    Transform { translation: [f32; 2] },
-    Effect { opacity: f32 },
-}
-
-impl DirectPropertyScrollGpuGrammar {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Transform { .. } => "transform-scroll",
-            Self::Effect { .. } => "effect-scroll",
-        }
-    }
-
-    fn nonblank_anchor(self) -> (u32, u32) {
-        match self {
-            Self::Transform { translation } => {
-                (translation[0] as u32 + 4, translation[1] as u32 + 4)
-            }
-            Self::Effect { .. } => (4, 4),
-        }
-    }
-}
-
-fn direct_property_scroll_gpu_fixture(
-    grammar: DirectPropertyScrollGpuGrammar,
-) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
-    let mut arena = NodeArena::new();
-    let root = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xb4_2f01, 0.0, 0.0, 120.0, 90.0,
-    ))));
-    let scroll = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xb4_2f02, 0.0, 0.0, 120.0, 90.0,
-    ))));
-    let content = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xb4_2f10, 0.0, -20.0, 120.0, 240.0,
-    ))));
-    arena.set_parent(scroll, Some(root));
-    arena.push_child(root, scroll);
-    arena.set_parent(content, Some(scroll));
-    arena.push_child(scroll, content);
-
-    let mut root_style = Style::new();
-    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
-        element.apply_style(root_style);
-        match grammar {
-            DirectPropertyScrollGpuGrammar::Transform { translation } => {
-                element.set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-                    glam::Vec3::new(translation[0], translation[1], 0.0),
-                )));
-            }
-            DirectPropertyScrollGpuGrammar::Effect { opacity } => {
-                element.set_resolved_transform_for_test(None);
-                element.set_opacity(opacity);
-            }
-        }
-    }
-
-    let mut scroll_style = Style::new();
-    scroll_style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-    );
-    scroll_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
-        element.apply_style(scroll_style);
-        element.layout_state.content_size = Size {
-            width: 120.0,
-            height: 240.0,
-        };
-        element.set_scroll_offset((0.0, 20.0));
-        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-
-    let mut content_style = Style::new();
-    content_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, content);
-        element.apply_style(content_style);
-        element.set_background_color_value(Color::rgb(24, 48, 72));
-        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-    arena.refresh_subtree_dirty_cache(root);
-
-    let mut properties = PropertyTrees::default();
-    properties.sync(&arena, &[root]);
-    assert!(
-        properties.validation_errors.is_empty(),
-        "direct property-scroll GPU fixture property errors: {:?}",
-        properties.validation_errors
-    );
-    let mut generations = PaintGenerationTracker::default();
-    generations.sync(&arena, &[root], &properties);
-    (arena, root, properties, generations)
-}
-
-type DirectPropertyScrollResident = (
-    crate::view::frame_graph::PersistentTextureKey,
-    crate::view::frame_graph::TextureDesc,
-);
-
-#[derive(Clone, Copy, Debug)]
-struct TransformEffectScrollGpuFrame {
-    translation: [f32; 2],
-}
-
-impl TransformEffectScrollGpuFrame {
-    fn nonblank_anchor(self) -> (u32, u32) {
-        (
-            self.translation[0] as u32 + 4,
-            self.translation[1] as u32 + 4,
-        )
-    }
-}
-
-fn transform_effect_scroll_gpu_fixture(
-    frame: TransformEffectScrollGpuFrame,
-) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
-    let mut arena = NodeArena::new();
-    let root = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xb4_3f01, 0.0, 0.0, 120.0, 90.0,
-    ))));
-    let effect = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xb4_3f02, 0.0, 0.0, 120.0, 90.0,
-    ))));
-    let scroll = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xb4_3f03, 0.0, 0.0, 120.0, 90.0,
-    ))));
-    let content = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xb4_3f10, 0.0, -20.0, 120.0, 240.0,
-    ))));
-    arena.set_parent(effect, Some(root));
-    arena.push_child(root, effect);
-    arena.set_parent(scroll, Some(effect));
-    arena.push_child(effect, scroll);
-    arena.set_parent(content, Some(scroll));
-    arena.push_child(scroll, content);
-
-    let mut root_style = Style::new();
-    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
-        element.apply_style(root_style);
-        element.set_resolved_transform_for_test(Some(glam::Mat4::from_translation(
-            glam::Vec3::new(frame.translation[0], frame.translation[1], 0.0),
-        )));
-    }
-
-    let mut effect_style = Style::new();
-    effect_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, effect);
-        element.apply_style(effect_style);
-        element.set_opacity(0.625);
-        element.set_background_color_value(Color::rgb(32, 64, 96));
-    }
-
-    let mut scroll_style = Style::new();
-    scroll_style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-    );
-    scroll_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
-        element.apply_style(scroll_style);
-        element.layout_state.content_size = Size {
-            width: 120.0,
-            height: 240.0,
-        };
-        element.set_scroll_offset((0.0, 20.0));
-        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-
-    let mut content_style = Style::new();
-    content_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, content);
-        element.apply_style(content_style);
-        element.set_background_color_value(Color::rgb(24, 48, 72));
-        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-    arena.refresh_subtree_dirty_cache(root);
-
-    let mut properties = PropertyTrees::default();
-    properties.sync(&arena, &[root]);
-    assert!(
-        properties.validation_errors.is_empty(),
-        "T->E->S GPU fixture property errors: {:?}",
-        properties.validation_errors
-    );
-    let mut generations = PaintGenerationTracker::default();
-    generations.sync(&arena, &[root], &properties);
-    (arena, root, properties, generations)
-}
-
-fn transform_effect_scroll_resident_roles_are_exact(
-    residents: &[DirectPropertyScrollResident],
-    include_scroll_content: bool,
-) -> bool {
-    let mut transformed = 0;
-    let mut isolation = 0;
-    let mut scroll_content = 0;
-    for (key, _) in residents {
-        match key {
-            crate::view::frame_graph::PersistentTextureKey::Retained {
-                role: crate::view::frame_graph::RetainedTextureRole::TransformedColor,
-                ..
-            } => transformed += 1,
-            crate::view::frame_graph::PersistentTextureKey::Retained {
-                role: crate::view::frame_graph::RetainedTextureRole::IsolationColor,
-                ..
-            } => isolation += 1,
-            crate::view::frame_graph::PersistentTextureKey::Retained {
-                role: crate::view::frame_graph::RetainedTextureRole::ScrollContentColor,
-                ..
-            } => scroll_content += 1,
-            _ => return false,
-        }
-    }
-    transformed == 1
-        && isolation == 1
-        && scroll_content == usize::from(include_scroll_content)
-        && residents.len() == if include_scroll_content { 3 } else { 2 }
-}
-
 mod buffer_binding_tests;
 mod native_pixel_oracle_tests;
 mod oracle_tests;
@@ -2331,16 +1603,14 @@ mod native_transform_surface_tests;
 
 #[derive(Clone, Copy, Debug)]
 struct ScrollSceneGpuCase {
-    name: &'static str,
     offset_y: f32,
     content_height: f32,
-    max_dimension_2d: u32,
+
     transition_local_y: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum NestedTextFallbackKind {
-    MissingPrepared,
     InlineIfcOwned,
 }
 
@@ -2424,16 +1694,6 @@ pub(crate) fn nested_scroll_unready_text_fixture_for_test(
 ) -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
     let (arena, outer, _inner, leaf, _properties, _generations) = nested_scroll_text_fixture();
     match kind {
-        NestedTextFallbackKind::MissingPrepared => {
-            arena
-                .get_mut(leaf)
-                .unwrap()
-                .element
-                .as_any_mut()
-                .downcast_mut::<Text>()
-                .unwrap()
-                .clear_prepared_standalone_text_for_test();
-        }
         NestedTextFallbackKind::InlineIfcOwned => {
             let (paint_input, bounds) = {
                 let node = arena.get(leaf).unwrap();
@@ -2551,18 +1811,6 @@ fn scroll_scene_gpu_fixture(
         root_element.set_scrollbar_shadow_blur_radius(3.0);
         match scrollbar {
             GpuScrollbarCase::Hidden => {}
-            GpuScrollbarCase::Opaque => {
-                root_element.set_hovered(true);
-            }
-            GpuScrollbarCase::Translucent => {
-                root_element.set_hovered(true);
-                root_element.set_hovered(false);
-                let sampled_at = crate::time::Instant::now();
-                let _ = root_element.tick_post_layout_animation_frame(sampled_at);
-                let _ = root_element.tick_post_layout_animation_frame(
-                    sampled_at + crate::time::Duration::from_millis(1_000),
-                );
-            }
         }
         root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }

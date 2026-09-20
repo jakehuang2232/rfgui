@@ -36,7 +36,7 @@ fn drag_drop_retargets_after_drag_over_rerender() {
 
     viewport.dispatch_pointer_up_event(crate::view::viewport::PointerButton::Left);
 
-    assert_eq!(dropped.get(), vec!["target".to_string()]);
+    assert_eq!(dropped.snapshot().get(), vec!["target".to_string()]);
 }
 
 #[test]

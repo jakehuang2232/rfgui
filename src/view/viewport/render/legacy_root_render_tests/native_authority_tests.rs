@@ -267,7 +267,6 @@ fn retained_auto_selects_one_exact_authority_by_property_topology() {
                 .map(AutoAuthorityRejection::debug_label)
                 .collect::<Vec<_>>()
         ),
-        _ => panic!("general transform scene selected the wrong authority"),
     }
 
     let (effect_tree_arena, effect_tree_roots, _, _, _) = prepared_transform_child_isolation_tree();

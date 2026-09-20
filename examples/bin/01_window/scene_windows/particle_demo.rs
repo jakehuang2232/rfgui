@@ -1,7 +1,7 @@
 use crate::rfgui::time::Instant;
 use crate::rfgui::ui::{
-    PointerButton, PointerDownEvent, PointerMoveEvent, PointerUpEvent, RsxElementNode, RsxNode,
-    Binding, FromPropValue, IntoPropValue, ViewportHandle, component,
+    Binding, FromPropValue, IntoPropValue, PointerButton, PointerDownEvent, PointerMoveEvent,
+    PointerUpEvent, RsxElementNode, RsxNode, ViewportHandle, component,
 };
 use crate::rfgui::view::base_component::PaintResourcePreparationContext;
 use crate::rfgui::view::base_component::{
@@ -368,7 +368,10 @@ impl Layoutable for ParticleCanvas {
             return;
         }
         self.prepared_frame = Some(context.frame_number);
-        let animating = self.animation_on.as_ref().is_none_or(|value| value.get());
+        let animating = self
+            .animation_on
+            .as_ref()
+            .is_none_or(|value| value.get_committed());
         #[cfg(any(test, feature = "renderer-perf"))]
         let animating = animating && std::env::var("RFGUI_PERF_UPDATES").as_deref() != Ok("idle");
         // Resume from the frozen simulation, without integrating paused time.

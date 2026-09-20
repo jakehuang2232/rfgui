@@ -20,6 +20,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_pointer_down_event(&mut self, button: PointerButton) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some((x, y)) = self.pointer_position_viewport() else {
             return false;
         };
@@ -134,6 +135,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_pointer_up_event(&mut self, button: PointerButton) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some((x, y)) = self.pointer_position_viewport() else {
             self.input_state.pointer_capture_node_id = None;
             let root_keys = self.scene.ui_root_keys.clone();
@@ -225,6 +227,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_pointer_move_event(&mut self) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some((x, y)) = self.pointer_position_viewport() else {
             return false;
         };
@@ -321,6 +324,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_click_event(&mut self, button: PointerButton) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some((x, y)) = self.pointer_position_viewport() else {
             return false;
         };
@@ -441,6 +445,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_pointer_wheel_event(&mut self, delta_x: f32, delta_y: f32) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         self.dispatch_pointer_wheel_event_full(
             delta_x,
             delta_y,
@@ -456,6 +461,7 @@ impl Viewport {
         delta_mode: crate::platform::input::WheelDeltaMode,
         phase: crate::platform::input::WheelPhase,
     ) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some((x, y)) = self.pointer_position_viewport() else {
             return false;
         };
@@ -637,6 +643,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_key_down_event(&mut self, data: KeyEventData) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some(target_id) = self.keyboard_dispatch_target() else {
             return false;
         };
@@ -673,6 +680,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_key_up_event(&mut self, data: KeyEventData) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some(target_id) = self.keyboard_dispatch_target() else {
             return false;
         };
@@ -710,6 +718,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_text_input_event(&mut self, text: String) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         self.dispatch_text_input_event_full(text, crate::ui::InputType::Typing, false)
     }
 
@@ -719,6 +728,7 @@ impl Viewport {
         input_type: crate::ui::InputType,
         is_composing: bool,
     ) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         if text.is_empty() {
             return false;
         }
@@ -765,6 +775,7 @@ impl Viewport {
         text: String,
         cursor: Option<(usize, usize)>,
     ) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         self.dispatch_ime_preedit_event_full(text, cursor, None, Vec::new())
     }
 
@@ -775,6 +786,7 @@ impl Viewport {
         selection: Option<(usize, usize)>,
         attributes: Vec<crate::ui::PreeditAttribute>,
     ) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some(target_id) = self.keyboard_dispatch_target() else {
             return false;
         };
@@ -819,6 +831,7 @@ impl Viewport {
     /// [`TextInputEvent`] path (which carries the same text with
     /// `input_type = ImeCommit`).
     pub fn dispatch_ime_commit_event(&mut self, text: String) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some(target_id) = self.keyboard_dispatch_target() else {
             return false;
         };
@@ -856,6 +869,7 @@ impl Viewport {
     /// Fire an [`ImeEnabledEvent`] at the focused node. Runners call this
     /// when a composition window opens.
     pub fn dispatch_ime_enabled_event(&mut self) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some(target_id) = self.keyboard_dispatch_target() else {
             return false;
         };
@@ -893,6 +907,7 @@ impl Viewport {
     /// this when a composition window closes (either committed or
     /// cancelled).
     pub fn dispatch_ime_disabled_event(&mut self) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some(target_id) = self.keyboard_dispatch_target() else {
             return false;
         };
@@ -931,6 +946,7 @@ impl Viewport {
     /// and no handler calls `prevent_default`, the viewport performs
     /// no default copy (future: copy the current text selection).
     pub fn dispatch_copy_event(&mut self) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some(target_id) = self.keyboard_dispatch_target() else {
             return false;
         };
@@ -979,6 +995,7 @@ impl Viewport {
     /// fill `data` with the text *and* delete the selected region. The
     /// viewport queues the text to the clipboard just like copy.
     pub fn dispatch_cut_event(&mut self) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some(target_id) = self.keyboard_dispatch_target() else {
             return false;
         };
@@ -1023,6 +1040,7 @@ impl Viewport {
     /// from the OS clipboard by the runner. Handlers call
     /// `event.data.text()` to read.
     pub fn dispatch_paste_event(&mut self, text: String) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let Some(target_id) = self.keyboard_dispatch_target() else {
             return false;
         };
@@ -1313,6 +1331,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_focus_event(&mut self, target_id: NodeId) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         self.dispatch_focus_event_with_related(target_id, None)
     }
 
@@ -1321,6 +1340,7 @@ impl Viewport {
         target_id: NodeId,
         related: Option<NodeId>,
     ) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let reason = self.input_state.pending_focus_reason;
         let mut meta = EventMeta::new(target_id);
         meta.set_related_target(related.map(crate::ui::EventTarget::bare));
@@ -1356,6 +1376,7 @@ impl Viewport {
 
     #[doc(hidden)]
     pub fn dispatch_blur_event(&mut self, target_id: NodeId) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         self.dispatch_blur_event_with_related(target_id, None)
     }
 
@@ -1364,6 +1385,7 @@ impl Viewport {
         target_id: NodeId,
         related: Option<NodeId>,
     ) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let reason = self.input_state.pending_focus_reason;
         let mut meta = EventMeta::new(target_id);
         meta.set_related_target(related.map(crate::ui::EventTarget::bare));
@@ -1404,6 +1426,7 @@ impl Viewport {
     /// those remain public for now so component tests and existing callers
     /// keep working. New backend code should only ever see this method.
     pub fn dispatch_platform_pointer_event(&mut self, event: &PlatformPointerEvent) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         match event.kind {
             PlatformPointerEventKind::Down(button) => self.dispatch_pointer_down_event(button),
             PlatformPointerEventKind::Up(button) => self.dispatch_pointer_up_event(button),
@@ -1416,6 +1439,7 @@ impl Viewport {
     }
 
     pub fn dispatch_platform_wheel_event(&mut self, event: &PlatformWheelEvent) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         self.dispatch_pointer_wheel_event_full(
             event.delta_x,
             event.delta_y,
@@ -1425,6 +1449,7 @@ impl Viewport {
     }
 
     pub fn dispatch_platform_key_event(&mut self, event: &PlatformKeyEvent) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let data = KeyEventData {
             key: event.key,
             characters: event.characters.clone(),
@@ -1442,6 +1467,7 @@ impl Viewport {
     }
 
     pub fn dispatch_platform_text_input(&mut self, event: &PlatformTextInput) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         self.dispatch_text_input_event_full(
             event.text.clone(),
             ui_input_type_from_platform(event.input_type),
@@ -1450,6 +1476,7 @@ impl Viewport {
     }
 
     pub fn dispatch_platform_ime_preedit(&mut self, event: &PlatformImePreedit) -> bool {
+        let _batch = crate::ui::begin_state_batch();
         let cursor = match (event.cursor_start, event.cursor_end) {
             (Some(start), Some(end)) => Some((start, end)),
             _ => None,
@@ -1930,6 +1957,7 @@ pub fn dispatch_pointer_down_from_hit_test(
     event: &mut PointerDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     let Some(target_key) = hit_test(
         arena,
         root_key,
@@ -1952,6 +1980,7 @@ pub(crate) fn dispatch_pointer_down_to_target(
     event: &mut PointerDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -1998,6 +2027,7 @@ pub fn dispatch_pointer_up_from_hit_test(
     event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     let Some(target_key) = hit_test(
         arena,
         root_key,
@@ -2020,6 +2050,7 @@ pub(crate) fn dispatch_pointer_up_to_target(
     event: &mut PointerUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2036,6 +2067,7 @@ pub fn dispatch_pointer_move_from_hit_test(
     event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     let Some(target_key) = hit_test(
         arena,
         root_key,
@@ -2058,6 +2090,7 @@ pub(crate) fn dispatch_pointer_move_to_target(
     event: &mut PointerMoveEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2074,6 +2107,7 @@ pub fn dispatch_click_from_hit_test(
     event: &mut ClickEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     let Some(target_key) = hit_test(
         arena,
         root_key,
@@ -2096,6 +2130,7 @@ pub(crate) fn dispatch_click_to_target(
     event: &mut ClickEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2113,6 +2148,7 @@ pub(crate) fn dispatch_context_menu_to_target(
     event: &mut crate::ui::ContextMenuEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2131,6 +2167,7 @@ pub fn dispatch_scroll_from_hit_test(
     delta_x: f32,
     delta_y: f32,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     let Some(target_key) = hit_test(arena, root_key, viewport_x, viewport_y) else {
         return false;
     };
@@ -2154,6 +2191,7 @@ pub(crate) fn dispatch_scroll_to_target(
     delta_x: f32,
     delta_y: f32,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     dispatch_scroll_bubble(arena, target_key, delta_x, delta_y)
 }
 
@@ -2328,6 +2366,7 @@ pub(crate) fn dispatch_key_down_bubble(
     event: &mut KeyDownEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2341,6 +2380,7 @@ pub(crate) fn dispatch_key_up_bubble(
     event: &mut KeyUpEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2354,6 +2394,7 @@ pub(crate) fn dispatch_text_input_bubble(
     event: &mut TextInputEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2367,6 +2408,7 @@ pub(crate) fn dispatch_ime_preedit_bubble(
     event: &mut ImePreeditEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2380,6 +2422,7 @@ pub(crate) fn dispatch_focus_bubble(
     event: &mut FocusEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2393,6 +2436,7 @@ pub(crate) fn dispatch_blur_bubble(
     event: &mut BlurEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -2633,6 +2677,7 @@ pub(crate) fn dispatch_wheel_from_hit_test(
     event: &mut crate::ui::WheelEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     let Some(target_key) = hit_test(arena, root_key, event.viewport_x, event.viewport_y) else {
         return false;
     };
@@ -2650,6 +2695,7 @@ pub(crate) fn dispatch_wheel_to_target(
     event: &mut crate::ui::WheelEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3169,6 +3215,7 @@ pub(crate) fn dispatch_ime_commit_bubble(
     event: &mut crate::ui::ImeCommitEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3182,6 +3229,7 @@ pub(crate) fn dispatch_ime_enabled_bubble(
     event: &mut crate::ui::ImeEnabledEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3195,6 +3243,7 @@ pub(crate) fn dispatch_ime_disabled_bubble(
     event: &mut crate::ui::ImeDisabledEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3208,6 +3257,7 @@ pub(crate) fn dispatch_copy_bubble(
     event: &mut crate::ui::CopyEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3221,6 +3271,7 @@ pub(crate) fn dispatch_cut_bubble(
     event: &mut crate::ui::CutEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3234,6 +3285,7 @@ pub(crate) fn dispatch_paste_bubble(
     event: &mut crate::ui::PasteEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3268,6 +3320,7 @@ pub(crate) fn dispatch_drag_start_bubble(
     event: &mut crate::ui::DragStartEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3281,6 +3334,7 @@ pub(crate) fn dispatch_drag_over_bubble(
     event: &mut crate::ui::DragOverEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3294,6 +3348,7 @@ pub(crate) fn dispatch_drop_bubble(
     event: &mut crate::ui::DropEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3307,6 +3362,7 @@ pub(crate) fn dispatch_drag_end_bubble(
     event: &mut crate::ui::DragEndEvent,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     if !arena.contains_key(target_key) {
         return false;
     }
@@ -3321,6 +3377,7 @@ pub(crate) fn dispatch_drag_leave_to_key(
     key: crate::view::node_arena::NodeKey,
     control: &mut ViewportControl<'_>,
 ) -> bool {
+    let _batch = crate::ui::begin_state_batch();
     arena
         .mutate_element_ref_with_invalidation(key, |element, cx| {
             let snapshot = element.box_model_snapshot();

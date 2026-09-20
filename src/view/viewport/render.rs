@@ -1209,9 +1209,7 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
         payload,
         eligibility,
     } = candidate;
-    let RecordedArtifactPayload::ArtifactSurface(frame) = payload else {
-        return Err("production selector returned the non-surface artifact payload".to_owned());
-    };
+    let RecordedArtifactPayload::ArtifactSurface(frame) = payload;
     let surface_count = frame.raster_plan().nodes().len();
     let aggregate_texture_bytes = frame
         .raster_plan()
@@ -2687,6 +2685,7 @@ impl Viewport {
         root: &RsxNode,
         semantic_now: crate::time::Instant,
     ) -> Result<(), String> {
+        let _state_frame = crate::ui::begin_state_frame();
         let state_dirty = take_state_dirty();
         // Apply any viewport mutations that component event handlers
         // enqueued via `use_viewport()` during the previous tick. Must
@@ -2981,6 +2980,7 @@ impl Viewport {
         &mut self,
         services: crate::platform::PlatformServices<'_>,
     ) -> super::RenderFrameResult {
+        let _state_frame = crate::ui::begin_state_frame();
         if self.app.is_none() {
             return super::RenderFrameResult::Ok;
         }
@@ -3016,6 +3016,7 @@ impl Viewport {
         event: &crate::app::AppEvent,
         services: crate::platform::PlatformServices<'_>,
     ) {
+        let _batch = crate::ui::begin_state_batch();
         self.with_app(services, |app, ctx| app.on_event(event, ctx));
     }
 

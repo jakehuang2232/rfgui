@@ -65,8 +65,8 @@ fn tree_view_click_toggles_expanded_and_selects() {
     let mut viewport = rfgui::view::Viewport::new();
     click_once(&mut arena, roots[0], &mut viewport, 16.0, 14.0);
 
-    assert_eq!(selected.get().as_deref(), Some("root"));
-    assert_eq!(expanded.get(), vec![String::from("root")]);
+    assert_eq!(selected.snapshot().get().as_deref(), Some("root"));
+    assert_eq!(expanded.snapshot().get(), vec![String::from("root")]);
 }
 
 /// Repro for the user-reported drag-reorder bug: dragging

@@ -242,7 +242,7 @@ impl TextArea {
         let Some(binding) = self.text_binding.as_ref() else {
             return;
         };
-        if binding.get() != self.content {
+        if binding.get_committed() != self.content {
             binding.set(self.content.clone());
         }
     }

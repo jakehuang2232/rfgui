@@ -45,7 +45,7 @@ where
 
         let fallback_value = use_state(|| value);
         let value_binding = if has_binding {
-            binding
+            binding.snapshot()
         } else {
             fallback_value.binding()
         };
@@ -97,7 +97,7 @@ where
                     };
 
                     let next = clamp_number(parsed, min, max);
-                    if value_binding.get() != next {
+                    if value_binding.get_committed() != next {
                         value_binding.set(next);
                     }
                 },
@@ -109,8 +109,8 @@ where
             let value_binding = value_binding.clone();
             let number_string = number_string.binding();
             Some(BlurHandlerProp::new(move |_event| {
-                let draft = number_string.get();
-                let current = value_binding.get();
+                let draft = number_string.get_committed();
+                let current = value_binding.get_committed();
                 let (next, display) = commit_text_input::<T>(&draft, current, min, max);
                 if current != next {
                     value_binding.set(next);
@@ -207,7 +207,7 @@ fn step_handler<T: NumberFieldValue>(
     subtract: bool,
 ) -> ClickHandlerProp {
     ClickHandlerProp::new(move |_event| {
-        let current = binding.get();
+        let current = binding.get_committed();
         let stepped = if subtract {
             T::decrement(current, step)
         } else {

@@ -333,7 +333,8 @@ fn hover_transform_transition_updates_live_element_in_viewport_flow() {
 }
 
 fn redraw_only_transform_root(toggle: &Binding<bool>) -> RsxNode {
-    let translated = toggle.get();
+    crate::ui::flush_state_updates();
+    let translated = toggle.snapshot().get();
     crate::ui::rsx! {
         <HostElement style={{
             width: Length::px(120.0),

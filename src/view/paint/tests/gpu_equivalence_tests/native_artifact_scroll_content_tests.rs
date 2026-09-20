@@ -23,10 +23,9 @@ pub(super) fn zero_offset_single_scroll_content_fixture()
 -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
     scroll_scene_gpu_fixture(
         ScrollSceneGpuCase {
-            name: "diagnostic-artifact-single-scroll-content-offset-zero",
             offset_y: 0.0,
             content_height: 300.0,
-            max_dimension_2d: 8192,
+
             transition_local_y: 33.0,
         },
         GpuScrollbarCase::Hidden,
@@ -37,10 +36,9 @@ pub(super) fn offset_single_scroll_content_fixture()
 -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker) {
     scroll_scene_gpu_fixture(
         ScrollSceneGpuCase {
-            name: "artifact-single-scroll-content-offset-thirteen",
             offset_y: 13.0,
             content_height: 300.0,
-            max_dimension_2d: 8192,
+
             transition_local_y: 33.0,
         },
         GpuScrollbarCase::Hidden,

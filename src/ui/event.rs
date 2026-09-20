@@ -1361,6 +1361,7 @@ impl<A: 'static, B: 'static> Handler<dyn FnMut(A, B)> {
     }
 
     pub fn call(&self, a: A, b: B) {
+        let _batch = crate::ui::begin_state_batch();
         (self.handler.borrow_mut())(a, b);
     }
 }
@@ -1495,6 +1496,7 @@ macro_rules! impl_handler_prop {
             }
 
             pub fn call(&self, event: &mut $event_ty) {
+                let _batch = crate::ui::begin_state_batch();
                 (self.handler.borrow_mut())(event);
             }
         }

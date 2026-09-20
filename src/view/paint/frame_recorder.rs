@@ -1088,9 +1088,6 @@ pub(super) fn canonical_manifest_matches(
         })
 }
 
-#[cfg(test)]
-mod property_effect_artifact_tests;
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FrameArtifactEligibility {
     pub(crate) eligible: bool,

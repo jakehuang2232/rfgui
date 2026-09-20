@@ -21,12 +21,12 @@ use rfgui::platform::{
     PlatformKeyEvent, PlatformPointerButton, PlatformPointerEvent, PlatformPointerEventKind,
     PlatformServices, PlatformTextInput, PlatformWheelEvent, PointerType,
 };
+use rfgui::time::Instant;
 use rfgui::ui::{next_timer_deadline, run_due_timers};
 use rfgui::view::viewport::{RenderFrameResult, Viewport};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use std::sync::Mutex;
-use rfgui::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{
@@ -98,6 +98,12 @@ impl Runner {
         };
         let cursor = CallbackCursorSink::new(|_| {});
         let redraw_flag = Arc::new(Mutex::new(false));
+        let state_redraw = Arc::downgrade(&redraw_flag);
+        rfgui::ui::set_redraw_callback(move || {
+            if let Some(flag) = state_redraw.upgrade() {
+                *flag.lock().unwrap() = true;
+            }
+        });
         let redraw_flag_write = redraw_flag.clone();
         let redraw = CallbackRedrawRequester::new(move || {
             *redraw_flag_write.lock().unwrap() = true;

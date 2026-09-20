@@ -27,21 +27,19 @@ impl WindowManager {
     pub fn push(&mut self, title: impl Into<String>, children: Vec<RsxNode>, size: (f64, f64)) {
         let id = self.windows.len();
         let positions_state = self.positions.clone();
-        positions_state.update(|positions| {
-            while positions.len() <= id {
-                let index = positions.len() as f32;
-                let offset = (index + 1.0) * Self::WINDOW_INIT_OFFSET;
-                positions.push((offset, offset));
-            }
+        let position = positions_state.get().get(id).copied().unwrap_or_else(|| {
+            let offset = (id as f32 + 1.0) * Self::WINDOW_INIT_OFFSET;
+            (offset, offset)
         });
-        let position = positions_state.get().get(id).copied().unwrap_or((0.0, 0.0));
         let on_move_handler = {
             let positions_state = self.positions.clone();
             on_move(move |x, y| {
-                positions_state.update(|positions| {
-                    if let Some(slot) = positions.get_mut(id) {
-                        *slot = (x, y);
+                positions_state.update(move |positions| {
+                    while positions.len() <= id {
+                        let offset = (positions.len() as f32 + 1.0) * Self::WINDOW_INIT_OFFSET;
+                        positions.push((offset, offset));
                     }
+                    positions[id] = (x, y);
                 });
             })
         };
@@ -66,8 +64,8 @@ impl WindowManager {
 
     pub fn into_nodes(self, z_order: Binding<Vec<usize>>) -> Vec<RsxNode> {
         let window_count = self.windows.len();
-        z_order.update(|order| normalize_window_order(order, window_count));
-        let order = z_order.get();
+        let mut order = z_order.get();
+        normalize_window_order(&mut order, window_count);
 
         let mut ordered_windows = Vec::with_capacity(window_count);
         for index in order {
@@ -79,7 +77,10 @@ impl WindowManager {
                     if let Some(handler) = &original_focus {
                         handler.call(event);
                     }
-                    z_order_for_focus.update(|current| bring_window_to_front(current, index));
+                    z_order_for_focus.update(move |current| {
+                        normalize_window_order(current, window_count);
+                        bring_window_to_front(current, index);
+                    });
                 });
                 let window = rsx! {
                     <Window

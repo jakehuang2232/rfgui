@@ -160,7 +160,7 @@ fn projection_caret_probe_at(cursor_char: usize) {
         // same cursor gives the ground-truth caret. Incremental frames
         // must land on the same position (wrap reflow included).
         let expected = {
-            let post_content = content.binding().get();
+            let post_content = content.snapshot().get();
             let cursor_now = viewport
                 .scene
                 .node_arena
@@ -236,7 +236,7 @@ fn projection_caret_probe_at(cursor_char: usize) {
         })
         .expect("root");
     let near_chip = {
-        let text = content.binding().get();
+        let text = content.snapshot().get();
         let chars: Vec<char> = text.chars().collect();
         let probe = |index: usize| -> bool {
             index + 1 < chars.len()

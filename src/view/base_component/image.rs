@@ -107,11 +107,6 @@ impl Image {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_layout_transition_width_for_test(&mut self, width: f32) {
-        self.element.set_layout_transition_width(width);
-    }
-
-    #[cfg(test)]
     pub(crate) fn set_resource_loading_for_test(&self) {
         crate::view::image_resource::set_image_loading_for_test(self.source_handle.asset_id());
     }

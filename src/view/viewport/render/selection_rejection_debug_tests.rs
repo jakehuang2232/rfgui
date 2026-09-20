@@ -11,13 +11,6 @@ use crate::view::paint::{
     FrameArtifactEligibility, FrameArtifactFallbackReason, LegacyPaintReason,
 };
 
-fn codes(rejection: &PaintAuthoritySelectionRejection) -> Vec<String> {
-    selection_rejection_debug_records(rejection)
-        .into_iter()
-        .map(|record| fallback_detail_label(&record.detail))
-        .collect()
-}
-
 #[test]
 fn artifact_rejections_emit_non_boundary_reasons_at_selection_stage() {
     let mut arena = crate::view::node_arena::NodeArena::new();

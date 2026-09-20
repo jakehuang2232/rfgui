@@ -76,7 +76,7 @@ fn scene(case: &str, m: &Model) -> RsxNode {
                 "Checkbox" => rsx! {<Checkbox label="Target" binding={m.flag.clone()}/>},
                 "Switch" => rsx! {<Switch label="Target" binding={m.flag.clone()}/>},
                 "ToggleButton" => {
-                    rsx! {<ToggleButton selected={m.flag.get()} on_click={m.click()}>"Target"</ToggleButton>}
+                    rsx! {<ToggleButton selected={m.flag.snapshot().get()} on_click={m.click()}>"Target"</ToggleButton>}
                 }
                 "ToggleButtonGroup" => {
                     rsx! {<ToggleButtonGroup value={m.group.clone()}><ToggleButton value="A">"Choice A"</ToggleButton><ToggleButton value="B">"Choice B"</ToggleButton></ToggleButtonGroup>}
@@ -98,7 +98,7 @@ fn scene(case: &str, m: &Model) -> RsxNode {
                 }
                 "Window" => {
                     let pos = m.position.clone();
-                    rsx! {<Window title="Target" width=240.0 height=160.0 position={m.position.get()} on_move={on_move(move |x,y|pos.set((x,y)))}><Text>"Window content"</Text></Window>}
+                    rsx! {<Window title="Target" width=240.0 height=160.0 position={m.position.snapshot().get()} on_move={on_move(move |x,y|pos.set((x,y)))}><Text>"Window content"</Text></Window>}
                 }
                 "Alert" => {
                     let n = m.clicks.clone();
@@ -106,7 +106,7 @@ fn scene(case: &str, m: &Model) -> RsxNode {
                 }
                 "Snackbar" => {
                     let n = m.clicks.clone();
-                    rsx! {<Snackbar open={m.flag.get()} message={rsx!{<Text>"Message"</Text>}} action={rsx!{<Button on_click={m.click()}>"Action"</Button>}} on_close={Rc::new(move |_|n.set(n.get()+1)) as Rc<dyn Fn(SnackbarCloseReason)>}/>}
+                    rsx! {<Snackbar open={m.flag.snapshot().get()} message={rsx!{<Text>"Message"</Text>}} action={rsx!{<Button on_click={m.click()}>"Action"</Button>}} on_close={Rc::new(move |_|n.set(n.get()+1)) as Rc<dyn Fn(SnackbarCloseReason)>}/>}
                 }
                 "Tooltip" => {
                     rsx! {<Element><Text>"Anchor"</Text><Tooltip handle={tooltip}><Text>"Tip"</Text></Tooltip></Element>}
@@ -182,7 +182,7 @@ fn interact(case: &str, m: &Model, v: &mut Viewport, reverse: bool) {
                 v,
                 [b.x + 8.0 + (b.width - 16.0) * ratio, b.y + b.height * 0.5],
             );
-            assert!((m.number.get() - if reverse { 25.0 } else { 75.0 }).abs() < 1.0);
+            assert!((m.number.snapshot().get() - if reverse { 25.0 } else { 75.0 }).abs() < 1.0);
         }
         "Window" => {
             let p = text_point(v, "Target").map(f32::round);
@@ -220,20 +220,25 @@ fn interact(case: &str, m: &Model, v: &mut Viewport, reverse: bool) {
             if reverse { 2 } else { 1 },
             "{case} callback"
         ),
-        "Checkbox" | "Switch" | "Accordion" => assert_eq!(m.flag.get(), !reverse, "{case} binding"),
-        "ToggleButtonGroup" => {
-            assert_eq!(m.group.get(), if reverse { None } else { Some("A".into()) })
+        "Checkbox" | "Switch" | "Accordion" => {
+            assert_eq!(m.flag.snapshot().get(), !reverse, "{case} binding")
         }
-        "NumberField" => assert_eq!(m.number.get(), if reverse { 25.0 } else { 26.0 }),
-        "Select" if reverse => assert_eq!(m.selected.get(), "B"),
+        "ToggleButtonGroup" => {
+            assert_eq!(
+                m.group.snapshot().get(),
+                if reverse { None } else { Some("A".into()) }
+            )
+        }
+        "NumberField" => assert_eq!(m.number.snapshot().get(), if reverse { 25.0 } else { 26.0 }),
+        "Select" if reverse => assert_eq!(m.selected.snapshot().get(), "B"),
         "Window" => assert_eq!(
-            m.position.get(),
+            m.position.snapshot().get(),
             if reverse { (20.0, 20.0) } else { (40.0, 40.0) }
         ),
         "TreeView" => {
-            assert_eq!(m.selection.get(), Some("branch".into()));
+            assert_eq!(m.selection.snapshot().get(), Some("branch".into()));
             assert_eq!(
-                m.expanded.get(),
+                m.expanded.snapshot().get(),
                 if reverse {
                     vec![]
                 } else {

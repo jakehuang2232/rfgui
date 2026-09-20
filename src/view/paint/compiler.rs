@@ -13,7 +13,9 @@ use crate::view::render_pass::TextureCompositePass;
 use crate::view::render_pass::draw_rect_pass::{DrawRectInput, DrawRectOutput, DrawRectPass};
 use crate::view::render_pass::render_target::GraphicsPassScissor;
 use crate::view::render_pass::text_pass::{TextInput, TextOutput, TextPreparedInputPass};
-use crate::view::render_pass::texture_composite_pass::{TextureCompositeInput, TextureCompositeOutput};
+use crate::view::render_pass::texture_composite_pass::{
+    TextureCompositeInput, TextureCompositeOutput,
+};
 use crate::view::render_pass::{ShadowModuleSpec, build_shadow_module};
 use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::Key;
@@ -1005,18 +1007,6 @@ impl PreparedArtifactSurfaceRasterPlan {
 
     pub(crate) fn nodes(&self) -> &[PreparedArtifactSurfaceRasterNode] {
         &self.nodes
-    }
-
-    #[cfg(test)]
-    pub(crate) fn force_first_role_for_test(
-        &mut self,
-        role: RetainedSurfaceRasterRole,
-    ) -> Option<(SurfaceDagNodeId, RetainedSurfaceRasterRole)> {
-        let node = self.nodes.first_mut()?;
-        let source = node.source;
-        let previous = node.identity.role;
-        node.identity.role = role;
-        Some((source, previous))
     }
 
     #[cfg(test)]

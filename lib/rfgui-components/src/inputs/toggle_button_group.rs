@@ -137,7 +137,9 @@ fn ToggleButtonGroupView(
     let full_width = full_width.unwrap_or(false);
     let disabled = disabled.unwrap_or(false);
 
-    let binding = value.unwrap_or_else(|| global_state::<Option<String>>(|| None).binding());
+    let binding = value
+        .unwrap_or_else(|| global_state::<Option<String>>(|| None).binding())
+        .snapshot();
 
     let ctx = ToggleButtonGroupContext {
         in_group: true,

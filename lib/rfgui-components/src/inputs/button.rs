@@ -284,13 +284,13 @@ fn ButtonView(
     let repeat_snapshot = repeat_state.get();
 
     if repeat_enabled {
-        let interval_state = repeat_state.clone();
+        let interval_state = repeat_state.binding();
         let interval_click = on_click.clone();
         use_interval(repeat_snapshot.pressed, REPEAT_TICK, move || {
             let Some(handler) = interval_click.as_ref() else {
                 return;
             };
-            let snapshot = interval_state.get();
+            let snapshot = interval_state.get_committed();
             if !snapshot.pressed || !snapshot.hovered {
                 return;
             }
@@ -298,7 +298,7 @@ fn ButtonView(
                 return;
             };
             if remaining_until_fire > REPEAT_TICK {
-                interval_state.update(|state| {
+                interval_state.update(move |state| {
                     state.remaining_until_fire =
                         Some(remaining_until_fire.saturating_sub(REPEAT_TICK));
                 });
@@ -307,7 +307,7 @@ fn ButtonView(
             let Some(trigger) = snapshot.trigger else {
                 return;
             };
-            interval_state.update(|state| {
+            interval_state.update(move |state| {
                 state.repeating_started = true;
                 state.remaining_until_fire = Some(REPEAT_INTERVAL);
             });
@@ -380,15 +380,16 @@ fn ButtonView(
             if !repeat_enabled {
                 return;
             }
-            let snapshot = repeat_state_for_move.get();
+            let snapshot = repeat_state_for_move.get_committed();
             if !snapshot.pressed {
                 return;
             }
             let Some(trigger) = snapshot.trigger else {
                 return;
             };
-            repeat_state_for_move.update(|state| {
-                state.hovered = move_event.meta.target_id == trigger.target_id;
+            let hovered = move_event.meta.target_id == trigger.target_id;
+            repeat_state_for_move.update(move |state| {
+                state.hovered = hovered;
             });
         });
     }

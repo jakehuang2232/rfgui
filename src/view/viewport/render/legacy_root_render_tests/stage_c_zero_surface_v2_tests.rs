@@ -442,9 +442,7 @@ fn stage_c_zero_surface_retained_auto_emits_once_and_matches_legacy() {
         ),
         (1, 1),
     );
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload else {
-        panic!("RetainedAuto current target must carry the generic artifact surface seal")
-    };
+    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
     assert!(frame.raster_plan().nodes().is_empty());
     assert!(frame.residents().is_empty());
 

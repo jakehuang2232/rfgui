@@ -26,6 +26,8 @@ pub(crate) use render::{
 #[cfg(test)]
 mod retained_auto_census_tests;
 pub(crate) mod scene_helpers;
+#[cfg(test)]
+mod state_queue_tests;
 #[cfg(any())]
 mod tests;
 pub(crate) mod transitions_tick;
