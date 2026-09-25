@@ -242,6 +242,8 @@ pub struct Viewport {
     /// every render. Hosts query this via `is_animating()` to decide
     /// whether to pump another frame immediately or idle.
     is_animating: bool,
+    animation_timer: Option<crate::time::timers::Timer>,
+    animation_redraw_pending: std::rc::Rc<std::cell::Cell<bool>>,
     app: Option<Box<dyn App>>,
     cached_rsx: Option<RsxNode>,
     needs_rebuild: bool,
@@ -737,6 +739,8 @@ impl Viewport {
             last_recorded_cursor: None,
             pending_platform_requests: PlatformRequests::default(),
             is_animating: false,
+            animation_timer: None,
+            animation_redraw_pending: Default::default(),
             app: None,
             cached_rsx: None,
             needs_rebuild: true,

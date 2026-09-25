@@ -1436,6 +1436,34 @@ impl TextArea {
         ShadowPaintRecordingCapability::Transparent
     }
 
+    pub(super) fn caret_animation_frame_request(
+        &self,
+        now: crate::time::Instant,
+    ) -> crate::view::base_component::AnimationFrameRequest {
+        use crate::view::base_component::AnimationFrameRequest;
+        if !self.is_focused || !self.layout_state.should_render {
+            return AnimationFrameRequest::None;
+        }
+        let Some(epoch) = self.caret_blink_epoch else {
+            return AnimationFrameRequest::NextFrame;
+        };
+        let elapsed = now.saturating_duration_since(epoch);
+        let phase = Duration::from_nanos(
+            (elapsed.as_nanos() % CARET_BLINK_PERIOD.as_nanos()) as u64,
+        );
+        // State may have been reset after the pre-layout tick. Paint that
+        // state before sleeping through another blink interval.
+        if self.caret_visible != (phase < CARET_BLINK_VISIBLE) {
+            return AnimationFrameRequest::NextFrame;
+        }
+        let remaining = if phase < CARET_BLINK_VISIBLE {
+            CARET_BLINK_VISIBLE - phase
+        } else {
+            CARET_BLINK_PERIOD - phase
+        };
+        AnimationFrameRequest::At(now + remaining)
+    }
+
     pub(super) fn tick_caret_blink(&mut self, now: crate::time::Instant) -> DirtyFlags {
         if !self.is_focused || !self.layout_state.should_render {
             self.caret_blink_epoch = None;

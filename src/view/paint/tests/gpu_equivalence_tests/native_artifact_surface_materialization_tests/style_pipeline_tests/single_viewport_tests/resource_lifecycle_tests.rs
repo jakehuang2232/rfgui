@@ -9,6 +9,7 @@ use crate::view::{ImageSampling, ImageSource};
 use std::sync::Arc;
 
 mod pressure_tests;
+mod resize_tests;
 mod slot_content_tests;
 mod source_transition_tests;
 mod svg_resource_tests;

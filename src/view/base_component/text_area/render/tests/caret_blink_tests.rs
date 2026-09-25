@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn caret_deadlines_follow_phase_without_rounding_or_catchup_frames() {
+    use crate::view::base_component::AnimationFrameRequest;
+    let mut text = TextArea::new();
+    let now = crate::time::Instant::now();
+    text.layout_state.should_render = true;
+    text.set_focused(true);
+    assert_eq!(
+        text.animation_frame_request(now),
+        AnimationFrameRequest::NextFrame
+    );
+    text.tick_caret_blink(now);
+    for offset in [
+        0,
+        1,
+        529_999_999,
+        530_000_000,
+        1_059_999_999,
+        1_060_000_000,
+        5_829_000_000,
+    ] {
+        let sample = now + Duration::from_nanos(offset);
+        text.tick_caret_blink(sample);
+        let next = (offset / 530_000_000 + 1) * 530_000_000;
+        assert_eq!(
+            text.animation_frame_request(sample),
+            AnimationFrameRequest::At(now + Duration::from_nanos(next))
+        );
+    }
+    text.reset_caret_blink();
+    assert_eq!(
+        text.animation_frame_request(now),
+        AnimationFrameRequest::NextFrame
+    );
+    text.set_focused(false);
+    assert_eq!(
+        text.animation_frame_request(now),
+        AnimationFrameRequest::None
+    );
+    text.set_focused(true);
+    text.layout_state.should_render = false;
+    assert_eq!(
+        text.animation_frame_request(now),
+        AnimationFrameRequest::None
+    );
+}
+
+#[test]
 fn retained_caret_blink_has_deterministic_boundaries_and_paint_only_dirty() {
     let mut text_area = TextArea::new();
     text_area.layout_state.should_render = true;

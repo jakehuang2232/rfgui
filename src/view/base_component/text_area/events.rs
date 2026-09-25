@@ -343,6 +343,13 @@ impl EventTarget for TextArea {
         self.is_focused && self.layout_state.should_render
     }
 
+    fn animation_frame_request(
+        &self,
+        now: crate::time::Instant,
+    ) -> crate::view::base_component::AnimationFrameRequest {
+        self.caret_animation_frame_request(now)
+    }
+
     fn block_key_down_child_event(&self) -> bool {
         true
     }

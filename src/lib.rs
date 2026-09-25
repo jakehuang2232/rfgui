@@ -105,6 +105,7 @@ pub mod platform;
 /// transitions/animations, and the parsed/computed style trees.
 pub mod style;
 pub mod time {
+    pub(crate) mod timers;
     pub use std::time::Duration;
     #[cfg(not(target_arch = "wasm32"))]
     pub use std::time::Instant;

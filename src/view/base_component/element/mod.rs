@@ -2118,6 +2118,28 @@ pub trait Layoutable {
     fn set_layout_offset(&mut self, _x: f32, _y: f32) {}
 }
 
+/// When a retained component next needs its animation state sampled and painted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnimationFrameRequest {
+    /// No animation wake-up is needed.
+    #[default]
+    None,
+    /// Continuous animation, or state that has not yet been sampled.
+    NextFrame,
+    /// The current appearance is stable until this deadline.
+    At(Instant),
+}
+
+impl AnimationFrameRequest {
+    pub(crate) fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NextFrame, _) | (_, Self::NextFrame) => Self::NextFrame,
+            (Self::At(a), Self::At(b)) => Self::At(a.min(b)),
+            (Self::None, request) | (request, Self::None) => request,
+        }
+    }
+}
+
 pub trait EventTarget {
     fn dispatch_pointer_down(
         &mut self,
@@ -2368,6 +2390,19 @@ pub trait EventTarget {
     }
     fn wants_animation_frame(&self) -> bool {
         false
+    }
+    /// Precise wake-up request, sampled with the viewport's frame time.
+    /// The default preserves continuous animation for existing implementors.
+    fn animation_frame_request(
+        &self,
+        _now: crate::time::Instant,
+    ) -> crate::view::base_component::AnimationFrameRequest {
+        use crate::view::base_component::AnimationFrameRequest;
+        if self.wants_animation_frame() {
+            AnimationFrameRequest::NextFrame
+        } else {
+            AnimationFrameRequest::None
+        }
     }
     fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {
         Vec::new()

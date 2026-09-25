@@ -77,9 +77,8 @@ impl Viewport {
     pub fn drain_platform_requests(&mut self) -> PlatformRequests {
         // Fold the internal `redraw_requested` flag into the drain so the
         // backend only has to look in one place.
-        if self.redraw_requested {
+        if self.take_redraw_request() {
             self.pending_platform_requests.request_redraw = true;
-            self.redraw_requested = false;
         }
         std::mem::take(&mut self.pending_platform_requests)
     }
@@ -150,7 +149,7 @@ impl Viewport {
     }
 
     pub fn redraw_requested(&self) -> bool {
-        self.redraw_requested
+        self.redraw_requested || self.animation_redraw_pending.get()
     }
 
     /// Returns true when the most recent render reported that one or
@@ -162,7 +161,8 @@ impl Viewport {
     }
 
     pub fn take_redraw_request(&mut self) -> bool {
-        std::mem::take(&mut self.redraw_requested)
+        let animation = self.animation_redraw_pending.replace(false);
+        std::mem::take(&mut self.redraw_requested) || animation
     }
 
     pub async fn create_surface(&mut self) {
@@ -263,7 +263,7 @@ impl Viewport {
                         device,
                         queue,
                         self.gpu.surface_target_format,
-                        self.gpu.msaa_sample_count,
+                        1,
                     );
                 }
             }
@@ -321,20 +321,25 @@ impl Viewport {
             None => return false,
         };
         surface.configure(device, &self.gpu.surface_config);
-        let device_for_prewarm = device.clone();
-        self.release_render_resource_caches();
-        self.create_frame_attachments();
-        if let Some(queue) = self.gpu.queue.as_ref() {
-            crate::view::render_pass::text_pass::prewarm_text_pipeline_for_scope(
-                self.render_resource_scope_id(),
-                &device_for_prewarm,
-                queue,
-                self.gpu.surface_config.format,
-                self.gpu.msaa_sample_count,
-            );
-        }
-        self.needs_reconfigure = false;
+        self.finish_surface_reconfigure();
         true
+    }
+
+    fn finish_surface_reconfigure(&mut self) {
+        // Resize (and surface recovery) does not change the device or the
+        // offscreen pipeline format. Keep glyphs, uploaded sources, pipelines,
+        // and retained residents; their descriptor/stamp checks own reuse.
+        // A new device/format is installed by create_surface, which releases
+        // the scoped caches before prewarming the actual offscreen key.
+        self.create_frame_attachments();
+        self.needs_reconfigure = false;
+    }
+
+    /// Offscreen tests supply the configured output dimensions in place of a
+    /// window surface; all post-configure resource lifetime work is shared.
+    #[cfg(test)]
+    pub(crate) fn finish_offscreen_reconfigure_for_test(&mut self) {
+        self.finish_surface_reconfigure();
     }
 
     pub(super) fn create_frame_attachments(&mut self) {

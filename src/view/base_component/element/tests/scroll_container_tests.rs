@@ -1,6 +1,65 @@
 use super::*;
 
 #[test]
+fn scrollbar_deadlines_sleep_during_hold_and_hover_then_animate_fade() {
+    use crate::view::base_component::AnimationFrameRequest;
+    let mut element = Element::new(0.0, 0.0, 100.0, 80.0);
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::ScrollDirection,
+        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
+    );
+    element.apply_style(style);
+    element.layout_state.content_size = Size {
+        width: 100.0,
+        height: 300.0,
+    };
+    let now = crate::time::Instant::now();
+    element.set_hovered(true);
+    assert_eq!(
+        element.animation_frame_request(now),
+        AnimationFrameRequest::NextFrame
+    );
+    element.tick_post_layout_animation_frame(now);
+    assert_eq!(
+        element.animation_frame_request(now),
+        AnimationFrameRequest::None
+    );
+    element.set_hovered(false);
+    element.tick_post_layout_animation_frame(now);
+    assert_eq!(
+        element.animation_frame_request(now),
+        AnimationFrameRequest::At(now + SCROLLBAR_HOLD)
+    );
+    let fade = now + SCROLLBAR_HOLD;
+    element.tick_post_layout_animation_frame(fade);
+    assert_eq!(
+        element.animation_frame_request(fade),
+        AnimationFrameRequest::NextFrame
+    );
+    let halfway = fade + crate::time::Duration::from_millis(175);
+    element.tick_post_layout_animation_frame(halfway);
+    assert!((element.scrollbar_visibility_alpha() - 0.5).abs() < 0.001);
+    assert_eq!(
+        element.animation_frame_request(halfway),
+        AnimationFrameRequest::NextFrame
+    );
+    let hidden = fade + SCROLLBAR_FADE;
+    element.tick_post_layout_animation_frame(hidden);
+    assert_eq!(
+        element.animation_frame_request(hidden),
+        AnimationFrameRequest::None
+    );
+    // New input restarts the hold epoch, including after a long idle interval.
+    element.note_scrollbar_interaction();
+    element.tick_post_layout_animation_frame(hidden);
+    assert_eq!(
+        element.animation_frame_request(hidden),
+        AnimationFrameRequest::At(hidden + SCROLLBAR_HOLD)
+    );
+}
+
+#[test]
 fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
     let mut element = Element::new(0.0, 0.0, 100.0, 80.0);
     let mut style = Style::new();

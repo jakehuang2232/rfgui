@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod attempts;
+#[cfg(test)]
+mod tests;
 
 use super::*;
 
@@ -2760,7 +2762,38 @@ impl Viewport {
         // Only persist the graph when compile succeeded; a failed compile
         // leaves the graph in an inconsistent state.
         self.frame.last_frame_graph = if compiled { Some(graph) } else { None };
-        post_layout_transition.redraw_changed || post_layout_animation_changed
+        // Animation dirtiness has already been painted in this frame. Only
+        // retry it if submission failed; future samples use the deadline API.
+        post_layout_transition.redraw_changed
+            || (post_layout_animation_changed && !self.frame.frame_presented)
+    }
+
+    fn update_animation_frame_schedule(&mut self, now: Instant) {
+        use crate::view::base_component::{AnimationFrameRequest, animation_frame_request};
+
+        let request =
+            animation_frame_request(&self.scene.node_arena, &self.scene.ui_root_keys, now);
+        // A new frame supersedes any outstanding animation wake-up.
+        self.animation_redraw_pending.set(false);
+        if let Some(timer) = &self.animation_timer {
+            timer.cancel();
+        }
+        match request {
+            AnimationFrameRequest::None => {}
+            AnimationFrameRequest::At(at) if at > now => {
+                let pending = self.animation_redraw_pending.clone();
+                let timer = self.animation_timer.get_or_insert_with(|| {
+                    crate::time::timers::Timer::new(move || {
+                        pending.set(true);
+                        crate::ui::request_timer_redraw();
+                    })
+                });
+                timer.schedule(at, None);
+            }
+            AnimationFrameRequest::NextFrame | AnimationFrameRequest::At(_) => {
+                self.request_redraw();
+            }
+        }
     }
 
     pub fn render_rsx(&mut self, root: &RsxNode) -> Result<(), String> {
@@ -3098,20 +3131,13 @@ impl Viewport {
             };
         if resource_dirty
             || hover_changed
-            || animation_changed
+            || (animation_changed && !self.frame.frame_presented)
             || transition_changed_before_render
             || transition_changed_after_layout
         {
             self.request_redraw();
         }
-        if self.scene.ui_root_keys.iter().any(|&root_key| {
-            crate::view::base_component::has_animation_frame_request(
-                &self.scene.node_arena,
-                root_key,
-            )
-        }) {
-            self.request_redraw();
-        }
+        self.update_animation_frame_schedule(semantic_now);
         if std::mem::take(&mut self.frame.frame_presented) {
             self.notify_cursor_handler();
         }

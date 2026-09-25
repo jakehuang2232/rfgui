@@ -1,3 +1,6 @@
+const SCROLLBAR_HOLD: Duration = Duration::from_millis(900);
+const SCROLLBAR_FADE: Duration = Duration::from_millis(350);
+
 impl Element {
     pub(crate) fn post_layout_animation_is_noop(&self) -> bool {
         !self.scrollbar_interaction_pending
@@ -40,9 +43,6 @@ impl Element {
     }
 
     fn tick_scrollbar_visibility(&mut self, now: Instant) -> bool {
-        const HOLD: Duration = Duration::from_millis(900);
-        const FADE: Duration = Duration::from_millis(350);
-
         let lifecycle_changed = self.scrollbar_interaction_pending;
         if lifecycle_changed {
             self.last_scrollbar_interaction = Some(now);
@@ -66,15 +66,15 @@ impl Element {
             1.0
         } else if let Some(last) = self.last_scrollbar_interaction {
             let elapsed = now.duration_since(last);
-            if elapsed <= HOLD {
+            if elapsed <= SCROLLBAR_HOLD {
                 1.0
             } else {
-                let fade_elapsed = elapsed - HOLD;
-                if fade_elapsed >= FADE {
+                let fade_elapsed = elapsed - SCROLLBAR_HOLD;
+                if fade_elapsed >= SCROLLBAR_FADE {
                     self.last_scrollbar_interaction = None;
                     0.0
                 } else {
-                    1.0 - (fade_elapsed.as_secs_f32() / FADE.as_secs_f32())
+                    1.0 - (fade_elapsed.as_secs_f32() / SCROLLBAR_FADE.as_secs_f32())
                 }
             }
         } else {

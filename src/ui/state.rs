@@ -381,12 +381,13 @@ enum TimerMode {
     Interval,
 }
 
+type TimerCallback = Rc<RefCell<dyn FnMut()>>;
+
 struct TimerEntry {
     mode: TimerMode,
-    enabled: bool,
     duration: Duration,
-    next_fire_at: Instant,
-    callback: Rc<RefCell<dyn FnMut()>>,
+    timer: crate::time::timers::Timer,
+    callback: Rc<RefCell<TimerCallback>>,
 }
 
 #[derive(Clone, Eq)]
@@ -1211,27 +1212,38 @@ where
     TIMER_STORE.with(|timers| {
         let mut timers = timers.borrow_mut();
         let now = Instant::now();
-        let callback: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(callback));
+        let interval = (mode == TimerMode::Interval).then_some(duration);
+        let callback: TimerCallback = Rc::new(RefCell::new(callback));
         match timers.get_mut(&key) {
             Some(entry) => {
                 let should_reset =
-                    entry.mode != mode || entry.duration != duration || (!entry.enabled && enabled);
+                    entry.mode != mode || entry.duration != duration || !entry.timer.is_scheduled();
                 entry.mode = mode;
                 entry.duration = duration;
-                entry.enabled = enabled;
-                entry.callback = callback;
-                if should_reset {
-                    entry.next_fire_at = now + duration;
+                *entry.callback.borrow_mut() = callback;
+                if !enabled {
+                    entry.timer.cancel();
+                } else if should_reset {
+                    entry.timer.schedule(now + duration, interval);
                 }
             }
             None => {
+                let callback = Rc::new(RefCell::new(callback));
+                let callback_for_timer = callback.clone();
+                let timer = crate::time::timers::Timer::new(move || {
+                    let callback = callback_for_timer.borrow().clone();
+                    let _batch = begin_state_batch();
+                    (callback.borrow_mut())();
+                });
+                if enabled {
+                    timer.schedule(now + duration, interval);
+                }
                 timers.insert(
                     key,
                     TimerEntry {
                         mode,
-                        enabled,
                         duration,
-                        next_fire_at: now + duration,
+                        timer,
                         callback,
                     },
                 );
@@ -1523,41 +1535,20 @@ fn drain_pending_mounts() {
     }
 }
 
+/// Earliest component timer or retained viewport animation deadline on this
+/// thread. Hosts can use it as their event-loop wake-up time.
 pub fn next_timer_deadline() -> Option<Instant> {
-    TIMER_STORE.with(|timers| {
-        timers
-            .borrow()
-            .values()
-            .filter(|entry| entry.enabled)
-            .map(|entry| entry.next_fire_at)
-            .min()
-    })
+    crate::time::timers::next_deadline()
 }
 
+/// Dispatch due work once, then let the host drain normal redraw requests.
+/// Timers whose owners have unmounted or been dropped are canceled.
 pub fn run_due_timers(now: Instant) {
-    let mut due_callbacks: Vec<Rc<RefCell<dyn FnMut()>>> = Vec::new();
-    TIMER_STORE.with(|timers| {
-        let mut timers = timers.borrow_mut();
-        for entry in timers.values_mut() {
-            if !entry.enabled || entry.next_fire_at > now {
-                continue;
-            }
-            due_callbacks.push(entry.callback.clone());
-            match entry.mode {
-                TimerMode::Timeout => {
-                    entry.enabled = false;
-                }
-                TimerMode::Interval => {
-                    entry.next_fire_at = now + entry.duration;
-                }
-            }
-        }
-    });
+    crate::time::timers::run_due(now);
+}
 
-    for callback in due_callbacks {
-        let _batch = begin_state_batch();
-        (callback.borrow_mut())();
-    }
+pub(crate) fn request_timer_redraw() {
+    request_state_wakeup();
 }
 
 fn global_payload_with_init<T: Clone + PartialEq + 'static>(

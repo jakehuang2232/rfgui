@@ -28,7 +28,7 @@ use rfgui::platform::{
     PlatformPointerEvent, PlatformPointerEventKind, PlatformServices, PlatformTextInput,
     PlatformWheelEvent, PointerType, RedrawRequester,
 };
-use rfgui::ui::run_due_timers;
+use rfgui::ui::{next_timer_deadline, run_due_timers};
 use rfgui::view::viewport::{RenderFrameResult, SurfaceFormatPreference, Viewport};
 use rfgui::view::{load_browser_fonts, load_web_font_from_url, set_default_font_families};
 use smol_str::SmolStr;
@@ -986,18 +986,17 @@ impl ApplicationHandler for Runner {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         run_due_timers(now.into());
-        if self.redraw.take() {
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
-        }
+        self.drain_and_apply();
         // Browser event loops drive themselves via requestAnimationFrame
         // when the viewport requests another redraw, so we never hold the
         // loop in a tight `Poll`. winit's wasm backend treats `Wait` as
         // "yield to the JS scheduler"; the queued `RedrawRequested` will
         // dispatch on the next animation frame regardless of the
         // ControlFlow setting we choose here.
-        event_loop.set_control_flow(ControlFlow::Wait);
+        match next_timer_deadline() {
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
     }
 }
 

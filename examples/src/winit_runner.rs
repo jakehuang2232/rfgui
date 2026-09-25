@@ -1064,21 +1064,14 @@ impl ApplicationHandler for Runner {
             event_loop.exit();
             return;
         }
-        // Drive component timers (use_timeout, use_interval). Viewport
+        // Drive component timers and retained animation deadlines. Viewport
         // transition/animation plugins tick inside render_rsx and report
         // their state via `viewport.is_animating()` below, so they don't
         // go through this path.
         let now = Instant::now();
         run_due_timers(now);
-        // Skip while occluded: winit drops request_redraw on hidden
-        // windows on some platforms. Consuming the flag here would lose
-        // the pending frame; defer until Occluded(false) re-kicks.
-        if !self.occluded && *self.redraw_flag.lock().unwrap() {
-            *self.redraw_flag.lock().unwrap() = false;
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
-        }
+        // This also retains pending redraws while the window is occluded.
+        self.drain_and_apply();
         // Schedule the next wake-up:
         // - viewport reports active transitions → Poll so the loop
         //   iterates and the freshly queued RedrawRequested fires
@@ -1089,7 +1082,7 @@ impl ApplicationHandler for Runner {
             .as_ref()
             .map(|v| v.is_animating())
             .unwrap_or(false);
-        if animating {
+        if animating && !self.occluded {
             event_loop.set_control_flow(ControlFlow::Poll);
         } else {
             match next_timer_deadline() {

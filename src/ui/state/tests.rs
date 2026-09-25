@@ -7,6 +7,8 @@ use crate::ui::{GlobalKey, RsxKey, RsxNode};
 use std::cell::Cell;
 use std::rc::Rc;
 
+mod timer_lifecycle_tests;
+
 fn clear_test_timers() {
     build_scope(|| {
         crate::ui::render_component::<u8, _>(|| {});

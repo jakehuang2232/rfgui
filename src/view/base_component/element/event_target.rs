@@ -470,6 +470,26 @@ impl EventTarget for Element {
                 && self.last_scrollbar_interaction.is_some())
     }
 
+    fn animation_frame_request(
+        &self,
+        now: Instant,
+    ) -> crate::view::base_component::AnimationFrameRequest {
+        use crate::view::base_component::AnimationFrameRequest;
+        if self.scrollbar_interaction_pending {
+            return AnimationFrameRequest::NextFrame;
+        }
+        if self.is_hovered || self.scrollbar_drag.is_some() {
+            return AnimationFrameRequest::None;
+        }
+        match self.last_scrollbar_interaction {
+            Some(last) if now < last + SCROLLBAR_HOLD => {
+                AnimationFrameRequest::At(last + SCROLLBAR_HOLD)
+            }
+            Some(_) => AnimationFrameRequest::NextFrame,
+            None => AnimationFrameRequest::None,
+        }
+    }
+
     fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {
         self.transition_requests
             .as_mut()
