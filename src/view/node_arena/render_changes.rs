@@ -9,6 +9,15 @@ pub(crate) struct RenderChangeCapture {
     owners: Vec<(NodeKey, DirtyFlags, [u64; 8])>,
 }
 
+/// Reuses the arena's bounded mutation history. Candidates retain failed or
+/// unconsumed work and hosts whose dirty getters can change without mutation.
+pub(super) struct RenderChangeObservation {
+    revision: u64,
+    // A dense list keeps sparse captures proportional to owners, not the
+    // capacity of a hash table left over from an earlier full observation.
+    candidates: Vec<NodeKey>,
+}
+
 const CAUSES: [DirtyFlags; 8] = [
     DirtyFlags::LAYOUT,
     DirtyFlags::PLACE,
@@ -129,19 +138,41 @@ impl NodeArena {
         let _profile = crate::view::base_component::layout_profile_scope(
             crate::view::base_component::LayoutPlaceTiming::ChangeCapture,
         );
-        let owners = self
-            .slots
-            .iter()
-            .map(|(key, node)| {
-                crate::ui::work_profile::count(|p| p.render_change_observations += 1);
-                self.observe_render_causes(key, self.pending_render_changes(key));
-                (
-                    key,
-                    node.pending_render_changes.get(),
-                    node.render_change_versions.get(),
-                )
-            })
-            .collect();
+        let previous = self.render_change_observation.borrow_mut().take();
+        let mut candidates = match previous {
+            Some(mut previous) => match self.mutated_nodes_since(previous.revision) {
+                Some(changed) => {
+                    previous.candidates.extend(changed);
+                    previous.candidates
+                }
+                None => self.slots.keys().collect(),
+            },
+            None => self.slots.keys().collect(),
+        };
+        // Start before invoking getters: mutations during observation must
+        // remain visible to the next capture, including other owners.
+        let revision = self.mutation_clock();
+        let mut owners = Vec::new();
+        let mut seen = FxHashSet::default();
+        candidates.retain(|&key| {
+            if !seen.insert(key) {
+                return false;
+            }
+            let Some(node) = self.slots.get(key) else {
+                return false;
+            };
+            crate::ui::work_profile::count(|p| p.render_change_observations += 1);
+            self.observe_render_causes(key, self.pending_render_changes(key));
+            let flags = node.pending_render_changes.get();
+            if !flags.is_empty() {
+                owners.push((key, flags, node.render_change_versions.get()));
+            }
+            !flags.is_empty() || !node.element.borrow().dirty_observation_is_tracked()
+        });
+        *self.render_change_observation.borrow_mut() = Some(RenderChangeObservation {
+            revision,
+            candidates,
+        });
         RenderChangeCapture {
             identity: self.mutation_identity(),
             owners,

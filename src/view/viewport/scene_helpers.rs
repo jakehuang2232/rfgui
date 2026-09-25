@@ -486,6 +486,21 @@ fn clear_subtree_dirty_flags_by_key(
     let _profile = crate::view::base_component::layout_profile_scope(
         crate::view::base_component::LayoutPlaceTiming::DirtyClear,
     );
+    if arena
+        .get(root_key)
+        .is_some_and(|node| node.native_dirty_clear_subtree.get())
+    {
+        // A preceding custom hook may have mutated this native branch. Only
+        // refresh where we might skip: repeatedly refreshing untracked custom
+        // subtrees at every depth would turn their fallback into O(N²).
+        arena.refresh_subtree_dirty_cache(root_key);
+        if arena.get(root_key).is_some_and(|node| {
+            node.native_dirty_clear_subtree.get()
+                && !node.cached_subtree_dirty.get().intersects(flags)
+        }) {
+            return true;
+        }
+    }
     let children = arena.children_of(root_key);
     if !arena.clear_element_dirty_flags(root_key, flags) {
         return false;
@@ -503,11 +518,15 @@ pub(crate) fn clear_subtree_dirty_flags_with_arena_dirty(
     root_key: crate::view::node_arena::NodeKey,
     flags: DirtyFlags,
 ) -> bool {
+    arena.refresh_subtree_dirty_cache(root_key);
     if !clear_subtree_dirty_flags_by_key(arena, root_key, flags) {
         return false;
     }
 
-    arena.clear_arena_dirty_subtree(root_key, flags);
+    // Custom clear hooks can invalidate other owners; refresh before using
+    // the existing branch-pruned arena clear, rather than trusting old flags.
+    arena.refresh_subtree_dirty_cache(root_key);
+    arena.clear_cached_arena_dirty_subtree(root_key, flags);
     true
 }
 
@@ -531,23 +550,66 @@ pub(crate) fn update_hover_state(
     root_key: crate::view::node_arena::NodeKey,
     target_key: Option<crate::view::node_arena::NodeKey>,
 ) -> bool {
+    let target_path = hover_path_for_target(arena, &[root_key], target_key);
+    let path_valid = target_key.is_none() || !target_path.is_empty();
     fn walk(
         arena: &crate::view::node_arena::NodeArena,
         key: crate::view::node_arena::NodeKey,
         target_key: Option<crate::view::node_arena::NodeKey>,
-    ) -> (bool, bool) {
-        // Inspect first: merely acquiring the mutable arena handle records a
-        // paint mutation, even if set_hovered later reports no change. Walk the
-        // live tree each time so replacement nodes and ancestor hover are current.
+        root_key: crate::view::node_arena::NodeKey,
+        target_path: &[crate::view::node_arena::NodeKey],
+        path_valid: bool,
+    ) -> (bool, bool, bool) {
+        crate::ui::work_profile::count(|p| p.hover_observations += 1);
         let Some(node) = arena.get(key) else {
-            return (false, false);
+            return (false, false, false);
         };
-        let children = node.element.children().to_vec();
+        let observed = node.hover_observation.get().filter(|(revision, _)| {
+            path_valid && arena.subtree_mutation_revision(key) == Some(*revision)
+        });
+        let desired = target_key.filter(|_| target_path.contains(&key));
+        if observed.is_some_and(|(_, previous)| previous == desired) {
+            return (desired.is_some(), false, true);
+        }
+        // A certified subtree already has correct off-path state. Reuse the
+        // existing ancestor-path helper to visit only old/new hover branches.
+        let children = if let Some((_, previous)) = observed {
+            let previous_path = hover_path_for_target(arena, &[root_key], previous);
+            let mut branches = Vec::with_capacity(2);
+            for path in [&previous_path[..], target_path] {
+                if let Some(child) = path
+                    .iter()
+                    .position(|&k| k == key)
+                    .and_then(|index| path.get(index + 1))
+                    .copied()
+                    && !branches.contains(&child)
+                {
+                    branches.push(child);
+                }
+            }
+            branches
+        } else {
+            node.element.children().to_vec()
+        };
+        // Unknown implementations can have live state or setter side effects;
+        // they never certify a skippable subtree.
+        let mut tracked = observed.is_some()
+            || ((node
+                .element
+                .as_any()
+                .is::<crate::view::base_component::Element>()
+                || node
+                    .element
+                    .as_any()
+                    .is::<crate::view::base_component::Text>())
+                && node.element.children() == node.children());
         drop(node);
         let mut contains_target = target_key == Some(key);
         let mut changed = false;
         for child in children.into_iter().rev() {
-            let (contains, child_changed) = walk(arena, child, target_key);
+            let (contains, child_changed, child_tracked) =
+                walk(arena, child, target_key, root_key, target_path, path_valid);
+            tracked &= child_tracked && arena.parent_of(child) == Some(key);
             contains_target |= contains;
             changed |= child_changed;
         }
@@ -565,10 +627,27 @@ pub(crate) fn update_hover_state(
                 })
                 .unwrap_or(false);
         }
-        (contains_target, changed)
+        if let Some(node) = arena.get(key) {
+            node.hover_observation.set(if tracked {
+                arena
+                    .subtree_mutation_revision(key)
+                    .map(|revision| (revision, target_key.filter(|_| contains_target)))
+            } else {
+                None
+            });
+        }
+        (contains_target, changed, tracked)
     }
 
-    walk(arena, root_key, target_key).1
+    walk(
+        arena,
+        root_key,
+        target_key,
+        root_key,
+        &target_path,
+        path_valid,
+    )
+    .1
 }
 
 /// Build a root-to-target path using `arena.parent_of`. Returns empty when
@@ -589,6 +668,9 @@ pub(crate) fn hover_path_for_target(
     let mut up = Vec::new();
     let mut cur = Some(target_key);
     while let Some(k) = cur {
+        if up.len() >= arena.len() {
+            return Vec::new();
+        }
         up.push(k);
         cur = arena.parent_of(k);
     }

@@ -210,3 +210,69 @@ fn revision_saturation_forces_observation() {
     assert_eq!(p.dirty_observations, 4);
     assert_eq!(p.dirty_subtree_reuses, 0);
 }
+
+#[test]
+fn incremental_capture_observes_external_dirty_without_arena_mutation() {
+    let (arena, root, _, _, leaf) = tree();
+    let shared = Rc::new(Cell::new(DirtyFlags::NONE));
+    *arena.get_mut(leaf).unwrap().element = Box::new(ExternalHost(shared.clone()));
+    arena.commit_render_changes(arena.capture_render_changes());
+    arena.commit_render_changes(arena.capture_render_changes());
+    let revision = arena.mutation_clock();
+    shared.set(DirtyFlags::RESOURCE);
+    assert_eq!(revision, arena.mutation_clock());
+    let capture = arena.capture_render_changes();
+    shared.set(DirtyFlags::NONE);
+    assert!(
+        arena
+            .pending_render_changes(leaf)
+            .contains(DirtyFlags::RESOURCE)
+    );
+    arena.commit_render_changes(capture);
+    assert!(arena.pending_render_changes(leaf).is_empty());
+    assert!(arena.pending_render_changes(root).is_empty());
+}
+
+#[test]
+fn frame_dirty_consumption_prunes_clean_native_branches() {
+    let (mut arena, root, _, _, leaf) = tree();
+    let clear = crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty;
+    clear(&mut arena, root, DirtyFlags::ALL);
+    let (_, clean) = profile_ui_work(|| clear(&mut arena, root, DirtyFlags::ALL));
+    assert_eq!(clean.dirty_clear_visits, 0);
+    arena.mark_dirty(leaf, DirtyFlags::PAINT);
+    let (_, changed) = profile_ui_work(|| clear(&mut arena, root, DirtyFlags::PAINT));
+    assert_eq!(changed.dirty_clear_visits, 3);
+    assert_fresh(&arena, root);
+    assert!(arena.cached_subtree_dirty(root).is_empty());
+    // Clearing work flags still cannot acknowledge render success.
+    assert!(
+        arena
+            .pending_render_changes(leaf)
+            .contains(DirtyFlags::PAINT)
+    );
+}
+
+#[test]
+fn untracked_clear_fallback_does_not_reobserve_every_subtree_at_every_depth() {
+    let mut arena = NodeArena::new();
+    let mut keys = Vec::new();
+    for _ in 0..40 {
+        let key = arena.insert(Node::new(Box::new(ExternalHost(Rc::new(Cell::new(
+            DirtyFlags::NONE,
+        ))))));
+        if let Some(&parent) = keys.last() {
+            link_child(&mut arena, parent, key);
+        }
+        keys.push(key);
+    }
+    let (_, work) = profile_ui_work(|| {
+        crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
+            &mut arena,
+            keys[0],
+            DirtyFlags::ALL,
+        )
+    });
+    assert_eq!(work.dirty_clear_visits, keys.len());
+    assert!(work.dirty_observations <= 2 * keys.len(), "{work:?}");
+}

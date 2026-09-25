@@ -179,3 +179,49 @@ fn subtree_changes_cover_mutation_removal_reparent_and_leave_siblings_stable() {
     arena.mutation_clock.set(u64::MAX);
     assert_eq!(arena.subtree_mutation_revision(root), None);
 }
+
+#[test]
+fn capture_observes_changed_owners_and_replays_failed_attempts() {
+    let (mut arena, root) = scene();
+    for _ in 0..1000 {
+        let key = arena.insert(Node::new(Box::new(Element::new(0., 0., 10., 10.))));
+        arena.clear_element_dirty_flags(key, DirtyFlags::ALL);
+    }
+    arena.commit_render_changes(arena.capture_render_changes());
+    arena.commit_render_changes(arena.capture_render_changes());
+    let (_, clean) = crate::ui::profile_ui_work(|| arena.capture_render_changes());
+    assert_eq!(clean.render_change_observations, 0);
+    arena.mark_dirty(root, DirtyFlags::RESOURCE);
+    arena.clear_arena_dirty(root, DirtyFlags::ALL);
+    let (failed, changed) = crate::ui::profile_ui_work(|| arena.capture_render_changes());
+    assert_eq!(changed.render_change_observations, 1);
+    drop(failed);
+    let retry = arena.capture_render_changes();
+    assert_eq!(retry.owners.len(), 1);
+    assert!(retry.owners[0].1.contains(DirtyFlags::RESOURCE));
+    arena.commit_render_changes(retry);
+    assert!(arena.pending_render_changes(root).is_empty());
+}
+
+#[test]
+fn capture_falls_back_after_history_eviction_and_observes_insertions() {
+    let (mut arena, root) = scene();
+    arena.commit_render_changes(arena.capture_render_changes());
+    for _ in 0..5000 {
+        drop(arena.get_mut(root));
+    }
+    let capture = arena.capture_render_changes();
+    assert_eq!(capture.owners.len(), 1);
+    assert!(capture.owners[0].1.contains(DirtyFlags::PAINT));
+    arena.commit_render_changes(capture);
+    // Stable ID zero must work too; the stable-ID index is not a slot census.
+    let key =
+        arena.insert_with_key(|_| Node::new(Box::new(Element::new_with_id(0, 0., 0., 1., 1.))));
+    let capture = arena.capture_render_changes();
+    assert!(
+        capture
+            .owners
+            .iter()
+            .any(|&(owner, flags, _)| owner == key && flags == DirtyFlags::ALL)
+    );
+}

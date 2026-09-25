@@ -2597,8 +2597,10 @@ impl Viewport {
         let mut compiled_topology_key = None;
         let compiled = match graph.compile_with_upload_cached(self, prior_cache) {
             Ok((profile, topology_key)) => {
-                timings.compile_children =
-                    build_compile_trace_nodes(&profile, self.debug_options.trace_compile_detail);
+                if self.debug_options.trace_render_time {
+                    timings.compile_children =
+                        build_compile_trace_nodes(&profile, self.debug_options.trace_compile_detail);
+                }
                 compiled_topology_key = Some(topology_key);
                 true
             }

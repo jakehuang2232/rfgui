@@ -3394,7 +3394,6 @@ impl FrameGraph {
             };
             parts.encoder as *mut wgpu::CommandEncoder
         };
-        let pass_names = pass_names_for_error(&group.pass_indices, &self.passes);
         catch_unwind(AssertUnwindSafe(|| {
             let encoder = unsafe { &mut *encoder_ptr };
             self.execute_graphics_passes(
@@ -3405,8 +3404,16 @@ impl FrameGraph {
                 timings,
             );
         }))
-        .map_err(|payload| execution_panic_error("graphics group", &pass_names, payload))?;
-        execution_witness_result(ctx.execution_failed, "graphics group", &pass_names)
+        .map_err(|payload| {
+            let pass_names = pass_names_for_error(&group.pass_indices, &self.passes);
+            execution_panic_error("graphics group", &pass_names, payload)
+        })?;
+        if ctx.execution_failed {
+            let pass_names = pass_names_for_error(&group.pass_indices, &self.passes);
+            execution_witness_result(true, "graphics group", &pass_names)
+        } else {
+            Ok(())
+        }
     }
 
     fn execute_graphics_passes(

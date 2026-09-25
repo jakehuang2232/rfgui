@@ -27,6 +27,8 @@ pub struct UiWorkProfile {
     pub dirty_clear_visits: usize,
     /// Nodes observed by the render-change capture after layout/resources.
     pub render_change_observations: usize,
+    /// Nodes inspected while synchronizing hover visuals, including cache hits.
+    pub hover_observations: usize,
     /// Queue evaluation and state publication, including invalidation.
     pub state_flush_ms: f64,
     /// Outermost component expansion; nested within App build.
@@ -233,6 +235,9 @@ impl UiWorkProfile {
             render_change_observations: self
                 .render_change_observations
                 .saturating_sub(before.render_change_observations),
+            hover_observations: self
+                .hover_observations
+                .saturating_sub(before.hover_observations),
             measure_reuses: self.measure_reuses.saturating_sub(before.measure_reuses),
             state_flush_ms: self.state_flush_ms - before.state_flush_ms,
             unwrap_ms: self.unwrap_ms - before.unwrap_ms,

@@ -109,6 +109,11 @@ pub struct Node {
     /// Revision certified by a complete observation of tracked hosts and
     /// coherent child/parent links. None also covers unknown/external hosts.
     dirty_observation_revision: Cell<Option<u64>>,
+    /// Hover state observed for a coherent subtree of native hosts. The
+    /// target is None when that subtree does not contain the hovered node.
+    pub(crate) hover_observation: Cell<Option<(u64, Option<NodeKey>)>>,
+    /// Only exact native dirty-clear implementations may skip clean hooks.
+    pub(crate) native_dirty_clear_subtree: Cell<bool>,
     pending_render_changes: Cell<DirtyFlags>,
     render_change_versions: Cell<[u64; 8]>,
     pub(crate) parent: Option<NodeKey>,
@@ -147,6 +152,8 @@ impl Node {
             mutation_revision: Cell::new(0),
             subtree_mutation_revision: Cell::new(0),
             dirty_observation_revision: Cell::new(None),
+            hover_observation: Cell::new(None),
+            native_dirty_clear_subtree: Cell::new(false),
             pending_render_changes: Cell::new(DirtyFlags::ALL),
             render_change_versions: Cell::new([0; 8]),
             parent: None,
@@ -163,6 +170,8 @@ impl Node {
             mutation_revision: Cell::new(0),
             subtree_mutation_revision: Cell::new(0),
             dirty_observation_revision: Cell::new(None),
+            hover_observation: Cell::new(None),
+            native_dirty_clear_subtree: Cell::new(false),
             pending_render_changes: Cell::new(DirtyFlags::ALL),
             render_change_versions: Cell::new([0; 8]),
             parent,
@@ -364,6 +373,7 @@ pub struct NodeArena {
     slots: SlotMap<NodeKey, Node>,
     mutation_clock: Cell<u64>,
     mutation_history: RefCell<mutation_history::MutationHistory>,
+    render_change_observation: RefCell<Option<render_changes::RenderChangeObservation>>,
     mutation_identity: Arc<()>,
     /// Top-level nodes (one per RSX root). Kept here rather than on
     /// individual elements so the arena itself is enough to traverse.
@@ -484,6 +494,7 @@ impl NodeArena {
         let requires_arena_sync = node.element.get_mut().requires_arena_sync()
             || node.element.get_mut().requires_paint_resource_preparation();
         let key = self.slots.insert(node);
+        self.render_change_observation.get_mut().take();
         if sid != 0 {
             self.stable_id_index.insert(sid, key);
             self.stable_id_index_revision = self.stable_id_index_revision.saturating_add(1);
@@ -502,6 +513,7 @@ impl NodeArena {
         F: FnOnce(NodeKey) -> Node,
     {
         let key = self.slots.insert_with_key(f);
+        self.render_change_observation.get_mut().take();
         if let Some(node) = self.slots.get(key) {
             let element = node.element.borrow();
             let sid = element.stable_id();
@@ -904,7 +916,7 @@ impl NodeArena {
             return node.cached_subtree_dirty.get();
         }
         crate::ui::work_profile::count(|p| p.dirty_observations += 1);
-        let (mut aggregate, mut placement_eligibility, mut tracked) = {
+        let (mut aggregate, mut placement_eligibility, mut tracked, mut native_clear) = {
             let element = node.element.borrow();
             (
                 element
@@ -912,6 +924,10 @@ impl NodeArena {
                     .union(node.arena_local_dirty.get()),
                 element.placement_eligibility_metadata(),
                 element.dirty_observation_is_tracked(),
+                element
+                    .as_any()
+                    .is::<crate::view::base_component::Element>()
+                    || element.as_any().is::<crate::view::base_component::Text>(),
             )
         };
         // Preserve local render causes before layout consumes work flags.
@@ -919,6 +935,9 @@ impl NodeArena {
         self.observe_render_causes(key, aggregate);
         for &child in &node.children {
             aggregate = aggregate.union(self.refresh_subtree_dirty_cache(child));
+            native_clear &= self.slots.get(child).is_some_and(|child_node| {
+                child_node.parent == Some(key) && child_node.native_dirty_clear_subtree.get()
+            });
             placement_eligibility =
                 placement_eligibility.union(self.cached_placement_eligibility_metadata(child));
             // Parent links carry invalidation. Never certify a subtree whose
@@ -929,6 +948,7 @@ impl NodeArena {
             });
         }
         node.cached_subtree_dirty.set(aggregate);
+        node.native_dirty_clear_subtree.set(native_clear && tracked);
         node.cached_placement_eligibility.set(placement_eligibility);
         node.dirty_observation_revision
             .set(if tracked { revision } else { None });

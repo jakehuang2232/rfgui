@@ -209,6 +209,12 @@ impl crate::view::base_component::Renderable for UnknownHoverHost {
     }
 }
 impl crate::view::base_component::ElementTrait for UnknownHoverHost {
+    fn dirty_observation_is_tracked(&self) -> bool {
+        true
+    }
+    fn clear_local_dirty_flags(&mut self, _: DirtyFlags) {
+        self.calls.set(self.calls.get() + 1);
+    }
     fn stable_id(&self) -> u64 {
         42
     }
@@ -247,4 +253,133 @@ fn unknown_hover_host_keeps_setter_side_effects_and_mutation_tracking() {
     update_hover_state(&arena, root, None);
     assert_eq!(calls.get(), 2);
     assert_ne!(arena.mutation_revision(root), revision);
+}
+
+#[test]
+fn warm_hover_visits_only_changed_paths_in_a_wide_tree() {
+    let mut arena = new_test_arena();
+    let root = commit_element(&mut arena, Box::new(Element::new(0., 0., 100., 100.)));
+    let children: Vec<_> = (0..1000)
+        .map(|_| commit_child(&mut arena, root, Box::new(Element::new(0., 0., 10., 10.))))
+        .collect();
+    let (_, cold) =
+        crate::ui::profile_ui_work(|| update_hover_state(&arena, root, Some(children[0])));
+    assert_eq!(cold.hover_observations, 1001);
+    let (_, warm) =
+        crate::ui::profile_ui_work(|| update_hover_state(&arena, root, Some(children[0])));
+    assert_eq!(warm.hover_observations, 1);
+    let (_, moved) =
+        crate::ui::profile_ui_work(|| update_hover_state(&arena, root, Some(children[999])));
+    assert_eq!(moved.hover_observations, 3);
+    for &key in &children {
+        assert!(
+            !arena
+                .get(key)
+                .unwrap()
+                .element
+                .hover_update_needed(key == children[999])
+        );
+    }
+    let (_, leave) = crate::ui::profile_ui_work(|| update_hover_state(&arena, root, None));
+    assert_eq!(leave.hover_observations, 2);
+    assert!(!arena.get(root).unwrap().element.hover_update_needed(false));
+}
+
+#[test]
+fn hover_cache_resynchronizes_reparented_and_incoherent_paths() {
+    let mut arena = new_test_arena();
+    let root = commit_element(&mut arena, Box::new(Element::new(0., 0., 100., 100.)));
+    let left = commit_child(&mut arena, root, Box::new(Element::new(0., 0., 40., 40.)));
+    let right = commit_child(&mut arena, root, Box::new(Element::new(50., 0., 40., 40.)));
+    let leaf = commit_child(&mut arena, left, Box::new(Element::new(0., 0., 10., 10.)));
+    update_hover_state(&arena, root, Some(leaf));
+    arena.set_children(left, vec![]);
+    arena.set_children(right, vec![leaf]);
+    arena.set_parent(leaf, Some(right));
+    assert!(update_hover_state(&arena, root, Some(leaf)));
+    assert!(!arena.get(left).unwrap().element.hover_update_needed(false));
+    assert!(!arena.get(right).unwrap().element.hover_update_needed(true));
+    arena.set_parent(leaf, None);
+    update_hover_state(&arena, root, None);
+    assert!(update_hover_state(&arena, root, Some(leaf)));
+    assert!(!arena.get(leaf).unwrap().element.hover_update_needed(true));
+    assert!(!arena.get(right).unwrap().element.hover_update_needed(true));
+}
+
+#[test]
+fn cyclic_hover_parent_path_terminates() {
+    let mut arena = new_test_arena();
+    let root = commit_element(&mut arena, Box::new(Element::new(0., 0., 10., 10.)));
+    arena.set_parent(root, Some(root));
+    assert!(hover_path_for_target(&arena, &[root], Some(root)).is_empty());
+}
+
+#[test]
+fn tracked_custom_dirty_getter_does_not_suppress_clear_hook_side_effects() {
+    let calls = Rc::new(std::cell::Cell::new(0));
+    let mut arena = new_test_arena();
+    let root = commit_element(
+        &mut arena,
+        Box::new(UnknownHoverHost {
+            calls: calls.clone(),
+        }),
+    );
+    clear_subtree_dirty_flags_with_arena_dirty(&mut arena, root, DirtyFlags::ALL);
+    let revision = arena.mutation_revision(root);
+    clear_subtree_dirty_flags_with_arena_dirty(&mut arena, root, DirtyFlags::ALL);
+    assert_eq!(calls.get(), 2);
+    assert_ne!(revision, arena.mutation_revision(root));
+}
+
+#[test]
+fn pointer_dispatch_reuses_unchanged_hover_subtrees_after_event_mutations() {
+    fn branch(
+        arena: &mut crate::view::node_arena::NodeArena,
+        parent: crate::view::node_arena::NodeKey,
+        depth: usize,
+        leaves: &mut Vec<crate::view::node_arena::NodeKey>,
+    ) {
+        for _ in 0..10 {
+            let child = commit_child(arena, parent, Box::new(Element::new(0., 0., 10., 10.)));
+            if depth == 1 {
+                leaves.push(child);
+            } else {
+                branch(arena, child, depth - 1, leaves);
+            }
+        }
+    }
+    let mut arena = new_test_arena();
+    let root = commit_element(&mut arena, Box::new(Element::new(0., 0., 100., 100.)));
+    let mut leaves = Vec::new();
+    branch(&mut arena, root, 3, &mut leaves);
+    assert_eq!(arena.len(), 1111);
+    let mut hovered = None;
+    Viewport::sync_hover_target(
+        &arena,
+        &[root],
+        &mut hovered,
+        Some(leaves[0]),
+        test_pointer_data(),
+    );
+    let (_, profile) = crate::ui::profile_ui_work(|| {
+        Viewport::sync_hover_target(
+            &arena,
+            &[root],
+            &mut hovered,
+            Some(leaves[999]),
+            test_pointer_data(),
+        )
+    });
+    // Enter/leave hooks invalidate their owners, so those branches are checked
+    // live. The other 1060 nodes need no hover observation.
+    assert_eq!(profile.hover_observations, 51);
+    for (index, &leaf) in leaves.iter().enumerate() {
+        assert!(
+            !arena
+                .get(leaf)
+                .unwrap()
+                .element
+                .hover_update_needed(index == 999)
+        );
+    }
 }
