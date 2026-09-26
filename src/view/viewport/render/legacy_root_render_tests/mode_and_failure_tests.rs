@@ -127,7 +127,15 @@ fn abort_frame_discards_encoder_resets_staging_and_next_frame_submits() -> Resul
         viewport
             .upload_draw_rect_uniform(&[1, 2, 3, 4], 256, 256)
             .is_some(),
-        "fixture must record a native staging-belt copy"
+        "fixture must stage a rect uniform"
+    );
+    assert!(viewport.flush_draw_rect_uniform_uploads());
+    // Abort must discard both recorded copies and slots still waiting for a
+    // prepare flush. Neither may be replayed into the next frame.
+    assert!(
+        viewport
+            .upload_draw_rect_uniform(&[9, 9, 9, 9], 256, 256)
+            .is_some()
     );
     assert!(viewport.gpu.upload_staging_belt.is_some());
 
@@ -152,11 +160,19 @@ fn abort_frame_discards_encoder_resets_staging_and_next_frame_submits() -> Resul
     )?;
     assert!(
         viewport
+            .frame
+            .draw_rect_uniform_pool
+            .iter()
+            .all(|entry| entry.pending_upload.is_empty())
+    );
+    assert!(
+        viewport
             .upload_draw_rect_uniform(&[5, 6, 7, 8], 256, 256)
             .is_some(),
         "the frame after abort must lazily recreate the staging belt"
     );
     assert!(viewport.gpu.upload_staging_belt.is_some());
+    assert!(viewport.flush_draw_rect_uniform_uploads());
     viewport.end_offscreen_test_frame()?;
     assert!(viewport.frame.frame_state.is_none());
     assert_eq!(viewport.frame_completion_counts_for_test(), (1, 0, 1));

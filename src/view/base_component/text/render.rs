@@ -17,10 +17,7 @@ use super::super::ShadowPaintBlocker;
 use super::Text;
 use super::hit_test::current_text_area_selection_render_context;
 use super::paint_cache::{TextPaintKey, TextPaintMemo};
-use crate::view::inline_text_pass_adapter::{
-    inline_ifc_paint_input_to_text_pass_staging_input,
-    inline_ifc_paint_input_to_text_pass_staging_input_with_color,
-};
+use crate::view::inline_text_pass_adapter::inline_ifc_paint_input_to_text_pass_staging_input_with_color;
 use std::sync::Arc;
 
 impl Renderable for Text {
@@ -39,37 +36,16 @@ impl Renderable for Text {
             return ctx.into_state();
         };
         self.emit_selection_underlay(graph, &mut ctx);
-        let params = if let Some(input) = self.inline_ifc_owned_paint_input() {
-            let paint_bounds = self
-                .inline_ifc_owned_paint_bounds()
-                .expect("inline-owned paint input must install paint bounds");
-            let [x, y] = ctx.paint_point(paint_bounds.x, paint_bounds.y);
-            let staging_input =
-                inline_ifc_paint_input_to_text_pass_staging_input(input, [x, y], opacity, 0, 1.0);
-            if staging_input.glyphs.is_empty() {
-                return ctx.into_state();
-            }
-            TextPassPreparedParams {
-                staging_input,
-                fragments: vec![TextPassPreparedFragment {
-                    origin: [x, y],
-                    size: [paint_bounds.width, paint_bounds.height],
-                }],
-                scissor_rect: None,
-                stencil_clip_id: None,
-            }
-        } else {
-            let Ok(payload) = self.prepared_standalone_text_payload(ctx.paint_offset(), opacity)
-            else {
-                return ctx.into_state();
-            };
-            let Some(params) = payload.params else {
-                return ctx.into_state();
-            };
-            params
+        // Both renderers consume the same immutable, memoized text payload.
+        // Rebuilding a Vec here would defeat the prepared-input warm lookup.
+        let Ok(payload) = self.prepared_shadow_text_payload(ctx.paint_offset(), opacity) else {
+            return ctx.into_state();
+        };
+        let Some(op) = &payload.op else {
+            return ctx.into_state();
         };
         let pass = TextPreparedInputPass::new(
-            params,
+            op.params.clone(),
             TextInput {
                 pass_context: ctx.graphics_pass_context(),
             },

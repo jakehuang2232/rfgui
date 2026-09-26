@@ -124,8 +124,10 @@ fn native_graphics_group_elides_buffers_without_losing_per_draw_uniforms() -> Re
             }
             add_present(&mut graph, &target)?;
             let _ = take_counts_for_test();
-            let pixels =
-                render_on_viewport_with_size(graph, gpu, &mut viewport, dpr as f32, FORMAT, size)?;
+            let (pixels, work) = crate::ui::profile_ui_work(|| {
+                render_on_viewport_with_size(graph, gpu, &mut viewport, dpr as f32, FORMAT, size)
+            });
+            let pixels = pixels?;
             let groups = take_counts_for_test();
             assert!(
                 !viewport.has_gradient_stops_buffer_for_test(),
@@ -157,6 +159,10 @@ fn native_graphics_group_elides_buffers_without_losing_per_draw_uniforms() -> Re
                 }
             }
             if !buffered {
+                assert_eq!(
+                    work.rect_uniform_uploads, 1,
+                    "256 rect slots should share one upload"
+                );
                 assert!(
                     groups.is_empty(),
                     "procedural rectangles must issue zero vertex/index bindings: {groups:?}"
@@ -201,5 +207,58 @@ fn native_graphics_group_elides_buffers_without_losing_per_draw_uniforms() -> Re
         }
     }
     eprintln!("graphics binding pixel evidence on {}", gpu.label());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn native_rect_upload_chunks_keep_distinct_offsets_across_frames() -> Result<(), String> {
+    let gpu = native_gpu_test_context()?;
+    let gpu = gpu.as_ref().expect("native graphics context");
+    let mut viewport = Viewport::new();
+    for (count, expected_uploads) in [(4097, 2), (1, 1), (4097, 2)] {
+        let size = [260, 256];
+        let (mut graph, mut ctx, target) = transformed_graph_prelude_with_size(1., None, size);
+        for index in 0..count {
+            let mut pass = DrawRectPass::new(
+                RectPassParams {
+                    position: [(index % 65 * 4) as f32, (index / 65 * 4) as f32],
+                    size: [4., 4.],
+                    fill_color: if index % 2 == 0 {
+                        [1., 0., 0., 1.]
+                    } else {
+                        [0., 0., 1., 1.]
+                    },
+                    opacity: 1.,
+                    ..Default::default()
+                },
+                DrawRectInput::default(),
+                DrawRectOutput::default(),
+            );
+            pass.set_render_mode(crate::view::render_pass::RectRenderMode::FillOnly);
+            ctx.emit_draw_rect_pass(&mut graph, pass);
+        }
+        add_present(&mut graph, &target)?;
+        let (pixels, work) = crate::ui::profile_ui_work(|| {
+            render_on_viewport_with_size(graph, gpu, &mut viewport, 1., FORMAT, size)
+        });
+        let pixels = pixels?;
+        assert_eq!(work.rect_uniform_uploads, expected_uploads);
+        for index in 0..(65 * 64) {
+            let expected = if index >= count {
+                [0; 4]
+            } else if index % 2 == 0 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 255, 255]
+            };
+            let offset = (((index / 65 * 4 + 2) * size[0] + index % 65 * 4 + 2) * 4) as usize;
+            assert_eq!(
+                &pixels[offset..offset + 4],
+                expected,
+                "count={count} index={index}"
+            );
+        }
+    }
     Ok(())
 }

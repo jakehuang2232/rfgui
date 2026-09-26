@@ -509,6 +509,9 @@ struct TextResources {
     /// vertex data identical (the shader adds the per-fragment origin),
     /// so prepare reuses the buffer and only rebuilds fragment uniforms.
     draw_cache: FxHashMap<u64, CachedTextDrawEntry>,
+    /// Weak ownership ties validation/hash to immutable prepared input. The
+    /// allocation cannot be edited or reused while its weak identity survives.
+    input_cache: FxHashMap<usize, CachedTextInput>,
     // Buffer handles compare by GPU resource identity, not frame-graph IDs.
     // The layout stays fixed until destroy(), which also clears these entries.
     globals_cache: FxHashMap<(wgpu::Buffer, wgpu::Buffer), CachedTextGlobals>,
@@ -519,6 +522,15 @@ struct TextResources {
 struct CachedTextDrawEntry {
     mask_draw: Option<std::rc::Rc<PreparedTextDraw>>,
     color_draw: Option<std::rc::Rc<PreparedTextDraw>>,
+    last_used_frame: u64,
+}
+
+const MAX_TEXT_INPUT_CACHE_ENTRIES: usize = 4096;
+const MAX_TEXT_INPUT_UNUSED_FRAMES: u64 = 120;
+
+struct CachedTextInput {
+    params: std::sync::Weak<TextPassPreparedParams>,
+    glyph_hash: Option<u64>,
     last_used_frame: u64,
 }
 
@@ -616,7 +628,7 @@ impl GraphicsPass for TextPreparedInputPass {
 }
 
 fn prepare_text_prepared_input_pass(
-    params: &TextPassPreparedParams,
+    params: &std::sync::Arc<TextPassPreparedParams>,
     input: &TextInput,
     output: &TextOutput,
     globals_buffers: &TextGlobalsBuffers,
@@ -628,9 +640,9 @@ fn prepare_text_prepared_input_pass(
         *prepared_empty = true;
         return None;
     }
-    if !prepared_text_raster_sources_are_valid(params) {
-        return None;
-    }
+    let glyph_hash = with_text_resources(resource_scope, |resources| {
+        resources.input_glyph_hash(params)
+    })?;
 
     let target_handle = output.render_target.handle();
     let (device, queue, surface_format, surface_size, scale_factor) = {
@@ -705,8 +717,7 @@ fn prepare_text_prepared_input_pass(
     // Instance data is origin-independent apart from sub-pixel snapping,
     // so a content hash keyed on glyphs + fragment origin fractions lets
     // scroll/move frames reuse the previous vertex buffers outright.
-    let draw_cache_key =
-        text_draw_cache_key(&params.staging_input, fragments.as_slice(), scale_factor);
+    let draw_cache_key = text_draw_cache_key(glyph_hash, fragments.len(), scale_factor);
     let cached_draws = with_text_resources(resource_scope, |resources| {
         let frame_epoch = resources.frame_epoch;
         resources.draw_cache.get_mut(&draw_cache_key).map(|entry| {
@@ -833,7 +844,9 @@ fn prepare_text_prepared_input_pass(
 }
 
 fn prepared_text_raster_sources_are_valid(params: &TextPassPreparedParams) -> bool {
-    params.staging_input.glyphs.iter().all(|glyph| {
+    let mut observed = 0;
+    let valid = params.staging_input.glyphs.iter().all(|glyph| {
+        observed += 1;
         glyph.paint.fragment_index < params.fragments.len() as u32
             && glyph.raster.font_size.is_finite()
             && glyph.raster.font_size > 0.0
@@ -846,26 +859,29 @@ fn prepared_text_raster_sources_are_valid(params: &TextPassPreparedParams) -> bo
                 .is_some_and(|font| {
                     glyph.raster.glyph_id < u32::from(font.glyph_metrics(&[]).glyph_count())
                 })
-    })
+    });
+    crate::ui::work_profile::count(|p| p.text_input_glyph_observations += observed);
+    valid
 }
 
 #[cfg(test)]
 mod empty_preparation_tests;
 
-/// Content hash of everything that shapes vertex-buffer bytes: glyph
-/// raster identity, paint colors/opacity, fragment indices, the scale
-/// factor, and each fragment origin's sub-pixel fraction and sign (the
-/// snap in `collect_prepared_staging_glyphs` depends only on those, so
-/// integer-pixel moves and scrolls hash identically).
-fn text_draw_cache_key(
-    input: &TextPassPreparedStagingInput,
-    fragments: &[FragmentUniform],
-    scale_factor: f32,
-) -> u64 {
+/// Vertex data contains local positions; the shader performs origin-dependent
+/// snapping. Target origins and clips therefore remain live uniforms.
+fn text_draw_cache_key(glyph_hash: u64, fragment_count: usize, scale_factor: f32) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = rustc_hash::FxHasher::default();
     scale_factor.to_bits().hash(&mut hasher);
-    fragments.len().hash(&mut hasher);
+    fragment_count.hash(&mut hasher);
+    glyph_hash.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn text_glyph_hash(input: &TextPassPreparedStagingInput) -> u64 {
+    crate::ui::work_profile::count(|p| p.text_input_glyph_observations += input.glyphs.len());
+    use std::hash::{Hash, Hasher};
+    let mut hasher = rustc_hash::FxHasher::default();
     input.glyphs.len().hash(&mut hasher);
     for glyph in input.glyphs.iter() {
         glyph.raster.font_data_id.hash(&mut hasher);
@@ -1426,8 +1442,37 @@ fn draw_prepared_text(
 }
 
 impl TextResources {
+    fn input_glyph_hash(&mut self, params: &std::sync::Arc<TextPassPreparedParams>) -> Option<u64> {
+        let key = std::sync::Arc::as_ptr(params) as usize;
+        if let Some(entry) = self.input_cache.get_mut(&key)
+            && entry.params.as_ptr() == std::sync::Arc::as_ptr(params)
+            && entry.params.strong_count() > 0
+        {
+            entry.last_used_frame = self.frame_epoch;
+            return entry.glyph_hash;
+        }
+        let glyph_hash = prepared_text_raster_sources_are_valid(params)
+            .then(|| text_glyph_hash(&params.staging_input));
+        if self.input_cache.len() < MAX_TEXT_INPUT_CACHE_ENTRIES {
+            self.input_cache.insert(
+                key,
+                CachedTextInput {
+                    params: std::sync::Arc::downgrade(params),
+                    glyph_hash,
+                    last_used_frame: self.frame_epoch,
+                },
+            );
+        }
+        glyph_hash
+    }
+
     fn begin_frame(&mut self) {
         self.frame_epoch = self.frame_epoch.wrapping_add(1);
+        self.input_cache.retain(|_, entry| {
+            entry.params.strong_count() > 0
+                && self.frame_epoch.wrapping_sub(entry.last_used_frame)
+                    <= MAX_TEXT_INPUT_UNUSED_FRAMES
+        });
         self.globals_cache.retain(|_, entry| {
             self.frame_epoch.wrapping_sub(entry.last_used_frame) <= MAX_TEXT_GLOBALS_UNUSED_FRAMES
         });
@@ -1709,6 +1754,7 @@ impl TextResources {
         self.pipelines.clear();
         self.raster_cache.clear();
         self.draw_cache.clear();
+        self.input_cache.clear();
         for (_, atlas) in self.persistent_atlases.drain() {
             atlas.texture.destroy();
         }

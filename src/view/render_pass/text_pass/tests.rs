@@ -168,3 +168,99 @@ fn prepared_staging_probe_uses_existing_raster_and_instance_metadata() {
         TextPassPreparedStagingAtlasKind::Mask | TextPassPreparedStagingAtlasKind::Color
     ));
 }
+
+fn cached_input_fixture() -> std::sync::Arc<TextPassPreparedParams> {
+    std::sync::Arc::new(TextPassPreparedParams {
+        staging_input: TextPassPreparedStagingInput {
+            scale_factor: 1.0,
+            glyphs: vec![
+                TextPassPreparedStagingGlyphInput {
+                    raster: first_renderable_raster_input(),
+                    paint: TextPassGlyphPaintInput {
+                        local_pos: [1., 12.],
+                        color: [1.; 4],
+                        opacity: 1.,
+                        fragment_index: 0,
+                    },
+                    final_paint_pos: [1., 12.],
+                };
+                1000
+            ],
+        },
+        fragments: vec![TextPassPreparedFragment {
+            origin: [0.; 2],
+            size: [40.; 2],
+        }],
+        scissor_rect: None,
+        stencil_clip_id: None,
+    })
+}
+
+#[test]
+fn immutable_text_input_replay_skips_glyph_validation_and_hashing() {
+    let mut resources = TextResources::default();
+    let params = cached_input_fixture();
+    let (first, cold) = crate::ui::profile_ui_work(|| resources.input_glyph_hash(&params));
+    assert!(first.is_some());
+    assert_eq!(cold.text_input_glyph_observations, 2000);
+    resources.begin_frame();
+    let (reused, warm) = crate::ui::profile_ui_work(|| resources.input_glyph_hash(&params.clone()));
+    assert_eq!(first, reused);
+    assert_eq!(warm.text_input_glyph_observations, 0);
+    assert_ne!(
+        text_draw_cache_key(first.unwrap(), 1, 1.),
+        text_draw_cache_key(first.unwrap(), 1, 2.)
+    );
+    assert_ne!(
+        text_draw_cache_key(first.unwrap(), 1, 1.),
+        text_draw_cache_key(first.unwrap(), 2, 1.)
+    );
+}
+
+#[test]
+fn edited_text_input_revalidates_font_sources_and_rehashes_paint() {
+    let mut resources = TextResources::default();
+    let params = cached_input_fixture();
+    let first = resources.input_glyph_hash(&params).unwrap();
+    let mut changed = params.clone();
+    std::sync::Arc::make_mut(&mut changed).staging_input.glyphs[0]
+        .paint
+        .color = [0.; 4];
+    assert_ne!(Some(first), resources.input_glyph_hash(&changed));
+    for damage in 0..4 {
+        let mut changed = params.clone();
+        let glyph = &mut std::sync::Arc::make_mut(&mut changed).staging_input.glyphs[0];
+        match damage {
+            0 => glyph.raster.font_data = None,
+            1 => glyph.raster.font_data_id ^= 1,
+            2 => glyph.raster.glyph_id = u32::MAX,
+            _ => glyph.paint.fragment_index = 1,
+        }
+        assert!(resources.input_glyph_hash(&changed).is_none());
+    }
+    // No strong clone is needed for correctness: Arc::make_mut severs weak
+    // identities too, rather than editing the old cached allocation in place.
+    let mut sole_owner = cached_input_fixture();
+    resources.input_glyph_hash(&sole_owner).unwrap();
+    std::sync::Arc::make_mut(&mut sole_owner)
+        .staging_input
+        .glyphs[0]
+        .raster
+        .font_data = None;
+    assert!(resources.input_glyph_hash(&sole_owner).is_none());
+}
+
+#[test]
+fn prepared_input_cache_releases_dead_and_idle_weak_identities() {
+    let mut resources = TextResources::default();
+    let params = cached_input_fixture();
+    resources.input_glyph_hash(&params).unwrap();
+    for _ in 0..=MAX_TEXT_INPUT_UNUSED_FRAMES {
+        resources.begin_frame();
+    }
+    assert!(resources.input_cache.is_empty());
+    resources.input_glyph_hash(&params).unwrap();
+    drop(params);
+    resources.begin_frame();
+    assert!(resources.input_cache.is_empty());
+}

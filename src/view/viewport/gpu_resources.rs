@@ -936,6 +936,8 @@ impl Viewport {
                     buffer,
                     size: required_size,
                     last_used_frame: self.frame.frame_number,
+                    pending_upload: Vec::new(),
+                    pending_upload_offset: 0,
                     bind_groups: FxHashMap::default(),
                 });
         } else if self.frame.draw_rect_uniform_pool[target_index].size < required_size {
@@ -951,6 +953,8 @@ impl Viewport {
                     }),
                     size: required_size,
                     last_used_frame: self.frame.frame_number,
+                    pending_upload: Vec::new(),
+                    pending_upload_offset: 0,
                     bind_groups: FxHashMap::default(),
                 },
             );
@@ -961,31 +965,68 @@ impl Viewport {
         let buffer = self.frame.draw_rect_uniform_pool[target_index]
             .buffer
             .clone();
-        #[cfg(target_arch = "wasm32")]
-        {
-            let queue = self.gpu.queue.as_ref()?;
-            let mut padded = vec![0u8; slot_size as usize];
-            padded[..data.len()].copy_from_slice(data);
-            queue.write_buffer(&buffer, dynamic_offset, &padded);
+        let entry = &mut self.frame.draw_rect_uniform_pool[target_index];
+        if entry.pending_upload.is_empty() {
+            entry.pending_upload_offset = dynamic_offset;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let Some(size) = wgpu::BufferSize::new(slot_size) else {
-                return None;
-            };
-            let frame = self.frame.frame_state.as_mut()?;
-            let staging_belt = self.gpu.upload_staging_belt.as_mut()?;
-            let mut mapped =
-                staging_belt.write_buffer(&mut frame.encoder, &buffer, dynamic_offset, size);
-            mapped.slice(..).fill(0);
-            mapped.slice(..data.len()).copy_from_slice(data);
-            drop(mapped);
-        }
+        let start = entry.pending_upload.len();
+        entry.pending_upload.resize(start + slot_size as usize, 0);
+        entry.pending_upload[start..start + data.len()].copy_from_slice(data);
         self.frame.draw_rect_uniform_offset = self
             .frame
             .draw_rect_uniform_offset
             .saturating_add(slot_size);
         Some((buffer, dynamic_offset as u32, target_index))
+    }
+
+    /// One copy per used ring-buffer chunk, before any graphics pass records.
+    /// Dynamic offsets and pass ordering remain those assigned by prepare.
+    pub(crate) fn flush_draw_rect_uniform_uploads(&mut self) -> bool {
+        for entry in &mut self.frame.draw_rect_uniform_pool {
+            if entry.pending_upload.is_empty() {
+                continue;
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let Some(queue) = self.gpu.queue.as_ref() else {
+                    return false;
+                };
+                queue.write_buffer(
+                    &entry.buffer,
+                    entry.pending_upload_offset,
+                    &entry.pending_upload,
+                );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let size = wgpu::BufferSize::new(entry.pending_upload.len() as u64)
+                    .expect("nonempty pending rect upload");
+                let Some(frame) = self.frame.frame_state.as_mut() else {
+                    return false;
+                };
+                let Some(staging_belt) = self.gpu.upload_staging_belt.as_mut() else {
+                    return false;
+                };
+                let mut mapped = staging_belt.write_buffer(
+                    &mut frame.encoder,
+                    &entry.buffer,
+                    entry.pending_upload_offset,
+                    size,
+                );
+                mapped.slice(..).copy_from_slice(&entry.pending_upload);
+            }
+            crate::ui::work_profile::count(|p| p.rect_uniform_uploads += 1);
+            entry.pending_upload.clear();
+        }
+        true
+    }
+
+    pub(super) fn reset_draw_rect_uniform_uploads(&mut self) {
+        self.frame.draw_rect_uniform_cursor = 0;
+        self.frame.draw_rect_uniform_offset = 0;
+        for entry in &mut self.frame.draw_rect_uniform_pool {
+            entry.pending_upload.clear();
+        }
     }
 
     /// Upload a run of gradient stops into the persistent gradient stops storage buffer,

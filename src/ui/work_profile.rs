@@ -29,6 +29,12 @@ pub struct UiWorkProfile {
     pub render_change_observations: usize,
     /// Nodes inspected while synchronizing hover visuals, including cache hits.
     pub hover_observations: usize,
+    /// Actual ring-buffer upload calls after rect preparation is batched.
+    pub rect_uniform_uploads: usize,
+    /// Glyphs inspected for immutable prepared-input validation/hash misses.
+    pub text_input_glyph_observations: usize,
+    /// Texture/layer composite bind groups actually created on cache misses.
+    pub composite_bind_group_creations: usize,
     /// Queue evaluation and state publication, including invalidation.
     pub state_flush_ms: f64,
     /// Outermost component expansion; nested within App build.
@@ -238,6 +244,15 @@ impl UiWorkProfile {
             hover_observations: self
                 .hover_observations
                 .saturating_sub(before.hover_observations),
+            rect_uniform_uploads: self
+                .rect_uniform_uploads
+                .saturating_sub(before.rect_uniform_uploads),
+            text_input_glyph_observations: self
+                .text_input_glyph_observations
+                .saturating_sub(before.text_input_glyph_observations),
+            composite_bind_group_creations: self
+                .composite_bind_group_creations
+                .saturating_sub(before.composite_bind_group_creations),
             measure_reuses: self.measure_reuses.saturating_sub(before.measure_reuses),
             state_flush_ms: self.state_flush_ms - before.state_flush_ms,
             unwrap_ms: self.unwrap_ms - before.unwrap_ms,

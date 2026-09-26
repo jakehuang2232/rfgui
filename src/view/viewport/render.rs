@@ -2598,8 +2598,10 @@ impl Viewport {
         let compiled = match graph.compile_with_upload_cached(self, prior_cache) {
             Ok((profile, topology_key)) => {
                 if self.debug_options.trace_render_time {
-                    timings.compile_children =
-                        build_compile_trace_nodes(&profile, self.debug_options.trace_compile_detail);
+                    timings.compile_children = build_compile_trace_nodes(
+                        &profile,
+                        self.debug_options.trace_compile_detail,
+                    );
                 }
                 compiled_topology_key = Some(topology_key);
                 true
@@ -3332,10 +3334,15 @@ impl Viewport {
         }
         self.frame.offscreen_render_target_pool.begin_frame();
         self.reclaim_idle_frame_gpu_pools();
-        self.frame.draw_rect_uniform_cursor = 0;
-        self.frame.draw_rect_uniform_offset = 0;
+        self.reset_draw_rect_uniform_uploads();
         self.frame.gradient_stops_byte_cursor = 0;
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
+        crate::view::render_pass::composite_layer_pass::begin_composite_layer_resources_frame(
+            self.render_resource_scope_id(),
+        );
+        crate::view::render_pass::texture_composite_pass::begin_texture_composite_resources_frame(
+            self.render_resource_scope_id(),
+        );
         crate::view::render_pass::shadow_module::begin_shadow_resources_frame();
         crate::view::render_pass::text_pass::begin_text_resources_frame_for_scope(
             self.render_resource_scope_id(),
@@ -3438,10 +3445,15 @@ impl Viewport {
         self.logical_height = height as f32;
 
         self.frame.offscreen_render_target_pool.begin_frame();
-        self.frame.draw_rect_uniform_cursor = 0;
-        self.frame.draw_rect_uniform_offset = 0;
+        self.reset_draw_rect_uniform_uploads();
         self.frame.gradient_stops_byte_cursor = 0;
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
+        crate::view::render_pass::composite_layer_pass::begin_composite_layer_resources_frame(
+            self.render_resource_scope_id(),
+        );
+        crate::view::render_pass::texture_composite_pass::begin_texture_composite_resources_frame(
+            self.render_resource_scope_id(),
+        );
         crate::view::render_pass::shadow_module::begin_shadow_resources_frame();
         crate::view::render_pass::text_pass::begin_text_resources_frame_for_scope(
             self.render_resource_scope_id(),

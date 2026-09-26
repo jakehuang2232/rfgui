@@ -75,6 +75,7 @@ struct CompositeVertex {
 }
 
 struct CompositeLayerResources {
+    resource_scope_id: u64,
     pipeline_no_stencil: wgpu::RenderPipeline,
     pipeline_stencil_test: wgpu::RenderPipeline,
     debug_pipeline_no_stencil: wgpu::RenderPipeline,
@@ -83,6 +84,40 @@ struct CompositeLayerResources {
     sampler: wgpu::Sampler,
     pipeline_format: wgpu::TextureFormat,
     pipeline_sample_count: u32,
+    bind_groups: rustc_hash::FxHashMap<wgpu::TextureView, (wgpu::BindGroup, u64)>,
+    frame_epoch: u64,
+}
+
+const MAX_LAYER_BIND_GROUPS: usize = 1024;
+const MAX_LAYER_BIND_GROUP_UNUSED_FRAMES: u64 = 2;
+
+impl CompositeLayerResources {
+    fn bind_group(&mut self, device: &wgpu::Device, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        if let Some((group, last_used)) = self.bind_groups.get_mut(view) {
+            *last_used = self.frame_epoch;
+            return group.clone();
+        }
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("CompositeLayer Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        crate::ui::work_profile::count(|p| p.composite_bind_group_creations += 1);
+        if self.bind_groups.len() < MAX_LAYER_BIND_GROUPS {
+            self.bind_groups
+                .insert(view.clone(), (group.clone(), self.frame_epoch));
+        }
+        group
+    }
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -306,15 +341,15 @@ impl GraphicsPass for CompositeLayerPass {
             .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))
             .unwrap_or_else(|| ctx.viewport().msaa_sample_count());
         with_composite_layer_resources_cache(|cache| {
-            let resources = cache.get_or_insert_scoped_with(
-                ctx.viewport().render_resource_scope_id(),
-                COMPOSITE_LAYER_RESOURCES,
-                || create_resources(&device, format, sample_count),
-            );
+            let scope = ctx.viewport().render_resource_scope_id();
+            let resources =
+                cache.get_or_insert_scoped_with(scope, COMPOSITE_LAYER_RESOURCES, || {
+                    create_resources(&device, scope, format, sample_count)
+                });
             if resources.pipeline_format != format
                 || resources.pipeline_sample_count != sample_count
             {
-                *resources = create_resources(&device, format, sample_count);
+                *resources = create_resources(&device, scope, format, sample_count);
             }
 
             if self.prepared_vertices.is_empty() || self.prepared_indices.is_empty() {
@@ -337,20 +372,7 @@ impl GraphicsPass for CompositeLayerPass {
                 return;
             };
 
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("CompositeLayer Bind Group"),
-                layout: &resources.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&layer_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&resources.sampler),
-                    },
-                ],
-            });
+            let bind_group = resources.bind_group(&device, &layer_view);
             let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
                 ctx.viewport(),
                 self.input.pass_context.scissor_rect,
@@ -426,6 +448,7 @@ impl GraphicsPass for CompositeLayerPass {
 
 fn create_resources(
     device: &wgpu::Device,
+    resource_scope_id: u64,
     format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> CompositeLayerResources {
@@ -518,6 +541,7 @@ fn create_resources(
     );
 
     CompositeLayerResources {
+        resource_scope_id,
         pipeline_no_stencil,
         pipeline_stencil_test,
         debug_pipeline_no_stencil,
@@ -526,6 +550,8 @@ fn create_resources(
         sampler,
         pipeline_format: format,
         pipeline_sample_count: sample_count,
+        bind_groups: rustc_hash::FxHashMap::default(),
+        frame_epoch: 0,
     }
 }
 
@@ -706,6 +732,21 @@ pub fn clear_composite_layer_resources_cache() {
 
 pub(super) fn release_scope(scope: u64) {
     with_composite_layer_resources_cache(|cache| cache.clear_scope(scope));
+}
+
+pub(crate) fn begin_composite_layer_resources_frame(scope: u64) {
+    with_composite_layer_resources_cache(|cache| {
+        cache.retain(|_, resources| {
+            if resources.resource_scope_id == scope {
+                resources.frame_epoch = resources.frame_epoch.wrapping_add(1);
+                resources.bind_groups.retain(|_, (_, last_used)| {
+                    resources.frame_epoch.wrapping_sub(*last_used)
+                        <= MAX_LAYER_BIND_GROUP_UNUSED_FRAMES
+                });
+            }
+            true
+        });
+    });
 }
 
 #[cfg(test)]

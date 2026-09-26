@@ -1777,10 +1777,17 @@ impl FrameGraph {
             &compiled_graph.buffer_allocation_ids,
         );
         let prepare_by_pass_name = self.run_prepare_passes(&mut ctx);
+        let rect_uploads_flushed = ctx.viewport.flush_draw_rect_uniform_uploads();
         let prepare_upload_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
         self.textures = textures;
         self.buffers = buffers;
         self.compiled_graph = Some(compiled_graph);
+
+        if !rect_uploads_flushed {
+            return Err(FrameGraphError::Execution(
+                "rect uniform upload requires an active frame".into(),
+            ));
+        }
 
         let profile = CompileProfile {
             total_ms: compile_started_at.elapsed().as_secs_f64() * 1000.0,
@@ -1853,12 +1860,18 @@ impl FrameGraph {
             &compiled_graph.buffer_allocation_ids,
         );
         profile.prepare_by_pass_name = self.run_prepare_passes(&mut ctx);
+        let rect_uploads_flushed = ctx.viewport.flush_draw_rect_uniform_uploads();
         profile.prepare_upload_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
         profile.prepare_pass_count = self.order.len();
         profile.total_ms += profile.prepare_upload_ms;
         self.textures = textures;
         self.buffers = buffers;
         self.compiled_graph = Some(compiled_graph);
+        if !rect_uploads_flushed {
+            return Err(FrameGraphError::Execution(
+                "rect uniform upload requires an active frame".into(),
+            ));
+        }
         Ok(profile)
     }
 

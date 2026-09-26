@@ -143,6 +143,91 @@ struct TextureCompositeResources {
     nearest_sampler: wgpu::Sampler,
     pipeline_format: wgpu::TextureFormat,
     pipeline_sample_count: u32,
+    bind_groups: rustc_hash::FxHashMap<CompositeBindingKey, CachedCompositeBinding>,
+    frame_epoch: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CompositeBindingKey {
+    source: wgpu::TextureView,
+    mask: wgpu::TextureView,
+    uniform: wgpu::Buffer,
+    nearest: bool,
+}
+
+struct CachedCompositeBinding {
+    group: wgpu::BindGroup,
+    last_used_frame: u64,
+}
+
+const MAX_COMPOSITE_BIND_GROUPS: usize = 1024;
+const MAX_COMPOSITE_BIND_GROUP_UNUSED_FRAMES: u64 = 2;
+
+impl TextureCompositeResources {
+    fn bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        source: &wgpu::TextureView,
+        mask: &wgpu::TextureView,
+        uniform: &wgpu::Buffer,
+        nearest: bool,
+    ) -> wgpu::BindGroup {
+        let key = CompositeBindingKey {
+            source: source.clone(),
+            mask: mask.clone(),
+            uniform: uniform.clone(),
+            nearest,
+        };
+        if let Some(entry) = self.bind_groups.get_mut(&key) {
+            entry.last_used_frame = self.frame_epoch;
+            return entry.group.clone();
+        }
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("TextureComposite Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(mask),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(if nearest {
+                        &self.nearest_sampler
+                    } else {
+                        &self.linear_sampler
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: uniform.as_entire_binding(),
+                },
+            ],
+        });
+        crate::ui::work_profile::count(|p| p.composite_bind_group_creations += 1);
+        if self.bind_groups.len() < MAX_COMPOSITE_BIND_GROUPS {
+            self.bind_groups.insert(
+                key,
+                CachedCompositeBinding {
+                    group: group.clone(),
+                    last_used_frame: self.frame_epoch,
+                },
+            );
+        }
+        group
+    }
+
+    fn begin_frame(&mut self) {
+        self.frame_epoch = self.frame_epoch.wrapping_add(1);
+        self.bind_groups.retain(|_, entry| {
+            self.frame_epoch.wrapping_sub(entry.last_used_frame)
+                <= MAX_COMPOSITE_BIND_GROUP_UNUSED_FRAMES
+        });
+    }
 }
 
 impl TextureCompositePass {
@@ -374,9 +459,7 @@ impl GraphicsPass for TextureCompositePass {
                 ctx.mark_execution_failed();
                 return;
             }
-            (false, handle) => {
-                handle.and_then(|h| render_target_view(ctx.frame_resources(), h))
-            }
+            (false, handle) => handle.and_then(|h| render_target_view(ctx.frame_resources(), h)),
         };
 
         let device = match ctx.viewport().device() {
@@ -414,8 +497,8 @@ impl GraphicsPass for TextureCompositePass {
                 .handle()
                 .and_then(|h| ctx.frame_resources().acquire_buffer(h));
             let fallback_uniform_buffer;
-            let uniform_binding = if let Some(buffer) = acquired_uniform_buffer.as_ref() {
-                buffer.as_entire_binding()
+            let uniform_buffer = if let Some(buffer) = acquired_uniform_buffer.as_ref() {
+                buffer
             } else {
                 fallback_uniform_buffer = super::create_transient_buffer(
                     &device,
@@ -434,44 +517,26 @@ impl GraphicsPass for TextureCompositePass {
                         usage: wgpu::BufferUsages::UNIFORM,
                     },
                 );
-                fallback_uniform_buffer.as_entire_binding()
+                &fallback_uniform_buffer
             };
 
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("TextureComposite Bind Group"),
-                layout: &resources.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            mask_view.as_ref().unwrap_or(&source_view),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(
-                            match self
-                                .input
-                                .sampled_source
-                                .as_ref()
-                                .map(|source| source.sampling)
-                            {
-                                Some(ImageSampling::Nearest) => &resources.nearest_sampler,
-                                None if self.pixel_preserving => &resources.nearest_sampler,
-                                _ => &resources.linear_sampler,
-                            },
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: uniform_binding,
-                    },
-                ],
-            });
+            let nearest = match self
+                .input
+                .sampled_source
+                .as_ref()
+                .map(|source| source.sampling)
+            {
+                Some(ImageSampling::Nearest) => true,
+                None => self.pixel_preserving,
+                _ => false,
+            };
+            let bind_group = resources.bind_group(
+                &device,
+                &source_view,
+                mask_view.as_ref().unwrap_or(&source_view),
+                uniform_buffer,
+                nearest,
+            );
 
             #[cfg(test)]
             let force_transient_geometry_fallback = self.force_transient_geometry_fallback;
@@ -1009,6 +1074,8 @@ fn create_resources(
         nearest_sampler,
         pipeline_format: format,
         pipeline_sample_count: sample_count,
+        bind_groups: rustc_hash::FxHashMap::default(),
+        frame_epoch: 0,
     }
 }
 
@@ -1371,6 +1438,20 @@ pub(crate) fn clear_texture_composite_resources_cache(resource_scope_id: u64) {
         cache.retain(|_, resources| resources.resource_scope_id != resource_scope_id);
     });
 }
+
+pub(crate) fn begin_texture_composite_resources_frame(resource_scope_id: u64) {
+    with_texture_composite_resources_cache(|cache| {
+        cache.retain(|_, resources| {
+            if resources.resource_scope_id == resource_scope_id {
+                resources.begin_frame();
+            }
+            true
+        });
+    });
+}
+
+#[cfg(test)]
+mod binding_cache_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn texture_composite_resources_cache_len() -> usize {

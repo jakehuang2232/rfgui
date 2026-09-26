@@ -644,6 +644,9 @@ pub(super) struct DrawRectUniformBufferEntry {
     pub(super) buffer: wgpu::Buffer,
     pub(super) size: u64,
     pub(super) last_used_frame: u64,
+    /// Dense, padded slots waiting for the end of frame-graph preparation.
+    pub(super) pending_upload: Vec<u8>,
+    pub(super) pending_upload_offset: u64,
     /// Cached bind groups keyed by layout_cache_key.  The bind group binds the buffer
     /// at offset 0 / size=slot_size; the per-draw dynamic offset is supplied separately,
     /// so one bind group is valid for *all* slots in this buffer.

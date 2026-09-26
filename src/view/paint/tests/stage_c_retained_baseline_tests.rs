@@ -111,6 +111,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_buffer_bindings_preserve_ranges_formats_and_pass_scope",
         "native_graphics_group_elides_buffers_without_losing_per_draw_uniforms",
         "native_rect_bindings_preserve_solid_and_gradient_layout_switches",
+        "native_rect_upload_chunks_keep_distinct_offsets_across_frames",
         "native_text_globals_reuse_buffers_without_overwriting_other_passes",
         "native_persistent_retirement_preserves_unsubmitted_attachments",
         "native_transient_texture_working_set_survives_pressure_between_frames",
