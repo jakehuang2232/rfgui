@@ -1142,6 +1142,59 @@ impl Element {
         PLACEMENT_RUNTIME.with(|runtime| runtime.borrow().child_clip_stack.last().copied())
     }
 
+    /// Conservative paint interest, separate from the exact drawing and hit
+    /// test clips. Keep the existing overscan, but align moving axes in content
+    /// space so small scroll deltas do not change the recorded child set.
+    fn child_paint_cull_rect(&self) -> Rect {
+        let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
+        let axis = |origin: f32, extent: f32, offset: f32, scrolls: bool| {
+            let start = origin - overscan;
+            let size = (extent + overscan * 2.0).max(0.0);
+            // Bound extra preparation to less than four existing overscan
+            // margins per edge; do not record the entire scrolling contents.
+            let step = overscan * 4.0;
+            if !scrolls || step <= 0.0 || !offset.is_finite() || !extent.is_finite() {
+                return (start, size);
+            }
+            let low = ((offset - overscan) / step).floor() * step;
+            let high = ((offset + extent + overscan) / step).ceil() * step;
+            let aligned_start = origin + low - offset;
+            let aligned_size = high - low;
+            if !aligned_start.is_finite()
+                || !aligned_size.is_finite()
+                || aligned_start > start
+                || aligned_start + aligned_size < start + size
+            {
+                return (start, size);
+            }
+            (aligned_start, aligned_size)
+        };
+        let (x, width) = axis(
+            self.layout_state.layout_inner_position.x,
+            self.layout_state.layout_inner_size.width,
+            self.scroll_offset.x,
+            matches!(
+                self.scroll_direction,
+                ScrollDirection::Horizontal | ScrollDirection::Both
+            ),
+        );
+        let (y, height) = axis(
+            self.layout_state.layout_inner_position.y,
+            self.layout_state.layout_inner_size.height,
+            self.scroll_offset.y,
+            matches!(
+                self.scroll_direction,
+                ScrollDirection::Vertical | ScrollDirection::Both
+            ),
+        );
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
     fn push_hit_test_clip_scope(&self, rect: Rect) {
         PLACEMENT_RUNTIME.with(|runtime| {
             runtime.borrow_mut().hit_test_clip_stack.push(rect);
@@ -1652,13 +1705,7 @@ impl Element {
         let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
         self.last_child_hit_test_clip_rect = Some(child_parent_hit_test_clip);
         self.push_hit_test_clip_scope(child_parent_hit_test_clip);
-        let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
-        self.push_child_clip_scope(Rect {
-            x: self.layout_state.layout_inner_position.x - overscan,
-            y: self.layout_state.layout_inner_position.y - overscan,
-            width: (self.layout_state.layout_inner_size.width + overscan * 2.0).max(0.0),
-            height: (self.layout_state.layout_inner_size.height + overscan * 2.0).max(0.0),
-        });
+        self.push_child_clip_scope(self.child_paint_cull_rect());
         // Inline is NOT an axis layout here: its children are placed by the
         // inline IFC install (`run_inline_ifc_root_after_place`), not the
         // flex/flow solver. Routing inline through `place_flex_children`

@@ -76,6 +76,8 @@ include!("event_handler_props.rs");
 mod inactive_scroll_paint_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod paint_cull_tests;
 
 use crate::time::{Duration, Instant};
 
@@ -6812,13 +6814,7 @@ impl Element {
         if has_atomic {
             let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
             self.push_hit_test_clip_scope(child_parent_hit_test_clip);
-            let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
-            self.push_child_clip_scope(Rect {
-                x: self.layout_state.layout_inner_position.x - overscan,
-                y: self.layout_state.layout_inner_position.y - overscan,
-                width: (self.layout_state.layout_inner_size.width + overscan * 2.0).max(0.0),
-                height: (self.layout_state.layout_inner_size.height + overscan * 2.0).max(0.0),
-            });
+            self.push_child_clip_scope(self.child_paint_cull_rect());
         }
         let moved = dx != 0.0 || dy != 0.0;
         for op in plan {
@@ -6863,9 +6859,12 @@ impl Element {
         if has_atomic {
             self.pop_child_clip_scope();
             self.pop_hit_test_clip_scope();
-            // Atomic boxes may have moved relative to this root; the
-            // scroll-content extent from place_children is stale. Pure
-            // span/text translation keeps relative extents unchanged.
+        }
+        if has_atomic || moved {
+            // place_children sampled the old installed child coordinates
+            // against this root's new origin. Even a pure text/span move must
+            // replace that transient extent after shifting the children, or a
+            // parent scroll invents/removes overflow and changes child masks.
             let absolute_mask = self.compute_children_absolute_mask(arena);
             self.update_content_size_from_children(arena, &absolute_mask);
         }
@@ -6919,13 +6918,7 @@ impl Element {
         // and hit-test clips resolve against the wrong ancestor state.
         let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
         self.push_hit_test_clip_scope(child_parent_hit_test_clip);
-        let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
-        self.push_child_clip_scope(Rect {
-            x: self.layout_state.layout_inner_position.x - overscan,
-            y: self.layout_state.layout_inner_position.y - overscan,
-            width: (self.layout_state.layout_inner_size.width + overscan * 2.0).max(0.0),
-            height: (self.layout_state.layout_inner_size.height + overscan * 2.0).max(0.0),
-        });
+        self.push_child_clip_scope(self.child_paint_cull_rect());
 
         let mut installed_nodes = Vec::with_capacity(plan.len());
         for op in plan {

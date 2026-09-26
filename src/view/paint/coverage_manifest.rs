@@ -865,6 +865,13 @@ fn record_coverage_manifest_with_property_authorities_impl(
     impl Recorder<'_> {
         fn culled_subtree_boundary(&self, root: NodeKey) -> Option<CulledSubtreeBoundary> {
             let _profile = crate::view::paint::work_profile::scope("culled_subtree_boundary");
+            // Generic recording preserves property scopes without drawing a
+            // culled subtree. Deferred roots are collected by the independent
+            // topology walk and recorded in the late phase. There is no legacy
+            // boundary to discover here, regardless of descendant properties.
+            if self.surface_dag {
+                return None;
+            }
             let mut stack = self
                 .arena
                 .get(root)?

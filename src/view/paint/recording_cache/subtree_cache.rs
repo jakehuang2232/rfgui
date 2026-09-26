@@ -298,6 +298,20 @@ impl SubtreeCache {
         metadata: &FxHashMap<NodeKey, (u64, Arc<PaintNodePlan<PaintChunkMetadata>>)>,
     ) -> Option<(Key, Arc<[NodeKey]>)> {
         let _profile = super::super::work_profile::scope("subtree_recording_key");
+        let revision = arena.subtree_mutation_revision(owner)?;
+        if let Some(previous) = self.split.get_mut(&owner)
+            && previous.revision != revision
+        {
+            // A split parent that keeps changing cannot coalesce this frame.
+            // Avoid rebuilding its closed-subtree/ancestor proof just to reject
+            // it below. This only declines a cache probe: the live recorder
+            // still visits the parent and can replay stable children. Once the
+            // revision settles, all other key inputs are observed again before
+            // capture; stale context here can only delay coalescing.
+            previous.revision = revision;
+            super::super::work_profile::count("subtree_probe_mutation_skips", 1);
+            return None;
+        }
         // ScrollNodeSnapshot compares every float by bits, including the
         // sampled overlay. Context equality therefore preserves the complete
         // parent scroll input as well as our separate paint-offset bit key.
@@ -325,7 +339,7 @@ impl SubtreeCache {
             parent = arena.parent_of(key);
         }
         let key = Key {
-            revision: arena.subtree_mutation_revision(owner)?,
+            revision,
             index_revision: arena.stable_id_index_revision()?,
             ancestors,
             context,
@@ -357,10 +371,14 @@ impl SubtreeCache {
     ) -> Option<Arc<Snapshot>> {
         let _profile = super::super::work_profile::scope("subtree_recording_validate");
         let (old, snapshot, seen, stamp, generation_stamp) = self.entries.get_mut(&owner)?;
-        let written = trees.property_writes_since(stamp);
         if old.revision == key.revision && old.ancestors != key.ancestors {
             super::super::work_profile::count("subtree_replay_ancestor_input_changes", 1);
         }
+        if old != key {
+            self.split.insert(owner, key.clone());
+            return None;
+        }
+        let written = trees.property_writes_since(stamp);
         let properties_match = match &written {
             Some(owners) if owners.len() < snapshot.properties.len() => {
                 owners.iter().all(|owner| {
@@ -390,7 +408,7 @@ impl SubtreeCache {
                 .iter()
                 .all(|(owner, old)| *old == generations.local_generations_for(*owner)),
         };
-        if old != key || !properties_match || !generations_match {
+        if !properties_match || !generations_match {
             self.split.insert(owner, key.clone());
             return None;
         }

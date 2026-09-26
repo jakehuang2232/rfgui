@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+fn continuously_changing_subtree_rejoins_cache_after_its_inputs_settle() {
+    let (arena, root, first, _, mut properties, mut generations) =
+        prepared_shadow_owner_tree(0xfeed_9820, 0.5);
+    let mut cache = RecordingCache::default();
+    for frame in 0..12 {
+        if (1..=5).contains(&frame) {
+            crate::view::test_support::get_element_mut::<Element>(&arena, first)
+                .set_background_color(Color::rgb(frame * 20, 27, 98));
+        }
+        if frame == 6 {
+            // The last mutation also changes inherited recording inputs.
+            // Settling the local revision must not revive the earlier context.
+            crate::view::test_support::get_element_mut::<Element>(&arena, root).set_opacity(0.75);
+        }
+        if frame == 10 {
+            cache.finish(false);
+        }
+        properties.sync(&arena, &[root]);
+        generations.sync(&arena, &[root], &properties);
+        let cached = record_surface_dag_frame_artifact_cached(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            &mut cache,
+        )
+        .unwrap();
+        let fresh = record_surface_dag_frame_artifact(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            RendererMode::Auto,
+        )
+        .unwrap();
+        assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
+        if [9, 11].contains(&frame) {
+            assert!(cache.subtrees.hits > 0, "settled frame {frame}");
+        }
+        if frame == 10 {
+            assert_eq!(cache.subtrees.hits, 0, "failed attempt discards proofs");
+        }
+    }
+}
+
+#[test]
 fn exact_ancestor_recordings_allow_noop_mutation_but_preserve_changed_effects() {
     let (arena, root, _, _, mut properties, mut generations) =
         prepared_shadow_owner_tree(0xfeed_9816, 0.5);
