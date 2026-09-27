@@ -306,5 +306,6 @@ mod pass_timing_tests;
 mod persistent_resource_tests;
 mod resource_allocation_tests;
 mod resource_timeline_tests;
+mod depth_stencil_store_tests;
 mod topology_cache_tests;
 mod version_flow_tests;

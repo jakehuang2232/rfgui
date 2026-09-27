@@ -1,3 +1,6 @@
+mod depth_stencil_store;
+use depth_stencil_store::DepthStencilStores;
+
 #[cfg(test)]
 pub(crate) mod execution_failure_test_support;
 
@@ -1032,6 +1035,7 @@ pub struct CompiledGraph {
     texture_allocation_ids: FxHashMap<TextureHandle, AllocationId>,
     buffer_allocation_ids: FxHashMap<BufferHandle, AllocationId>,
     texture_stable_keys: FxHashMap<TextureHandle, PersistentTextureKey>,
+    depth_stencil_stores: DepthStencilStores,
 }
 
 #[derive(Clone)]
@@ -2373,7 +2377,11 @@ impl FrameGraph {
         let assemble_compiled_passes_ms =
             assemble_compiled_passes_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        let depth_stencil_stores = DepthStencilStores::compile(
+            &resources, &compiled_passes, &self.external_sinks,
+        );
         let compiled_graph = CompiledGraph {
+            depth_stencil_stores,
             passes: compiled_passes,
             resources,
             external_sinks: self.external_sinks.clone(),
@@ -3157,6 +3165,7 @@ impl FrameGraph {
             &compiled_graph.texture_allocation_ids,
             &compiled_graph.texture_stable_keys,
             &compiled_graph.buffer_allocation_ids,
+            &compiled_graph.depth_stencil_stores,
         );
         // Take execute_steps out of self so we can call &mut self methods while iterating,
         // then restore it afterward — zero clones, no heap allocations.
@@ -3520,7 +3529,17 @@ impl FrameGraph {
                             render_target_attachment_view(ctx, *handle)
                         }
                     }?;
-                    Some((view, depth.clone(), stencil.clone()))
+                    let mut depth = depth.clone();
+                    let mut stencil = stencil.clone();
+                    if ctx.depth_stencil_stores.discard_after(*target, pass_indices) {
+                        if let Some(aspect) = depth.as_mut() {
+                            aspect.store_op = AttachmentStoreOp::Discard;
+                        }
+                        if let Some(aspect) = stencil.as_mut() {
+                            aspect.store_op = AttachmentStoreOp::Discard;
+                        }
+                    }
+                    Some((view, depth, stencil))
                 });
         let depth_attachment = owned_depth_attachment
             .as_ref()
@@ -5046,6 +5065,7 @@ pub struct RecordContext<'a, 'b> {
     texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
     texture_stable_keys: &'b FxHashMap<TextureHandle, PersistentTextureKey>,
     buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
+    depth_stencil_stores: &'b DepthStencilStores,
     detail_timings: FxHashMap<&'static str, f64>,
     detail_counts: FxHashMap<&'static str, usize>,
     detail_order: Vec<&'static str>,
@@ -5053,13 +5073,14 @@ pub struct RecordContext<'a, 'b> {
 }
 
 impl<'a, 'b> RecordContext<'a, 'b> {
-    pub(crate) fn new(
+    fn new(
         viewport: &'a mut Viewport,
         textures: &'b [TextureDesc],
         buffers: &'b [BufferDesc],
         texture_allocation_ids: &'b FxHashMap<TextureHandle, AllocationId>,
         texture_stable_keys: &'b FxHashMap<TextureHandle, PersistentTextureKey>,
         buffer_allocation_ids: &'b FxHashMap<BufferHandle, AllocationId>,
+        depth_stencil_stores: &'b DepthStencilStores,
     ) -> Self {
         Self {
             viewport,
@@ -5068,6 +5089,7 @@ impl<'a, 'b> RecordContext<'a, 'b> {
             texture_allocation_ids,
             texture_stable_keys,
             buffer_allocation_ids,
+            depth_stencil_stores,
             detail_timings: FxHashMap::default(),
             detail_counts: FxHashMap::default(),
             detail_order: Vec::new(),
@@ -5140,6 +5162,7 @@ impl<'ctx, 'res> GraphicsRecordContext<'ctx, 'res> {
             detail_counts,
             detail_order,
             execution_failed,
+            depth_stencil_stores: _,
         } = record;
         Self {
             viewport,
@@ -5241,6 +5264,7 @@ impl<'ctx, 'res> ComputeRecordContext<'ctx, 'res> {
             detail_counts,
             detail_order,
             execution_failed: _,
+            depth_stencil_stores: _,
         } = record;
         Self {
             viewport,
@@ -5333,6 +5357,7 @@ impl<'ctx, 'res> TransferRecordContext<'ctx, 'res> {
             detail_counts,
             detail_order,
             execution_failed: _,
+            depth_stencil_stores: _,
         } = record;
         Self {
             viewport,

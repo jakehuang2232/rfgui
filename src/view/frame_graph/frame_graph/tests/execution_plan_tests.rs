@@ -42,6 +42,7 @@ fn graphics_execution_witness_fails_closed_and_stops_group_progress() {
     let texture_allocations = FxHashMap::default();
     let texture_keys = FxHashMap::default();
     let buffer_allocations = FxHashMap::default();
+    let stores = DepthStencilStores::default();
     let mut record = RecordContext::new(
         &mut viewport,
         &[],
@@ -49,6 +50,7 @@ fn graphics_execution_witness_fails_closed_and_stops_group_progress() {
         &texture_allocations,
         &texture_keys,
         &buffer_allocations,
+        &stores,
     );
     {
         let mut graphics = GraphicsRecordContext::new(&mut record);
