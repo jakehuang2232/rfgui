@@ -3318,6 +3318,9 @@ impl FrameGraph {
         ctx: &mut RecordContext<'_, '_>,
         timings: &mut PassTimingCollector,
     ) -> Result<(), FrameGraphError> {
+        let compatibility = render_pass_descriptor_compatibility(&self.passes[index].descriptor)
+            .expect("graphics pass descriptor should produce render-pass compatibility");
+        acquire_surface_for_pass(ctx, &compatibility)?;
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return Err(FrameGraphError::Execution(
@@ -3328,9 +3331,6 @@ impl FrameGraph {
         };
         let result = catch_unwind(AssertUnwindSafe(|| {
             let encoder = unsafe { &mut *encoder_ptr };
-            let compatibility =
-                render_pass_descriptor_compatibility(&self.passes[index].descriptor)
-                    .expect("graphics pass descriptor should produce render-pass compatibility");
             self.execute_graphics_passes(&[index], &compatibility, ctx, encoder, timings);
         }));
         result.map_err(|payload| {
@@ -3408,6 +3408,7 @@ impl FrameGraph {
         ctx: &mut RecordContext<'_, '_>,
         timings: &mut PassTimingCollector,
     ) -> Result<(), FrameGraphError> {
+        acquire_surface_for_pass(ctx, &group.compatibility)?;
         let encoder_ptr = {
             let Some(parts) = ctx.viewport.frame_parts() else {
                 return Err(FrameGraphError::Execution(
@@ -3451,7 +3452,7 @@ impl FrameGraph {
                 return;
             };
             (
-                parts.view.clone(),
+                parts.view.cloned(),
                 parts.resolve_view.cloned(),
                 parts.depth_view.cloned(),
             )
@@ -3463,7 +3464,7 @@ impl FrameGraph {
                 ctx,
                 attachment.target,
                 attachment.resolve_target,
-                &surface_view,
+                surface_view.as_ref(),
                 surface_resolve_view.as_ref(),
             );
             let Some(view) = view else {
@@ -3578,6 +3579,7 @@ impl FrameGraph {
             let mut pass_ctx =
                 GraphicsCtx::new(&mut graphics_ctx, &mut render_pass, &mut buffer_bindings);
             self.passes[index].pass.execute_graphics(&mut pass_ctx);
+            crate::ui::work_profile::count(|p| p.graphics_passes_recorded += 1);
             timings.record(pass_name, pass_started_at);
             if !graphics_group_can_continue(graphics_ctx.execution_failed()) {
                 break;
@@ -3594,15 +3596,32 @@ fn pass_names_for_error(pass_indices: &[usize], passes: &[PassNode]) -> String {
         .join(", ")
 }
 
+fn acquire_surface_for_pass(
+    ctx: &mut RecordContext<'_, '_>,
+    compatibility: &RenderPassCompatibilityKey,
+) -> Result<(), FrameGraphError> {
+    let writes_surface = compatibility.color_attachments.iter().any(|attachment| {
+        attachment.target == AttachmentTarget::Surface
+            || attachment.resolve_target == Some(AttachmentTarget::Surface)
+    });
+    if writes_surface && !ctx.viewport.acquire_frame_surface() {
+        return Err(FrameGraphError::SurfaceUnavailable);
+    }
+    Ok(())
+}
+
 fn resolve_color_attachment_views(
     ctx: &mut RecordContext<'_, '_>,
     target: AttachmentTarget,
     resolve_target: Option<AttachmentTarget>,
-    surface_view: &wgpu::TextureView,
+    surface_view: Option<&wgpu::TextureView>,
     surface_resolve_view: Option<&wgpu::TextureView>,
 ) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
     match target {
         AttachmentTarget::Surface => {
+            let Some(surface_view) = surface_view else {
+                return (None, None);
+            };
             if resolve_target.is_some() {
                 (
                     Some(surface_view.clone()),
@@ -5435,6 +5454,8 @@ pub enum FrameGraphError {
     MissingRootPass,
     NotCompiled,
     Execution(String),
+    /// A recoverable surface acquisition failure; no commands were submitted.
+    SurfaceUnavailable,
 }
 
 /// Counters for a cache's lifetime. Incremented with `Relaxed` atomics so the

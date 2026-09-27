@@ -32,6 +32,7 @@ pub(super) struct WindowPerformance {
     pointer_sequence: u64,
     previous_pointer_sequence: u64,
     input: Vec<(f64, String, Option<(f32, f32)>)>,
+    aborts: Vec<(f64, (u64, u64, u64))>,
 }
 impl WindowPerformance {
     pub(super) fn from_env() -> Option<Self> {
@@ -51,6 +52,7 @@ impl WindowPerformance {
             pointer_sequence: 0,
             previous_pointer_sequence: 0,
             input: Vec::new(),
+            aborts: Vec::new(),
             counts: (0, 0, 0),
             pending_redraw_observation: false,
             drain_gpu: std::env::var("RFGUI_WINDOW_PERF_DRAIN_GPU").is_ok_and(|v| v == "1"),
@@ -78,7 +80,18 @@ impl WindowPerformance {
         occluded: bool,
     ) {
         let (cpu_ms, completion_ms, counts) = viewport.renderer_performance_sample();
-        assert_eq!(counts.2, self.counts.2, "window frame aborted");
+        if counts.2 != self.counts.2 {
+            assert_eq!(counts.2, self.counts.2 + 1);
+            assert_eq!((counts.0, counts.1), (self.counts.0, self.counts.1));
+            // A temporarily unavailable surface aborts without submitting.
+            // Preserve the attempt separately so the measurement can exclude
+            // affected intervals; never turn it into a successful frame sample.
+            self.aborts
+                .push((self.started.elapsed().as_secs_f64() * 1000., counts));
+            self.counts = counts;
+            self.frame_started = None;
+            return;
+        }
         if counts.0 == self.counts.0 {
             return;
         }
@@ -187,6 +200,9 @@ impl Drop for WindowPerformance {
                 s.input_events,
                 s.drain_ms
             );
+        }
+        for (at, counts) in &self.aborts {
+            let _ = writeln!(output, "window-abort time_ms={at:.6} counts={counts:?}");
         }
         for (at, kind, position) in &self.input {
             let _ = writeln!(

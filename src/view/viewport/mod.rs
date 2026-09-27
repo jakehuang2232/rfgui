@@ -327,6 +327,8 @@ struct FrameRuntime {
     #[cfg(feature = "renderer-test-support")]
     offscreen_redraw_target: Option<render::downstream_test_support::OffscreenRedrawTarget>,
     #[cfg(feature = "renderer-test-support")]
+    fail_next_surface_acquisition: bool,
+    #[cfg(feature = "renderer-test-support")]
     diagnostics_enabled: bool,
     #[cfg(feature = "renderer-test-support")]
     last_diagnostics: Option<render::downstream_test_support::RendererTestDiagnostics>,
@@ -377,6 +379,8 @@ impl FrameRuntime {
         Self {
             #[cfg(feature = "renderer-test-support")]
             offscreen_redraw_target: None,
+            #[cfg(feature = "renderer-test-support")]
+            fail_next_surface_acquisition: false,
             #[cfg(feature = "renderer-test-support")]
             diagnostics_enabled: false,
             #[cfg(feature = "renderer-test-support")]
@@ -711,9 +715,12 @@ impl Viewport {
                 render_resource_scope_id: next_render_resource_scope_id(),
                 surface: None,
                 surface_config: wgpu::SurfaceConfiguration {
-                    usage: TextureUsages::RENDER_ATTACHMENT
-                        | TextureUsages::COPY_SRC
-                        | TextureUsages::COPY_DST,
+                    usage: {
+                        #[cfg(any(test, feature = "renderer-test-support"))]
+                        { TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC }
+                        #[cfg(not(any(test, feature = "renderer-test-support")))]
+                        { TextureUsages::RENDER_ATTACHMENT }
+                    },
                     format: wgpu::TextureFormat::Bgra8Unorm,
                     width: 1,
                     height: 1,
@@ -951,7 +958,7 @@ impl Viewport {
         let frame = self.frame.frame_state.as_mut()?;
         Some(FrameParts {
             encoder: &mut frame.encoder,
-            view: &frame.view,
+            view: frame.view.as_ref(),
             resolve_view: frame.resolve_view.as_ref(),
             depth_view: frame.depth_view.as_ref(),
         })

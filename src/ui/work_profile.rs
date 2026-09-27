@@ -37,6 +37,8 @@ pub struct UiWorkProfile {
     pub composite_bind_group_creations: usize,
     /// Surface presentation bindings and immutable uniforms created on cache misses.
     pub present_bind_group_creations: usize,
+    /// Logical graphics passes actually recorded, excluding an aborted surface pass.
+    pub graphics_passes_recorded: usize,
     /// Component scheduling hooks observed while aggregating animation requests.
     pub animation_request_observations: usize,
     /// Queue evaluation and state publication, including invalidation.
@@ -257,6 +259,9 @@ impl UiWorkProfile {
             composite_bind_group_creations: self
                 .composite_bind_group_creations
                 .saturating_sub(before.composite_bind_group_creations),
+            graphics_passes_recorded: self
+                .graphics_passes_recorded
+                .saturating_sub(before.graphics_passes_recorded),
             present_bind_group_creations: self
                 .present_bind_group_creations
                 .saturating_sub(before.present_bind_group_creations),

@@ -861,6 +861,9 @@ pub(crate) fn composite_immediate(
         });
 
         let msaa_enabled = sample_count > 1;
+        if offscreen_view.is_none() && !ctx.viewport.acquire_frame_surface() {
+            return;
+        }
         let Some(parts) = ctx.viewport.frame_parts() else {
             return;
         };
@@ -872,7 +875,12 @@ pub(crate) fn composite_immediate(
         let (color_view, resolve_target) = match (offscreen_view, offscreen_msaa_view) {
             (Some(resolve_view), Some(msaa_view)) => (msaa_view, Some(resolve_view)),
             (Some(resolve_view), None) => (resolve_view, None),
-            (None, _) => (parts.view, surface_resolve),
+            (None, _) => {
+                let Some(view) = parts.view else {
+                    return;
+                };
+                (view, surface_resolve)
+            }
         };
         let mut pass = parts
             .encoder

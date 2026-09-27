@@ -2,8 +2,6 @@ use super::*;
 use std::time::Duration;
 
 pub(super) struct BeginFrameProfile {
-    pub acquire_ms: f64,
-    pub create_view_ms: f64,
     pub create_encoder_ms: f64,
 }
 
@@ -86,13 +84,12 @@ impl FrameStats {
 }
 
 pub(super) struct FrameState {
-    #[cfg(not(any(test, feature = "renderer-test-support")))]
-    pub render_texture: wgpu::SurfaceTexture,
-    #[cfg(any(test, feature = "renderer-test-support"))]
     pub render_texture: Option<wgpu::SurfaceTexture>,
     #[cfg(any(test, feature = "renderer-test-support"))]
     pub offscreen_texture: Option<wgpu::Texture>,
-    pub view: wgpu::TextureView,
+    pub view: Option<wgpu::TextureView>,
+    pub surface_acquire_ms: f64,
+    pub surface_create_view_ms: f64,
     pub resolve_view: Option<wgpu::TextureView>,
     pub encoder: wgpu::CommandEncoder,
     pub depth_view: Option<wgpu::TextureView>,
@@ -104,22 +101,15 @@ impl FrameState {
     /// final `SurfaceTexture` drop releases the acquired image without
     /// presenting it.
     pub(super) fn discard_unsubmitted(self) {
-        #[cfg(not(any(test, feature = "renderer-test-support")))]
         let Self {
             render_texture,
-            view,
-            resolve_view,
-            encoder,
-            depth_view,
-        } = self;
-        #[cfg(any(test, feature = "renderer-test-support"))]
-        let Self {
-            render_texture,
+            #[cfg(any(test, feature = "renderer-test-support"))]
             offscreen_texture,
             view,
             resolve_view,
             encoder,
             depth_view,
+            ..
         } = self;
 
         // Encoder first: all views and transient resources may be referenced
@@ -163,8 +153,8 @@ impl FrontendProfile {
 #[derive(Default)]
 pub(super) struct FrameTimings {
     pub begin_frame_ms: f64,
-    pub begin_frame_acquire_ms: f64,
-    pub begin_frame_create_view_ms: f64,
+    pub surface_acquire_ms: f64,
+    pub surface_create_view_ms: f64,
     pub begin_frame_create_encoder_ms: f64,
 
     /// Entire layout phase, including transitions, relayout and profiling setup.
@@ -285,7 +275,8 @@ pub(super) struct LayoutPassResult {
 
 pub struct FrameParts<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
-    pub view: &'a wgpu::TextureView,
+    /// Available after the first surface pass acquires the output image.
+    pub view: Option<&'a wgpu::TextureView>,
     pub resolve_view: Option<&'a wgpu::TextureView>,
     pub depth_view: Option<&'a wgpu::TextureView>,
 }

@@ -1,3 +1,4 @@
+mod surface_acquisition;
 #[cfg(test)]
 mod attempts;
 #[cfg(test)]
@@ -1957,8 +1958,6 @@ impl Viewport {
                 "begin_frame",
                 t.begin_frame_ms,
                 vec![
-                    TraceRenderNode::new("acquire_surface_texture", t.begin_frame_acquire_ms),
-                    TraceRenderNode::new("create_surface_view", t.begin_frame_create_view_ms),
                     TraceRenderNode::new("create_command_encoder", t.begin_frame_create_encoder_ms),
                 ],
             )
@@ -2030,6 +2029,12 @@ impl Viewport {
             } else {
                 build_execute_detail_trace_nodes(t.execute_ordered_passes.clone())
             };
+            execute_children.push(TraceRenderNode::new(
+                "acquire_surface_texture", t.surface_acquire_ms,
+            ));
+            execute_children.push(TraceRenderNode::new(
+                "create_surface_view", t.surface_create_view_ms,
+            ));
             if !t.execute_detail_ordered_passes.is_empty() {
                 let detail_total_ms: f64 = t
                     .execute_detail_ordered_passes
@@ -2226,8 +2231,6 @@ impl Viewport {
 
         let mut timings = FrameTimings {
             begin_frame_ms: phase_clock.checkpoint_ms(),
-            begin_frame_acquire_ms: begin_frame_profile.acquire_ms,
-            begin_frame_create_view_ms: begin_frame_profile.create_view_ms,
             begin_frame_create_encoder_ms: begin_frame_profile.create_encoder_ms,
             frontend: self.frame.frontend,
             frame_number,
@@ -2663,6 +2666,7 @@ impl Viewport {
 
         // --- Execute ---
         let mut executed = false;
+        let mut surface_unavailable = false;
         if compiled {
             match graph.execute_profiled(self, self.debug_options.trace_render_time) {
                 Ok(profile) => {
@@ -2672,12 +2676,19 @@ impl Viewport {
                     timings.execute_detail_ordered_passes = profile.detail_ordered;
                     executed = true;
                 }
+                Err(crate::view::frame_graph::FrameGraphError::SurfaceUnavailable) => {
+                    surface_unavailable = true;
+                }
                 Err(error) => eprintln!("[warn] frame graph execution failed: {error:?}"),
             }
         }
         // Failed execution still consumes this phase; a missing profile
         // must not turn the time spent into a zero-duration attempt.
         timings.execute_ms = phase_clock.checkpoint_ms();
+        if let Some(frame) = &self.frame.frame_state {
+            timings.surface_acquire_ms = frame.surface_acquire_ms;
+            timings.surface_create_view_ms = frame.surface_create_view_ms;
+        }
         let root_keys = self.scene.ui_root_keys.clone();
         finish_frame_dirty_lifecycle(&mut self.scene.node_arena, &root_keys, compiled, executed);
         if compiled && executed {
@@ -2687,7 +2698,11 @@ impl Viewport {
             retained_surface_frame_owner,
             compiled && executed,
         );
-        let terminal_failure = terminal_failure_stage(compiled, executed);
+        let terminal_failure = if surface_unavailable {
+            None
+        } else {
+            terminal_failure_stage(compiled, executed)
+        };
         if let Some(stage) = terminal_failure {
             if let Some(telemetry) = paint_authority_telemetry.as_mut() {
                 telemetry.note_terminal_failure(retained_auto_terminal_fallback_stage(stage));
@@ -3403,14 +3418,12 @@ impl Viewport {
         // existing encoder rather than skipping the frame entirely.
         if self.frame.frame_state.is_some() {
             return Some(BeginFrameProfile {
-                acquire_ms: 0.0,
-                create_view_ms: 0.0,
                 create_encoder_ms: 0.0,
             });
         }
         #[cfg(feature = "renderer-test-support")]
         if self.frame.offscreen_redraw_target.is_some() {
-            return self.acquire_offscreen_redraw_for_test();
+            return self.prepare_offscreen_redraw_for_test();
         }
         if !self.apply_pending_reconfigure() {
             return None;
@@ -3431,54 +3444,8 @@ impl Viewport {
             self.render_resource_scope_id(),
         );
 
-        let surface = match &self.gpu.surface {
-            Some(s) => s,
-            None => return None,
-        };
-        let device = match &self.gpu.device {
-            Some(d) => d,
-            None => return None,
-        };
-
-        let acquire_started_at = Instant::now();
-        #[cfg(any(test, feature = "renderer-test-support"))]
-        {
-            self.frame.completion_counts.acquires += 1;
-        }
-        let render_texture = match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture) => texture,
-            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                surface.configure(device, &self.gpu.surface_config);
-                texture
-            }
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                println!("[warn] surface lost, recreate render texture");
-                surface.configure(device, &self.gpu.surface_config);
-                #[cfg(any(test, feature = "renderer-test-support"))]
-                {
-                    self.frame.completion_counts.acquires += 1;
-                }
-                match surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(texture)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
-                    _ => return None,
-                }
-            }
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => return None,
-        };
-        let acquire_ms = acquire_started_at.elapsed().as_secs_f64() * 1000.0;
-
-        let create_view_started_at = Instant::now();
-        let surface_view = render_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor {
-                format: Some(self.gpu.surface_target_format),
-                ..Default::default()
-            });
-        let (view, resolve_view) = (surface_view, None);
-        let create_view_ms = create_view_started_at.elapsed().as_secs_f64() * 1000.0;
+        self.gpu.surface.as_ref()?;
+        let device = self.gpu.device.as_ref()?;
 
         let create_encoder_started_at = Instant::now();
         let encoder =
@@ -3486,26 +3453,21 @@ impl Viewport {
         let create_encoder_ms = create_encoder_started_at.elapsed().as_secs_f64() * 1000.0;
 
         self.frame.frame_state = Some(FrameState {
-            #[cfg(not(any(test, feature = "renderer-test-support")))]
-            render_texture,
-            #[cfg(any(test, feature = "renderer-test-support"))]
-            render_texture: Some(render_texture),
+            render_texture: None,
             #[cfg(any(test, feature = "renderer-test-support"))]
             offscreen_texture: None,
-            view,
-            resolve_view,
+            view: None,
+            surface_acquire_ms: 0.,
+            surface_create_view_ms: 0.,
+            resolve_view: None,
             encoder,
             depth_view: self.gpu.depth_view.clone(),
         });
-        Some(BeginFrameProfile {
-            acquire_ms,
-            create_view_ms,
-            create_encoder_ms,
-        })
+        Some(BeginFrameProfile { create_encoder_ms })
     }
 
     #[cfg(any(test, feature = "renderer-test-support"))]
-    pub(crate) fn begin_offscreen_test_frame(
+    pub(super) fn prepare_offscreen_test_frame(
         &mut self,
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -3550,27 +3512,14 @@ impl Viewport {
             self.render_resource_scope_id(),
         );
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rfgui native pixel parity output"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         self.frame.frame_state = Some(FrameState {
             render_texture: None,
-            offscreen_texture: Some(texture),
-            view,
+            offscreen_texture: None,
+            view: None,
+            surface_acquire_ms: 0.,
+            surface_create_view_ms: 0.,
             resolve_view: None,
             encoder,
             depth_view: None,
@@ -3702,13 +3651,13 @@ impl Viewport {
         self.frame.offscreen_render_target_pool.finish_frame();
         profile.resource_cleanup_ms = clock.checkpoint_ms();
 
-        #[cfg(not(any(test, feature = "renderer-test-support")))]
-        queue.present(frame.render_texture);
-        #[cfg(any(test, feature = "renderer-test-support"))]
         if let Some(render_texture) = frame.render_texture {
             queue.present(render_texture);
-            self.frame.completion_counts.presents =
-                self.frame.completion_counts.presents.saturating_add(1);
+            #[cfg(any(test, feature = "renderer-test-support"))]
+            {
+                self.frame.completion_counts.presents =
+                    self.frame.completion_counts.presents.saturating_add(1);
+            }
         }
         profile.present_ms = clock.checkpoint_ms();
         self.finish_gpu_paint_frame(true);

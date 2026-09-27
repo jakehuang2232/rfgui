@@ -30,8 +30,8 @@ pub struct RendererTestFrame {
 }
 
 impl Viewport {
-    /// Demand-driven offscreen target: allocation happens inside begin_frame,
-    /// after the production no-change gate. A skipped redraw returns None.
+    /// Demand-driven offscreen target: allocation happens at the first surface pass,
+    /// after the production no-change gate and offscreen recording. A skipped redraw returns None.
     pub fn render_rsx_redraw_offscreen_for_test(
         &mut self,
         root: &RsxNode,
@@ -69,6 +69,16 @@ impl Viewport {
         }
         let after = self.frame.completion_counts;
         let frames = u64::from(target.texture.is_some());
+        if after.aborts == before.aborts + 1
+            && after.acquires == before.acquires + 1
+            && after.submits == before.submits
+            && frames == 0
+            && self.frame.render_required
+            && self.frame.frame_state.is_none()
+            && self.retained_auto_terminal_failure.is_none()
+        {
+            return Ok(None);
+        }
         if after.acquires != before.acquires + frames
             || after.submits != before.submits + frames
             || after.aborts != before.aborts
@@ -79,15 +89,19 @@ impl Viewport {
         Ok(target.texture)
     }
 
+    /// Fail the next offscreen surface acquisition at the production pass boundary.
+    pub fn fail_next_surface_acquisition_for_test(&mut self) {
+        self.frame.fail_next_surface_acquisition = true;
+    }
+
     pub fn frame_acquisition_count_for_test(&self) -> u64 {
         self.frame.completion_counts.acquires
     }
 
-    pub(super) fn acquire_offscreen_redraw_for_test(&mut self) -> Option<BeginFrameProfile> {
+    pub(super) fn prepare_offscreen_redraw_for_test(&mut self) -> Option<BeginFrameProfile> {
         let target = self.frame.offscreen_redraw_target.as_ref()?;
         let (size, dpr) = (target.size, target.dpr);
-        self.frame.completion_counts.acquires += 1;
-        self.begin_offscreen_test_frame(
+        self.prepare_offscreen_test_frame(
             self.gpu.device.clone()?,
             self.gpu.queue.clone()?,
             size[0],
@@ -98,13 +112,16 @@ impl Viewport {
         self.pending_size = None;
         self.needs_reconfigure = false;
         self.set_scale_factor(dpr);
-        let texture = self.frame.frame_state.as_ref()?.offscreen_texture.clone();
-        self.frame.offscreen_redraw_target.as_mut()?.texture = texture;
         Some(BeginFrameProfile {
-            acquire_ms: 0.,
-            create_view_ms: 0.,
             create_encoder_ms: 0.,
         })
+    }
+
+    pub(in crate::view::viewport) fn note_offscreen_acquisition(&mut self, texture: wgpu::Texture) {
+        if let Some(target) = self.frame.offscreen_redraw_target.as_mut() {
+            target.texture = Some(texture);
+            self.frame.completion_counts.acquires += 1;
+        }
     }
 
     /// Opt-in fine-grained CPU diagnostics; time these separately from benchmarks.

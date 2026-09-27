@@ -1,4 +1,4 @@
-//! Production redraw admission, with acquisition deferred until begin_frame.
+//! Production redraw admission, with acquisition deferred until surface execution.
 use rfgui::style::{Color, Length, Transition, TransitionProperty};
 use rfgui::time::{Duration, Instant};
 use rfgui::ui::{RsxNode, rsx};
@@ -27,6 +27,58 @@ fn redraw(
         )?
         .map(|texture| gpu.read(&texture, size))
         .transpose()
+}
+
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn late_surface_acquisition_aborts_without_submit_and_retries_the_same_renderer()
+-> Result<(), String> {
+    let gpu = gpu::Gpu::new()?;
+    for dpr in [1, 2] {
+        let mut reference = None;
+        for mode in [
+            ViewportPaintRendererMode::Legacy,
+            ViewportPaintRendererMode::RetainedAuto,
+        ] {
+            let mut viewport = Viewport::new();
+            viewport.set_paint_renderer_mode(mode);
+            let root = rsx! { <Element style={{
+                width: Length::px(40.), height: Length::px(40.),
+                background_color: Color::hex("#ff0000"),
+            }} /> };
+            let size = [64 * dpr, 64 * dpr];
+            let now = Instant::now();
+            viewport.fail_next_surface_acquisition_for_test();
+            let (failed, work) = rfgui::ui::profile_ui_work(|| {
+                redraw(&gpu, &mut viewport, &root, size, dpr as f32, now)
+            });
+            assert!(failed?.is_none());
+            assert!(
+                work.graphics_passes_recorded > 0,
+                "offscreen passes precede acquisition"
+            );
+            assert_eq!(viewport.frame_acquisition_count_for_test(), 1);
+            assert_eq!(
+                viewport.renderer_performance_sample().2.0,
+                0,
+                "aborted encoder never submits"
+            );
+
+            // Admission retains the obligation, and the Auto circuit breaker
+            // stays unlatched. The helper also verifies actual selected authority.
+            let recovered = redraw(&gpu, &mut viewport, &root, size, dpr as f32, now)?.unwrap();
+            assert_eq!(viewport.frame_acquisition_count_for_test(), 2);
+            assert_eq!(viewport.renderer_performance_sample().2.0, 1);
+            if let Some(reference) = &reference {
+                assert_eq!(&recovered, reference, "recovery pixel parity DPR {dpr}");
+            } else {
+                reference = Some(recovered);
+            }
+            assert!(redraw(&gpu, &mut viewport, &root, size, dpr as f32, now)?.is_none());
+            assert_eq!(viewport.frame_acquisition_count_for_test(), 2);
+        }
+    }
+    Ok(())
 }
 
 #[test]
