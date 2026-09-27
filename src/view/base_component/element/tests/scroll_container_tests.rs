@@ -260,7 +260,13 @@ fn scrollbar_hover_resolves_against_same_frame_final_layout_geometry() {
         element.scrollbar_visibility_alpha().to_bits(),
         1.0_f32.to_bits()
     );
-    assert!(element.last_scrollbar_interaction.is_some());
+    // Enter happened before overflow existed, so it did not start a hold epoch.
+    // Final layout still makes the hovered scrollbar opaque; leave starts hold.
+    assert!(element.last_scrollbar_interaction.is_none());
+    element.set_hovered(false);
+    element.tick_post_layout_animation_frame(semantic_now);
+    assert_eq!(element.last_scrollbar_interaction, Some(semantic_now));
+    assert_eq!(element.animation_frame_request(semantic_now), AnimationFrameRequest::At(semantic_now + SCROLLBAR_HOLD));
 }
 
 #[test]
@@ -542,5 +548,43 @@ fn flow_cross_size_stretch_aligns_using_current_then_final_cross_size() {
             stretched_snapshot.y,
             expected_final_y
         );
+    }
+}
+
+#[test]
+fn hover_without_scrollbars_does_not_start_a_visibility_lifecycle() {
+    let now = crate::time::Instant::now();
+    for (direction, content) in [
+        (ScrollDirection::None, 300.),
+        (ScrollDirection::Vertical, 40.),
+    ] {
+        let mut element = Element::new(0., 0., 100., 80.);
+        element.scroll_direction = direction;
+        element.layout_state.layout_inner_size = Size {
+            width: 100.,
+            height: 80.,
+        };
+        element.layout_state.content_size = Size {
+            width: 100.,
+            height: content,
+        };
+        for hovered in [true, false, true, false] {
+            element.set_hovered(hovered);
+            assert!(!element.scrollbar_interaction_pending);
+            assert!(element.post_layout_animation_is_noop());
+            assert!(element.tick_post_layout_animation_frame(now).is_empty());
+            assert_eq!(
+                element.animation_frame_request(now),
+                AnimationFrameRequest::None
+            );
+            assert!(element.last_scrollbar_interaction.is_none());
+        }
+        // A pending interaction may predate layout removing overflow.
+        element.note_scrollbar_interaction();
+        assert!(!element.tick_scrollbar_visibility(now));
+        assert!(element.last_scrollbar_interaction.is_none());
+        element.sampled_scrollbar_alpha = 1.;
+        assert!(element.tick_scrollbar_visibility(now));
+        assert_eq!(element.sampled_scrollbar_alpha, 0.);
     }
 }

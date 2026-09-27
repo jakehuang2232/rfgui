@@ -327,3 +327,46 @@ fn explicit_redraw_and_geometry_overlay_submit_once_on_a_clean_scene() -> Result
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn hover_without_visual_styles_or_scrollbars_does_not_submit() -> Result<(), String> {
+    let gpu = gpu::Gpu::new()?;
+    let mut reference = None;
+    for mode in [
+        ViewportPaintRendererMode::Legacy,
+        ViewportPaintRendererMode::RetainedAuto,
+    ] {
+        let root = rsx! { <Element style={{width: Length::px(40.), height: Length::px(40.), background_color: Color::hex("#ff0000")}} /> };
+        let mut viewport = Viewport::new();
+        viewport.set_paint_renderer_mode(mode);
+        let now = Instant::now();
+        let first = redraw(&gpu, &mut viewport, &root, [64, 64], 1., now)?.unwrap();
+        if let Some(ref pixels) = reference {
+            assert_eq!(&first, pixels);
+        } else {
+            reference = Some(first);
+        }
+        let counts = viewport.renderer_performance_sample().2;
+        let acquired = viewport.frame_acquisition_count_for_test();
+        for i in 0..40 {
+            let x = if i % 2 == 0 { 10. } else { 50. };
+            viewport.set_pointer_position_viewport(x, 10.);
+            viewport.dispatch_pointer_move_event();
+            assert!(
+                redraw(
+                    &gpu,
+                    &mut viewport,
+                    &root,
+                    [64, 64],
+                    1.,
+                    now + Duration::from_millis(i * 50)
+                )?
+                .is_none()
+            );
+        }
+        assert_eq!(viewport.renderer_performance_sample().2, counts);
+        assert_eq!(viewport.frame_acquisition_count_for_test(), acquired);
+    }
+    Ok(())
+}

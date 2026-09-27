@@ -352,9 +352,11 @@ impl EventTarget for Element {
             return false;
         }
         self.is_hovered = hovered;
-        // Both edges are animation boundaries. Enter forces opacity; leave
-        // starts a fresh hold/fade epoch at the next viewport frame sample.
-        self.note_scrollbar_interaction();
+        // Hover is an animation boundary only for actual overflowing scrollbars.
+        // Leave starts their hold/fade epoch at the next viewport frame sample.
+        if self.has_scrollbar() {
+            self.note_scrollbar_interaction();
+        }
         self.recompute_style();
         true
     }

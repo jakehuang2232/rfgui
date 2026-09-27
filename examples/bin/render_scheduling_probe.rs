@@ -32,6 +32,10 @@ fn main() {
                 hover: { background_color: Color::hex("#0000ff") },
             }} />
         }
+    } else if std::env::var("RFGUI_PROBE_SCENE").as_deref() == Ok("hover") {
+        rsx! {
+            <Element style={{width: Length::px(300.), height: Length::px(180.), background_color: Color::hex("#ff0000")}} />
+        }
     } else {
         rsx! {
             <TextArea content={"Focused caret measurement".to_string()} style={{

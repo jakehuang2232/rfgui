@@ -7,7 +7,7 @@ impl Element {
             && self.last_scrollbar_interaction.is_none()
             && self.sampled_scrollbar_alpha.to_bits() == 0.0_f32.to_bits()
             && self.scrollbar_drag.is_none()
-            && !self.is_hovered
+            && (!self.is_hovered || !self.has_scrollbar())
     }
 
     fn note_scrollbar_interaction(&mut self) {
@@ -25,6 +25,18 @@ impl Element {
             (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height)
                 .max(0.0),
         )
+    }
+
+    fn has_scrollbar(&self) -> bool {
+        let (max_x, max_y) = self.max_scroll();
+        (matches!(
+            self.scroll_direction,
+            ScrollDirection::Horizontal | ScrollDirection::Both
+        ) && max_x > 0.0)
+            || (matches!(
+                self.scroll_direction,
+                ScrollDirection::Vertical | ScrollDirection::Both
+            ) && max_y > 0.0)
     }
 
     fn local_inner_origin(&self) -> (f32, f32) {
@@ -49,15 +61,7 @@ impl Element {
             self.scrollbar_interaction_pending = false;
         }
 
-        let (max_x, max_y) = self.max_scroll();
-        let has_scrollbar = (matches!(
-            self.scroll_direction,
-            ScrollDirection::Horizontal | ScrollDirection::Both
-        ) && max_x > 0.0)
-            || (matches!(
-                self.scroll_direction,
-                ScrollDirection::Vertical | ScrollDirection::Both
-            ) && max_y > 0.0);
+        let has_scrollbar = self.has_scrollbar();
         let forced_opaque = self.scrollbar_drag.is_some() || self.is_hovered;
         let next_alpha = if !has_scrollbar {
             self.last_scrollbar_interaction = None;
@@ -80,8 +84,8 @@ impl Element {
         } else {
             0.0
         };
-        let changed =
-            lifecycle_changed || self.sampled_scrollbar_alpha.to_bits() != next_alpha.to_bits();
+        let changed = (has_scrollbar && lifecycle_changed)
+            || self.sampled_scrollbar_alpha.to_bits() != next_alpha.to_bits();
         self.sampled_scrollbar_alpha = next_alpha;
         changed
     }
