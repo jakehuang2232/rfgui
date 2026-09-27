@@ -254,6 +254,7 @@ pub(crate) fn animation_frame_request(
         let Some(node) = arena.get(key) else {
             return AnimationFrameRequest::None;
         };
+        crate::ui::work_profile::count(|p| p.animation_request_observations += 1);
         let mut request = node.element.animation_frame_request(now);
         if request == AnimationFrameRequest::NextFrame {
             return request;

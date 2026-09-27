@@ -243,6 +243,8 @@ pub struct Viewport {
     /// whether to pump another frame immediately or idle.
     is_animating: bool,
     animation_timer: Option<crate::time::timers::Timer>,
+    /// Final request observed after the preceding frame's layout/resources.
+    scheduled_animation_request: super::base_component::AnimationFrameRequest,
     animation_redraw_pending: std::rc::Rc<std::cell::Cell<bool>>,
     app: Option<Box<dyn App>>,
     cached_rsx: Option<RsxNode>,
@@ -751,6 +753,7 @@ impl Viewport {
             pending_platform_requests: PlatformRequests::default(),
             is_animating: false,
             animation_timer: None,
+            scheduled_animation_request: super::base_component::AnimationFrameRequest::None,
             animation_redraw_pending: Default::default(),
             app: None,
             cached_rsx: None,

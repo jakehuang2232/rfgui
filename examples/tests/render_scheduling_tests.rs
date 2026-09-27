@@ -55,7 +55,14 @@ fn unchanged_redraws_do_not_acquire_or_submit_and_changes_preserve_pixels() -> R
             for _ in 0..20 {
                 viewport.request_redraw();
                 viewport.drain_platform_requests();
-                assert!(redraw(&gpu, &mut viewport, &root, size, dpr as f32, now)?.is_none());
+                let (frame, work) = rfgui::ui::profile_ui_work(|| {
+                    redraw(&gpu, &mut viewport, &root, size, dpr as f32, now)
+                });
+                assert!(frame?.is_none());
+                assert_eq!(
+                    work.animation_request_observations, 1,
+                    "one scheduling observation per clean root per redraw attempt"
+                );
             }
             assert_eq!(viewport.renderer_performance_sample().2, before);
             assert_eq!(viewport.frame_acquisition_count_for_test(), acquires);

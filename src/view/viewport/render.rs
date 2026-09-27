@@ -2182,12 +2182,12 @@ impl Viewport {
                 .refresh_subtree_dirty_cache(key)
                 .is_empty()
         });
-        use crate::view::base_component::{AnimationFrameRequest, animation_frame_request};
-        let animation_due = match animation_frame_request(
-            &self.scene.node_arena,
-            &self.scene.ui_root_keys,
-            semantic_now,
-        ) {
+        use crate::view::base_component::AnimationFrameRequest;
+        // The preceding final-state request already owns this wake-up. New
+        // state/scene/resource changes independently invalidate admission.
+        // Resample only after this frame's final layout/resource preparation,
+        // so scrollbar hold/fade and caret deadlines use the finished state.
+        let animation_due = match self.scheduled_animation_request {
             AnimationFrameRequest::None => false,
             AnimationFrameRequest::NextFrame => true,
             AnimationFrameRequest::At(at) => at <= semantic_now,
@@ -2821,6 +2821,7 @@ impl Viewport {
 
         let request =
             animation_frame_request(&self.scene.node_arena, &self.scene.ui_root_keys, now);
+        self.scheduled_animation_request = request;
         // A new frame supersedes any outstanding animation wake-up.
         self.animation_redraw_pending.set(false);
         if let Some(timer) = &self.animation_timer {

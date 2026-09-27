@@ -37,6 +37,8 @@ pub struct UiWorkProfile {
     pub composite_bind_group_creations: usize,
     /// Surface presentation bindings and immutable uniforms created on cache misses.
     pub present_bind_group_creations: usize,
+    /// Component scheduling hooks observed while aggregating animation requests.
+    pub animation_request_observations: usize,
     /// Queue evaluation and state publication, including invalidation.
     pub state_flush_ms: f64,
     /// Outermost component expansion; nested within App build.
@@ -258,6 +260,9 @@ impl UiWorkProfile {
             present_bind_group_creations: self
                 .present_bind_group_creations
                 .saturating_sub(before.present_bind_group_creations),
+            animation_request_observations: self
+                .animation_request_observations
+                .saturating_sub(before.animation_request_observations),
             measure_reuses: self.measure_reuses.saturating_sub(before.measure_reuses),
             state_flush_ms: self.state_flush_ms - before.state_flush_ms,
             unwrap_ms: self.unwrap_ms - before.unwrap_ms,
