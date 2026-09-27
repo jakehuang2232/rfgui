@@ -4,6 +4,12 @@ use super::*;
 mod diagnostics;
 pub use diagnostics::RendererTestDiagnostics;
 
+pub(in crate::view::viewport) struct OffscreenRedrawTarget {
+    size: [u32; 2],
+    dpr: f32,
+    texture: Option<wgpu::Texture>,
+}
+
 pub struct RendererTestFrame {
     pub diagnostics: Option<RendererTestDiagnostics>,
     /// CPU milliseconds: total, begin, layout, prepare, property sync, build,
@@ -24,6 +30,83 @@ pub struct RendererTestFrame {
 }
 
 impl Viewport {
+    /// Demand-driven offscreen target: allocation happens inside begin_frame,
+    /// after the production no-change gate. A skipped redraw returns None.
+    pub fn render_rsx_redraw_offscreen_for_test(
+        &mut self,
+        root: &RsxNode,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        size: [u32; 2],
+        dpr: f32,
+        now: Instant,
+    ) -> Result<Option<wgpu::Texture>, String> {
+        if !dpr.is_finite() || dpr <= 0. || size.contains(&0) {
+            return Err("invalid test viewport".into());
+        }
+        self.gpu.device = Some(device);
+        self.gpu.queue = Some(queue);
+        self.set_size(size[0], size[1]);
+        self.set_scale_factor(dpr);
+        self.update_logical_size(size[0], size[1]);
+        self.frame.offscreen_redraw_target = Some(OffscreenRedrawTarget {
+            size,
+            dpr,
+            texture: None,
+        });
+        let before = self.frame.completion_counts;
+        let _capture = enable_paint_authority_test_capture();
+        self.render_rsx_at(root, now, None)?;
+        let target = self.frame.offscreen_redraw_target.take().unwrap();
+        if let Some(snapshot) = take_paint_authority_test_snapshot() {
+            if snapshot.legacy_fallback_stage.is_some()
+                || snapshot.terminal_failure_stage.is_some()
+                || (snapshot.selected == PaintAuthorityKind::Artifact)
+                    != (self.paint_renderer_mode() == ViewportPaintRendererMode::RetainedAuto)
+            {
+                return Err(format!("unexpected authority: {snapshot:?}"));
+            }
+        }
+        let after = self.frame.completion_counts;
+        let frames = u64::from(target.texture.is_some());
+        if after.acquires != before.acquires + frames
+            || after.submits != before.submits + frames
+            || after.aborts != before.aborts
+            || self.frame.frame_state.is_some()
+        {
+            return Err(format!("unclean demand frame: {before:?} -> {after:?}"));
+        }
+        Ok(target.texture)
+    }
+
+    pub fn frame_acquisition_count_for_test(&self) -> u64 {
+        self.frame.completion_counts.acquires
+    }
+
+    pub(super) fn acquire_offscreen_redraw_for_test(&mut self) -> Option<BeginFrameProfile> {
+        let target = self.frame.offscreen_redraw_target.as_ref()?;
+        let (size, dpr) = (target.size, target.dpr);
+        self.frame.completion_counts.acquires += 1;
+        self.begin_offscreen_test_frame(
+            self.gpu.device.clone()?,
+            self.gpu.queue.clone()?,
+            size[0],
+            size[1],
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .ok()?;
+        self.pending_size = None;
+        self.needs_reconfigure = false;
+        self.set_scale_factor(dpr);
+        let texture = self.frame.frame_state.as_ref()?.offscreen_texture.clone();
+        self.frame.offscreen_redraw_target.as_mut()?.texture = texture;
+        Some(BeginFrameProfile {
+            acquire_ms: 0.,
+            create_view_ms: 0.,
+            create_encoder_ms: 0.,
+        })
+    }
+
     /// Opt-in fine-grained CPU diagnostics; time these separately from benchmarks.
     pub fn set_renderer_diagnostics_for_test(&mut self, enabled: bool) {
         self.frame.diagnostics_enabled = enabled;

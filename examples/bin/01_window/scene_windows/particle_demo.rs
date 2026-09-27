@@ -1,12 +1,12 @@
 use crate::rfgui::time::Instant;
 use crate::rfgui::ui::{
     Binding, FromPropValue, IntoPropValue, PointerButton, PointerDownEvent, PointerMoveEvent,
-    PointerUpEvent, RsxElementNode, RsxNode, ViewportHandle, component,
+    PointerUpEvent, RsxElementNode, RsxNode, component,
 };
 use crate::rfgui::view::base_component::PaintResourcePreparationContext;
 use crate::rfgui::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, Renderable, UiBuildContext,
+    AnimationFrameRequest, BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget,
+    LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
 };
 use crate::rfgui::view::frame_graph::FrameGraph;
 use crate::rfgui::view::gpu_paint::{GpuPaintProgram, GpuPaintSource, GpuPaintSourceId};
@@ -332,6 +332,16 @@ pub struct ParticleCanvas {
 }
 
 impl ParticleCanvas {
+    fn animating(&self) -> bool {
+        let animating = self
+            .animation_on
+            .as_ref()
+            .is_none_or(|value| value.get_committed());
+        #[cfg(any(test, feature = "renderer-perf"))]
+        let animating = animating && std::env::var("RFGUI_PERF_UPDATES").as_deref() != Ok("idle");
+        animating
+    }
+
     pub fn new(id: u64) -> Self {
         // Sizes seeded at 0.0; `measure` fills target_w/target_h from
         // parent's percent base (width:100%, height:100% layout).
@@ -368,12 +378,7 @@ impl Layoutable for ParticleCanvas {
             return;
         }
         self.prepared_frame = Some(context.frame_number);
-        let animating = self
-            .animation_on
-            .as_ref()
-            .is_none_or(|value| value.get_committed());
-        #[cfg(any(test, feature = "renderer-perf"))]
-        let animating = animating && std::env::var("RFGUI_PERF_UPDATES").as_deref() != Ok("idle");
+        let animating = self.animating();
         // Resume from the frozen simulation, without integrating paused time.
         if !animating || !self.was_animating {
             PARTICLE_SYSTEM.with(|system| system.borrow_mut().last_update = context.now);
@@ -395,9 +400,6 @@ impl Layoutable for ParticleCanvas {
                 .is_some_and(|source| source.extent() == extent)
         {
             return;
-        }
-        if animating {
-            ViewportHandle.request_redraw();
         }
         self.content_revision = self
             .content_revision
@@ -507,6 +509,14 @@ impl Layoutable for ParticleCanvas {
 }
 
 impl EventTarget for ParticleCanvas {
+    fn animation_frame_request(&self, _now: Instant) -> AnimationFrameRequest {
+        if self.should_render && self.animating() {
+            AnimationFrameRequest::NextFrame
+        } else {
+            AnimationFrameRequest::None
+        }
+    }
+
     fn dispatch_pointer_move(
         &mut self,
         event: &mut PointerMoveEvent,

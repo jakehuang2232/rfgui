@@ -109,3 +109,51 @@ fn native_particle_canvas_changes_pixels_while_native_raster_reuses() -> Result<
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn particle_animation_survives_demand_redraws_with_renderer_parity() -> Result<(), String> {
+    let gpu = gpu::Gpu::new()?;
+    for dpr in [1, 2] {
+        let mut reference = Vec::new();
+        for mode in [
+            ViewportPaintRendererMode::Legacy,
+            ViewportPaintRendererMode::RetainedAuto,
+        ] {
+            let now = Instant::now();
+            PARTICLE_SYSTEM.with(|system| {
+                let mut system = system.borrow_mut();
+                *system = ParticleSystemInner::new();
+                system.last_update = now;
+            });
+            let root = tree();
+            let mut viewport = Viewport::new();
+            viewport.set_paint_renderer_mode(mode);
+            let mut frames = Vec::new();
+            for frame in 0..6 {
+                let texture = viewport
+                    .render_rsx_redraw_offscreen_for_test(
+                        &root,
+                        gpu.device.clone(),
+                        gpu.queue.clone(),
+                        [160 * dpr, 96 * dpr],
+                        dpr as f32,
+                        now + std::time::Duration::from_millis((frame + 1) * 32),
+                    )?
+                    .expect("visible animating particle canvas must admit the next redraw");
+                frames.push(gpu.read(&texture, [160 * dpr, 96 * dpr])?);
+            }
+            assert!(
+                frames.windows(2).all(|pair| pair[0] != pair[1]),
+                "every consecutive particle frame must change pixels: {mode:?}, DPR {dpr}"
+            );
+            assert_eq!(viewport.frame_acquisition_count_for_test(), 6);
+            if mode == ViewportPaintRendererMode::Legacy {
+                reference = frames;
+            } else {
+                assert!(frames == reference, "particle renderer parity DPR {dpr}");
+            }
+        }
+    }
+    Ok(())
+}

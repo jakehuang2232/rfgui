@@ -1065,30 +1065,18 @@ impl ApplicationHandler for Runner {
             return;
         }
         // Drive component timers and retained animation deadlines. Viewport
-        // transition/animation plugins tick inside render_rsx and report
-        // their state via `viewport.is_animating()` below, so they don't
-        // go through this path.
+        // transition/animation plugins tick inside render_rsx and request
+        // their next redraw at the end of that frame.
         let now = Instant::now();
         run_due_timers(now);
         // This also retains pending redraws while the window is occluded.
         self.drain_and_apply();
-        // Schedule the next wake-up:
-        // - viewport reports active transitions → Poll so the loop
-        //   iterates and the freshly queued RedrawRequested fires
-        // - timer pending → WaitUntil(deadline)
-        // - otherwise idle until the next user event
-        let animating = self
-            .viewport
-            .as_ref()
-            .map(|v| v.is_animating())
-            .unwrap_or(false);
-        if animating && !self.occluded {
-            event_loop.set_control_flow(ControlFlow::Poll);
-        } else {
-            match next_timer_deadline() {
-                Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
-                None => event_loop.set_control_flow(ControlFlow::Wait),
-            }
+        // request_redraw wakes the host for continuous animation; Poll would
+        // also spin between display updates. Timed animations retain their
+        // deadline, while other work sleeps until an event or queued redraw.
+        match next_timer_deadline() {
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }

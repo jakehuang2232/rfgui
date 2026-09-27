@@ -323,6 +323,8 @@ impl SceneState {
 /// outside world needs through existing accessor methods.
 struct FrameRuntime {
     #[cfg(feature = "renderer-test-support")]
+    offscreen_redraw_target: Option<render::downstream_test_support::OffscreenRedrawTarget>,
+    #[cfg(feature = "renderer-test-support")]
     diagnostics_enabled: bool,
     #[cfg(feature = "renderer-test-support")]
     last_diagnostics: Option<render::downstream_test_support::RendererTestDiagnostics>,
@@ -341,6 +343,8 @@ struct FrameRuntime {
     gradient_stops_byte_cursor: u64,
     frame_stats: FrameStats,
     frame_presented: bool,
+    /// A viewport change or failed frame still needs a successful submission.
+    render_required: bool,
     #[cfg(any(test, feature = "renderer-test-support"))]
     completion_counts: FrameCompletionCounts,
     #[cfg(any(test, feature = "renderer-test-support"))]
@@ -360,6 +364,7 @@ struct FrameRuntime {
 #[cfg(any(test, feature = "renderer-test-support"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FrameCompletionCounts {
+    acquires: u64,
     submits: u64,
     presents: u64,
     aborts: u64,
@@ -368,6 +373,8 @@ struct FrameCompletionCounts {
 impl FrameRuntime {
     fn new(trace_fps: bool) -> Self {
         Self {
+            #[cfg(feature = "renderer-test-support")]
+            offscreen_redraw_target: None,
             #[cfg(feature = "renderer-test-support")]
             diagnostics_enabled: false,
             #[cfg(feature = "renderer-test-support")]
@@ -386,6 +393,7 @@ impl FrameRuntime {
             gradient_stops_byte_cursor: 0,
             frame_stats: FrameStats::new(trace_fps),
             frame_presented: false,
+            render_required: true,
             #[cfg(any(test, feature = "renderer-test-support"))]
             completion_counts: FrameCompletionCounts::default(),
             #[cfg(any(test, feature = "renderer-test-support"))]
@@ -796,6 +804,7 @@ impl Viewport {
         self.frame.compile_cache = None;
         self.frame.last_retained_auto_debug = None;
         self.paint_renderer_mode = mode;
+        self.frame.render_required = true;
         self.retained_auto_terminal_failure = None;
         self.request_redraw();
     }
@@ -889,6 +898,9 @@ impl Viewport {
     }
 
     pub fn set_debug_options(&mut self, options: ViewportDebugOptions) {
+        if self.debug_options != options {
+            self.frame.render_required = true;
+        }
         self.debug_options = options;
         self.frame.frame_stats.set_enabled(options.trace_fps);
     }
@@ -977,8 +989,11 @@ impl Viewport {
 
     fn update_logical_size(&mut self, physical_width: u32, physical_height: u32) {
         let scale = self.scale_factor.max(0.0001);
-        self.logical_width = (physical_width as f32 / scale).max(1.0);
-        self.logical_height = (physical_height as f32 / scale).max(1.0);
+        let width = (physical_width as f32 / scale).max(1.0);
+        let height = (physical_height as f32 / scale).max(1.0);
+        self.frame.render_required |= (width, height) != self.logical_size();
+        self.logical_width = width;
+        self.logical_height = height;
     }
 
     pub fn frame_box_models(&self) -> &[super::base_component::BoxModelSnapshot] {

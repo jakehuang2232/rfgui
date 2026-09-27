@@ -103,3 +103,31 @@ fn animation_switch_freezes_particles_resizes_and_resumes_without_catching_up() 
     let elapsed = PARTICLE_SYSTEM.with(|s| s.borrow().elapsed);
     assert!((elapsed - frozen.0 - 0.016).abs() < 0.00001);
 }
+
+#[test]
+fn particle_animation_request_respects_visibility_and_pause() {
+    let now = Instant::now();
+    let animation_on = Binding::new(true);
+    let mut canvas = ParticleCanvas::new(79);
+    canvas.animation_on = Some(animation_on.clone());
+    assert_eq!(
+        canvas.animation_frame_request(now),
+        AnimationFrameRequest::NextFrame
+    );
+    canvas.should_render = false;
+    assert_eq!(
+        canvas.animation_frame_request(now),
+        AnimationFrameRequest::None
+    );
+    canvas.should_render = true;
+    rfgui::ui::batch_state_updates(|| animation_on.set(false));
+    assert_eq!(
+        canvas.animation_frame_request(now),
+        AnimationFrameRequest::None
+    );
+    rfgui::ui::batch_state_updates(|| animation_on.set(true));
+    assert_eq!(
+        canvas.animation_frame_request(now),
+        AnimationFrameRequest::NextFrame
+    );
+}

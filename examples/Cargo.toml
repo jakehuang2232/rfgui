@@ -18,6 +18,11 @@ path = "bin/00_hello_world/main.rs"
 name = "01_window"
 path = "bin/01_window/main.rs"
 
+[[bin]]
+name = "render_scheduling_probe"
+path = "bin/render_scheduling_probe.rs"
+required-features = ["renderer-perf"]
+
 [dependencies]
 rfgui = { path = ".." }
 rfgui-components = { path = "../lib/rfgui-components" }

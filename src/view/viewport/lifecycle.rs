@@ -50,6 +50,7 @@ impl Viewport {
 
     pub fn set_clear_color(&mut self, clear_color: Box<dyn ColorLike>) {
         self.clear_color = clear_color;
+        self.frame.render_required = true;
     }
 
     pub fn set_cursor(&mut self, cursor: Option<Cursor>) {
@@ -253,6 +254,7 @@ impl Viewport {
             self.gpu.surface = Some(surface);
             self.gpu.device = Some(device);
             self.gpu.queue = Some(queue);
+            self.frame.render_required = true;
             self.release_render_resource_caches();
             self.create_frame_attachments();
             self.needs_reconfigure = false;

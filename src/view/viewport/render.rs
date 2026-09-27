@@ -1392,6 +1392,7 @@ fn build_layout_pass_trace_children(
 impl Viewport {
     /// Run a single layout pass: measure → place → collect_box_models.
     /// Returns profiling data for the pass.
+    #[cfg(test)]
     pub(super) fn run_layout_pass(&mut self) -> LayoutPassResult {
         self.run_layout_pass_with_registered_sync(true)
     }
@@ -2165,7 +2166,42 @@ impl Viewport {
         dt: f32,
         now_seconds: f64,
         semantic_now: crate::time::Instant,
+        frontend_changed: bool,
     ) -> bool {
+        // Registered hosts may hold deferred arena edits. Observe them before
+        // proving the tree clean, and do not sync them again during layout.
+        self.scene.node_arena.sync_registered_elements();
+        let dirty = self.scene.ui_root_keys.iter().any(|&key| {
+            !self
+                .scene
+                .node_arena
+                .refresh_subtree_dirty_cache(key)
+                .is_empty()
+        });
+        use crate::view::base_component::{AnimationFrameRequest, animation_frame_request};
+        let animation_due = match animation_frame_request(
+            &self.scene.node_arena,
+            &self.scene.ui_root_keys,
+            semantic_now,
+        ) {
+            AnimationFrameRequest::None => false,
+            AnimationFrameRequest::NextFrame => true,
+            AnimationFrameRequest::At(at) => at <= semantic_now,
+        };
+        if !frontend_changed
+            && !dirty
+            && !animation_due
+            && !self.frame.render_required
+            && !self.needs_reconfigure
+            && self.frame.frame_state.is_none()
+            && self.transitions.transition_claims.is_empty()
+            && !crate::view::base_component::transition_requests_pending()
+        {
+            return false;
+        }
+        // Keep consumed frontend/resource invalidation alive across failed
+        // acquisition or execution. Only submission discharges this obligation.
+        self.frame.render_required = true;
         // Profiling is deliberately a separate clock read. It may only feed
         // elapsed-time diagnostics; retained frame semantics use the sample
         // captured once by `render_rsx`.
@@ -2212,7 +2248,7 @@ impl Viewport {
             self.debug_options.trace_render_time || diagnostic_enabled,
         );
         let layout_started_at = Instant::now();
-        let layout_result = self.run_layout_pass();
+        let layout_result = self.run_layout_pass_with_registered_sync(false);
         timings.layout_measure_ms = layout_result.measure_ms;
         timings.layout_place_ms = layout_result.place_ms;
         timings.layout_collect_box_models_ms = layout_result.collect_box_models_ms;
@@ -2813,6 +2849,12 @@ impl Viewport {
         semantic_now: crate::time::Instant,
         app_profile: Option<(FrontendProfile, crate::ui::UiWorkProfile, Instant)>,
     ) -> Result<(), String> {
+        begin_paint_authority_telemetry_attempt();
+        #[cfg(any(test, feature = "renderer-test-support"))]
+        {
+            self.frame.last_cpu_phases = [0.; 10];
+            self.frame.last_completion_phases = [0.; 6];
+        }
         let _capture = crate::ui::work_profile::capture(
             self.debug_options.trace_render_time
                 || cfg!(any(test, feature = "renderer-test-support")),
@@ -2843,9 +2885,9 @@ impl Viewport {
         self.apply_pending_viewport_actions();
         // Reset the animation flag — transition plugins below will set
         // it back to true if any of them still want more frames.
-        self.is_animating = false;
+        let was_animating = std::mem::replace(&mut self.is_animating, false);
         let resource_dirty = crate::view::image_resource::take_image_redraw_dirty()
-            || crate::view::svg_resource::take_svg_redraw_dirty();
+            | crate::view::svg_resource::take_svg_redraw_dirty();
         // Pointer equality certifies an unchanged tree. Otherwise reconcile
         // once, without an earlier structural equality walk. Placement and the
         // general translator consume the same root-relative patch schedule.
@@ -3100,11 +3142,39 @@ impl Viewport {
         frontend.scene_update_ms = scene_start.elapsed().as_secs_f64() * 1000.0;
         frontend.work = crate::ui::work_profile::snapshot().since(before);
         self.frame.frontend = frontend;
+        let hover_changed_before_render = self.sync_pointer_hover_visual(needs_rebuild);
         let mut transition_changed_after_layout = false;
         if !self.scene.ui_root_keys.is_empty() {
-            transition_changed_after_layout =
-                self.render_render_tree(dt, now_seconds, semantic_now);
+            transition_changed_after_layout = self.render_render_tree(
+                dt,
+                now_seconds,
+                semantic_now,
+                state_dirty.has_any()
+                    || root_changed
+                    || resource_dirty
+                    || animation_changed
+                    || transition_changed_before_render
+                    || was_animating
+                    || hover_changed_before_render,
+            );
         }
+        let hover_changed = self.frame.frame_presented && self.sync_pointer_hover_visual(false);
+        if self.frame.render_required
+            || hover_changed
+            || (animation_changed && !self.frame.frame_presented)
+            || transition_changed_before_render
+            || transition_changed_after_layout
+        {
+            self.request_redraw();
+        }
+        self.update_animation_frame_schedule(semantic_now);
+        if std::mem::take(&mut self.frame.frame_presented) {
+            self.notify_cursor_handler();
+        }
+        Ok(())
+    }
+
+    fn sync_pointer_hover_visual(&mut self, rebuilt: bool) -> bool {
         let next_hover_target = self.pointer_position_viewport().and_then(|(x, y)| {
             Self::hit_test_pointer_target(
                 &self.scene.node_arena,
@@ -3118,34 +3188,20 @@ impl Viewport {
         // Re-applying hover flags is a whole-tree walk; skip it when the
         // hover target is unchanged and the arena was not rebuilt this
         // frame (a rebuild drops the per-node hover flags).
-        let hover_changed =
-            if next_hover_target == self.input_state.hovered_node_id && !needs_rebuild {
-                false
-            } else {
-                let mut arena = std::mem::take(&mut self.scene.node_arena);
-                let root_keys = self.scene.ui_root_keys.clone();
-                let result = Self::sync_hover_visual_only(
-                    &mut arena,
-                    &root_keys,
-                    &mut self.input_state.hovered_node_id,
-                    next_hover_target,
-                );
-                self.scene.node_arena = arena;
-                result
-            };
-        if resource_dirty
-            || hover_changed
-            || (animation_changed && !self.frame.frame_presented)
-            || transition_changed_before_render
-            || transition_changed_after_layout
-        {
-            self.request_redraw();
+        if next_hover_target == self.input_state.hovered_node_id && !rebuilt {
+            false
+        } else {
+            let mut arena = std::mem::take(&mut self.scene.node_arena);
+            let root_keys = self.scene.ui_root_keys.clone();
+            let result = Self::sync_hover_visual_only(
+                &mut arena,
+                &root_keys,
+                &mut self.input_state.hovered_node_id,
+                next_hover_target,
+            );
+            self.scene.node_arena = arena;
+            result
         }
-        self.update_animation_frame_schedule(semantic_now);
-        if std::mem::take(&mut self.frame.frame_presented) {
-            self.notify_cursor_handler();
-        }
-        Ok(())
     }
 
     /// Build RSX (if dirty) and render a frame in one call.
@@ -3274,38 +3330,38 @@ impl Viewport {
         if actions.is_empty() {
             return;
         }
+        let mut options = self.debug_options;
         for action in actions {
             match action {
                 crate::ui::ViewportAction::SetDebugTraceFps(on) => {
-                    self.debug_options.trace_fps = on;
-                    self.frame.frame_stats.set_enabled(on);
+                    options.trace_fps = on;
                 }
                 crate::ui::ViewportAction::SetDebugTraceRenderTime(on) => {
-                    self.debug_options.trace_render_time = on;
+                    options.trace_render_time = on;
                 }
                 crate::ui::ViewportAction::SetDebugTraceLayoutDetail(on) => {
-                    self.debug_options.trace_layout_detail = on;
+                    options.trace_layout_detail = on;
                 }
                 crate::ui::ViewportAction::SetDebugTraceCompileDetail(on) => {
-                    self.debug_options.trace_compile_detail = on;
+                    options.trace_compile_detail = on;
                 }
                 crate::ui::ViewportAction::SetDebugTraceExecuteDetail(on) => {
-                    self.debug_options.trace_execute_detail = on;
+                    options.trace_execute_detail = on;
                 }
                 crate::ui::ViewportAction::SetDebugGeometryOverlay(on) => {
-                    self.debug_options.geometry_overlay = on;
+                    options.geometry_overlay = on;
                 }
                 crate::ui::ViewportAction::SetDebugRetainedAutoOverlay(on) => {
-                    self.debug_options.retained_auto_overlay = on;
+                    options.retained_auto_overlay = on;
                 }
                 crate::ui::ViewportAction::SetDebugRetainedAutoAuthority(on) => {
-                    self.debug_options.retained_auto_authority = on;
+                    options.retained_auto_authority = on;
                 }
                 crate::ui::ViewportAction::SetDebugRetainedAutoReuseActions(on) => {
-                    self.debug_options.retained_auto_reuse_actions = on;
+                    options.retained_auto_reuse_actions = on;
                 }
                 crate::ui::ViewportAction::SetDebugRetainedAutoFallbackReasons(on) => {
-                    self.debug_options.retained_auto_fallback_reasons = on;
+                    options.retained_auto_fallback_reasons = on;
                 }
                 crate::ui::ViewportAction::SetClearColor(color) => {
                     self.set_clear_color(Box::new(color));
@@ -3313,8 +3369,14 @@ impl Viewport {
                 crate::ui::ViewportAction::SetCursor(cursor) => {
                     self.set_cursor(cursor);
                 }
-                crate::ui::ViewportAction::RequestRedraw => self.request_redraw(),
+                crate::ui::ViewportAction::RequestRedraw => {
+                    self.frame.render_required = true;
+                    self.request_redraw();
+                }
             }
+        }
+        if options != self.debug_options {
+            self.set_debug_options(options);
         }
     }
 
@@ -3328,6 +3390,10 @@ impl Viewport {
                 create_view_ms: 0.0,
                 create_encoder_ms: 0.0,
             });
+        }
+        #[cfg(feature = "renderer-test-support")]
+        if self.frame.offscreen_redraw_target.is_some() {
+            return self.acquire_offscreen_redraw_for_test();
         }
         if !self.apply_pending_reconfigure() {
             return None;
@@ -3358,6 +3424,10 @@ impl Viewport {
         };
 
         let acquire_started_at = Instant::now();
+        #[cfg(any(test, feature = "renderer-test-support"))]
+        {
+            self.frame.completion_counts.acquires += 1;
+        }
         let render_texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
@@ -3367,6 +3437,10 @@ impl Viewport {
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 println!("[warn] surface lost, recreate render texture");
                 surface.configure(device, &self.gpu.surface_config);
+                #[cfg(any(test, feature = "renderer-test-support"))]
+                {
+                    self.frame.completion_counts.acquires += 1;
+                }
                 match surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(texture)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -3649,6 +3723,7 @@ impl Viewport {
             }
         }
         self.frame.frame_presented = true;
+        self.frame.render_required = false;
         profile
     }
 

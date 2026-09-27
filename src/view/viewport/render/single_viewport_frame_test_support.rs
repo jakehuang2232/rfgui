@@ -105,7 +105,7 @@ impl Viewport {
         // The bool reports transition/animation redraw demand, not render
         // success. Submission/abort counts and authority telemetry below
         // establish success. Event-loop redraw scheduling is outside this harness.
-        let _ = self.render_render_tree(0.0, 0.0, semantic_now);
+        let _ = self.render_render_tree(0.0, 0.0, semantic_now, true);
         let after = self.frame_completion_counts_for_test();
         if self.frame.frame_state.is_some() || after.0 != before.0 + 1 || after.2 != before.2 {
             return Err(format!(
@@ -181,7 +181,7 @@ impl Viewport {
         }
         let _capture = enable_paint_authority_test_capture();
         let before = self.frame_completion_counts_for_test();
-        let _ = self.render_render_tree(0.0, 0.0, crate::time::Instant::now());
+        let _ = self.render_render_tree(0.0, 0.0, crate::time::Instant::now(), true);
         let after = self.frame_completion_counts_for_test();
         if after != (before.0, before.1, before.2 + 1) || self.frame.frame_state.is_some() {
             return Err(format!(

@@ -164,3 +164,19 @@ fn animation_deadline_uses_existing_wakeup_without_dirtying_component_state() {
     assert_eq!(count.get(), 1);
     crate::ui::clear_redraw_callback();
 }
+
+#[test]
+fn failed_acquisition_preserves_consumed_frontend_changes_for_retry() {
+    let root = crate::ui::rsx! { <crate::view::Element /> };
+    let mut viewport = Viewport::new();
+    let now = Instant::now();
+    viewport.render_rsx_at(&root, now, None).unwrap();
+    assert!(viewport.frame.render_required);
+    assert!(viewport.drain_platform_requests().request_redraw);
+    let first_attempt = viewport.frame.frame_number;
+    viewport.render_rsx_at(&root, now, None).unwrap();
+    assert_eq!(viewport.frame.frame_number, first_attempt + 1);
+    assert!(viewport.frame.render_required);
+    assert!(viewport.drain_platform_requests().request_redraw);
+    assert_eq!(viewport.frame.completion_counts.submits, 0);
+}
