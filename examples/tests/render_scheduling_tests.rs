@@ -425,6 +425,14 @@ fn presentation_binding_reuses_uniforms_and_preserves_resize_pixels() -> Result<
                             }
                         }
                     }
+                    assert_eq!(
+                        work.box_model_reads, 0,
+                        "normal rendering must not collect diagnostic boxes"
+                    );
+                    assert_eq!(
+                        work.box_model_reused_snapshots, 0,
+                        "normal rendering must not clone diagnostic boxes"
+                    );
                     if frame >= 2 {
                         assert_eq!(
                             work.present_bind_group_creations, 0,
@@ -436,6 +444,15 @@ fn presentation_binding_reuses_uniforms_and_preserves_resize_pixels() -> Result<
                     }
                     stable = Some(pixels);
                 }
+                let (boxes, reads) =
+                    rfgui::ui::profile_ui_work(|| viewport.frame_box_models().len());
+                assert_eq!(boxes, 1);
+                assert!(reads.box_model_reads + reads.box_model_reused_snapshots > 0);
+                let (_, cached) = rfgui::ui::profile_ui_work(|| viewport.frame_box_models());
+                assert_eq!(
+                    cached.box_model_reads + cached.box_model_reused_snapshots,
+                    0
+                );
                 frames.push(stable.unwrap());
             }
             if mode == ViewportPaintRendererMode::Legacy {

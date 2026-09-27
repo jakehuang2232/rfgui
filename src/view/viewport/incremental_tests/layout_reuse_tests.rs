@@ -51,14 +51,17 @@ fn color_update_does_not_measure_and_unchanged_geometry_reuses_box_models() {
             .unwrap();
         let (_, p) = profile_ui_work(|| v.run_layout_pass());
         assert_eq!(p.measure_calls, 0);
-        // Once placement has consumed any runtime geometry flags, the next
-        // unchanged pass must copy snapshots without rereading every host.
+        // Layout leaves diagnostic snapshots lazy. A later explicit read
+        // can still reuse clean root geometry without rereading every host.
         let before = v.frame_box_models().to_vec();
         let (_, clean) = profile_ui_work(|| v.run_layout_pass());
         assert_eq!(clean.measure_calls, 0);
         assert_eq!(clean.place_calls, 0);
         assert_eq!(clean.box_model_reads, 0);
-        assert_eq!(clean.box_model_reused_snapshots, before.len());
+        assert_eq!(clean.box_model_reused_snapshots, 0);
+        let (_, requested) = profile_ui_work(|| v.frame_box_models());
+        assert_eq!(requested.box_model_reads, 0);
+        assert_eq!(requested.box_model_reused_snapshots, before.len());
         assert_eq!(
             v.frame_box_models()
                 .iter()

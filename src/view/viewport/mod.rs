@@ -585,9 +585,10 @@ struct CompositorState {
     recording_cache: crate::view::paint::RecordingCache,
     property_trees: crate::view::compositor::PropertyTrees,
     paint_generations: crate::view::compositor::PaintGenerationTracker,
-    frame_box_models: Vec<super::base_component::BoxModelSnapshot>,
-    frame_box_model_cache:
+    frame_box_models: std::cell::OnceCell<Vec<super::base_component::BoxModelSnapshot>>,
+    frame_box_model_cache: std::cell::RefCell<
         FxHashMap<crate::view::node_arena::NodeKey, Vec<super::base_component::BoxModelSnapshot>>,
+    >,
     retained_surfaces: RetainedSurfaceResidentState,
     pending_retained_surfaces: Option<PendingRetainedSurfaceTransaction>,
     pending_retained_surface_owner: Option<u64>,
@@ -602,7 +603,7 @@ struct CompositorState {
     #[cfg(test)]
     retained_surface_pair_witnesses: FxHashSet<crate::view::frame_graph::PersistentTextureKey>,
     #[cfg(test)]
-    box_model_refresh_stats: BoxModelRefreshStats,
+    box_model_refresh_stats: std::cell::Cell<BoxModelRefreshStats>,
 }
 
 #[cfg(test)]
@@ -621,8 +622,8 @@ impl CompositorState {
             recording_cache: Default::default(),
             property_trees: crate::view::compositor::PropertyTrees::default(),
             paint_generations: crate::view::compositor::PaintGenerationTracker::default(),
-            frame_box_models: Vec::new(),
-            frame_box_model_cache: FxHashMap::default(),
+            frame_box_models: Default::default(),
+            frame_box_model_cache: Default::default(),
             retained_surfaces: RetainedSurfaceResidentState::default(),
             pending_retained_surfaces: None,
             pending_retained_surface_owner: None,
@@ -633,7 +634,7 @@ impl CompositorState {
             #[cfg(test)]
             retained_surface_pair_witnesses: FxHashSet::default(),
             #[cfg(test)]
-            box_model_refresh_stats: BoxModelRefreshStats::default(),
+            box_model_refresh_stats: Default::default(),
         }
     }
 }
@@ -1000,12 +1001,14 @@ impl Viewport {
     }
 
     pub fn frame_box_models(&self) -> &[super::base_component::BoxModelSnapshot] {
-        &self.compositor.frame_box_models
+        self.compositor
+            .frame_box_models
+            .get_or_init(|| self.collect_frame_box_models())
     }
 
     #[cfg(test)]
     fn box_model_refresh_stats(&self) -> BoxModelRefreshStats {
-        self.compositor.box_model_refresh_stats
+        self.compositor.box_model_refresh_stats.get()
     }
 
     pub fn set_focused_node_id(&mut self, node_id: Option<crate::view::node_arena::NodeKey>) {

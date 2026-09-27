@@ -375,70 +375,61 @@ impl Viewport {
         Self::rsx_node_by_index_path(child, &path[1..])
     }
 
-    pub(super) fn refresh_frame_box_models(&mut self) {
+    /// Invalidate diagnostic snapshots after layout without reading every box.
+    pub(super) fn invalidate_frame_box_models(&mut self) {
+        self.compositor.frame_box_models.take();
+        let roots = &self.scene.ui_root_keys;
+        let cache = self.compositor.frame_box_model_cache.get_mut();
+        cache.retain(|key, _| roots.contains(key));
+        let flags = crate::view::base_component::DirtyPassMask::BOX_MODEL
+            .union(crate::view::base_component::DirtyPassMask::HIT_TEST);
+        for &root in roots {
+            if self.scene.node_arena.subtree_dirty_intersects(root, flags) {
+                cache.remove(&root);
+                // These flags describe geometry already consumed by layout /
+                // hit testing. Keeping them would defeat clean-frame admission.
+                clear_subtree_dirty_flags_with_arena_dirty(&mut self.scene.node_arena, root, flags);
+            }
+        }
+    }
+
+    pub(super) fn collect_frame_box_models(&self) -> Vec<BoxModelSnapshot> {
         let _profile = crate::view::base_component::layout_profile_scope(
             crate::view::base_component::LayoutPlaceTiming::BoxModels,
         );
-        self.compositor.frame_box_models.clear();
+        let mut snapshots = Vec::new();
+        let mut cache = self.compositor.frame_box_model_cache.borrow_mut();
         #[cfg(test)]
-        {
-            self.compositor.box_model_refresh_stats = BoxModelRefreshStats::default();
-        }
-        let root_keys = self.scene.ui_root_keys.clone();
-        let active_roots: FxHashSet<_> = root_keys.iter().copied().collect();
-        self.compositor
-            .frame_box_model_cache
-            .retain(|root_key, _| active_roots.contains(root_key));
-
-        for &root_key in &root_keys {
-            let flags = crate::view::base_component::DirtyPassMask::BOX_MODEL
-                .union(crate::view::base_component::DirtyPassMask::HIT_TEST);
-            let can_reuse = self
-                .compositor
-                .frame_box_model_cache
-                .contains_key(&root_key)
-                && !self
-                    .scene
-                    .node_arena
-                    .subtree_dirty_intersects(root_key, flags);
-
-            if can_reuse {
-                let snapshots = self
-                    .compositor
-                    .frame_box_model_cache
-                    .get(&root_key)
-                    .expect("cache entry checked");
+        let mut stats = BoxModelRefreshStats::default();
+        for &root in &self.scene.ui_root_keys {
+            if let Some(cached) = cache.get(&root) {
                 #[cfg(test)]
                 {
-                    self.compositor.box_model_refresh_stats.reused_roots += 1;
-                    self.compositor.box_model_refresh_stats.reused_snapshots += snapshots.len();
+                    stats.reused_roots += 1;
+                    stats.reused_snapshots += cached.len();
                 }
-                crate::ui::work_profile::count(|p| p.box_model_reused_snapshots += snapshots.len());
-                self.compositor
-                    .frame_box_models
-                    .extend_from_slice(snapshots);
-                continue;
+                crate::ui::work_profile::count(|p| p.box_model_reused_snapshots += cached.len());
+                snapshots.extend_from_slice(cached);
+            } else {
+                let collected = collect_box_models(root, &self.scene.node_arena);
+                #[cfg(test)]
+                {
+                    stats.collected_roots += 1;
+                    stats.collected_snapshots += collected.len();
+                }
+                snapshots.extend_from_slice(&collected);
+                cache.insert(root, collected);
             }
-
-            let snapshots = crate::view::viewport::scene_helpers::collect_box_models(
-                root_key,
-                &self.scene.node_arena,
-            );
-            #[cfg(test)]
-            {
-                self.compositor.box_model_refresh_stats.collected_roots += 1;
-                self.compositor.box_model_refresh_stats.collected_snapshots += snapshots.len();
-            }
-            self.compositor
-                .frame_box_model_cache
-                .insert(root_key, snapshots.clone());
-            self.compositor.frame_box_models.extend(snapshots);
-            crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
-                &mut self.scene.node_arena,
-                root_key,
-                flags,
-            );
         }
+        #[cfg(test)]
+        self.compositor.box_model_refresh_stats.set(stats);
+        snapshots
+    }
+
+    #[cfg(test)]
+    pub(super) fn refresh_frame_box_models(&mut self) {
+        self.invalidate_frame_box_models();
+        let _ = self.frame_box_models();
     }
 }
 

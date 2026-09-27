@@ -33,7 +33,7 @@ impl RendererTestDiagnostics {
                 ("place", t.layout_place_ms + t.relayout_place_ms),
                 (
                     "box_models",
-                    t.layout_collect_box_models_ms + t.relayout_collect_box_models_ms,
+                    t.layout_invalidate_box_models_ms + t.relayout_invalidate_box_models_ms,
                 ),
                 (
                     "sync_registered",

@@ -615,8 +615,8 @@ pub(super) fn build_layout_traversal_trace_nodes(
             0.0,
         ),
         TraceRenderNode::new(
-            format!("collect_box_models (roots={})", profile.root_count),
-            profile.collect_box_models_ms,
+            format!("invalidate_box_models (roots={})", profile.root_count),
+            profile.invalidate_box_models_ms,
         ),
     ]
 }

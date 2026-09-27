@@ -172,7 +172,7 @@ pub(super) struct FrameTimings {
     pub layout_ms: f64,
     pub layout_measure_ms: f64,
     pub layout_place_ms: f64,
-    pub layout_collect_box_models_ms: f64,
+    pub layout_invalidate_box_models_ms: f64,
     pub layout_traversal_profile: LayoutTraversalProfile,
     pub layout_text_measure_profile: crate::view::base_component::TextMeasureProfile,
     pub layout_place_profile: crate::view::base_component::LayoutPlaceProfile,
@@ -182,7 +182,7 @@ pub(super) struct FrameTimings {
     pub relayout_ms: f64,
     pub relayout_measure_ms: f64,
     pub relayout_place_ms: f64,
-    pub relayout_collect_box_models_ms: f64,
+    pub relayout_invalidate_box_models_ms: f64,
     pub relayout_traversal_profile: LayoutTraversalProfile,
     pub relayout_place_profile: crate::view::base_component::LayoutPlaceProfile,
 
@@ -270,14 +270,14 @@ pub(super) struct LayoutTraversalProfile {
     pub placement_candidate_clean_children: usize,
     pub placement_dirty_children: usize,
     pub skipped_child_place_calls: usize,
-    pub collect_box_models_ms: f64,
+    pub invalidate_box_models_ms: f64,
 }
 
-/// Result of a single layout pass (measure → place → collect_box_models).
+/// Result of a single layout pass (measure → place → invalidate_box_models).
 pub(super) struct LayoutPassResult {
     pub measure_ms: f64,
     pub place_ms: f64,
-    pub collect_box_models_ms: f64,
+    pub invalidate_box_models_ms: f64,
     pub traversal_profile: LayoutTraversalProfile,
     pub text_measure_profile: crate::view::base_component::TextMeasureProfile,
     pub place_profile: crate::view::base_component::LayoutPlaceProfile,

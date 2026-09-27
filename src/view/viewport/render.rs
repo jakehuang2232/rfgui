@@ -1316,7 +1316,7 @@ fn build_layout_pass_trace_children(
     measure_children: Vec<TraceRenderNode>,
     place_ms: f64,
     place_profile: &crate::view::base_component::LayoutPlaceProfile,
-    collect_box_models_ms: f64,
+    invalidate_box_models_ms: f64,
 ) -> Vec<TraceRenderNode> {
     vec![
         TraceRenderNode::new(
@@ -1381,16 +1381,16 @@ fn build_layout_pass_trace_children(
         ),
         TraceRenderNode::new(
             format!(
-                "collect_box_models (roots={})",
+                "invalidate_box_models (roots={})",
                 traversal_profile.root_count
             ),
-            collect_box_models_ms,
+            invalidate_box_models_ms,
         ),
     ]
 }
 
 impl Viewport {
-    /// Run a single layout pass: measure → place → collect_box_models.
+    /// Run a single layout pass: measure → place → invalidate_box_models.
     /// Returns profiling data for the pass.
     #[cfg(test)]
     pub(super) fn run_layout_pass(&mut self) -> LayoutPassResult {
@@ -1410,7 +1410,7 @@ impl Viewport {
         sync_registered_elements: bool,
     ) -> LayoutPassResult {
         let work_before = crate::ui::work_profile::snapshot();
-        self.compositor.frame_box_models.clear();
+        self.compositor.frame_box_models.take();
         crate::view::base_component::reset_text_measure_profile();
         crate::view::base_component::reset_layout_place_profile();
         crate::view::base_component::reset_layout_gate_candidate_profile();
@@ -1547,9 +1547,9 @@ impl Viewport {
 
         self.scene.node_arena = arena;
         let collect_started_at = Instant::now();
-        self.refresh_frame_box_models();
-        let collect_box_models_ms = collect_started_at.elapsed().as_secs_f64() * 1000.0;
-        traversal_profile.collect_box_models_ms = collect_box_models_ms;
+        self.invalidate_frame_box_models();
+        let invalidate_box_models_ms = collect_started_at.elapsed().as_secs_f64() * 1000.0;
+        traversal_profile.invalidate_box_models_ms = invalidate_box_models_ms;
         let place_profile = crate::view::base_component::take_layout_place_profile();
         traversal_profile.skipped_child_place_calls = place_profile.skipped_child_place_calls;
 
@@ -1558,7 +1558,7 @@ impl Viewport {
         LayoutPassResult {
             measure_ms,
             place_ms,
-            collect_box_models_ms,
+            invalidate_box_models_ms,
             traversal_profile,
             text_measure_profile,
             place_profile,
@@ -1976,7 +1976,7 @@ impl Viewport {
                 layout_measure_children,
                 t.layout_place_ms,
                 &t.layout_place_profile,
-                t.layout_collect_box_models_ms,
+                t.layout_invalidate_box_models_ms,
             );
             let relayout_traversal_children = build_layout_pass_trace_children(
                 &t.relayout_traversal_profile,
@@ -1984,7 +1984,7 @@ impl Viewport {
                 Vec::new(),
                 t.relayout_place_ms,
                 &t.relayout_place_profile,
-                t.relayout_collect_box_models_ms,
+                t.relayout_invalidate_box_models_ms,
             );
             TraceRenderNode::with_children(
                 "layout",
@@ -2003,7 +2003,7 @@ impl Viewport {
                             "layout_traversal",
                             t.relayout_measure_ms
                                 + t.relayout_place_ms
-                                + t.relayout_collect_box_models_ms,
+                                + t.relayout_invalidate_box_models_ms,
                             relayout_traversal_children,
                         )],
                     ),
@@ -2255,7 +2255,7 @@ impl Viewport {
         let layout_result = self.run_layout_pass_with_registered_sync(false);
         timings.layout_measure_ms = layout_result.measure_ms;
         timings.layout_place_ms = layout_result.place_ms;
-        timings.layout_collect_box_models_ms = layout_result.collect_box_models_ms;
+        timings.layout_invalidate_box_models_ms = layout_result.invalidate_box_models_ms;
         timings.layout_traversal_profile = layout_result.traversal_profile;
         timings.layout_text_measure_profile = layout_result.text_measure_profile;
         timings.layout_place_profile = layout_result.place_profile;
@@ -2274,7 +2274,7 @@ impl Viewport {
             let relayout_result = self.run_relayout_pass();
             timings.relayout_measure_ms = relayout_result.measure_ms;
             timings.relayout_place_ms = relayout_result.place_ms;
-            timings.relayout_collect_box_models_ms = relayout_result.collect_box_models_ms;
+            timings.relayout_invalidate_box_models_ms = relayout_result.invalidate_box_models_ms;
             timings.relayout_traversal_profile = relayout_result.traversal_profile;
             timings.relayout_place_profile = relayout_result.place_profile;
         }
@@ -3260,7 +3260,15 @@ impl Viewport {
             );
         }
 
-        if self.cached_rsx.is_some() && self.frame_box_models().is_empty() {
+        // Only inspect roots for layout readiness. Diagnostic box models are
+        // collected on demand; an intentionally zero-sized root is valid.
+        let has_layout_root = self.scene.ui_root_keys.iter().any(|&key| {
+            self.scene.node_arena.get(key).is_some_and(|node| {
+                let (width, height) = node.element.measured_size();
+                width.is_finite() && height.is_finite() && width >= 0. && height >= 0.
+            })
+        });
+        if self.cached_rsx.is_some() && !has_layout_root {
             super::RenderFrameResult::NeedsRetry
         } else {
             super::RenderFrameResult::Ok
