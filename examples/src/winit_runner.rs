@@ -37,6 +37,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 #[cfg(feature = "renderer-perf")]
 mod performance;
+mod pointer_moves;
 
 /// Run an `App` until the user closes the window.
 ///
@@ -70,6 +71,7 @@ struct Runner {
     /// tick and converted into `Window::request_redraw`.
     redraw_flag: Arc<Mutex<bool>>,
     last_mouse: Option<PhysicalPosition<f64>>,
+    pending_pointer_move: Option<(f32, f32, bool)>,
     /// Last cursor position in logical (scale-factor-adjusted) viewport
     /// coordinates. Used by `DeviceEvent::MouseMotion` to keep drag
     /// tracking alive when the cursor leaves the window.
@@ -120,6 +122,7 @@ impl Runner {
             redraw,
             redraw_flag,
             last_mouse: None,
+            pending_pointer_move: None,
             last_mouse_logical: None,
             cursor_in_window: false,
             ime_composing: false,
@@ -417,6 +420,7 @@ impl Runner {
     /// paints without waiting for a user event — winit does not queue a
     /// `RedrawRequested` at window creation on every platform.
     fn render_once(&mut self) {
+        self.flush_pointer_move();
         #[cfg(feature = "renderer-perf")]
         if self
             .performance
@@ -653,6 +657,7 @@ impl ApplicationHandler for Runner {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         self.ensure_ready();
+        self.flush_pointer_move_before(&event);
         match event {
             WindowEvent::CloseRequested => {
                 if let Some(viewport) = self.viewport.as_mut() {
@@ -725,27 +730,7 @@ impl ApplicationHandler for Runner {
                 if let Some(performance) = self.performance.as_mut() {
                     performance.pointer_event("move", self.last_mouse_logical);
                 }
-                let move_event = PlatformPointerEvent {
-                    kind: PlatformPointerEventKind::Move {
-                        x: logical_x,
-                        y: logical_y,
-                    },
-                    pointer_id: 0,
-                    pointer_type: PointerType::Mouse,
-                    pressure: 0.0,
-                };
-                let ev = AppEvent::Pointer(move_event);
-                if let Some(viewport) = self.viewport.as_mut() {
-                    viewport.dispatch_app_event(
-                        &ev,
-                        PlatformServices {
-                            clipboard: self.clipboard.as_mut(),
-                            cursor: &mut self.cursor,
-                            redraw: &self.redraw,
-                        },
-                    );
-                    let _ = viewport.dispatch_platform_pointer_event(&move_event);
-                }
+                self.queue_pointer_move(logical_x, logical_y, true);
             }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor_in_window = false;
@@ -1004,19 +989,11 @@ impl ApplicationHandler for Runner {
                 if let Some(performance) = self.performance.as_mut() {
                     performance.pointer_event("raw_move", Some(next));
                 }
-                viewport.set_pointer_position_viewport(next.0, next.1);
-                let _ = viewport.dispatch_platform_pointer_event(&PlatformPointerEvent {
-                    kind: PlatformPointerEventKind::Move {
-                        x: next.0,
-                        y: next.1,
-                    },
-                    pointer_id: 0,
-                    pointer_type: PointerType::Mouse,
-                    pressure: 0.0,
-                });
                 self.last_mouse_logical = Some(next);
+                self.queue_pointer_move(next.0, next.1, false);
             }
             DeviceEvent::Button { button, state } => {
+                self.flush_pointer_move();
                 if !matches!(state, ElementState::Released) {
                     return;
                 }
