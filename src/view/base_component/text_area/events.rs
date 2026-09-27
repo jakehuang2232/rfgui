@@ -339,10 +339,6 @@ impl EventTarget for TextArea {
         self.cursor
     }
 
-    fn wants_animation_frame(&self) -> bool {
-        self.is_focused && self.layout_state.should_render
-    }
-
     fn animation_frame_request(
         &self,
         now: crate::time::Instant,

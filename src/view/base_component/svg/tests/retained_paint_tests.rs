@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::base_component::AnimationFrameRequest;
 
 #[test]
 fn svg_delegates_retained_paint_properties_to_its_element() {
@@ -43,25 +44,40 @@ fn svg_wrapper_forwards_scrollbar_post_layout_lifecycle() {
 
     let now = crate::time::Instant::now();
     assert!(svg.set_hovered(true));
-    assert!(svg.wants_animation_frame());
+    assert_eq!(
+        svg.animation_frame_request(now),
+        AnimationFrameRequest::NextFrame
+    );
     assert!(
         svg.tick_post_layout_animation_frame(now)
             .contains(DirtyFlags::PAINT)
     );
-    assert!(!svg.wants_animation_frame());
+    assert_eq!(
+        svg.animation_frame_request(now),
+        AnimationFrameRequest::None
+    );
 
     assert!(svg.set_hovered(false));
-    assert!(svg.wants_animation_frame());
+    assert_eq!(
+        svg.animation_frame_request(now),
+        AnimationFrameRequest::NextFrame
+    );
     assert!(
         svg.tick_post_layout_animation_frame(now)
             .contains(DirtyFlags::PAINT)
     );
-    assert!(svg.wants_animation_frame());
+    assert_eq!(
+        svg.animation_frame_request(now),
+        AnimationFrameRequest::At(now + crate::time::Duration::from_millis(900))
+    );
     assert!(
         svg.tick_post_layout_animation_frame(now + crate::time::Duration::from_millis(1_250),)
             .contains(DirtyFlags::PAINT)
     );
-    assert!(!svg.wants_animation_frame());
+    assert_eq!(
+        svg.animation_frame_request(now + crate::time::Duration::from_millis(1_250)),
+        AnimationFrameRequest::None
+    );
 }
 
 #[test]

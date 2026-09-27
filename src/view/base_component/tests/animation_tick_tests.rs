@@ -4,8 +4,8 @@ use super::*;
 fn animation_tick_visits_duplicate_and_cyclic_topology_once() {
     let root_ticks = Rc::new(Cell::new(0));
     let child_ticks = Rc::new(Cell::new(0));
-    let root_wants_checks = Rc::new(Cell::new(0));
-    let child_wants_checks = Rc::new(Cell::new(0));
+    let root_request_checks = Rc::new(Cell::new(0));
+    let child_request_checks = Rc::new(Cell::new(0));
     let root_tick_now = Rc::new(Cell::new(None));
     let root_post_tick_now = Rc::new(Cell::new(None));
     let root_resource_now = Rc::new(Cell::new(None));
@@ -19,7 +19,7 @@ fn animation_tick_visits_duplicate_and_cyclic_topology_once() {
             id: 0xa001,
             children: Vec::new(),
             ticks: root_ticks.clone(),
-            wants_checks: root_wants_checks.clone(),
+            request_checks: root_request_checks.clone(),
             tick_now: root_tick_now.clone(),
             post_tick_now: root_post_tick_now.clone(),
             resource_now: root_resource_now.clone(),
@@ -32,7 +32,7 @@ fn animation_tick_visits_duplicate_and_cyclic_topology_once() {
             id: 0xa002,
             children: Vec::new(),
             ticks: child_ticks.clone(),
-            wants_checks: child_wants_checks.clone(),
+            request_checks: child_request_checks.clone(),
             tick_now: child_tick_now.clone(),
             post_tick_now: child_post_tick_now.clone(),
             resource_now: child_resource_now.clone(),
@@ -65,7 +65,10 @@ fn animation_tick_visits_duplicate_and_cyclic_topology_once() {
     assert_eq!(child_tick_now.get(), Some(semantic_now));
     assert_eq!(child_post_tick_now.get(), Some(semantic_now));
     assert_eq!(child_resource_now.get(), Some(semantic_now));
-    assert!(!super::super::has_animation_frame_request(&arena, root));
-    assert_eq!(root_wants_checks.get(), 1);
-    assert_eq!(child_wants_checks.get(), 1);
+    assert_eq!(
+        super::super::animation_frame_request(&arena, &[root, root], semantic_now),
+        super::super::AnimationFrameRequest::None
+    );
+    assert_eq!(root_request_checks.get(), 1);
+    assert_eq!(child_request_checks.get(), 1);
 }

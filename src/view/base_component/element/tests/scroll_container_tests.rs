@@ -1,8 +1,8 @@
 use super::*;
+use crate::view::base_component::AnimationFrameRequest;
 
 #[test]
 fn scrollbar_deadlines_sleep_during_hold_and_hover_then_animate_fade() {
-    use crate::view::base_component::AnimationFrameRequest;
     let mut element = Element::new(0.0, 0.0, 100.0, 80.0);
     let mut style = Style::new();
     style.insert(
@@ -77,7 +77,10 @@ fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
     assert!(element.post_layout_animation_is_noop());
     assert!(element.set_hovered(true));
     assert!(!element.post_layout_animation_is_noop());
-    assert!(element.wants_animation_frame());
+    assert_eq!(
+        element.animation_frame_request(frame),
+        AnimationFrameRequest::NextFrame
+    );
     assert!(
         element
             .tick_post_layout_animation_frame(frame)
@@ -95,7 +98,10 @@ fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
             .tick_post_layout_animation_frame(leave_frame)
             .contains(DirtyFlags::PAINT)
     );
-    assert!(element.wants_animation_frame());
+    assert_eq!(
+        element.animation_frame_request(leave_frame),
+        AnimationFrameRequest::At(leave_frame + SCROLLBAR_HOLD)
+    );
 
     let fade_frame = leave_frame + crate::time::Duration::from_millis(1_000);
     assert!(!element.post_layout_animation_is_noop());
@@ -105,7 +111,10 @@ fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
             .contains(DirtyFlags::PAINT)
     );
     assert!((0.0..1.0).contains(&element.scrollbar_visibility_alpha()));
-    assert!(element.wants_animation_frame());
+    assert_eq!(
+        element.animation_frame_request(fade_frame),
+        AnimationFrameRequest::NextFrame
+    );
 
     let hidden_frame = leave_frame + crate::time::Duration::from_millis(1_250);
     assert!(
@@ -117,7 +126,10 @@ fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
         element.scrollbar_visibility_alpha().to_bits(),
         0.0_f32.to_bits()
     );
-    assert!(!element.wants_animation_frame());
+    assert_eq!(
+        element.animation_frame_request(hidden_frame),
+        AnimationFrameRequest::None
+    );
     assert!(element.post_layout_animation_is_noop());
     assert!(
         element
@@ -140,7 +152,10 @@ fn scrollbar_fade_uses_one_frame_sample_and_stops_after_hidden() {
             .contains(DirtyFlags::PAINT)
     );
     assert!(element.cancel_pointer_interaction());
-    assert!(element.wants_animation_frame());
+    assert_eq!(
+        element.animation_frame_request(drag_frame),
+        AnimationFrameRequest::NextFrame
+    );
     assert!(
         element
             .tick_post_layout_animation_frame(drag_frame)

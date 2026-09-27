@@ -110,9 +110,9 @@ fn unchanged_hover_does_not_record_paint_mutations() {
         Box::new(Element::new(40.0, 0.0, 30.0, 30.0)),
     );
     for target in [None, Some(a), Some(b), None] {
-        update_hover_state(&arena, root, target);
+        Viewport::apply_hover_target(&arena, &[root], target);
         let before: Vec<_> = [root, a, b].map(|k| arena.mutation_revision(k)).into();
-        assert!(!update_hover_state(&arena, root, target));
+        assert!(!Viewport::apply_hover_target(&arena, &[root], target));
         assert_eq!(before, [root, a, b].map(|k| arena.mutation_revision(k)));
         assert!(
             !arena
@@ -147,19 +147,23 @@ fn same_target_resynchronizes_replaced_ancestor_hover_state() {
         root,
         Box::new(Element::new(0.0, 0.0, 20.0, 20.0)),
     );
-    assert!(update_hover_state(&arena, root, Some(child)));
+    assert!(Viewport::apply_hover_target(&arena, &[root], Some(child)));
     // Rebuilding a native host can reset its state while retaining the target.
     arena.mutate_element_ref_with_invalidation(root, |element, _| {
         element.set_hovered(false);
     });
-    assert!(update_hover_state(&arena, root, Some(child)));
+    assert!(Viewport::apply_hover_target(&arena, &[root], Some(child)));
     assert!(!arena.get(root).unwrap().element.hover_update_needed(true));
     let replacement = commit_child(
         &mut arena,
         root,
         Box::new(Element::new(30.0, 0.0, 20.0, 20.0)),
     );
-    assert!(update_hover_state(&arena, root, Some(replacement)));
+    assert!(Viewport::apply_hover_target(
+        &arena,
+        &[root],
+        Some(replacement)
+    ));
     assert!(!arena.get(child).unwrap().element.hover_update_needed(false));
     assert!(
         !arena
@@ -248,9 +252,9 @@ fn unknown_hover_host_keeps_setter_side_effects_and_mutation_tracking() {
             calls: calls.clone(),
         }),
     );
-    update_hover_state(&arena, root, None);
+    Viewport::apply_hover_target(&arena, &[root], None);
     let revision = arena.mutation_revision(root);
-    update_hover_state(&arena, root, None);
+    Viewport::apply_hover_target(&arena, &[root], None);
     assert_eq!(calls.get(), 2);
     assert_ne!(arena.mutation_revision(root), revision);
 }
@@ -262,14 +266,17 @@ fn warm_hover_visits_only_changed_paths_in_a_wide_tree() {
     let children: Vec<_> = (0..1000)
         .map(|_| commit_child(&mut arena, root, Box::new(Element::new(0., 0., 10., 10.))))
         .collect();
-    let (_, cold) =
-        crate::ui::profile_ui_work(|| update_hover_state(&arena, root, Some(children[0])));
+    let (_, cold) = crate::ui::profile_ui_work(|| {
+        Viewport::apply_hover_target(&arena, &[root], Some(children[0]))
+    });
     assert_eq!(cold.hover_observations, 1001);
-    let (_, warm) =
-        crate::ui::profile_ui_work(|| update_hover_state(&arena, root, Some(children[0])));
+    let (_, warm) = crate::ui::profile_ui_work(|| {
+        Viewport::apply_hover_target(&arena, &[root], Some(children[0]))
+    });
     assert_eq!(warm.hover_observations, 1);
-    let (_, moved) =
-        crate::ui::profile_ui_work(|| update_hover_state(&arena, root, Some(children[999])));
+    let (_, moved) = crate::ui::profile_ui_work(|| {
+        Viewport::apply_hover_target(&arena, &[root], Some(children[999]))
+    });
     assert_eq!(moved.hover_observations, 3);
     for &key in &children {
         assert!(
@@ -280,7 +287,8 @@ fn warm_hover_visits_only_changed_paths_in_a_wide_tree() {
                 .hover_update_needed(key == children[999])
         );
     }
-    let (_, leave) = crate::ui::profile_ui_work(|| update_hover_state(&arena, root, None));
+    let (_, leave) =
+        crate::ui::profile_ui_work(|| Viewport::apply_hover_target(&arena, &[root], None));
     assert_eq!(leave.hover_observations, 2);
     assert!(!arena.get(root).unwrap().element.hover_update_needed(false));
 }
@@ -292,18 +300,152 @@ fn hover_cache_resynchronizes_reparented_and_incoherent_paths() {
     let left = commit_child(&mut arena, root, Box::new(Element::new(0., 0., 40., 40.)));
     let right = commit_child(&mut arena, root, Box::new(Element::new(50., 0., 40., 40.)));
     let leaf = commit_child(&mut arena, left, Box::new(Element::new(0., 0., 10., 10.)));
-    update_hover_state(&arena, root, Some(leaf));
+    Viewport::apply_hover_target(&arena, &[root], Some(leaf));
     arena.set_children(left, vec![]);
     arena.set_children(right, vec![leaf]);
     arena.set_parent(leaf, Some(right));
-    assert!(update_hover_state(&arena, root, Some(leaf)));
+    assert!(Viewport::apply_hover_target(&arena, &[root], Some(leaf)));
     assert!(!arena.get(left).unwrap().element.hover_update_needed(false));
     assert!(!arena.get(right).unwrap().element.hover_update_needed(true));
     arena.set_parent(leaf, None);
-    update_hover_state(&arena, root, None);
-    assert!(update_hover_state(&arena, root, Some(leaf)));
+    Viewport::apply_hover_target(&arena, &[root], None);
+    assert!(Viewport::apply_hover_target(&arena, &[root], Some(leaf)));
     assert!(!arena.get(leaf).unwrap().element.hover_update_needed(true));
     assert!(!arena.get(right).unwrap().element.hover_update_needed(true));
+}
+
+#[test]
+fn multi_root_hover_reuses_untargeted_roots_and_clears_previous_root() {
+    let mut arena = new_test_arena();
+    let roots =
+        [0, 1].map(|_| commit_element(&mut arena, Box::new(Element::new(0., 0., 100., 100.))));
+    let children = roots.map(|root| {
+        (0..1000)
+            .map(|_| commit_child(&mut arena, root, Box::new(Element::new(0., 0., 10., 10.))))
+            .collect::<Vec<_>>()
+    });
+    let (_, cold) = crate::ui::profile_ui_work(|| {
+        Viewport::apply_hover_target(&arena, &roots, Some(children[0][0]))
+    });
+    assert_eq!(cold.hover_observations, 2002);
+    let (changed, warm) = crate::ui::profile_ui_work(|| {
+        Viewport::apply_hover_target(&arena, &roots, Some(children[0][0]))
+    });
+    assert!(!changed);
+    assert_eq!(warm.hover_observations, 2);
+    let (changed, crossed) = crate::ui::profile_ui_work(|| {
+        Viewport::apply_hover_target(&arena, &roots, Some(children[1][999]))
+    });
+    assert!(changed);
+    assert_eq!(crossed.hover_observations, 4);
+    for (index, &root) in roots.iter().enumerate() {
+        assert!(
+            !arena
+                .get(root)
+                .unwrap()
+                .element
+                .hover_update_needed(index == 1)
+        );
+        for (child_index, &child) in children[index].iter().enumerate() {
+            assert!(
+                !arena
+                    .get(child)
+                    .unwrap()
+                    .element
+                    .hover_update_needed(index == 1 && child_index == 999)
+            );
+        }
+    }
+    let (changed, left) =
+        crate::ui::profile_ui_work(|| Viewport::apply_hover_target(&arena, &roots, None));
+    assert!(changed);
+    assert_eq!(left.hover_observations, 3);
+    for key in roots.into_iter().chain(children.into_iter().flatten()) {
+        assert!(!arena.get(key).unwrap().element.hover_update_needed(false));
+    }
+}
+
+#[test]
+fn multi_root_hover_rechecks_reparented_and_invalid_targets() {
+    let mut arena = new_test_arena();
+    let roots =
+        [0, 1].map(|_| commit_element(&mut arena, Box::new(Element::new(0., 0., 100., 100.))));
+    let leaf = commit_child(
+        &mut arena,
+        roots[0],
+        Box::new(Element::new(0., 0., 10., 10.)),
+    );
+    Viewport::apply_hover_target(&arena, &roots, Some(leaf));
+    arena.set_children(roots[0], vec![]);
+    arena.set_children(roots[1], vec![leaf]);
+    arena.set_parent(leaf, Some(roots[1]));
+    assert!(Viewport::apply_hover_target(&arena, &roots, Some(leaf)));
+    assert!(
+        !arena
+            .get(roots[0])
+            .unwrap()
+            .element
+            .hover_update_needed(false)
+    );
+    assert!(
+        !arena
+            .get(roots[1])
+            .unwrap()
+            .element
+            .hover_update_needed(true)
+    );
+    let (_, warm) =
+        crate::ui::profile_ui_work(|| Viewport::apply_hover_target(&arena, &roots, Some(leaf)));
+    assert_eq!(warm.hover_observations, 2);
+
+    // The child mirror still reaches the target, but its parent link does not.
+    // Do not treat an unresolved path as a proven unrelated root.
+    arena.set_parent(leaf, None);
+    for _ in 0..2 {
+        let (_, unresolved) =
+            crate::ui::profile_ui_work(|| Viewport::apply_hover_target(&arena, &roots, Some(leaf)));
+        assert_eq!(unresolved.hover_observations, 3);
+        assert!(!arena.get(leaf).unwrap().element.hover_update_needed(true));
+        assert!(
+            !arena
+                .get(roots[1])
+                .unwrap()
+                .element
+                .hover_update_needed(true)
+        );
+    }
+    arena.set_children(roots[1], vec![]);
+    arena.remove_subtree(leaf);
+    assert!(Viewport::apply_hover_target(&arena, &roots, Some(leaf)));
+    for root in roots {
+        assert!(!arena.get(root).unwrap().element.hover_update_needed(false));
+    }
+}
+
+#[test]
+fn multi_root_pointer_transition_keeps_enter_leave_order() {
+    let mut arena = new_test_arena();
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let roots = [0, 1].map(|index| {
+        let mut root = Element::new(0., 0., 100., 100.);
+        let entered = order.clone();
+        root.on_pointer_enter(move |_| entered.borrow_mut().push((index, true)));
+        let left = order.clone();
+        root.on_pointer_leave(move |_| left.borrow_mut().push((index, false)));
+        commit_element(&mut arena, Box::new(root))
+    });
+    let mut hovered = None;
+    for target in [Some(roots[0]), Some(roots[1]), None] {
+        Viewport::sync_hover_target(&arena, &roots, &mut hovered, target, test_pointer_data());
+    }
+    assert_eq!(
+        &*order.borrow(),
+        &[(0, true), (0, false), (1, true), (1, false)]
+    );
+    assert_eq!(hovered, None);
+    for root in roots {
+        assert!(!arena.get(root).unwrap().element.hover_update_needed(false));
+    }
 }
 
 #[test]

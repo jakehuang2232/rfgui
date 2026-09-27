@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::base_component::AnimationFrameRequest;
 
 #[test]
 fn image_delegates_retained_paint_properties_to_its_element() {
@@ -44,28 +45,43 @@ fn image_wrapper_forwards_scrollbar_post_layout_lifecycle() {
 
     let now = crate::time::Instant::now();
     assert!(image.set_hovered(true));
-    assert!(image.wants_animation_frame());
+    assert_eq!(
+        image.animation_frame_request(now),
+        AnimationFrameRequest::NextFrame
+    );
     assert!(
         image
             .tick_post_layout_animation_frame(now)
             .contains(DirtyFlags::PAINT)
     );
-    assert!(!image.wants_animation_frame());
+    assert_eq!(
+        image.animation_frame_request(now),
+        AnimationFrameRequest::None
+    );
 
     assert!(image.set_hovered(false));
-    assert!(image.wants_animation_frame());
+    assert_eq!(
+        image.animation_frame_request(now),
+        AnimationFrameRequest::NextFrame
+    );
     assert!(
         image
             .tick_post_layout_animation_frame(now)
             .contains(DirtyFlags::PAINT)
     );
-    assert!(image.wants_animation_frame());
+    assert_eq!(
+        image.animation_frame_request(now),
+        AnimationFrameRequest::At(now + crate::time::Duration::from_millis(900))
+    );
     assert!(
         image
             .tick_post_layout_animation_frame(now + crate::time::Duration::from_millis(1_250),)
             .contains(DirtyFlags::PAINT)
     );
-    assert!(!image.wants_animation_frame());
+    assert_eq!(
+        image.animation_frame_request(now + crate::time::Duration::from_millis(1_250)),
+        AnimationFrameRequest::None
+    );
 }
 
 #[test]

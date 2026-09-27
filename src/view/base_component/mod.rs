@@ -237,39 +237,16 @@ pub fn subtree_contains_node(
     false
 }
 
-pub fn has_animation_frame_request(
-    arena: &crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-) -> bool {
-    collect_animation_frame_requests(arena, &[root_key], |node| {
-        if node.wants_animation_frame() {
-            AnimationFrameRequest::NextFrame
-        } else {
-            AnimationFrameRequest::None
-        }
-    }) != AnimationFrameRequest::None
-}
-
 pub(crate) fn animation_frame_request(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
     now: crate::time::Instant,
 ) -> AnimationFrameRequest {
-    collect_animation_frame_requests(arena, roots, |node| node.animation_frame_request(now))
-}
-
-// The legacy boolean query and deadline query share topology traversal, cycle
-// protection, and early exit. Custom components retain their original hook.
-fn collect_animation_frame_requests(
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    query: impl Fn(&dyn ElementTrait) -> AnimationFrameRequest,
-) -> AnimationFrameRequest {
     fn visit(
         arena: &crate::view::node_arena::NodeArena,
         key: crate::view::node_arena::NodeKey,
         seen: &mut FxHashSet<crate::view::node_arena::NodeKey>,
-        query: &impl Fn(&dyn ElementTrait) -> AnimationFrameRequest,
+        now: crate::time::Instant,
     ) -> AnimationFrameRequest {
         if !seen.insert(key) {
             return AnimationFrameRequest::None;
@@ -277,14 +254,14 @@ fn collect_animation_frame_requests(
         let Some(node) = arena.get(key) else {
             return AnimationFrameRequest::None;
         };
-        let mut request = query(node.element.as_ref());
+        let mut request = node.element.animation_frame_request(now);
         if request == AnimationFrameRequest::NextFrame {
             return request;
         }
         let children = node.children.clone();
         drop(node);
         for child in children {
-            request = request.merge(visit(arena, child, seen, query));
+            request = request.merge(visit(arena, child, seen, now));
             if request == AnimationFrameRequest::NextFrame {
                 break;
             }
@@ -295,7 +272,7 @@ fn collect_animation_frame_requests(
     let mut seen = FxHashSet::default();
     let mut request = AnimationFrameRequest::None;
     for &root in roots {
-        request = request.merge(visit(arena, root, &mut seen, &query));
+        request = request.merge(visit(arena, root, &mut seen, now));
         if request == AnimationFrameRequest::NextFrame {
             break;
         }
@@ -648,9 +625,6 @@ macro_rules! forward_event_target {
         }
         fn cursor(&self) -> $crate::style::Cursor {
             self.$field.cursor()
-        }
-        fn wants_animation_frame(&self) -> bool {
-            self.$field.wants_animation_frame()
         }
         fn animation_frame_request(
             &self,

@@ -25,9 +25,18 @@ impl Viewport {
         root_keys: &[crate::view::node_arena::NodeKey],
         target: Option<crate::view::node_arena::NodeKey>,
     ) -> bool {
+        let target_path = hover_path_for_target(arena, root_keys, target);
+        let target_root = target_path.first().copied();
         let mut changed = false;
         for &root_key in root_keys {
-            if crate::view::viewport::scene_helpers::update_hover_state(arena, root_key, target) {
+            // A valid target in another root proves this whole root should be
+            // unhovered. An unresolved target still takes the conservative walk
+            // so malformed parent links cannot certify an unchanged subtree.
+            let root_target = match target_root {
+                Some(owner) if owner != root_key => None,
+                _ => target,
+            };
+            if update_hover_state(arena, root_key, root_target, &target_path) {
                 changed = true;
             }
         }
@@ -545,12 +554,12 @@ pub(crate) fn paint_snapped_retained_surface_bounds(
     }
 }
 
-pub(crate) fn update_hover_state(
+fn update_hover_state(
     arena: &crate::view::node_arena::NodeArena,
     root_key: crate::view::node_arena::NodeKey,
     target_key: Option<crate::view::node_arena::NodeKey>,
+    target_path: &[crate::view::node_arena::NodeKey],
 ) -> bool {
-    let target_path = hover_path_for_target(arena, &[root_key], target_key);
     let path_valid = target_key.is_none() || !target_path.is_empty();
     fn walk(
         arena: &crate::view::node_arena::NodeArena,
@@ -644,7 +653,7 @@ pub(crate) fn update_hover_state(
         root_key,
         target_key,
         root_key,
-        &target_path,
+        target_path,
         path_valid,
     )
     .1

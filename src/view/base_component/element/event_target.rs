@@ -463,13 +463,6 @@ impl EventTarget for Element {
         self.computed_style.cursor
     }
 
-    fn wants_animation_frame(&self) -> bool {
-        self.scrollbar_interaction_pending
-            || (!self.is_hovered
-                && self.scrollbar_drag.is_none()
-                && self.last_scrollbar_interaction.is_some())
-    }
-
     fn animation_frame_request(
         &self,
         now: Instant,

@@ -1,8 +1,8 @@
 use super::*;
+use crate::view::base_component::AnimationFrameRequest;
 
 #[test]
 fn caret_deadlines_follow_phase_without_rounding_or_catchup_frames() {
-    use crate::view::base_component::AnimationFrameRequest;
     let mut text = TextArea::new();
     let now = crate::time::Instant::now();
     text.layout_state.should_render = true;
@@ -57,13 +57,11 @@ fn retained_caret_blink_has_deterministic_boundaries_and_paint_only_dirty() {
     assert!(text_area.set_focused(true));
     assert!(text_area.caret_visible);
     assert!(text_area.caret_blink_epoch.is_none());
-    assert!(
-        <TextArea as crate::view::base_component::EventTarget>::wants_animation_frame(
-            &text_area
-        )
-    );
-
     let t0 = crate::time::Instant::now();
+    assert_eq!(
+        text_area.animation_frame_request(t0),
+        AnimationFrameRequest::NextFrame
+    );
     text_area.dirty_flags = DirtyFlags::NONE;
     assert_eq!(text_area.tick_caret_blink(t0), DirtyFlags::NONE);
     assert_eq!(text_area.caret_blink_epoch, Some(t0));
@@ -82,11 +80,10 @@ fn retained_caret_blink_has_deterministic_boundaries_and_paint_only_dirty() {
     );
     assert!(!text_area.caret_visible);
     assert_eq!(text_area.dirty_flags, DirtyFlags::PAINT);
-    assert!(
-        <TextArea as crate::view::base_component::EventTarget>::wants_animation_frame(
-            &text_area
-        ),
-        "the invisible blink phase must keep requesting frames"
+    assert_eq!(
+        text_area.animation_frame_request(t0 + Duration::from_millis(530)),
+        AnimationFrameRequest::At(t0 + Duration::from_millis(1060)),
+        "the invisible blink phase waits until the next visible phase"
     );
 
     text_area.dirty_flags = DirtyFlags::NONE;
@@ -165,10 +162,9 @@ fn retained_caret_focus_reset_blur_and_unrender_restart_without_clock_reads() {
     );
     assert!(!text_area.caret_visible);
     assert!(text_area.caret_blink_epoch.is_none());
-    assert!(
-        !<TextArea as crate::view::base_component::EventTarget>::wants_animation_frame(
-            &text_area
-        )
+    assert_eq!(
+        text_area.animation_frame_request(t0 + Duration::from_millis(600)),
+        AnimationFrameRequest::None
     );
 
     text_area.dirty_flags = DirtyFlags::NONE;
@@ -188,9 +184,8 @@ fn retained_caret_focus_reset_blur_and_unrender_restart_without_clock_reads() {
     assert!(!text_area.caret_visible);
     assert!(text_area.caret_blink_epoch.is_none());
     assert_eq!(text_area.dirty_flags, DirtyFlags::PAINT);
-    assert!(
-        !<TextArea as crate::view::base_component::EventTarget>::wants_animation_frame(
-            &text_area
-        )
+    assert_eq!(
+        text_area.animation_frame_request(t0 + Duration::from_millis(700)),
+        AnimationFrameRequest::None
     );
 }

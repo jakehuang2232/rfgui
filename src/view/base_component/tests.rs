@@ -24,7 +24,7 @@ struct AnimationTickProbe {
     id: u64,
     children: Vec<NodeKey>,
     ticks: Rc<Cell<u32>>,
-    wants_checks: Rc<Cell<u32>>,
+    request_checks: Rc<Cell<u32>>,
     tick_now: Rc<Cell<Option<crate::time::Instant>>>,
     post_tick_now: Rc<Cell<Option<crate::time::Instant>>>,
     resource_now: Rc<Cell<Option<crate::time::Instant>>>,
@@ -47,9 +47,9 @@ impl Layoutable for AnimationTickProbe {
 }
 
 impl EventTarget for AnimationTickProbe {
-    fn wants_animation_frame(&self) -> bool {
-        self.wants_checks.set(self.wants_checks.get() + 1);
-        false
+    fn animation_frame_request(&self, _now: crate::time::Instant) -> super::AnimationFrameRequest {
+        self.request_checks.set(self.request_checks.get() + 1);
+        super::AnimationFrameRequest::None
     }
 }
 

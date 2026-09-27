@@ -61,14 +61,24 @@ fn unsampled_caret_requests_immediate_frame_instead_of_future_deadline() {
 }
 
 #[test]
-fn existing_custom_animation_hook_remains_continuous() {
+fn custom_animation_hook_explicitly_requests_frames_and_default_is_idle() {
     struct CustomAnimation(bool);
     impl EventTarget for CustomAnimation {
-        fn wants_animation_frame(&self) -> bool {
-            self.0
+        fn animation_frame_request(&self, _now: Instant) -> AnimationFrameRequest {
+            if self.0 {
+                AnimationFrameRequest::NextFrame
+            } else {
+                AnimationFrameRequest::None
+            }
         }
     }
+    struct Idle;
+    impl EventTarget for Idle {}
     let now = Instant::now();
+    assert_eq!(
+        Idle.animation_frame_request(now),
+        AnimationFrameRequest::None
+    );
     assert_eq!(
         CustomAnimation(true).animation_frame_request(now),
         AnimationFrameRequest::NextFrame

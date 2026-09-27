@@ -2390,21 +2390,13 @@ pub trait EventTarget {
     fn cursor(&self) -> Cursor {
         Cursor::Default
     }
-    fn wants_animation_frame(&self) -> bool {
-        false
-    }
     /// Precise wake-up request, sampled with the viewport's frame time.
-    /// The default preserves continuous animation for existing implementors.
+    /// Components opt into continuous frames or a future deadline as needed.
     fn animation_frame_request(
         &self,
         _now: crate::time::Instant,
     ) -> crate::view::base_component::AnimationFrameRequest {
-        use crate::view::base_component::AnimationFrameRequest;
-        if self.wants_animation_frame() {
-            AnimationFrameRequest::NextFrame
-        } else {
-            AnimationFrameRequest::None
-        }
+        crate::view::base_component::AnimationFrameRequest::None
     }
     fn take_style_transition_requests(&mut self) -> Vec<StyleTrackRequest> {
         Vec::new()
