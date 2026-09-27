@@ -1,19 +1,19 @@
 use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
-    BufferDesc, BufferReadUsage, BufferResource, FrameResourceContext, GraphicsColorAttachmentOps,
-    GraphicsPassBuilder, GraphicsPassMergePolicy,
+    GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
 };
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetTag};
 use crate::view::render_pass::render_target::{render_target_ref, render_target_view};
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
+use wgpu::util::DeviceExt;
 
 const PRESENT_SURFACE_RESOURCES: u64 = 401;
 
 pub struct PresentSurfacePass {
     params: PresentSurfaceParams,
     input: PresentSurfaceInput,
-    uniform_buffer: PresentSurfaceUniformBufferOut,
+    uniform: PresentSurfaceUniform,
 }
 
 #[derive(Default)]
@@ -26,10 +26,6 @@ pub struct PresentSurfaceInput {
 
 #[derive(Default)]
 pub struct PresentSurfaceOutput;
-
-#[derive(Clone, Copy)]
-pub struct PresentSurfaceUniformBufferTag;
-pub type PresentSurfaceUniformBufferOut = OutSlot<BufferResource, PresentSurfaceUniformBufferTag>;
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
@@ -48,7 +44,7 @@ impl PresentSurfacePass {
         Self {
             params,
             input,
-            uniform_buffer: PresentSurfaceUniformBufferOut::default(),
+            uniform: PresentSurfaceUniform::default(),
         }
     }
 
@@ -69,12 +65,6 @@ pub(crate) struct PresentSurfacePassTestSnapshot {
 impl GraphicsPass for PresentSurfacePass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::RequiresOwnPass);
-        self.uniform_buffer = builder.create_buffer(BufferDesc {
-            size: std::mem::size_of::<PresentSurfaceUniform>() as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
-            label: Some("Present Surface Uniform"),
-        });
-        builder.read_buffer(&self.uniform_buffer, BufferReadUsage::Uniform);
         if let Some(handle) = self.input.source.handle() {
             let source: OutSlot<TextureResource, RenderTargetTag> = OutSlot::with_handle(handle);
             builder.read_texture(&mut self.input.source, &source);
@@ -89,13 +79,10 @@ impl GraphicsPass for PresentSurfacePass {
         let Some(texture_ref) = render_target_ref(ctx, handle) else {
             return;
         };
-        let uniform = PresentSurfaceUniform {
+        self.uniform = PresentSurfaceUniform {
             uv_offset: [texture_ref.uv_offset_x(), texture_ref.uv_offset_y()],
             uv_scale: [texture_ref.uv_scale_x(), texture_ref.uv_scale_y()],
         };
-        if let Some(buffer) = self.uniform_buffer.handle() {
-            let _ = ctx.upload_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
-        }
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
@@ -104,12 +91,6 @@ impl GraphicsPass for PresentSurfacePass {
             return;
         };
         let Some(src_view) = render_target_view(ctx.frame_resources(), input_handle) else {
-            return;
-        };
-        let Some(uniform_handle) = self.uniform_buffer.handle() else {
-            return;
-        };
-        let Some(uniform_buffer) = ctx.frame_resources().acquire_buffer(uniform_handle) else {
             return;
         };
         let Some(device) = ctx.viewport().device().cloned() else {
@@ -126,24 +107,7 @@ impl GraphicsPass for PresentSurfacePass {
                 *resources = PresentSurfaceResources::new(&device, format);
             }
 
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Present Surface Bind Group"),
-                layout: &resources.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&src_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&resources.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                ],
-            });
+            let bind_group = resources.binding(&device, &src_view, self.uniform);
             ctx.set_pipeline(&resources.pipeline);
             ctx.set_bind_group(0, &bind_group, &[]);
             ctx.draw(0..3, 0..1);
@@ -157,9 +121,78 @@ struct PresentSurfaceResources {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pipeline_format: wgpu::TextureFormat,
+    bindings: Vec<PresentSurfaceBinding>,
+}
+
+struct PresentSurfaceBinding {
+    source: wgpu::TextureView,
+    uniform_bits: [u32; 4],
+    group: wgpu::BindGroup,
 }
 
 impl PresentSurfaceResources {
+    fn binding(
+        &mut self,
+        device: &wgpu::Device,
+        source: &wgpu::TextureView,
+        uniform: PresentSurfaceUniform,
+    ) -> wgpu::BindGroup {
+        let uniform_bits = [
+            uniform.uv_offset[0],
+            uniform.uv_offset[1],
+            uniform.uv_scale[0],
+            uniform.uv_scale[1],
+        ]
+        .map(f32::to_bits);
+        if let Some(index) = self
+            .bindings
+            .iter()
+            .position(|entry| entry.source == *source && entry.uniform_bits == uniform_bits)
+        {
+            let entry = self.bindings.remove(index);
+            let group = entry.group.clone();
+            self.bindings.push(entry);
+            return group;
+        }
+        // These UV values are immutable for this binding. Reuse across frames
+        // avoids a per-frame staging copy and frame-graph buffer allocation.
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Present Surface Uniform"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Present Surface Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: buffer.as_entire_binding(),
+                },
+            ],
+        });
+        crate::ui::work_profile::count(|p| p.present_bind_group_creations += 1);
+        // A small bounded LRU covers rotating frame targets without retaining
+        // old resized targets indefinitely. The bind group owns its buffer ref.
+        if self.bindings.len() == 8 {
+            self.bindings.remove(0);
+        }
+        self.bindings.push(PresentSurfaceBinding {
+            source: source.clone(),
+            uniform_bits,
+            group: group.clone(),
+        });
+        group
+    }
+
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Present Surface Shader"),
@@ -254,6 +287,7 @@ impl PresentSurfaceResources {
             bind_group_layout,
             sampler,
             pipeline_format: format,
+            bindings: Vec::new(),
         }
     }
 }

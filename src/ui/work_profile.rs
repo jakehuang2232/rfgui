@@ -35,6 +35,8 @@ pub struct UiWorkProfile {
     pub text_input_glyph_observations: usize,
     /// Texture/layer composite bind groups actually created on cache misses.
     pub composite_bind_group_creations: usize,
+    /// Surface presentation bindings and immutable uniforms created on cache misses.
+    pub present_bind_group_creations: usize,
     /// Queue evaluation and state publication, including invalidation.
     pub state_flush_ms: f64,
     /// Outermost component expansion; nested within App build.
@@ -253,6 +255,9 @@ impl UiWorkProfile {
             composite_bind_group_creations: self
                 .composite_bind_group_creations
                 .saturating_sub(before.composite_bind_group_creations),
+            present_bind_group_creations: self
+                .present_bind_group_creations
+                .saturating_sub(before.present_bind_group_creations),
             measure_reuses: self.measure_reuses.saturating_sub(before.measure_reuses),
             state_flush_ms: self.state_flush_ms - before.state_flush_ms,
             unwrap_ms: self.unwrap_ms - before.unwrap_ms,

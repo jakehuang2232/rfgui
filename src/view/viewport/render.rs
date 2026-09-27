@@ -2152,7 +2152,11 @@ impl Viewport {
                 layout,
                 TraceRenderNode::new("prepare_paint", t.prepare_paint_ms),
                 TraceRenderNode::new("sync_properties", t.sync_properties_ms),
-                TraceRenderNode::new("build_graph", t.build_graph_ms),
+                TraceRenderNode::with_children(
+                    "build_graph",
+                    t.build_graph_ms,
+                    vec![TraceRenderNode::new("paint_select", t.paint_select_ms)],
+                ),
                 compile,
                 execute,
                 TraceRenderNode::new("finish_render", t.finish_render_ms),
@@ -2345,6 +2349,7 @@ impl Viewport {
             .map(|device| device.limits().max_texture_dimension_2d)
             .unwrap_or_else(|| wgpu::Limits::default().max_texture_dimension_2d);
         let retained_auto_terminal_failure = self.retained_auto_terminal_failure;
+        let paint_select_started = self.debug_options.trace_render_time.then(Instant::now);
         let frame_paint_selection = if self.paint_renderer_mode == ViewportPaintRendererMode::Legacy
         {
             FramePaintSelection::Inactive
@@ -2368,6 +2373,9 @@ impl Viewport {
                 ))
             })
         };
+        if let Some(started) = paint_select_started {
+            timings.paint_select_ms = started.elapsed().as_secs_f64() * 1000.0;
+        }
         let (frame_paint_selection, auto_authority_trace) = match frame_paint_selection {
             FramePaintSelection::Auto(decision) => match decision {
                 RetainedAutoDecision::Artifact { candidate, trace } => (

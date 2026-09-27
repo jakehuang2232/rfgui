@@ -19,6 +19,12 @@ impl App for Probe {
             ViewportPaintRendererMode::RetainedAuto
         };
         ctx.viewport.set_paint_renderer_mode(mode);
+        if std::env::var("RFGUI_PROBE_TRACE").as_deref() == Ok("1") {
+            let mut options = rfgui::view::viewport::ViewportDebugOptions::default();
+            options.trace_render_time = true;
+            options.trace_execute_detail = true;
+            ctx.viewport.set_debug_options(options);
+        }
     }
 }
 

@@ -370,3 +370,73 @@ fn hover_without_visual_styles_or_scrollbars_does_not_submit() -> Result<(), Str
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn presentation_binding_reuses_uniforms_and_preserves_resize_pixels() -> Result<(), String> {
+    let gpu = gpu::Gpu::new()?;
+    for dpr in [1, 2] {
+        let mut reference = Vec::new();
+        for mode in [
+            ViewportPaintRendererMode::Legacy,
+            ViewportPaintRendererMode::RetainedAuto,
+        ] {
+            let root = rsx! { <Element style={{width: Length::px(40.), height: Length::px(40.), background_color: Color::hex("#ff0000")}} /> };
+            let mut viewport = Viewport::new();
+            viewport.set_paint_renderer_mode(mode);
+            let now = Instant::now();
+            let mut frames = Vec::new();
+            for side in [64, 96, 128, 64] {
+                let size = [side * dpr, side * dpr];
+                let mut stable = None;
+                for frame in 0..6 {
+                    rfgui::ui::ViewportHandle.request_redraw();
+                    let (pixels, work) = rfgui::ui::profile_ui_work(|| {
+                        redraw(&gpu, &mut viewport, &root, size, dpr as f32, now)
+                    });
+                    let pixels = pixels?.unwrap();
+                    let red_pixels = pixels
+                        .chunks_exact(4)
+                        .filter(|pixel| {
+                            pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255
+                        })
+                        .count();
+                    assert!(
+                        ((38 * dpr * 38 * dpr) as usize..=(40 * dpr * 40 * dpr) as usize)
+                            .contains(&red_pixels),
+                        "presentation UVs must preserve the rectangle extent after resize (excluding antialiased edges): {red_pixels}, {mode:?}, DPR {dpr}, size {side}"
+                    );
+                    for y in 0..size[1] {
+                        for x in 0..size[0] {
+                            if x >= 40 * dpr || y >= 40 * dpr {
+                                let offset = ((y * size[0] + x) * 4) as usize;
+                                assert_ne!(
+                                    &pixels[offset..offset + 4],
+                                    &[255, 0, 0, 255],
+                                    "red rectangle must not grow with the pooled target"
+                                );
+                            }
+                        }
+                    }
+                    if frame >= 2 {
+                        assert_eq!(
+                            work.present_bind_group_creations, 0,
+                            "steady presentation must reuse binding and uniform"
+                        );
+                    }
+                    if let Some(ref previous) = stable {
+                        assert_eq!(&pixels, previous);
+                    }
+                    stable = Some(pixels);
+                }
+                frames.push(stable.unwrap());
+            }
+            if mode == ViewportPaintRendererMode::Legacy {
+                reference = frames;
+            } else {
+                assert!(frames == reference, "presentation resize parity DPR {dpr}");
+            }
+        }
+    }
+    Ok(())
+}

@@ -190,6 +190,8 @@ pub(super) struct FrameTimings {
     pub prepare_paint_ms: f64,
     pub sync_properties_ms: f64,
     pub build_graph_ms: f64,
+    /// Nested inside build_graph; recording and renderer selection.
+    pub paint_select_ms: f64,
 
     pub compile_ms: f64,
     pub compile_children: Vec<super::debug::TraceRenderNode>,
