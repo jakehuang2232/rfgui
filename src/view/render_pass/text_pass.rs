@@ -845,20 +845,36 @@ fn prepare_text_prepared_input_pass(
 
 fn prepared_text_raster_sources_are_valid(params: &TextPassPreparedParams) -> bool {
     let mut observed = 0;
+    // A face's glyph count is a pure function of its font blob and index (the
+    // raster key check below binds both to the glyph). Building swash metrics
+    // parses font tables, so do it once per face in this payload, not per glyph.
+    let mut glyph_counts: Vec<((u64, u32), u32)> = Vec::new();
     let valid = params.staging_input.glyphs.iter().all(|glyph| {
         observed += 1;
-        glyph.paint.fragment_index < params.fragments.len() as u32
-            && glyph.raster.font_size.is_finite()
-            && glyph.raster.font_size > 0.0
-            && text_raster_key_for_raster_input(&glyph.raster, 1.0).is_some()
-            && glyph
-                .raster
-                .font_data
-                .as_ref()
-                .and_then(swash_font_ref)
-                .is_some_and(|font| {
-                    glyph.raster.glyph_id < u32::from(font.glyph_metrics(&[]).glyph_count())
-                })
+        if glyph.paint.fragment_index >= params.fragments.len() as u32
+            || !glyph.raster.font_size.is_finite()
+            || glyph.raster.font_size <= 0.0
+            || text_raster_key_for_raster_input(&glyph.raster, 1.0).is_none()
+        {
+            return false;
+        }
+        let face = (glyph.raster.font_data_id, glyph.raster.font_index);
+        let glyph_count = match glyph_counts.iter().find(|(key, _)| *key == face) {
+            Some(&(_, count)) => Some(count),
+            None => {
+                let count = glyph
+                    .raster
+                    .font_data
+                    .as_ref()
+                    .and_then(swash_font_ref)
+                    .map(|font| u32::from(font.glyph_metrics(&[]).glyph_count()));
+                if let Some(count) = count {
+                    glyph_counts.push((face, count));
+                }
+                count
+            }
+        };
+        glyph_count.is_some_and(|count| glyph.raster.glyph_id < count)
     });
     crate::ui::work_profile::count(|p| p.text_input_glyph_observations += observed);
     valid
