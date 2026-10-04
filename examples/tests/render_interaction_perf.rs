@@ -42,6 +42,7 @@ fn input_to_submitted_frame() -> Result<(), String> {
         .map(|s| s.parse::<usize>().unwrap())
         .unwrap_or(180);
     assert!(samples > 0);
+    let diagnostics = std::env::var_os("RFGUI_BENCH_DIAGNOSTICS").is_some();
     for case in ["idle", "hover", "scroll", "text-input"] {
         let mut reference = Vec::new();
         for mode in [
@@ -109,14 +110,30 @@ fn input_to_submitted_frame() -> Result<(), String> {
                     }
                 }
                 let input_ms = start.elapsed().as_secs_f64() * 1000.;
-                let output = viewport.render_rsx_offscreen_for_test(
-                    &root,
-                    gpu.device.clone(),
-                    gpu.queue.clone(),
-                    [640, 480],
-                    1.,
-                    now,
-                )?;
+                let render = |viewport: &mut Viewport| {
+                    viewport.render_rsx_offscreen_for_test(
+                        &root,
+                        gpu.device.clone(),
+                        gpu.queue.clone(),
+                        [640, 480],
+                        1.,
+                        now,
+                    )
+                };
+                // Work counters are opt-in and observe one unmeasured frame.
+                let output = if diagnostics && frame == 29 {
+                    let (output, work) = rfgui::ui::profile_ui_work(|| render(&mut viewport));
+                    println!(
+                        "interaction-rect-work mode={mode:?} case={case} rect_draw_calls={} rect_instances={} rect_instance_uploads={} graphics_passes={}",
+                        work.rect_draw_calls,
+                        work.rect_instances,
+                        work.rect_instance_uploads,
+                        work.graphics_passes_recorded
+                    );
+                    output
+                } else {
+                    render(&mut viewport)
+                }?;
                 let cpu_ms = start.elapsed().as_secs_f64() * 1000.;
                 // Keep GPU completion outside CPU sample and prevent queued
                 // work from an earlier frame distorting the next sample.
