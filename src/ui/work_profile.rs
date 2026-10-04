@@ -32,6 +32,10 @@ pub struct UiWorkProfile {
     /// Rect instance-buffer upload copies; at most one per prepare flush,
     /// covering only instances staged since the previous flush.
     pub rect_instance_uploads: usize,
+    /// Instanced rect draw calls recorded (one per contiguous run).
+    pub rect_draw_calls: usize,
+    /// Rect instances covered by those draw calls.
+    pub rect_instances: usize,
     /// Glyphs inspected for immutable prepared-input validation/hash misses.
     pub text_input_glyph_observations: usize,
     /// Texture/layer composite bind groups actually created on cache misses.
@@ -254,6 +258,8 @@ impl UiWorkProfile {
             rect_instance_uploads: self
                 .rect_instance_uploads
                 .saturating_sub(before.rect_instance_uploads),
+            rect_draw_calls: self.rect_draw_calls.saturating_sub(before.rect_draw_calls),
+            rect_instances: self.rect_instances.saturating_sub(before.rect_instances),
             text_input_glyph_observations: self
                 .text_input_glyph_observations
                 .saturating_sub(before.text_input_glyph_observations),

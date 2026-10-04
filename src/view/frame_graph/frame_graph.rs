@@ -3568,16 +3568,22 @@ impl FrameGraph {
             ..Default::default()
         });
 
-        // Buffer bindings persist across logical passes in this one encoder
-        // render pass. Never carry this state into another GraphicsGroup.
+        // Buffer bindings and the pending instanced rect draw persist across
+        // logical passes in this one encoder render pass. Never carry this
+        // state into another GraphicsGroup.
         let mut buffer_bindings =
             crate::view::render_pass::buffer_bindings::GraphicsBufferBindings::default();
+        let mut rect_batch = crate::view::render_pass::rect_batch::RectDrawBatch::default();
         for &index in pass_indices {
             let pass_name = self.passes[index].pass.name();
             let pass_started_at = timings.start();
             let mut graphics_ctx = GraphicsRecordContext::new(ctx);
-            let mut pass_ctx =
-                GraphicsCtx::new(&mut graphics_ctx, &mut render_pass, &mut buffer_bindings);
+            let mut pass_ctx = GraphicsCtx::new(
+                &mut graphics_ctx,
+                &mut render_pass,
+                &mut buffer_bindings,
+                &mut rect_batch,
+            );
             self.passes[index].pass.execute_graphics(&mut pass_ctx);
             crate::ui::work_profile::count(|p| p.graphics_passes_recorded += 1);
             timings.record(pass_name, pass_started_at);
@@ -3585,6 +3591,9 @@ impl FrameGraph {
                 break;
             }
         }
+        // The last run belongs to this render pass, including after a pass
+        // stopped the group early.
+        rect_batch.flush(&mut render_pass);
     }
 }
 

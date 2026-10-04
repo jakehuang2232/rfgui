@@ -124,15 +124,15 @@ enum PreparedRect {
 /// Everything recording needs, resolved once during prepare: the pipeline,
 /// the layout used to bind this frame's instance storage, the dynamic state,
 /// and this rectangle's index into the frame's instance array.
-struct PreparedRectDraw {
-    pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    layout_key: u64,
-    uses_gradient_stops: bool,
-    stencil_reference: Option<u32>,
+pub(crate) struct PreparedRectDraw {
+    pub(crate) pipeline: wgpu::RenderPipeline,
+    pub(crate) bind_group_layout: wgpu::BindGroupLayout,
+    pub(crate) layout_key: u64,
+    pub(crate) uses_gradient_stops: bool,
+    pub(crate) stencil_reference: Option<u32>,
     /// Target-physical scissor `[x, y, width, height]`.
-    scissor: [u32; 4],
-    instance: u32,
+    pub(crate) scissor: [u32; 4],
+    pub(crate) instance: u32,
 }
 
 #[cfg(test)]
@@ -651,36 +651,18 @@ impl DrawRectPass {
         }));
     }
 
-    /// Records the prepared instance. A rectangle that was never prepared
-    /// fails the frame.
+    /// Queues the prepared instance into the render pass's pending instanced
+    /// draw. A rectangle that was never prepared fails the frame.
     fn record_prepared(&self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
-        let draw = match &self.prepared {
-            Some(PreparedRect::Draw(draw)) => draw,
-            Some(PreparedRect::Empty) => return,
-            None => {
-                ctx.mark_execution_failed();
-                return;
+        match &self.prepared {
+            Some(PreparedRect::Draw(draw)) => {
+                if !ctx.draw_rect_instance(draw) {
+                    ctx.mark_execution_failed();
+                }
             }
-        };
-        // Resolved at record time: a later flush in the same frame may have
-        // replaced the instance or gradient buffer since this rect prepared.
-        let Some(bind_group) = ctx.viewport().rect_bind_group(
-            draw.layout_key,
-            &draw.bind_group_layout,
-            draw.uses_gradient_stops,
-        ) else {
-            ctx.mark_execution_failed();
-            return;
-        };
-        ctx.set_pipeline(&draw.pipeline);
-        ctx.set_bind_group(0, &bind_group, &[]);
-        if let Some(reference) = draw.stencil_reference {
-            ctx.set_stencil_reference(reference);
+            Some(PreparedRect::Empty) => {}
+            None => ctx.mark_execution_failed(),
         }
-        let [x, y, width, height] = draw.scissor;
-        ctx.set_scissor_rect(x, y, width, height);
-        // The shader emits the six quad corners procedurally per instance.
-        ctx.draw(0..6, draw.instance..draw.instance + 1);
     }
 }
 

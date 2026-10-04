@@ -1,3 +1,4 @@
+use super::rect_instancing_tests::emit_rect_run_primer;
 use super::*;
 use crate::view::render_pass::buffer_bindings::take_counts_for_test;
 mod buffered_grid;
@@ -87,6 +88,10 @@ fn native_graphics_group_elides_buffers_without_losing_per_draw_uniforms() -> Re
             let size = [WIDTH * dpr, HEIGHT * dpr];
             let (mut graph, mut ctx, target) =
                 transformed_graph_prelude_with_size(dpr as f32, None, size);
+            if !buffered {
+                // Outside the 64x64 grid, so no probe below can see it.
+                emit_rect_run_primer(&mut graph, &mut ctx, [65.0, 0.0]);
+            }
             for row in 0..16 {
                 for column in 0..16 {
                     if let Some(resources) = &mesh {
@@ -163,12 +168,18 @@ fn native_graphics_group_elides_buffers_without_losing_per_draw_uniforms() -> Re
                     work.rect_instance_uploads, 1,
                     "256 rect instances should share one upload"
                 );
+                assert_eq!(work.rect_instances, 1 + 256);
+                assert_eq!(
+                    work.rect_draw_calls,
+                    1 + 1,
+                    "consecutive same-state rectangles must share one instanced draw"
+                );
                 assert!(
                     groups.is_empty(),
                     "procedural rectangles must issue zero vertex/index bindings: {groups:?}"
                 );
                 eprintln!(
-                    "procedural rectangles DPR {dpr}: 256 instances, zero vertex/index bindings, no gradient storage"
+                    "procedural rectangles DPR {dpr}: 256 instances in 1 draw, zero vertex/index bindings, no gradient storage"
                 );
                 continue;
             }
@@ -221,8 +232,10 @@ fn native_rect_instances_survive_buffer_growth_across_frames() -> Result<(), Str
     const COLUMNS: u32 = 65;
     const ROWS: u32 = 77;
     for count in [5000_u32, 1, 5000] {
-        let size = [COLUMNS * 4, ROWS * 4];
+        // One spare column on the right holds the primer.
+        let size = [COLUMNS * 4 + 4, ROWS * 4];
         let (mut graph, mut ctx, target) = transformed_graph_prelude_with_size(1., None, size);
+        emit_rect_run_primer(&mut graph, &mut ctx, [(COLUMNS * 4 + 2) as f32, 0.]);
         for index in 0..count {
             let mut pass = DrawRectPass::new(
                 RectPassParams {
@@ -248,6 +261,8 @@ fn native_rect_instances_survive_buffer_growth_across_frames() -> Result<(), Str
         });
         let pixels = pixels?;
         assert_eq!(work.rect_instance_uploads, 1, "count={count}");
+        assert_eq!(work.rect_instances, 1 + count as usize);
+        assert_eq!(work.rect_draw_calls, 1 + 1, "count={count}");
         for index in 0..COLUMNS * ROWS {
             let expected = if index >= count {
                 [0; 4]

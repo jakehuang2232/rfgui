@@ -12,6 +12,7 @@ pub mod composite_layer_pass;
 pub mod debug_overlay_pass;
 pub mod draw_rect_pass;
 pub mod present_surface_pass;
+pub(crate) mod rect_batch;
 mod rect_shader;
 pub mod render_target;
 pub mod shadow_module;
@@ -35,10 +36,16 @@ pub(crate) fn release_scoped_resources(scope: u64) {
     text_pass::release_scope(scope);
 }
 
+/// Recording access to one wgpu render pass for one logical graphics pass.
+///
+/// Draw-rect passes queue instances into a pending instanced draw shared by
+/// the whole render pass. Every other method that records a command flushes
+/// that pending draw first, so command order matches logical pass order.
 pub struct GraphicsCtx<'a, 'ctx, 'res, 'pass> {
     frame_resources: &'a mut GraphicsRecordContext<'ctx, 'res>,
     render_pass: &'a mut wgpu::RenderPass<'pass>,
     buffer_bindings: &'a mut buffer_bindings::GraphicsBufferBindings,
+    rect_batch: &'a mut rect_batch::RectDrawBatch,
 }
 
 impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
@@ -46,12 +53,50 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
         frame_resources: &'a mut GraphicsRecordContext<'ctx, 'res>,
         render_pass: &'a mut wgpu::RenderPass<'pass>,
         buffer_bindings: &'a mut buffer_bindings::GraphicsBufferBindings,
+        rect_batch: &'a mut rect_batch::RectDrawBatch,
     ) -> Self {
         Self {
             frame_resources,
             render_pass,
             buffer_bindings,
+            rect_batch,
         }
+    }
+
+    fn flush_rect_batch(&mut self) {
+        self.rect_batch.flush(self.render_pass);
+    }
+
+    /// Adds one prepared rectangle to the pending instanced draw, starting a
+    /// new run when it cannot extend the current one. Returns false when the
+    /// frame's instance storage cannot be bound.
+    pub(crate) fn draw_rect_instance(&mut self, draw: &draw_rect_pass::PreparedRectDraw) -> bool {
+        if self.rect_batch.try_extend(
+            &draw.pipeline,
+            draw.scissor,
+            draw.stencil_reference,
+            draw.instance,
+        ) {
+            return true;
+        }
+        self.flush_rect_batch();
+        // Resolved at record time: a later flush in the same frame may have
+        // replaced the instance or gradient buffer since this rect prepared.
+        let Some(bind_group) = self.frame_resources.viewport().rect_bind_group(
+            draw.layout_key,
+            &draw.bind_group_layout,
+            draw.uses_gradient_stops,
+        ) else {
+            return false;
+        };
+        self.rect_batch.start(
+            draw.pipeline.clone(),
+            bind_group,
+            draw.scissor,
+            draw.stencil_reference,
+            draw.instance,
+        );
+        true
     }
 
     pub fn frame_resources(&mut self) -> &mut GraphicsRecordContext<'ctx, 'res> {
@@ -67,6 +112,7 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
     }
 
     pub fn set_pipeline(&mut self, pipeline: &wgpu::RenderPipeline) {
+        self.flush_rect_batch();
         self.render_pass.set_pipeline(pipeline);
     }
 
@@ -76,10 +122,12 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
         bind_group: &wgpu::BindGroup,
         offsets: &[wgpu::DynamicOffset],
     ) {
+        self.flush_rect_batch();
         self.render_pass.set_bind_group(index, bind_group, offsets);
     }
 
     pub fn set_vertex_buffer(&mut self, slot: u32, buffer_slice: wgpu::BufferSlice<'_>) {
+        self.flush_rect_batch();
         self.buffer_bindings
             .set_vertex_buffer(self.render_pass, slot, buffer_slice);
     }
@@ -89,19 +137,23 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
         buffer_slice: wgpu::BufferSlice<'_>,
         index_format: wgpu::IndexFormat,
     ) {
+        self.flush_rect_batch();
         self.buffer_bindings
             .set_index_buffer(self.render_pass, buffer_slice, index_format);
     }
 
     pub fn set_scissor_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        self.flush_rect_batch();
         self.render_pass.set_scissor_rect(x, y, width, height);
     }
 
     pub fn set_stencil_reference(&mut self, reference: u32) {
+        self.flush_rect_batch();
         self.render_pass.set_stencil_reference(reference);
     }
 
     pub fn draw(&mut self, vertices: std::ops::Range<u32>, instances: std::ops::Range<u32>) {
+        self.flush_rect_batch();
         self.render_pass.draw(vertices, instances);
     }
 
@@ -111,6 +163,7 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
         base_vertex: i32,
         instances: std::ops::Range<u32>,
     ) {
+        self.flush_rect_batch();
         self.render_pass
             .draw_indexed(indices, base_vertex, instances);
     }
