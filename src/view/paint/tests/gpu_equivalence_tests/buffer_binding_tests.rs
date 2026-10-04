@@ -100,8 +100,8 @@ fn native_graphics_group_elides_buffers_without_losing_per_draw_uniforms() -> Re
                         continue;
                     }
                     // Procedural rectangles, distinct positions and alternating colors. A
-                    // skipped dynamic-offset update changes independently known
-                    // pixels even when vertex/index accounting looks plausible.
+                    // wrong instance index changes independently known pixels
+                    // even when vertex/index accounting looks plausible.
                     let color = if (row + column) % 2 == 0 {
                         [1.0, 0.0, 0.0, 1.0]
                     } else {
@@ -160,15 +160,15 @@ fn native_graphics_group_elides_buffers_without_losing_per_draw_uniforms() -> Re
             }
             if !buffered {
                 assert_eq!(
-                    work.rect_uniform_uploads, 1,
-                    "256 rect slots should share one upload"
+                    work.rect_instance_uploads, 1,
+                    "256 rect instances should share one upload"
                 );
                 assert!(
                     groups.is_empty(),
                     "procedural rectangles must issue zero vertex/index bindings: {groups:?}"
                 );
                 eprintln!(
-                    "procedural rectangles DPR {dpr}: 256 draws, zero vertex/index bindings, no gradient storage"
+                    "procedural rectangles DPR {dpr}: 256 instances, zero vertex/index bindings, no gradient storage"
                 );
                 continue;
             }
@@ -212,17 +212,21 @@ fn native_graphics_group_elides_buffers_without_losing_per_draw_uniforms() -> Re
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
-fn native_rect_upload_chunks_keep_distinct_offsets_across_frames() -> Result<(), String> {
+fn native_rect_instances_survive_buffer_growth_across_frames() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native graphics context");
     let mut viewport = Viewport::new();
-    for (count, expected_uploads) in [(4097, 2), (1, 1), (4097, 2)] {
-        let size = [260, 256];
+    // 5000 instances outgrow the initial instance buffer by more than one
+    // doubling; the following frames shrink back to one instance and regrow.
+    const COLUMNS: u32 = 65;
+    const ROWS: u32 = 77;
+    for count in [5000_u32, 1, 5000] {
+        let size = [COLUMNS * 4, ROWS * 4];
         let (mut graph, mut ctx, target) = transformed_graph_prelude_with_size(1., None, size);
         for index in 0..count {
             let mut pass = DrawRectPass::new(
                 RectPassParams {
-                    position: [(index % 65 * 4) as f32, (index / 65 * 4) as f32],
+                    position: [(index % COLUMNS * 4) as f32, (index / COLUMNS * 4) as f32],
                     size: [4., 4.],
                     fill_color: if index % 2 == 0 {
                         [1., 0., 0., 1.]
@@ -243,8 +247,8 @@ fn native_rect_upload_chunks_keep_distinct_offsets_across_frames() -> Result<(),
             render_on_viewport_with_size(graph, gpu, &mut viewport, 1., FORMAT, size)
         });
         let pixels = pixels?;
-        assert_eq!(work.rect_uniform_uploads, expected_uploads);
-        for index in 0..(65 * 64) {
+        assert_eq!(work.rect_instance_uploads, 1, "count={count}");
+        for index in 0..COLUMNS * ROWS {
             let expected = if index >= count {
                 [0; 4]
             } else if index % 2 == 0 {
@@ -252,7 +256,8 @@ fn native_rect_upload_chunks_keep_distinct_offsets_across_frames() -> Result<(),
             } else {
                 [0, 0, 255, 255]
             };
-            let offset = (((index / 65 * 4 + 2) * size[0] + index % 65 * 4 + 2) * 4) as usize;
+            let offset =
+                (((index / COLUMNS * 4 + 2) * size[0] + index % COLUMNS * 4 + 2) * 4) as usize;
             assert_eq!(
                 &pixels[offset..offset + 4],
                 expected,

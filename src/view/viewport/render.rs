@@ -3430,8 +3430,7 @@ impl Viewport {
         }
         self.frame.offscreen_render_target_pool.begin_frame();
         self.reclaim_idle_frame_gpu_pools();
-        self.reset_draw_rect_uniform_uploads();
-        self.frame.gradient_stops_byte_cursor = 0;
+        self.reset_rect_instance_frame();
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
         crate::view::render_pass::composite_layer_pass::begin_composite_layer_resources_frame(
             self.render_resource_scope_id(),
@@ -3498,8 +3497,7 @@ impl Viewport {
         self.logical_height = height as f32;
 
         self.frame.offscreen_render_target_pool.begin_frame();
-        self.reset_draw_rect_uniform_uploads();
-        self.frame.gradient_stops_byte_cursor = 0;
+        self.reset_rect_instance_frame();
         crate::view::render_pass::draw_rect_pass::begin_draw_rect_resources_frame();
         crate::view::render_pass::composite_layer_pass::begin_composite_layer_resources_frame(
             self.render_resource_scope_id(),

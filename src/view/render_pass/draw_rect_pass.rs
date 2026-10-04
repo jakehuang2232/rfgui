@@ -1,12 +1,13 @@
 use crate::view::frame_graph::slot::{InSlot, OutSlot};
-use crate::view::frame_graph::texture_resource::{TextureHandle, TextureResource};
+#[cfg(test)]
+use crate::view::frame_graph::texture_resource::TextureHandle;
+use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, GraphicsPassScissor, render_target_origin,
-    render_target_sample_count, resolve_graphics_pass_scissor_to_target_physical,
-    resolve_texture_ref,
+    GraphicsPassContext as RenderPassContext, render_target_origin, render_target_sample_count,
+    resolve_graphics_pass_scissor_to_target_physical, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use rustc_hash::FxHashSet;
@@ -107,10 +108,31 @@ pub struct DrawRectPass {
     color_write_enabled: bool,
     clear_target: bool,
     render_mode: RectRenderMode,
-    prepared_bind_group: Option<wgpu::BindGroup>,
-    prepared_dynamic_offset: u32,
+    /// Recording state resolved by `prepare`; `None` until prepare succeeds.
+    prepared: Option<PreparedRect>,
     input: DrawRectInput,
     output: DrawRectOutput,
+}
+
+/// Outcome of preparing one rectangle for the current frame.
+enum PreparedRect {
+    /// Degenerate geometry: nothing is drawn.
+    Empty,
+    Draw(PreparedRectDraw),
+}
+
+/// Everything recording needs, resolved once during prepare: the pipeline,
+/// the layout used to bind this frame's instance storage, the dynamic state,
+/// and this rectangle's index into the frame's instance array.
+struct PreparedRectDraw {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    layout_key: u64,
+    uses_gradient_stops: bool,
+    stencil_reference: Option<u32>,
+    /// Target-physical scissor `[x, y, width, height]`.
+    scissor: [u32; 4],
+    instance: u32,
 }
 
 #[cfg(test)]
@@ -319,8 +341,7 @@ impl DrawRectPass {
             color_write_enabled: true,
             clear_target: false,
             render_mode: RectRenderMode::Combined,
-            prepared_bind_group: None,
-            prepared_dynamic_offset: 0,
+            prepared: None,
             input,
             output,
         }
@@ -431,34 +452,11 @@ impl DrawRectPass {
         OpaqueRectPass::from_draw_rect_pass(self)
     }
 
-    pub fn snapshot_draw(&self) -> DrawRectDraw {
-        DrawRectDraw {
-            position: self.params.position,
-            size: self.params.size,
-            fill_color: self.params.fill_color,
-            border_color: self.params.border_color,
-            border_side_colors: self.params.border_side_colors,
-            use_border_side_colors: self.params.use_border_side_colors,
-            border_widths: self.params.border_widths,
-            border_radii: self.params.border_radii,
-            opacity: self.params.opacity,
-            depth: self.params.depth,
-            pass_scissor: self.input.pass_context.scissor_rect,
-            explicit_scissor_rect: self.scissor_rect,
-            stencil_mode: self.stencil_mode,
-            color_write_enabled: self.color_write_enabled,
-            color_target: self.output.render_target.handle(),
-            render_mode: self.render_mode,
-            gradient: self.params.gradient.clone(),
-            border_gradient: self.params.border_gradient.clone(),
-        }
-    }
-
-    fn compile_upload_uniform(
-        &mut self,
-        ctx: &mut PrepareContext<'_, '_>,
-        variant: RectShaderVariant,
-    ) {
+    /// Resolves this rectangle for the frame: appends its instance (and any
+    /// gradient stops) to the viewport's per-frame arrays and records the
+    /// pipeline, scissor and stencil reference used when recording.
+    fn prepare_instance(&mut self, ctx: &mut PrepareContext<'_, '_>, variant: RectShaderVariant) {
+        self.prepared = None;
         let surface_size = ctx.viewport.surface_size();
         let target_meta =
             resolve_texture_ref(self.output.render_target.handle(), ctx, surface_size, None);
@@ -477,6 +475,19 @@ impl DrawRectPass {
                 + target_meta.logical_origin.1 as f32,
         ];
         let scaled_size = [self.params.size[0] * scale, self.params.size[1] * scale];
+        // Degenerate rects draw nothing and stage no instance.
+        let outer_max = [
+            scaled_position[0] + scaled_size[0].max(0.0),
+            scaled_position[1] + scaled_size[1].max(0.0),
+        ];
+        if outer_max[0] <= scaled_position[0] || outer_max[1] <= scaled_position[1] {
+            self.prepared = Some(PreparedRect::Empty);
+            return;
+        }
+        // Without a device no pipeline exists; recording reports the failure.
+        let Some(device) = ctx.viewport.device().cloned() else {
+            return;
+        };
         let scaled_border_widths = self.params.border_widths.map(|v| v * scale);
         let scaled_border_radii = self
             .params
@@ -488,7 +499,7 @@ impl DrawRectPass {
             [self.params.border_color; 4]
         };
         let gradient_upload = self.params.gradient.as_ref().and_then(|g| {
-            upload_gradient_paint_stops(ctx.viewport, g, self.params.opacity).map(|stops_start| {
+            push_gradient_paint_stops(ctx.viewport, g, self.params.opacity).map(|stops_start| {
                 GradientUploadInfo {
                     kind: g.kind,
                     repeating: g.repeating,
@@ -499,7 +510,7 @@ impl DrawRectPass {
             })
         });
         let border_gradient_upload = self.params.border_gradient.as_ref().and_then(|g| {
-            upload_gradient_paint_stops(ctx.viewport, g, self.params.opacity).map(|stops_start| {
+            push_gradient_paint_stops(ctx.viewport, g, self.params.opacity).map(|stops_start| {
                 GradientUploadInfo {
                     kind: g.kind,
                     repeating: g.repeating,
@@ -509,7 +520,7 @@ impl DrawRectPass {
                 }
             })
         });
-        let params = build_rect_params(
+        let instance = build_rect_instance(
             scaled_position,
             scaled_size,
             scaled_border_widths,
@@ -526,7 +537,7 @@ impl DrawRectPass {
         if ctx.viewport.debug_options().geometry_overlay {
             let (overlay_w, overlay_h) = ctx.viewport.surface_size();
             let (debug_vertices, debug_indices) = build_rect_debug_overlay_geometry(
-                params,
+                instance,
                 [
                     target_origin.0 as f32 - target_meta.logical_origin.0 as f32,
                     target_origin.1 as f32 - target_meta.logical_origin.1 as f32,
@@ -552,21 +563,7 @@ impl DrawRectPass {
                     .push_debug_overlay_geometry(&overlay_vertices, &debug_indices);
             }
         }
-        let Some((_, dynamic_offset, pool_index)) = ctx.viewport.upload_draw_rect_uniform(
-            bytemuck::bytes_of(&params),
-            RECT_UNIFORM_SLOT_SIZE,
-            RECT_UNIFORM_SLOT_SIZE * RECT_UNIFORM_SLOT_COUNT as u64,
-        ) else {
-            self.prepared_bind_group = None;
-            self.prepared_dynamic_offset = 0;
-            return;
-        };
 
-        let Some(device) = ctx.viewport.device().cloned() else {
-            self.prepared_bind_group = None;
-            self.prepared_dynamic_offset = 0;
-            return;
-        };
         let format = ctx.viewport.offscreen_format();
         let sample_count = self
             .output
@@ -574,7 +571,7 @@ impl DrawRectPass {
             .handle()
             .and_then(|handle| render_target_sample_count(ctx, handle))
             .unwrap_or_else(|| ctx.viewport.msaa_sample_count());
-        let (stencil_class, _) = stencil_class_and_reference(self.stencil_mode);
+        let (stencil_class, stencil_reference) = stencil_class_and_reference(self.stencil_mode);
         let shape = RectShaderShape::detect(
             self.render_mode,
             self.params.fill_color,
@@ -586,20 +583,17 @@ impl DrawRectPass {
             self.params.gradient.is_some(),
             self.params.border_gradient.is_some(),
         );
-        let cache_key = rect_resource_cache_key(
+        let layout_key = rect_resource_cache_key(
             variant,
             stencil_class,
             self.color_write_enabled,
             self.render_mode,
             shape,
         );
-
-        // Get or create the pipeline resources, then extract the bind group layout.
-        // The layout is stable for the lifetime of the resources and cheap to clone.
-        let bind_group_layout = with_draw_rect_resources_cache(|cache| {
+        let (pipeline, bind_group_layout) = with_draw_rect_resources_cache(|cache| {
             let resources = cache.get_or_insert_scoped_with(
                 ctx.viewport.render_resource_scope_id(),
-                cache_key,
+                layout_key,
                 || {
                     create_draw_rect_resources(
                         &device,
@@ -632,20 +626,61 @@ impl DrawRectPass {
                     shape,
                 );
             }
-            resources.bind_group_layout.clone()
+            (
+                resources.pipeline.clone(),
+                resources.bind_group_layout.clone(),
+            )
         });
+        let scissor = resolve_graphics_pass_scissor_to_target_physical(
+            ctx.viewport,
+            self.input.pass_context.scissor_rect,
+            self.scissor_rect,
+            target_origin,
+            (target_w, target_h),
+        )
+        .unwrap_or([0, 0, target_w, target_h]);
+        let instance = ctx.viewport.push_rect_instance(instance);
+        self.prepared = Some(PreparedRect::Draw(PreparedRectDraw {
+            pipeline,
+            bind_group_layout,
+            layout_key,
+            uses_gradient_stops: shape.has_gradient || shape.has_border_gradient,
+            stencil_reference: stencil_reference.map(u32::from),
+            scissor,
+            instance,
+        }));
+    }
 
-        // Reuse a cached bind group for this pool buffer + layout combination.
-        // The bind group binds at offset 0 / size = slot_size; the per-draw dynamic
-        // offset is passed separately, so one bind group covers all slots in the buffer.
-        self.prepared_bind_group = ctx.viewport.get_or_create_draw_rect_bind_group(
-            pool_index,
-            cache_key,
-            &bind_group_layout,
-            RECT_UNIFORM_SLOT_SIZE,
-            shape.has_gradient || shape.has_border_gradient,
-        );
-        self.prepared_dynamic_offset = dynamic_offset;
+    /// Records the prepared instance. A rectangle that was never prepared
+    /// fails the frame.
+    fn record_prepared(&self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
+        let draw = match &self.prepared {
+            Some(PreparedRect::Draw(draw)) => draw,
+            Some(PreparedRect::Empty) => return,
+            None => {
+                ctx.mark_execution_failed();
+                return;
+            }
+        };
+        // Resolved at record time: a later flush in the same frame may have
+        // replaced the instance or gradient buffer since this rect prepared.
+        let Some(bind_group) = ctx.viewport().rect_bind_group(
+            draw.layout_key,
+            &draw.bind_group_layout,
+            draw.uses_gradient_stops,
+        ) else {
+            ctx.mark_execution_failed();
+            return;
+        };
+        ctx.set_pipeline(&draw.pipeline);
+        ctx.set_bind_group(0, &bind_group, &[]);
+        if let Some(reference) = draw.stencil_reference {
+            ctx.set_stencil_reference(reference);
+        }
+        let [x, y, width, height] = draw.scissor;
+        ctx.set_scissor_rect(x, y, width, height);
+        // The shader emits the six quad corners procedurally per instance.
+        ctx.draw(0..6, draw.instance..draw.instance + 1);
     }
 }
 
@@ -713,10 +748,13 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
 }
 
 const RECT_RESOURCES_BASE: u64 = 10;
-pub(crate) const RECT_UNIFORM_SLOT_SIZE: u64 = 512;
+pub(crate) const RECT_INSTANCE_STRIDE: u64 = std::mem::size_of::<RectInstance>() as u64;
+pub(crate) const RECT_INSTANCE_BUFFER_INITIAL_CAPACITY: u64 = 1024 * RECT_INSTANCE_STRIDE;
 pub(crate) const GRADIENT_STOP_STRIDE: u64 = 32;
 pub(crate) const GRADIENT_STOPS_BUFFER_INITIAL_CAPACITY: u64 = 256 * GRADIENT_STOP_STRIDE;
-const RECT_UNIFORM_SLOT_COUNT: u32 = 4096;
+// The WGSL storage array stride for 18 `vec4<f32>` fields.
+const _: () = assert!(RECT_INSTANCE_STRIDE == 18 * 16);
+const _: () = assert!(GRADIENT_STOP_STRIDE == std::mem::size_of::<GradientStopGpu>() as u64);
 
 #[derive(Clone, Copy)]
 pub struct RenderTargetTag;
@@ -735,28 +773,6 @@ enum RectStencilClass {
     Test,
     Increment,
     Decrement,
-}
-
-#[derive(Clone)]
-pub struct DrawRectDraw {
-    position: [f32; 2],
-    size: [f32; 2],
-    fill_color: [f32; 4],
-    border_color: [f32; 4],
-    border_side_colors: [[f32; 4]; 4],
-    use_border_side_colors: bool,
-    border_widths: [f32; 4],
-    border_radii: [[f32; 2]; 4],
-    opacity: f32,
-    depth: f32,
-    pass_scissor: Option<GraphicsPassScissor>,
-    explicit_scissor_rect: Option<[u32; 4]>,
-    stencil_mode: RectStencilMode,
-    color_write_enabled: bool,
-    color_target: Option<TextureHandle>,
-    render_mode: RectRenderMode,
-    gradient: Option<GradientPaint>,
-    border_gradient: Option<GradientPaint>,
 }
 
 impl GraphicsPass for DrawRectPass {
@@ -798,11 +814,11 @@ impl GraphicsPass for DrawRectPass {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
-        self.compile_upload_uniform(ctx, RectShaderVariant::Alpha);
+        self.prepare_instance(ctx, RectShaderVariant::Alpha);
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
-        encode_draw_rect_into_existing_pass(self, ctx, RectShaderVariant::Alpha);
+        self.record_prepared(ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -849,12 +865,11 @@ impl GraphicsPass for OpaqueRectPass {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
-        self.inner
-            .compile_upload_uniform(ctx, RectShaderVariant::Opaque);
+        self.inner.prepare_instance(ctx, RectShaderVariant::Opaque);
     }
 
     fn execute(&mut self, ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {
-        encode_draw_rect_into_existing_pass(&mut self.inner, ctx, RectShaderVariant::Opaque);
+        self.inner.record_prepared(ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -1010,203 +1025,6 @@ fn stencil_class_and_reference(stencil_mode: RectStencilMode) -> (RectStencilCla
     }
 }
 
-fn encode_draw_rect_into_existing_pass(
-    pass_def: &mut DrawRectPass,
-    ctx: &mut GraphicsCtx<'_, '_, '_, '_>,
-    variant: RectShaderVariant,
-) {
-    let draw = pass_def.snapshot_draw();
-    let surface_size = ctx.viewport().surface_size();
-    let target_meta =
-        resolve_texture_ref(draw.color_target, ctx.frame_resources(), surface_size, None);
-    let (target_w, target_h) = target_meta.physical_size;
-    let target_origin = draw
-        .color_target
-        .and_then(|handle| render_target_origin(ctx.frame_resources(), handle))
-        .unwrap_or((0, 0));
-    let scale = ctx.viewport().scale_factor();
-    let device = match ctx.viewport().device() {
-        Some(device) => device.clone(),
-        None => {
-            ctx.mark_execution_failed();
-            return;
-        }
-    };
-    let format = ctx.viewport().offscreen_format();
-    let sample_count = draw
-        .color_target
-        .and_then(|handle| render_target_sample_count(ctx.frame_resources(), handle))
-        .unwrap_or_else(|| ctx.viewport().msaa_sample_count());
-    let scaled_position = [
-        draw.position[0] * scale - target_origin.0 as f32 + target_meta.logical_origin.0 as f32,
-        draw.position[1] * scale - target_origin.1 as f32 + target_meta.logical_origin.1 as f32,
-    ];
-    let scaled_size = [draw.size[0] * scale, draw.size[1] * scale];
-    let scaled_border_widths = draw.border_widths.map(|v| v * scale);
-    let scaled_border_radii = draw
-        .border_radii
-        .map(|r| [r[0].max(0.0) * scale, r[1].max(0.0) * scale]);
-    let border_side_colors = if draw.use_border_side_colors {
-        draw.border_side_colors
-    } else {
-        [draw.border_color; 4]
-    };
-    // Early-out for degenerate rects before touching the viewport.  We reuse the
-    // same min/max logic build_rect_params would apply internally.
-    let outer_min = scaled_position;
-    let outer_max = [
-        scaled_position[0] + scaled_size[0].max(0.0),
-        scaled_position[1] + scaled_size[1].max(0.0),
-    ];
-    if outer_max[0] <= outer_min[0] || outer_max[1] <= outer_min[1] {
-        return;
-    }
-    let (stencil_class, stencil_reference) = stencil_class_and_reference(draw.stencil_mode);
-    let shape = RectShaderShape::detect(
-        draw.render_mode,
-        draw.fill_color,
-        draw.border_widths,
-        draw.border_color,
-        draw.border_side_colors,
-        draw.use_border_side_colors,
-        draw.border_radii,
-        draw.gradient.is_some(),
-        draw.border_gradient.is_some(),
-    );
-    let cache_key = rect_resource_cache_key(
-        variant,
-        stencil_class,
-        draw.color_write_enabled,
-        draw.render_mode,
-        shape,
-    );
-    let (pipeline, bind_group_layout) = {
-        with_draw_rect_resources_cache(|cache| {
-            let resources = cache.get_or_insert_scoped_with(
-                ctx.viewport().render_resource_scope_id(),
-                cache_key,
-                || {
-                    create_draw_rect_resources(
-                        &device,
-                        format,
-                        sample_count,
-                        variant,
-                        stencil_class,
-                        draw.color_write_enabled,
-                        draw.render_mode,
-                        shape,
-                    )
-                },
-            );
-            if resources.pipeline_format != format
-                || resources.pipeline_sample_count != sample_count
-                || resources.variant != variant
-                || resources.stencil_class != stencil_class
-                || resources.color_write_enabled != draw.color_write_enabled
-                || resources.render_mode != draw.render_mode
-                || resources.shape != shape
-            {
-                *resources = create_draw_rect_resources(
-                    &device,
-                    format,
-                    sample_count,
-                    variant,
-                    stencil_class,
-                    draw.color_write_enabled,
-                    draw.render_mode,
-                    shape,
-                );
-            }
-            (
-                resources.pipeline.clone(),
-                resources.bind_group_layout.clone(),
-            )
-        })
-    };
-    let bind_group = if let Some(bind_group) = pass_def.prepared_bind_group.clone() {
-        bind_group
-    } else {
-        // Fallback path: no prepare step ran.  Skip gradient uploads here —
-        // upload_gradient_stops goes through the staging belt, which must not be
-        // touched while a render pass is recording on the same encoder.
-        let fallback_params = build_rect_params(
-            scaled_position,
-            scaled_size,
-            scaled_border_widths,
-            scaled_border_radii,
-            draw.fill_color,
-            border_side_colors,
-            draw.opacity,
-            draw.depth,
-            target_w as f32,
-            target_h as f32,
-            None,
-            None,
-        );
-        let fallback_uniform_buffer = super::create_transient_buffer(
-            &device,
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("DrawRect Params Buffer Fallback"),
-                contents: bytemuck::bytes_of(&fallback_params),
-                usage: wgpu::BufferUsages::UNIFORM,
-            },
-        );
-        let stops_buffer = (shape.has_gradient || shape.has_border_gradient).then(|| {
-            ctx.viewport()
-                .ensure_gradient_stops_buffer()
-                .cloned()
-                .unwrap_or_else(|| {
-                    device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("Gradient Stops Fallback (empty)"),
-                        size: GRADIENT_STOP_STRIDE,
-                        usage: wgpu::BufferUsages::STORAGE,
-                        mapped_at_creation: false,
-                    })
-                })
-        });
-        let mut entries = vec![wgpu::BindGroupEntry {
-            binding: 0,
-            resource: fallback_uniform_buffer.as_entire_binding(),
-        }];
-        if let Some(stops_buffer) = &stops_buffer {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 1,
-                resource: stops_buffer.as_entire_binding(),
-            });
-        }
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("DrawRect Bind Group Fallback"),
-            layout: &bind_group_layout,
-            entries: &entries,
-        })
-    };
-    let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
-        ctx.viewport(),
-        draw.pass_scissor,
-        draw.explicit_scissor_rect,
-        target_origin,
-        (target_w, target_h),
-    );
-    ctx.set_pipeline(&pipeline);
-    let dynamic_offset = if pass_def.prepared_bind_group.is_some() {
-        pass_def.prepared_dynamic_offset
-    } else {
-        0
-    };
-    ctx.set_bind_group(0, &bind_group, &[dynamic_offset]);
-    if let Some(stencil_reference) = stencil_reference {
-        ctx.set_stencil_reference(stencil_reference as u32);
-    }
-    if let Some([x, y, width, height]) = scissor_rect_physical {
-        ctx.set_scissor_rect(x, y, width, height);
-    } else {
-        ctx.set_scissor_rect(0, 0, target_w, target_h);
-    }
-    // The shader emits the same six indexed corners procedurally. No vertex
-    // input means Metal needs neither a quad buffer nor its sizes metadata.
-    ctx.draw(0..6, 0..1);
-}
-
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct DebugVertex {
@@ -1214,9 +1032,11 @@ struct DebugVertex {
     color: [f32; 4],
 }
 
+/// One rectangle in the per-frame instance storage buffer. The layout matches
+/// `RectInstance` in rect.wgsl (an array element, 16-byte aligned fields).
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
-struct RectParams {
+pub(crate) struct RectInstance {
     // [min_x, min_y, max_x, max_y] in physical pixels
     outer_rect: [f32; 4],
     inner_rect: [f32; 4],
@@ -1247,8 +1067,6 @@ struct RectParams {
     // Same layout as gradient_info / gradient_axis, but for border paint.
     border_gradient_info: [f32; 4],
     border_gradient_axis: [f32; 4],
-    // Pad to RECT_UNIFORM_SLOT_SIZE (512 B = 32 vec4).  Fields above occupy 18 vec4.
-    _pad_tail: [[f32; 4]; 14],
 }
 
 pub(crate) struct DrawRectResources {
@@ -1287,17 +1105,17 @@ fn create_draw_rect_resources(
         },
     );
 
-    // A solid shader never reads gradient stops. Omitting the binding (rather
-    // than binding an unused dummy) prevents Metal from resending that buffer
-    // whenever the per-draw uniform dynamic offset changes. The shape is also
-    // part of the resource/layout cache key, so gradient variants stay distinct.
+    // Binding 0 is the frame's instance array, indexed by `instance_index`.
+    // A solid shader never reads gradient stops, so it omits binding 1 rather
+    // than binding an unused dummy. The shape is also part of the
+    // resource/layout cache key, so gradient variants stay distinct.
     let mut entries = vec![wgpu::BindGroupLayoutEntry {
         binding: 0,
         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
         ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: true,
-            min_binding_size: Some(NonZeroU64::new(RECT_UNIFORM_SLOT_SIZE).unwrap()),
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: NonZeroU64::new(RECT_INSTANCE_STRIDE),
         },
         count: None,
     }];
@@ -1485,7 +1303,7 @@ fn create_draw_rect_resources(
 }
 
 fn build_rect_debug_overlay_geometry(
-    params: RectParams,
+    params: RectInstance,
     global_origin: [f32; 2],
     screen_w: f32,
     screen_h: f32,
@@ -1630,7 +1448,7 @@ pub(super) fn release_scope(scope: u64) {
 
 type CornerRadii = [[f32; 2]; 4]; // TL, TR, BR, BL
 
-fn build_rect_params(
+fn build_rect_instance(
     position: [f32; 2],
     size: [f32; 2],
     border_widths_lr_tb: [f32; 4], // [left,right,top,bottom]
@@ -1643,7 +1461,7 @@ fn build_rect_params(
     screen_h: f32,
     gradient: Option<&GradientUploadInfo>,
     border_gradient: Option<&GradientUploadInfo>,
-) -> RectParams {
+) -> RectInstance {
     let width = size[0].max(0.0);
     let height = size[1].max(0.0);
 
@@ -1720,7 +1538,7 @@ fn build_rect_params(
     let (gradient_info, gradient_axis) = gradient_uniform(gradient);
     let (border_gradient_info, border_gradient_axis) = gradient_uniform(border_gradient);
 
-    RectParams {
+    RectInstance {
         outer_rect: [outer_min[0], outer_min[1], outer_max[0], outer_max[1]],
         inner_rect: [inner_min[0], inner_min[1], inner_max[0], inner_max[1]],
         outer_rx: [
@@ -1764,12 +1582,11 @@ fn build_rect_params(
         gradient_axis,
         border_gradient_info,
         border_gradient_axis,
-        _pad_tail: [[0.0; 4]; 14],
     }
 }
 
-/// Gradient paint axis resolved to physical pixels plus the SSBO start index
-/// for this draw's stops.
+/// Gradient paint axis resolved to physical pixels plus the frame's gradient
+/// stop array start index for this draw's stops.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GradientUploadInfo {
     pub kind: GradientKindGpu,
@@ -1779,20 +1596,17 @@ pub(crate) struct GradientUploadInfo {
     pub axis_scaled: [f32; 4],
 }
 
-fn upload_gradient_paint_stops(
+fn push_gradient_paint_stops(
     viewport: &mut crate::view::viewport::Viewport,
     paint: &GradientPaint,
     opacity: f32,
 ) -> Option<u32> {
-    if paint.stops.is_empty() {
-        return None;
-    }
     let opacity = opacity.clamp(0.0, 1.0);
-    let mut scratch: Vec<GradientStopGpu> = paint.stops.iter().copied().collect();
-    for stop in &mut scratch {
+    viewport.push_gradient_stops(paint.stops.iter().map(|stop| {
+        let mut stop = *stop;
         stop.color[3] *= opacity;
-    }
-    viewport.upload_gradient_stops(&scratch)
+        stop
+    }))
 }
 
 fn scaled_gradient_axis(paint: &GradientPaint, scale: f32, origin: [f32; 2]) -> [f32; 4] {

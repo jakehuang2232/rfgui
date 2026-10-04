@@ -123,20 +123,19 @@ fn abort_frame_discards_encoder_resets_staging_and_next_frame_submits() -> Resul
         wgpu::TextureFormat::Rgba8Unorm,
     )?;
     assert!(viewport.frame.frame_state.is_some());
-    assert!(
-        viewport
-            .upload_draw_rect_uniform(&[1, 2, 3, 4], 256, 256)
-            .is_some(),
-        "fixture must stage a rect uniform"
+    let instance =
+        <crate::view::render_pass::draw_rect_pass::RectInstance as bytemuck::Zeroable>::zeroed();
+    assert_eq!(
+        viewport.push_rect_instance(instance),
+        0,
+        "fixture must stage a rect instance"
     );
-    assert!(viewport.flush_draw_rect_uniform_uploads());
-    // Abort must discard both recorded copies and slots still waiting for a
-    // prepare flush. Neither may be replayed into the next frame.
-    assert!(
-        viewport
-            .upload_draw_rect_uniform(&[9, 9, 9, 9], 256, 256)
-            .is_some()
-    );
+    assert!(viewport.flush_rect_instance_uploads());
+    let (_, _, uploaded_buffer) = viewport.rect_instance_stream_for_test();
+    // Abort must discard both recorded copies and instances still waiting for
+    // a prepare flush. Neither may be replayed into the next frame.
+    assert_eq!(viewport.push_rect_instance(instance), 1);
+    assert_eq!(viewport.rect_instance_stream_for_test().1, 1);
     assert!(viewport.gpu.upload_staging_belt.is_some());
 
     let profile = viewport.complete_frame(FrameDisposition::Abort);
@@ -158,21 +157,19 @@ fn abort_frame_discards_encoder_resets_staging_and_next_frame_submits() -> Resul
         4,
         wgpu::TextureFormat::Rgba8Unorm,
     )?;
+    // The next frame restarts instance indices and re-uploads from zero into
+    // the retained buffer; nothing staged before the abort survives.
+    let (staged, uploaded, buffer) = viewport.rect_instance_stream_for_test();
+    assert_eq!((staged, uploaded), (0, 0));
+    assert_eq!(buffer, uploaded_buffer);
+    assert_eq!(viewport.push_rect_instance(instance), 0);
+    assert!(viewport.gpu.upload_staging_belt.is_none());
     assert!(
-        viewport
-            .frame
-            .draw_rect_uniform_pool
-            .iter()
-            .all(|entry| entry.pending_upload.is_empty())
-    );
-    assert!(
-        viewport
-            .upload_draw_rect_uniform(&[5, 6, 7, 8], 256, 256)
-            .is_some(),
+        viewport.flush_rect_instance_uploads(),
         "the frame after abort must lazily recreate the staging belt"
     );
     assert!(viewport.gpu.upload_staging_belt.is_some());
-    assert!(viewport.flush_draw_rect_uniform_uploads());
+    assert_eq!(viewport.rect_instance_stream_for_test().1, 1);
     viewport.end_offscreen_test_frame()?;
     assert!(viewport.frame.frame_state.is_none());
     assert_eq!(viewport.frame_completion_counts_for_test(), (1, 0, 1));

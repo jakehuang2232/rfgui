@@ -84,8 +84,11 @@ fn compose_all_variants() {
                                     has_gradient,
                                     has_border_gradient,
                                 };
-                                if let Err(e) = compose(key) {
-                                    panic!("{}", e);
+                                // Validate as well as compose: the emitted WGSL
+                                // is what the device compiles.
+                                let module = compose(key).unwrap_or_else(|e| panic!("{}", e));
+                                if let Err(e) = compose_rect_shader_wgsl(module) {
+                                    panic!("validate ({:?}): {}", key, e);
                                 }
                             }
                         }

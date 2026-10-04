@@ -150,7 +150,7 @@ fn pick_border_side(
 }
 
 
-struct RectParams {
+struct RectInstance {
     outer_rect: vec4<f32>,    // min_x, min_y, max_x, max_y (pixel space)
     inner_rect: vec4<f32>,
     outer_rx: vec4<f32>,      // TL, TR, BR, BL
@@ -172,7 +172,6 @@ struct RectParams {
     gradient_axis: vec4<f32>,
     border_gradient_info: vec4<f32>,
     border_gradient_axis: vec4<f32>,
-    _pad_tail: array<vec4<f32>, 14>,
 }
 
 struct GradientStop {
@@ -180,8 +179,13 @@ struct GradientStop {
     pos: vec4<f32>, // x: position (0..1)
 }
 
+// One element per rectangle; a draw call covers a contiguous instance range.
 @group(0) @binding(0)
-var<uniform> u: RectParams;
+var<storage, read> rects: array<RectInstance>;
+
+// The current rectangle, loaded once at the top of each entry point so the
+// helpers below keep reading a single value.
+var<private> u: RectInstance;
 
 @group(0) @binding(1)
 var<storage, read> gradient_stops: array<GradientStop>;
@@ -189,10 +193,15 @@ var<storage, read> gradient_stops: array<GradientStop>;
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) pixel_pos: vec2<f32>,
+    @location(1) @interpolate(flat) instance: u32,
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
+fn vs_main(
+    @builtin(vertex_index) vertex_index: u32,
+    @builtin(instance_index) instance_index: u32,
+) -> VertexOut {
+    u = rects[instance_index];
     // Preserve the original quad indices [0, 1, 2, 0, 2, 3] exactly, including
     // winding and diagonal. Fixed corners do not need a vertex/index buffer.
     let corners = array<vec2<f32>, 6>(
@@ -212,6 +221,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
     out.position = vec4<f32>(ndc, 0.0, 1.0);
 #endif
     out.pixel_pos = p;
+    out.instance = instance_index;
     return out;
 }
 
@@ -337,6 +347,7 @@ fn border_color_of(p: vec2<f32>) -> vec4<f32> {
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    u = rects[in.instance];
     let p = in.pixel_pos;
 
 #ifdef PASS_FILL_ONLY
@@ -368,11 +379,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 #ifdef BORDER_NONE
     let cov_inner = cov_outer;
 #else
+    // Per-instance data is non-uniform, so derivatives (fwidth) must not be
+    // reached through a branch on it. Evaluate unconditionally and select.
     let has_inner = u.flags.x > 0.5;
-    var cov_inner = 0.0;
-    if has_inner {
-        cov_inner = cov_inner_of(p);
-    }
+    let cov_inner = select(0.0, cov_inner_of(p), has_inner);
 #endif
 
     let border_mask = clamp(cov_outer - cov_inner, 0.0, 1.0);

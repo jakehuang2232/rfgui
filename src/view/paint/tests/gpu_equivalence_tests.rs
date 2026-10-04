@@ -1588,6 +1588,7 @@ fn validate_direct_scroll_transform_gradient_coverage(
 mod buffer_binding_tests;
 mod native_pixel_oracle_tests;
 mod oracle_tests;
+mod rect_instancing_tests;
 mod text_buffer_tests;
 
 mod artifact_intermediate_coverage_tests;

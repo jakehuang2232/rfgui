@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn radius_smaller_than_border_clamps_inner_radii_and_inner_rect_safely() {
-    let params = build_rect_params(
+    let params = build_rect_instance(
         [10.0, 20.0],
         [20.0, 16.0],
         [12.0, 11.0, 13.0, 10.0], // left, right, top, bottom
@@ -41,7 +41,7 @@ fn css_radius_normalization_scales_xy_to_avoid_overlap() {
     // width=100, height=60.
     // x sums: top=140, bottom=140 => sx = 100/140 = 0.7142857...
     // y sums: left=90, right=90 => sy = 60/90 = 0.6666666...
-    let params = build_rect_params(
+    let params = build_rect_instance(
         [0.0, 0.0],
         [100.0, 60.0],
         [4.0, 4.0, 4.0, 4.0],

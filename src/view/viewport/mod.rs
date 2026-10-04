@@ -17,6 +17,7 @@ pub(crate) use self::gpu_resources::PoolCanonicalArtifactSurfaceResidents;
 mod incremental_tests;
 mod input;
 mod lifecycle;
+mod rect_instances;
 mod render;
 #[cfg(test)]
 pub(crate) use render::{
@@ -340,11 +341,7 @@ struct FrameRuntime {
         FxHashMap<crate::view::sampled_texture::SampledTextureId, SampledTextureEntry>,
     sampled_texture_upload_count: u64,
     frame_buffer_pool: FxHashMap<u32, FrameBufferEntry>,
-    draw_rect_uniform_pool: Vec<DrawRectUniformBufferEntry>,
-    draw_rect_uniform_cursor: usize,
-    draw_rect_uniform_offset: u64,
-    gradient_stops_buffer: Option<GradientStopsBufferEntry>,
-    gradient_stops_byte_cursor: u64,
+    rect_instances: rect_instances::RectInstanceFrame,
     frame_stats: FrameStats,
     frame_presented: bool,
     /// A viewport change or failed frame still needs a successful submission.
@@ -392,11 +389,7 @@ impl FrameRuntime {
             gpu_paint_sources: FxHashMap::default(),
             retained_raster_diagnostics: Vec::new(),
             frame_buffer_pool: FxHashMap::default(),
-            draw_rect_uniform_pool: Vec::new(),
-            draw_rect_uniform_cursor: 0,
-            draw_rect_uniform_offset: 0,
-            gradient_stops_buffer: None,
-            gradient_stops_byte_cursor: 0,
+            rect_instances: rect_instances::RectInstanceFrame::default(),
             frame_stats: FrameStats::new(trace_fps),
             frame_presented: false,
             render_required: true,
@@ -653,26 +646,6 @@ pub(super) struct FrameBufferEntry {
     pub(super) buffer: wgpu::Buffer,
     pub(super) size: u64,
     pub(super) usage: wgpu::BufferUsages,
-}
-
-pub(super) struct DrawRectUniformBufferEntry {
-    pub(super) buffer: wgpu::Buffer,
-    pub(super) size: u64,
-    pub(super) last_used_frame: u64,
-    /// Dense, padded slots waiting for the end of frame-graph preparation.
-    pub(super) pending_upload: Vec<u8>,
-    pub(super) pending_upload_offset: u64,
-    /// Cached bind groups keyed by layout_cache_key.  The bind group binds the buffer
-    /// at offset 0 / size=slot_size; the per-draw dynamic offset is supplied separately,
-    /// so one bind group is valid for *all* slots in this buffer.
-    pub(super) bind_groups: FxHashMap<u64, wgpu::BindGroup>,
-}
-
-pub(super) struct GradientStopsBufferEntry {
-    pub(super) buffer: wgpu::Buffer,
-    pub(super) size: u64,
-    pub(super) last_used_frame: u64,
-    pub(super) last_high_usage_frame: u64,
 }
 
 pub(super) struct SampledTextureEntry {
