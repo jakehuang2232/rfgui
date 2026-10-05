@@ -87,14 +87,7 @@ fn fragmented_inline_outer_shadow_prepares_one_op_per_fragment_in_order() {
     assert_eq!(prepared.len(), 2);
     let min_y = prepared
         .iter()
-        .map(|shadow| {
-            shadow
-                .mesh
-                .vertices
-                .iter()
-                .map(|vertex| vertex[1])
-                .fold(f32::INFINITY, f32::min)
-        })
+        .map(|shadow| shadow.shape.y)
         .collect::<Vec<_>>();
     assert_eq!(min_y, vec![0.0, 10.0]);
 }

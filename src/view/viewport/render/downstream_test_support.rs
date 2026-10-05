@@ -240,7 +240,13 @@ impl Viewport {
         for (key, desc) in graph.declared_persistent_textures() {
             // A declared target can be culled with its enclosing raster. Only
             // resources in the executed graph require physical residency.
-            if !compiled.uses_persistent_texture(key) {
+            // Shadow templates are a shared cache, not surface residency.
+            if !compiled.uses_persistent_texture(key)
+                || matches!(
+                    key,
+                    crate::view::frame_graph::PersistentTextureKey::ShadowTemplate(_)
+                )
+            {
                 continue;
             }
             texture_bytes += crate::view::raster_cost::texture_desc_payload_bytes(desc).bytes;

@@ -299,6 +299,7 @@ fn prepare_composite_geometry(
                     source_is_premultiplied: true,
                     opacity: 1.0,
                     scissor_rect: None,
+                    nine_patch: None,
                 },
                 resolved_clip: resolved_receiver_clip,
             })

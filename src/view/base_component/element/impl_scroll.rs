@@ -412,7 +412,7 @@ impl Element {
         color: [f32; 4],
     ) -> BuildState {
         let [rect_x, rect_y] = ctx.paint_point(rect.x, rect.y);
-        let mesh = ShadowMesh::rounded_rect(
+        let mesh = ShadowShape::rounded_rect(
             rect_x,
             rect_y,
             rect.width.max(0.0),
@@ -425,7 +425,6 @@ impl Element {
             blur_radius: self.scrollbar_shadow_blur_radius.max(0.0),
             color,
             opacity: 1.0,
-            spread: 0.0,
             clip_to_geometry: true,
         };
 

@@ -97,7 +97,7 @@ fn seven_opacity_carriers() -> Vec<PaintOp> {
     use crate::view::base_component::{
         Rect, ScrollbarInteractionWitness, ScrollbarOverlayWitness, ScrollbarPaintStateWitness,
     };
-    use crate::view::render_pass::shadow_module::{ShadowMesh, ShadowParams};
+    use crate::view::render_pass::shadow_module::{ShadowParams, ShadowShape};
 
     let draw = PaintOp::DrawRect(crate::view::paint::DrawRectOp {
         params: crate::view::render_pass::draw_rect_pass::RectPassParams {
@@ -132,7 +132,7 @@ fn seven_opacity_carriers() -> Vec<PaintOp> {
     )
     .expect("canonical inline decoration");
     let shadow = PreparedShadowOp::new(
-        ShadowMesh::rounded_rect(1.0, 2.0, 20.0, 10.0, 2.0),
+        ShadowShape::rounded_rect(1.0, 2.0, 20.0, 10.0, 2.0),
         ShadowParams {
             opacity: 0.5,
             ..Default::default()

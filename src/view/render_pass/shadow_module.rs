@@ -1,34 +1,38 @@
+use crate::view::frame_graph::texture_resource::TextureHandle;
 use crate::view::frame_graph::{
-    FrameGraph, GraphicsColorAttachmentOps, GraphicsPassBuilder, TextureDesc,
+    FrameGraph, GraphicsColorAttachmentOps, GraphicsPassBuilder, PersistentTextureKey, TextureDesc,
 };
 use crate::view::render_pass::GraphicsPass;
 use crate::view::render_pass::blur_module::{
-    BlurModuleInput, BlurModuleOutput, BlurModuleParams, build_blur_module,
+    BlurModuleInput, BlurModuleOutput, BlurModuleParams, blur_downsample_factor, build_blur_module,
 };
 use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{GraphicsPassContext, render_target_ref};
 use crate::view::render_pass::texture_composite_pass::{
-    TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput, TextureCompositeParams,
-    TextureCompositePass, TextureCompositeSourceIn,
+    NinePatchComposite, TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput,
+    TextureCompositeParams, TextureCompositePass, TextureCompositeSourceIn,
 };
+use rustc_hash::{FxHashMap, FxHashSet};
 
 const SHADOW_RESOURCES: u64 = 203;
 const SHADOW_INTERMEDIATE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-#[derive(Clone, Debug, Default)]
-pub struct ShadowMesh {
-    pub vertices: Vec<[f32; 2]>,
-    pub indices: Vec<u32>,
+/// A rounded rectangle that casts a shadow, in logical coordinates.
+/// Radii are top-left, top-right, bottom-right, bottom-left and are
+/// normalized to the rectangle when constructed.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShadowShape {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub radii: [f32; 4],
 }
 
-impl ShadowMesh {
-    pub fn new(vertices: Vec<[f32; 2]>, indices: Vec<u32>) -> Self {
-        Self { vertices, indices }
-    }
-
+impl ShadowShape {
     pub fn rounded_rect(x: f32, y: f32, width: f32, height: f32, radius: f32) -> Self {
-        Self::rounded_rect_with_radii(x, y, width, height, [radius, radius, radius, radius])
+        Self::rounded_rect_with_radii(x, y, width, height, [radius; 4])
     }
 
     pub fn rounded_rect_with_radii(
@@ -38,17 +42,63 @@ impl ShadowMesh {
         height: f32,
         radii: [f32; 4],
     ) -> Self {
-        let w = width.max(0.0);
-        let h = height.max(0.0);
-        if w <= 0.0 || h <= 0.0 {
-            return Self::default();
+        let width = width.max(0.0);
+        let height = height.max(0.0);
+        Self {
+            x,
+            y,
+            width,
+            height,
+            radii: normalize_corner_radii(radii, width, height),
         }
-        let [tl, tr, br, bl] = normalize_corner_radii(radii, w, h);
+    }
+
+    /// A drawable shape: finite, non-empty, with non-negative radii.
+    pub fn is_valid(&self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .into_iter()
+            .chain(self.radii)
+            .all(f32::is_finite)
+            && self.width > 0.0
+            && self.height > 0.0
+            && self.radii.iter().all(|radius| *radius >= 0.0)
+    }
+
+    pub fn translated(self, dx: f32, dy: f32) -> Self {
+        Self {
+            x: self.x + dx,
+            y: self.y + dy,
+            ..self
+        }
+    }
+
+    fn scaled(self, scale: f32) -> Self {
+        Self {
+            x: self.x * scale,
+            y: self.y * scale,
+            width: self.width * scale,
+            height: self.height * scale,
+            radii: self.radii.map(|radius| radius * scale),
+        }
+    }
+
+    /// Triangle fan approximating the outline with six segments per corner.
+    fn fill_mesh(&self) -> (Vec<[f32; 2]>, Vec<u32>) {
+        let Self {
+            x,
+            y,
+            width: w,
+            height: h,
+            radii: [tl, tr, br, bl],
+        } = *self;
+        if w <= 0.0 || h <= 0.0 {
+            return (Vec::new(), Vec::new());
+        }
         if tl <= 0.001 && tr <= 0.001 && br <= 0.001 && bl <= 0.001 {
-            return Self {
-                vertices: vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
-                indices: vec![0, 1, 2, 0, 2, 3],
-            };
+            return (
+                vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+                vec![0, 1, 2, 0, 2, 3],
+            );
         }
         const ARC_SEGMENTS: usize = 6;
         let mut ring = Vec::with_capacity(ARC_SEGMENTS * 4 + 4);
@@ -84,23 +134,437 @@ impl ShadowMesh {
             std::f32::consts::PI * 1.5,
             ARC_SEGMENTS,
         );
-
-        let cx = x + w * 0.5;
-        let cy = y + h * 0.5;
         let mut vertices = Vec::with_capacity(ring.len() + 1);
-        vertices.push([cx, cy]);
+        vertices.push([x + w * 0.5, y + h * 0.5]);
         vertices.extend(ring.iter().copied());
-
-        let mut indices = Vec::with_capacity(ring.len() * 3);
-        let ring_start = 1_u32;
         let ring_len = ring.len() as u32;
+        let mut indices = Vec::with_capacity(ring.len() * 3);
         for i in 0..ring_len {
-            let a = ring_start + i;
-            let b = ring_start + ((i + 1) % ring_len);
-            indices.extend_from_slice(&[0, a, b]);
+            indices.extend_from_slice(&[0, 1 + i, 1 + (i + 1) % ring_len]);
         }
-        Self { vertices, indices }
+        (vertices, indices)
     }
+}
+
+/// Identity of one cached shadow template: a blurred (or, at zero blur,
+/// plain) coverage mask of a rounded rectangle, independent of where it is
+/// drawn and of its color. All values are physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ShadowTemplateKey {
+    shape_len_bits: [u32; 2],
+    shape_offset_bits: [u32; 2],
+    radii_bits: [u32; 4],
+    blur_bits: u32,
+    extent: [u32; 2],
+}
+
+impl ShadowTemplateKey {
+    pub(crate) fn texture_desc(&self) -> TextureDesc {
+        TextureDesc::new(
+            self.extent[0],
+            self.extent[1],
+            SHADOW_INTERMEDIATE_FORMAT,
+            wgpu::TextureDimension::D2,
+        )
+        .with_sample_count(1)
+        .with_label("Shadow Template")
+    }
+}
+
+/// Templates a frame graph may read without producing them, and the ones it
+/// declared. A viewport supplies the resident set before build.
+#[derive(Default)]
+pub(crate) struct ShadowTemplateFrame {
+    pub(crate) resident: FxHashSet<ShadowTemplateKey>,
+    declared: FxHashMap<ShadowTemplateKey, TextureHandle>,
+}
+
+/// One axis of a shadow layer and its nine-patch template, in physical
+/// pixels. The template keeps every pixel within `radius + influence` of
+/// either shape edge; between them the coverage is constant along this axis,
+/// so the destination repeats template texel `split` for `stretch` pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TemplateAxis {
+    origin: i64,
+    layer: u32,
+    template: u32,
+    shape_offset: f32,
+    shape_len: f32,
+    split: u32,
+    stretch: u32,
+}
+
+impl TemplateAxis {
+    fn new(
+        start: f32,
+        len: f32,
+        radius: f32,
+        pad: u32,
+        influence: f32,
+        align: u32,
+    ) -> Option<Self> {
+        let origin = start.floor() - pad as f32;
+        if ![start, len, radius, origin].into_iter().all(f32::is_finite)
+            || len <= 0.0
+            || origin.abs() > 1.0e9
+            || len > 1.0e7
+        {
+            return None;
+        }
+        let shape_offset = start - origin;
+        let layer = (shape_offset + len).ceil() as u32 + pad;
+        let min_shape = 2.0 * (radius + influence) + 4.0;
+        let stretch = if len >= min_shape + align as f32 {
+            ((len - min_shape) / align as f32).floor() as u32 * align
+        } else {
+            0
+        };
+        let shape_len = len - stretch as f32;
+        let template = ((shape_offset + shape_len).ceil() as u32 + pad).div_ceil(align) * align;
+        let split = if stretch > 0 {
+            (shape_offset + radius + influence).ceil() as u32
+        } else {
+            template
+        };
+        Some(Self {
+            origin: origin as i64,
+            layer,
+            template,
+            shape_offset,
+            shape_len,
+            split,
+            stretch,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TemplatePlan {
+    key: ShadowTemplateKey,
+    x: TemplateAxis,
+    y: TemplateAxis,
+    radii: [f32; 4],
+    blur: f32,
+}
+
+impl TemplatePlan {
+    /// `shape` and `blur` in physical pixels.
+    fn new(shape: ShadowShape, blur: f32) -> Option<Self> {
+        if !shape.is_valid() || !blur.is_finite() || blur < 0.0 {
+            return None;
+        }
+        let blurred = blur > 0.001;
+        let pad = (blur * 1.5).ceil() as u32;
+        let (influence, align) = if blurred {
+            let downsample = blur_downsample_factor(blur);
+            ((blur.ceil() as u32 + 2 * downsample + 2) as f32, downsample)
+        } else {
+            (1.0, 1)
+        };
+        let radius = shape.radii.into_iter().fold(0.0_f32, f32::max);
+        let x = TemplateAxis::new(shape.x, shape.width, radius, pad, influence, align)?;
+        let y = TemplateAxis::new(shape.y, shape.height, radius, pad, influence, align)?;
+        let blur = if blurred { blur } else { 0.0 };
+        Some(Self {
+            key: ShadowTemplateKey {
+                shape_len_bits: [x.shape_len, y.shape_len].map(f32::to_bits),
+                shape_offset_bits: [x.shape_offset, y.shape_offset].map(f32::to_bits),
+                radii_bits: shape.radii.map(f32::to_bits),
+                blur_bits: blur.to_bits(),
+                extent: [x.template, y.template],
+            },
+            x,
+            y,
+            radii: shape.radii,
+            blur,
+        })
+    }
+
+    /// Declares this template in `graph`, producing it unless the viewport
+    /// reported it resident.
+    fn ensure(&self, graph: &mut FrameGraph, pass_context: GraphicsPassContext) -> TextureHandle {
+        if let Some(handle) = graph.shadow_templates.declared.get(&self.key) {
+            return *handle;
+        }
+        let output: RenderTargetOut = graph.declare_persistent_texture_internal(
+            self.key.texture_desc(),
+            PersistentTextureKey::ShadowTemplate(self.key),
+        );
+        let handle = output.handle().expect("declared shadow template");
+        graph.shadow_templates.declared.insert(self.key, handle);
+        if graph.shadow_templates.resident.contains(&self.key) {
+            return handle;
+        }
+        let (vertices, indices) = ShadowShape {
+            x: self.x.shape_offset,
+            y: self.y.shape_offset,
+            width: self.x.shape_len,
+            height: self.y.shape_len,
+            radii: self.radii,
+        }
+        .fill_mesh();
+        let fill = |render_target| ShadowFillPass {
+            vertices,
+            indices,
+            color: [1.0; 4],
+            render_target,
+            template: Some(self.key),
+        };
+        if self.blur == 0.0 {
+            graph.add_graphics_pass(fill(output));
+            return handle;
+        }
+        let coverage = graph.declare_texture(
+            TextureDesc::new(
+                self.key.extent[0],
+                self.key.extent[1],
+                SHADOW_INTERMEDIATE_FORMAT,
+                wgpu::TextureDimension::D2,
+            )
+            .with_sample_count(1)
+            .with_label("Shadow Template / Coverage"),
+        );
+        let coverage_handle = coverage.handle().expect("declared shadow coverage");
+        graph.add_graphics_pass(fill(coverage));
+        let built = build_blur_module(
+            graph,
+            BlurModuleParams {
+                blur_radius: self.blur,
+                intermediate_format: SHADOW_INTERMEDIATE_FORMAT,
+            },
+            BlurModuleInput {
+                layer: LayerIn::with_handle(coverage_handle),
+                pass_context,
+            },
+            BlurModuleOutput {
+                render_target: output,
+            },
+        );
+        debug_assert!(built, "a declared coverage layer always blurs");
+        handle
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ShadowParams {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    pub color: [f32; 4],
+    pub opacity: f32,
+    /// Show the shadow only inside the unshifted shape.
+    pub clip_to_geometry: bool,
+}
+
+impl Default for ShadowParams {
+    fn default() -> Self {
+        Self {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_radius: 0.0,
+            color: [0.0, 0.0, 0.0, 1.0],
+            opacity: 1.0,
+            clip_to_geometry: false,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ShadowModuleSpec {
+    pub shape: ShadowShape,
+    pub params: ShadowParams,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
+    pub scale_factor: f32,
+    pub pass_context: GraphicsPassContext,
+    pub output: RenderTargetOut,
+}
+
+/// Fills a template's coverage. A template producer reports its write so
+/// the viewport can trust the template once the frame is submitted.
+pub(crate) struct ShadowFillPass {
+    vertices: Vec<[f32; 2]>,
+    indices: Vec<u32>,
+    color: [f32; 4],
+    render_target: RenderTargetOut,
+    template: Option<ShadowTemplateKey>,
+}
+
+#[cfg(test)]
+impl ShadowFillPass {
+    pub(crate) fn test_snapshot(&self) -> ShadowFillPassTestSnapshot {
+        ShadowFillPassTestSnapshot {
+            vertices_bits: self
+                .vertices
+                .iter()
+                .map(|vertex| vertex.map(f32::to_bits))
+                .collect(),
+            indices: self.indices.clone(),
+            color_bits: self.color.map(f32::to_bits),
+            render_target: self.render_target.handle(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShadowFillPassTestSnapshot {
+    pub(crate) vertices_bits: Vec<[u32; 2]>,
+    pub(crate) indices: Vec<u32>,
+    pub(crate) color_bits: [u32; 4],
+    pub(crate) render_target: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
+}
+
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+struct FillVertex {
+    position: [f32; 2],
+    color: [f32; 4],
+}
+
+struct ShadowResources {
+    fill_pipeline: wgpu::RenderPipeline,
+}
+
+impl GraphicsPass for ShadowFillPass {
+    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
+        if let Some(target) = builder.texture_target(&self.render_target) {
+            let _ = target;
+            // This pass owns a newly declared shadow/mask scratch target.
+            // Clear in its attachment load instead of opening a separate
+            // clear-only pass immediately before this fill.
+            builder.write_color(
+                &self.render_target,
+                GraphicsColorAttachmentOps::clear([0.; 4]),
+            );
+        }
+    }
+
+    fn execute(&mut self, ctx: &mut crate::view::render_pass::GraphicsCtx<'_, '_, '_, '_>) {
+        // Executing a producer means its whole chain into the template is
+        // live: every later stage consumes this pass's output.
+        if let Some(key) = self.template {
+            ctx.viewport().note_shadow_template_written(key);
+            crate::ui::work_profile::count(|p| p.shadow_template_builds += 1);
+        }
+        if self.vertices.is_empty() || self.indices.is_empty() {
+            return;
+        }
+        let Some(device) = ctx.viewport().device().cloned() else {
+            ctx.mark_execution_failed();
+            return;
+        };
+        let surface_size = ctx.viewport().surface_size();
+        let (target_w, target_h) = match self.render_target.handle() {
+            Some(handle) => {
+                let Some(texture_ref) = render_target_ref(ctx.frame_resources(), handle) else {
+                    ctx.mark_execution_failed();
+                    return;
+                };
+                texture_ref.physical_size()
+            }
+            None => surface_size,
+        };
+        if target_w == 0 || target_h == 0 {
+            return;
+        }
+        let pipeline = with_shadow_resources_cache(|cache| {
+            let resources = cache.get_or_insert_scoped_with(
+                ctx.viewport().render_resource_scope_id(),
+                SHADOW_RESOURCES,
+                || create_resources(&device),
+            );
+            resources.fill_pipeline.clone()
+        });
+        encode_mesh_fill_into_pass(
+            &device,
+            &pipeline,
+            ctx,
+            target_w as f32,
+            target_h as f32,
+            &self.vertices,
+            &self.indices,
+            self.color,
+        );
+    }
+}
+
+/// Draws a shadow as one stretched nine-patch of a cached template. Like
+/// Firefox WebRender and WebKit's tiled shadows, the blur runs once per
+/// template, not per frame: moving or resizing a shadow only redraws it.
+pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bool {
+    let scale = spec.scale_factor.max(0.0001);
+    if !spec.shape.is_valid() {
+        return false;
+    }
+    let shadow_shape = spec
+        .shape
+        .translated(spec.params.offset_x, spec.params.offset_y)
+        .scaled(scale);
+    let Some(shadow) = TemplatePlan::new(shadow_shape, spec.params.blur_radius.max(0.0) * scale)
+    else {
+        return false;
+    };
+    // Skip a layer entirely outside the target, as the per-frame blur did.
+    let target = [spec.viewport_width as i64, spec.viewport_height as i64];
+    let visible = |axis: TemplateAxis, extent: i64| {
+        axis.origin.clamp(0, extent) < (axis.origin + axis.layer as i64).clamp(0, extent)
+    };
+    if !visible(shadow.x, target[0]) || !visible(shadow.y, target[1]) {
+        return false;
+    }
+    let mask = if spec.params.clip_to_geometry {
+        let Some(mask) = TemplatePlan::new(spec.shape.scaled(scale), 0.0) else {
+            return false;
+        };
+        Some(mask)
+    } else {
+        None
+    };
+
+    let source = shadow.ensure(graph, spec.pass_context);
+    let mask_source = mask.map(|mask| mask.ensure(graph, spec.pass_context));
+    let alpha = (spec.params.color[3] * spec.params.opacity).clamp(0.0, 1.0);
+    let [r, g, b, _] = spec.params.color;
+    let offset = |mask: i64, source: i64| i32::try_from(mask - source).unwrap_or(0);
+    graph.add_graphics_pass(TextureCompositePass::new(
+        TextureCompositeParams {
+            bounds: [
+                shadow.x.origin as f32 / scale,
+                shadow.y.origin as f32 / scale,
+                shadow.x.layer as f32 / scale,
+                shadow.y.layer as f32 / scale,
+            ],
+            use_mask: mask.is_some(),
+            source_is_premultiplied: true,
+            opacity: 1.0,
+            nine_patch: Some(NinePatchComposite {
+                split: [shadow.x.split, shadow.y.split],
+                stretch: [shadow.x.stretch, shadow.y.stretch],
+                mask_split: mask.map_or([0; 2], |mask| [mask.x.split, mask.y.split]),
+                mask_stretch: mask.map_or([0; 2], |mask| [mask.x.stretch, mask.y.stretch]),
+                mask_offset: mask.map_or([0; 2], |mask| {
+                    [
+                        offset(mask.x.origin, shadow.x.origin),
+                        offset(mask.y.origin, shadow.y.origin),
+                    ]
+                }),
+                tint: [r * alpha, g * alpha, b * alpha, alpha],
+            }),
+            ..Default::default()
+        },
+        TextureCompositeInput::from_render_target(
+            TextureCompositeSourceIn::with_handle(source),
+            mask_source
+                .map(TextureCompositeMaskIn::with_handle)
+                .unwrap_or_default(),
+            spec.pass_context,
+        ),
+        TextureCompositeOutput {
+            render_target: spec.output,
+        },
+    ));
+    true
 }
 
 fn append_arc(
@@ -156,322 +620,6 @@ fn normalize_corner_radii(radii: [f32; 4], width: f32, height: f32) -> [f32; 4] 
         bl *= scale;
     }
     [tl, tr, br, bl]
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ShadowParams {
-    pub offset_x: f32,
-    pub offset_y: f32,
-    pub blur_radius: f32,
-    pub color: [f32; 4],
-    pub opacity: f32,
-    pub spread: f32,
-    pub clip_to_geometry: bool,
-}
-
-impl Default for ShadowParams {
-    fn default() -> Self {
-        Self {
-            offset_x: 0.0,
-            offset_y: 0.0,
-            blur_radius: 0.0,
-            color: [0.0, 0.0, 0.0, 1.0],
-            opacity: 1.0,
-            spread: 0.0,
-            clip_to_geometry: false,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct ShadowModuleSpec {
-    pub mesh: ShadowMesh,
-    pub params: ShadowParams,
-    pub viewport_width: u32,
-    pub viewport_height: u32,
-    pub scale_factor: f32,
-    pub pass_context: GraphicsPassContext,
-    pub output: RenderTargetOut,
-}
-
-pub(crate) struct ShadowFillPass {
-    mesh: ShadowMesh,
-    color: [f32; 4],
-    render_target: RenderTargetOut,
-}
-
-#[cfg(test)]
-impl ShadowFillPass {
-    pub(crate) fn test_snapshot(&self) -> ShadowFillPassTestSnapshot {
-        ShadowFillPassTestSnapshot {
-            vertices_bits: self
-                .mesh
-                .vertices
-                .iter()
-                .map(|vertex| vertex.map(f32::to_bits))
-                .collect(),
-            indices: self.mesh.indices.clone(),
-            color_bits: self.color.map(f32::to_bits),
-            render_target: self.render_target.handle(),
-        }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ShadowFillPassTestSnapshot {
-    pub(crate) vertices_bits: Vec<[u32; 2]>,
-    pub(crate) indices: Vec<u32>,
-    pub(crate) color_bits: [u32; 4],
-    pub(crate) render_target: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
-}
-
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct FillVertex {
-    position: [f32; 2],
-    color: [f32; 4],
-}
-
-struct ShadowResources {
-    fill_pipeline: wgpu::RenderPipeline,
-}
-
-impl GraphicsPass for ShadowFillPass {
-    fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
-        if let Some(target) = builder.texture_target(&self.render_target) {
-            let _ = target;
-            // This pass owns a newly declared shadow/mask scratch target.
-            // Clear in its attachment load instead of opening a separate
-            // clear-only pass immediately before this fill.
-            builder.write_color(
-                &self.render_target,
-                GraphicsColorAttachmentOps::clear([0.; 4]),
-            );
-        }
-    }
-
-    fn execute(&mut self, ctx: &mut crate::view::render_pass::GraphicsCtx<'_, '_, '_, '_>) {
-        if self.mesh.vertices.is_empty() || self.mesh.indices.is_empty() {
-            return;
-        }
-        let Some(device) = ctx.viewport().device().cloned() else {
-            ctx.mark_execution_failed();
-            return;
-        };
-        let surface_size = ctx.viewport().surface_size();
-        let (target_w, target_h) = match self.render_target.handle() {
-            Some(handle) => {
-                let Some(texture_ref) = render_target_ref(ctx.frame_resources(), handle) else {
-                    ctx.mark_execution_failed();
-                    return;
-                };
-                texture_ref.physical_size()
-            }
-            None => surface_size,
-        };
-        if target_w == 0 || target_h == 0 {
-            return;
-        }
-        let pipeline = with_shadow_resources_cache(|cache| {
-            let resources = cache.get_or_insert_scoped_with(
-                ctx.viewport().render_resource_scope_id(),
-                SHADOW_RESOURCES,
-                || create_resources(&device),
-            );
-            resources.fill_pipeline.clone()
-        });
-        encode_mesh_fill_into_pass(
-            &device,
-            &pipeline,
-            ctx,
-            target_w as f32,
-            target_h as f32,
-            &self.mesh.vertices,
-            &self.mesh.indices,
-            self.color,
-        );
-    }
-}
-
-pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bool {
-    let scale = spec.scale_factor.max(0.0001);
-    let base_vertices = spec
-        .mesh
-        .vertices
-        .iter()
-        .map(|[x, y]| [x * scale, y * scale])
-        .collect::<Vec<_>>();
-    let mut shadow_vertices = base_vertices.clone();
-    apply_spread(&mut shadow_vertices, (spec.params.spread * scale).max(0.0));
-    for v in &mut shadow_vertices {
-        v[0] += spec.params.offset_x * scale;
-        v[1] += spec.params.offset_y * scale;
-    }
-    let Some(first) = shadow_vertices.first().copied() else {
-        return false;
-    };
-    let (mut min_x, mut min_y, mut max_x, mut max_y) = (first[0], first[1], first[0], first[1]);
-    for [x, y] in shadow_vertices.iter().copied().skip(1) {
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
-    }
-    let blur_padding = ((spec.params.blur_radius.max(0.0) * scale) * 1.5).ceil();
-    min_x -= blur_padding;
-    min_y -= blur_padding;
-    max_x += blur_padding;
-    max_y += blur_padding;
-    let target_w = spec.viewport_width as f32;
-    let target_h = spec.viewport_height as f32;
-    let bx = min_x.floor().max(0.0).min(target_w);
-    let by = min_y.floor().max(0.0).min(target_h);
-    let br = max_x.ceil().max(0.0).min(target_w);
-    let bb = max_y.ceil().max(0.0).min(target_h);
-    if br <= bx || bb <= by {
-        return false;
-    }
-
-    let layer_w = (br - bx).max(1.0) as u32;
-    let layer_h = (bb - by).max(1.0) as u32;
-    let local_shadow_mesh = ShadowMesh::new(
-        shadow_vertices
-            .iter()
-            .map(|[x, y]| [x - bx, y - by])
-            .collect(),
-        spec.mesh.indices.clone(),
-    );
-    let local_mask_mesh = ShadowMesh::new(
-        base_vertices
-            .iter()
-            .map(|[x, y]| [x - bx, y - by])
-            .collect(),
-        spec.mesh.indices.clone(),
-    );
-    let shadow_layer = graph.declare_texture(
-        TextureDesc::new(
-            layer_w,
-            layer_h,
-            SHADOW_INTERMEDIATE_FORMAT,
-            wgpu::TextureDimension::D2,
-        )
-        .with_origin(bx as u32, by as u32)
-        .with_sample_count(1)
-        .with_label("Shadow Layer"),
-    );
-    let shadow_mask_layer = if spec.params.clip_to_geometry {
-        graph.declare_texture(
-            TextureDesc::new(
-                layer_w,
-                layer_h,
-                SHADOW_INTERMEDIATE_FORMAT,
-                wgpu::TextureDimension::D2,
-            )
-            .with_origin(bx as u32, by as u32)
-            .with_sample_count(1)
-            .with_label("Shadow Mask Layer"),
-        )
-    } else {
-        RenderTargetOut::default()
-    };
-
-    let shadow_fill_color = [
-        spec.params.color[0],
-        spec.params.color[1],
-        spec.params.color[2],
-        (spec.params.color[3] * spec.params.opacity).clamp(0.0, 1.0),
-    ];
-    graph.add_graphics_pass(ShadowFillPass {
-        mesh: local_shadow_mesh,
-        color: shadow_fill_color,
-        render_target: shadow_layer,
-    });
-    if spec.params.clip_to_geometry {
-        graph.add_graphics_pass(ShadowFillPass {
-            mesh: local_mask_mesh,
-            color: [1.0, 1.0, 1.0, 1.0],
-            render_target: shadow_mask_layer,
-        });
-    }
-
-    let blur_radius_px = (spec.params.blur_radius.max(0.0) * scale).max(0.0);
-    let mut composite_source = shadow_layer;
-    if blur_radius_px > 0.001 {
-        let blurred = graph.declare_texture(
-            TextureDesc::new(
-                layer_w,
-                layer_h,
-                SHADOW_INTERMEDIATE_FORMAT,
-                wgpu::TextureDimension::D2,
-            )
-            .with_origin(bx as u32, by as u32)
-            .with_sample_count(1)
-            .with_label("Shadow Layer / Blurred"),
-        );
-        let built = build_blur_module(
-            graph,
-            BlurModuleParams {
-                blur_radius: blur_radius_px,
-                intermediate_format: SHADOW_INTERMEDIATE_FORMAT,
-            },
-            BlurModuleInput {
-                layer: shadow_layer
-                    .handle()
-                    .map(LayerIn::with_handle)
-                    .unwrap_or_default(),
-                pass_context: spec.pass_context,
-            },
-            BlurModuleOutput {
-                render_target: blurred,
-            },
-        );
-        if built {
-            composite_source = blurred;
-        }
-    }
-
-    graph.add_graphics_pass(TextureCompositePass::new(
-        TextureCompositeParams {
-            bounds: [
-                bx / scale,
-                by / scale,
-                layer_w as f32 / scale,
-                layer_h as f32 / scale,
-            ],
-            uv_bounds: Some([
-                bx / scale,
-                by / scale,
-                layer_w as f32 / scale,
-                layer_h as f32 / scale,
-            ]),
-            mask_uv_bounds: spec.params.clip_to_geometry.then_some([
-                bx / scale,
-                by / scale,
-                layer_w as f32 / scale,
-                layer_h as f32 / scale,
-            ]),
-            use_mask: spec.params.clip_to_geometry,
-            source_is_premultiplied: true,
-            opacity: 1.0,
-            ..Default::default()
-        },
-        TextureCompositeInput::from_render_target(
-            composite_source
-                .handle()
-                .map(TextureCompositeSourceIn::with_handle)
-                .unwrap_or_default(),
-            shadow_mask_layer
-                .handle()
-                .map(TextureCompositeMaskIn::with_handle)
-                .unwrap_or_default(),
-            spec.pass_context,
-        ),
-        TextureCompositeOutput {
-            render_target: spec.output,
-        },
-    ));
-    true
 }
 
 crate::static_resource_cache! {
@@ -602,31 +750,6 @@ fn encode_mesh_fill_into_pass(
     ctx.set_vertex_buffer(0, vertex_buffer.slice(..));
     ctx.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
     ctx.draw_indexed(0..indices.len() as u32, 0, 0..1);
-}
-
-fn apply_spread(vertices: &mut [[f32; 2]], spread: f32) {
-    if spread.abs() <= 0.0001 || vertices.is_empty() {
-        return;
-    }
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    for [x, y] in vertices.iter() {
-        cx += *x;
-        cy += *y;
-    }
-    let inv = 1.0 / vertices.len() as f32;
-    cx *= inv;
-    cy *= inv;
-    for v in vertices.iter_mut() {
-        let dx = v[0] - cx;
-        let dy = v[1] - cy;
-        let len = (dx * dx + dy * dy).sqrt();
-        if len <= 0.0001 {
-            continue;
-        }
-        v[0] += (dx / len) * spread;
-        v[1] += (dy / len) * spread;
-    }
 }
 
 #[cfg(test)]

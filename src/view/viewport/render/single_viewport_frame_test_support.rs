@@ -129,6 +129,13 @@ impl Viewport {
         let mut texture_bytes = 0_u64;
         let mut color_targets = Vec::new();
         for (key, desc) in graph.declared_persistent_textures() {
+            // Shadow templates are a shared cache, not surface residency.
+            if matches!(
+                key,
+                crate::view::frame_graph::PersistentTextureKey::ShadowTemplate(_)
+            ) {
+                continue;
+            }
             texture_bytes = texture_bytes
                 .checked_add(crate::view::raster_cost::texture_desc_payload_bytes(desc).bytes)
                 .ok_or("frame texture accounting overflow")?;

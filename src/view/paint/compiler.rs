@@ -3919,7 +3919,7 @@ fn emit_artifact_surface_paint_op(op: &PaintOp, graph: &mut FrameGraph, ctx: &mu
             if build_shadow_module(
                 graph,
                 ShadowModuleSpec {
-                    mesh: op.mesh.as_ref().clone(),
+                    shape: op.shape,
                     params: op.params,
                     viewport_width: viewport.target_width(),
                     viewport_height: viewport.target_height(),
@@ -4111,7 +4111,7 @@ fn emit_prepared_scrollbar_shadow(
     if build_shadow_module(
         graph,
         ShadowModuleSpec {
-            mesh: op.mesh.clone(),
+            shape: op.shape,
             params: op.params,
             viewport_width: viewport.target_width(),
             viewport_height: viewport.target_height(),
@@ -4242,11 +4242,14 @@ pub(crate) fn localize_artifact_surface_op(
                 .ok_or_else(invalid)
         }
         PaintOp::PreparedShadow(shadow) => {
-            let mut mesh = shadow.mesh.as_ref().clone();
-            for vertex in &mut mesh.vertices {
-                translate_nested_scroll_position(vertex, delta).ok_or_else(invalid)?;
-            }
-            PreparedShadowOp::new(mesh, shadow.params)
+            let mut origin = [shadow.shape.x, shadow.shape.y];
+            translate_nested_scroll_position(&mut origin, delta).ok_or_else(invalid)?;
+            let shape = crate::view::render_pass::ShadowShape {
+                x: origin[0],
+                y: origin[1],
+                ..shadow.shape
+            };
+            PreparedShadowOp::new(shape, shadow.params)
                 .map(PaintOp::PreparedShadow)
                 .ok_or_else(invalid)
         }
@@ -4330,7 +4333,7 @@ fn neutralize_artifact_surface_opacity(
         PaintOp::PreparedShadow(shadow) => {
             let mut params = shadow.params;
             params.opacity = neutral;
-            PreparedShadowOp::new(shadow.mesh, params)
+            PreparedShadowOp::new(shadow.shape, params)
                 .map(PaintOp::PreparedShadow)
                 .ok_or(ArtifactSurfaceLocalizationError::InvalidLocalizedOp(kind))?
         }

@@ -594,6 +594,7 @@ impl Svg {
                 source_is_premultiplied: false,
                 opacity: opacity.clamp(0.0, 1.0),
                 scissor_rect: None,
+                nine_patch: None,
             },
             upload: frozen.upload.clone(),
         })

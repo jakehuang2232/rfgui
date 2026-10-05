@@ -23,7 +23,7 @@ fn outer_shadow_artifact_owns_ordered_fractional_payload_and_strict_pass_sequenc
         shadows[1].params.color,
         Color::rgb(20, 40, 220).to_rgba_f32()
     );
-    assert_eq!(shadows[0].mesh.vertices[0], [10.0, 21.0]);
+    assert_eq!([shadows[0].shape.x, shadows[0].shape.y], [10.0, 21.0]);
     assert!(shadows.iter().all(|shadow| shadow.has_canonical_identity()));
 
     drop(arena);
@@ -70,15 +70,27 @@ fn outer_shadow_artifact_owns_ordered_fractional_payload_and_strict_pass_sequenc
     }
     assert_eq!(
         cleared_fills, 2,
-        "each fill clears its own scratch attachment"
+        "each fill clears its own template attachment"
     );
-    assert_eq!(
-        shadow_fills[0].color_bits,
-        Color::rgb(220, 30, 20).to_rgba_f32().map(f32::to_bits)
+    // Templates hold color-independent coverage; each shadow tints its own.
+    assert!(
+        shadow_fills
+            .iter()
+            .all(|fill| fill.color_bits == [1.0_f32; 4].map(f32::to_bits))
     );
+    let tints = payloads
+        .iter()
+        .filter_map(|payload| match payload {
+            FramePassTestPayload::TextureComposite(composite) => composite.nine_patch_tint_bits,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        shadow_fills[1].color_bits,
-        Color::rgb(20, 40, 220).to_rgba_f32().map(f32::to_bits)
+        tints,
+        vec![
+            Color::rgb(220, 30, 20).to_rgba_f32().map(f32::to_bits),
+            Color::rgb(20, 40, 220).to_rgba_f32().map(f32::to_bits),
+        ]
     );
     let first_rect = payloads
         .iter()
@@ -567,7 +579,7 @@ fn outer_shadow_artifact_compiler_fails_closed() {
     else {
         unreachable!()
     };
-    std::sync::Arc::make_mut(&mut late.mesh).indices[0] = u32::MAX;
+    late.shape.width = f32::NAN;
     assert_eq!(
         compiled_whole_frame_graph(&artifact)
             .pass_descriptors()

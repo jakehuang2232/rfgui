@@ -18,6 +18,7 @@ use std::hash::{Hash, Hasher};
 pub struct TextureCompositePass {
     params: TextureCompositeParams,
     pixel_preserving: bool,
+    uniform: TextureCompositeUniform,
     #[cfg(test)]
     explicit_scissor_rect: Option<[u32; 4]>,
     #[cfg(test)]
@@ -39,6 +40,25 @@ pub struct TextureCompositeParams {
     pub source_is_premultiplied: bool,
     pub opacity: f32,
     pub scissor_rect: Option<[u32; 4]>,
+    /// Reads the source (and mask) as stretched nine-patch templates
+    /// instead of sampling them over `uv_bounds`.
+    pub nine_patch: Option<NinePatchComposite>,
+}
+
+/// Texel lookup for a nine-patch template covering `bounds`. Along each axis
+/// a destination layer pixel `p` reads template texel `p` below `split`, the
+/// constant texel `split` for `stretch` pixels, and `p - stretch` after that.
+/// The source alpha is coverage; the output is `tint * coverage`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NinePatchComposite {
+    pub split: [u32; 2],
+    pub stretch: [u32; 2],
+    pub mask_split: [u32; 2],
+    pub mask_stretch: [u32; 2],
+    /// Mask layer origin relative to the source layer origin, in pixels.
+    pub mask_offset: [i32; 2],
+    /// Premultiplied color applied to the coverage.
+    pub tint: [f32; 4],
 }
 
 impl Default for TextureCompositeParams {
@@ -52,6 +72,7 @@ impl Default for TextureCompositeParams {
             source_is_premultiplied: false,
             opacity: 1.0,
             scissor_rect: None,
+            nine_patch: None,
         }
     }
 }
@@ -122,7 +143,45 @@ struct TextureCompositeUniform {
     use_mask: f32,
     source_is_premultiplied: f32,
     opacity: f32,
-    _pad: f32,
+    nine_patch: f32,
+    /// Layer origin in target pixels, then split.
+    nine_patch_origin_split: [f32; 4],
+    /// Stretch, then mask split.
+    nine_patch_stretch_mask_split: [f32; 4],
+    /// Mask stretch, then mask offset.
+    nine_patch_mask_stretch_offset: [f32; 4],
+    tint: [f32; 4],
+}
+
+impl TextureCompositeUniform {
+    fn new(params: &TextureCompositeParams, layer_origin: [f32; 2]) -> Self {
+        let flag = |value: bool| if value { 1.0 } else { 0.0 };
+        let nine_patch = params.nine_patch.unwrap_or_default();
+        let pair = |value: [u32; 2]| value.map(|v| v as f32);
+        let [split, stretch, mask_split, mask_stretch] = [
+            nine_patch.split,
+            nine_patch.stretch,
+            nine_patch.mask_split,
+            nine_patch.mask_stretch,
+        ]
+        .map(pair);
+        let mask_offset = nine_patch.mask_offset.map(|v| v as f32);
+        Self {
+            use_mask: flag(params.use_mask),
+            source_is_premultiplied: flag(params.source_is_premultiplied),
+            opacity: params.opacity.clamp(0.0, 1.0),
+            nine_patch: flag(params.nine_patch.is_some()),
+            nine_patch_origin_split: [layer_origin[0], layer_origin[1], split[0], split[1]],
+            nine_patch_stretch_mask_split: [stretch[0], stretch[1], mask_split[0], mask_split[1]],
+            nine_patch_mask_stretch_offset: [
+                mask_stretch[0],
+                mask_stretch[1],
+                mask_offset[0],
+                mask_offset[1],
+            ],
+            tint: nine_patch.tint,
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -238,9 +297,11 @@ impl TextureCompositePass {
     ) -> Self {
         #[cfg(test)]
         let explicit_scissor_rect = params.scissor_rect;
+        let uniform = TextureCompositeUniform::new(&params, [0.0, 0.0]);
         Self {
             params,
             pixel_preserving: false,
+            uniform,
             #[cfg(test)]
             explicit_scissor_rect,
             #[cfg(test)]
@@ -269,6 +330,10 @@ impl TextureCompositePass {
             use_mask: self.params.use_mask,
             source_is_premultiplied: self.params.source_is_premultiplied,
             opacity_bits: self.params.opacity.to_bits(),
+            nine_patch_tint_bits: self
+                .params
+                .nine_patch
+                .map(|nine_patch| nine_patch.tint.map(f32::to_bits)),
             explicit_scissor_rect: self.explicit_scissor_rect,
             effective_scissor_rect: intersect_scissor_rects(
                 self.input.pass_context.logical_scissor_rect(),
@@ -322,6 +387,7 @@ pub(crate) struct TextureCompositePassTestSnapshot {
     pub(crate) use_mask: bool,
     pub(crate) source_is_premultiplied: bool,
     pub(crate) opacity_bits: u32,
+    pub(crate) nine_patch_tint_bits: Option<[u32; 4]>,
     pub(crate) explicit_scissor_rect: Option<[u32; 4]>,
     pub(crate) effective_scissor_rect: Option<[u32; 4]>,
     pub(crate) source_handle: Option<crate::view::frame_graph::texture_resource::TextureHandle>,
@@ -405,18 +471,9 @@ impl GraphicsPass for TextureCompositePass {
             return;
         }
 
-        let uniform = TextureCompositeUniform {
-            use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
-            source_is_premultiplied: if self.params.source_is_premultiplied {
-                1.0
-            } else {
-                0.0
-            },
-            opacity: self.params.opacity.clamp(0.0, 1.0),
-            _pad: 0.0,
-        };
+        self.uniform = TextureCompositeUniform::new(&self.params, resolved.layer_origin);
         if let Some(handle) = self.uniform_buffer.handle() {
-            let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&uniform));
+            let _ = ctx.upload_buffer(handle, 0, bytemuck::bytes_of(&self.uniform));
         }
         if let Some(handle) = self.vertex_buffer.handle() {
             let _ = ctx.upload_buffer(handle, 0, bytemuck::cast_slice(&resolved.vertices));
@@ -504,16 +561,7 @@ impl GraphicsPass for TextureCompositePass {
                     &device,
                     &wgpu::util::BufferInitDescriptor {
                         label: Some("TextureComposite Uniform (Fallback)"),
-                        contents: bytemuck::bytes_of(&TextureCompositeUniform {
-                            use_mask: if self.params.use_mask { 1.0 } else { 0.0 },
-                            source_is_premultiplied: if self.params.source_is_premultiplied {
-                                1.0
-                            } else {
-                                0.0
-                            },
-                            opacity: self.params.opacity.clamp(0.0, 1.0),
-                            _pad: 0.0,
-                        }),
+                        contents: bytemuck::bytes_of(&self.uniform),
                         usage: wgpu::BufferUsages::UNIFORM,
                     },
                 );
@@ -647,6 +695,8 @@ fn resolve_target_meta(
 
 struct ResolvedCompositeGeometry {
     pixel_preserving: bool,
+    /// Destination top-left of `bounds`, in target pixels.
+    layer_origin: [f32; 2],
     target_meta: ResolvedTextureRef,
     vertices: [CompositeVertex; 4],
     indices: [u16; 6],
@@ -711,6 +761,7 @@ fn resolve_composite_geometry(
             source_meta.physical_size,
             scale,
         ),
+        layer_origin: [bounds[0], bounds[1]],
         target_meta,
         vertices,
         indices,
@@ -800,12 +851,14 @@ pub(crate) fn composite_immediate(
             *resources = create_resources(&device, resource_scope_id, format, sample_count);
         }
 
-        let uniform = TextureCompositeUniform {
-            use_mask: if use_mask { 1.0 } else { 0.0 },
-            source_is_premultiplied: 0.0,
-            opacity: opacity.clamp(0.0, 1.0),
-            _pad: 0.0,
-        };
+        let uniform = TextureCompositeUniform::new(
+            &TextureCompositeParams {
+                use_mask,
+                opacity,
+                ..Default::default()
+            },
+            [0.0, 0.0],
+        );
         let uniform_buffer = super::create_transient_buffer(
             &device,
             &wgpu::util::BufferInitDescriptor {

@@ -334,6 +334,11 @@ struct FrameRuntime {
     #[cfg(feature = "renderer-test-support")]
     last_diagnostics: Option<render::downstream_test_support::RendererTestDiagnostics>,
     gpu_paint_sources: FxHashMap<u64, gpu_paint::CachedSource>,
+    /// Shadow templates and whether a submitted frame wrote them.
+    shadow_templates: FxHashMap<
+        crate::view::render_pass::shadow_module::ShadowTemplateKey,
+        gpu_paint::ShadowTemplateResidency,
+    >,
     retained_raster_diagnostics: Vec<gpu_paint::RasterDiagnostic>,
     frame_state: Option<FrameState>,
     offscreen_render_target_pool: OffscreenRenderTargetPool,
@@ -387,6 +392,7 @@ impl FrameRuntime {
             sampled_texture_cache: FxHashMap::default(),
             sampled_texture_upload_count: 0,
             gpu_paint_sources: FxHashMap::default(),
+            shadow_templates: FxHashMap::default(),
             retained_raster_diagnostics: Vec::new(),
             frame_buffer_pool: FxHashMap::default(),
             rect_instances: rect_instances::RectInstanceFrame::default(),

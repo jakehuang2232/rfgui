@@ -70,6 +70,8 @@ pub enum RetainedTextureRole {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PersistentTextureKey {
     Generic(u64),
+    /// A cached shadow coverage template, shared by every shadow it fits.
+    ShadowTemplate(crate::view::render_pass::shadow_module::ShadowTemplateKey),
     Retained {
         role: RetainedTextureRole,
         stable_id: u64,
@@ -119,7 +121,7 @@ impl PersistentTextureKey {
                 column,
                 row,
             } => (role, stable_id, Some((column, row))),
-            Self::Generic(_) => return None,
+            Self::Generic(_) | Self::ShadowTemplate(_) => return None,
         };
         let role = match role {
             RetainedTextureRole::RootEffectColor => RetainedTextureRole::RootEffectDepthStencil,
@@ -1049,6 +1051,7 @@ enum ExecuteStep {
 pub struct FrameGraph {
     pub(crate) gpu_paint_sources:
         FxHashMap<u64, (crate::view::gpu_paint::GpuPaintSource, TextureHandle)>,
+    pub(crate) shadow_templates: crate::view::render_pass::shadow_module::ShadowTemplateFrame,
     passes: Vec<PassNode>,
     textures: Vec<TextureDesc>,
     texture_attachment_pairs: FxHashMap<TextureHandle, AttachmentTarget>,
@@ -1204,6 +1207,7 @@ impl FrameGraph {
     pub fn new() -> Self {
         Self {
             gpu_paint_sources: FxHashMap::default(),
+            shadow_templates: Default::default(),
             passes: Vec::new(),
             textures: Vec::new(),
             texture_attachment_pairs: FxHashMap::default(),
@@ -1217,6 +1221,15 @@ impl FrameGraph {
             build_errors: Vec::new(),
             execute_steps: Vec::new(),
         }
+    }
+
+    /// Shadow templates this frame may read without producing them: written
+    /// by an earlier submitted frame and still resident.
+    pub(crate) fn set_resident_shadow_templates(
+        &mut self,
+        resident: rustc_hash::FxHashSet<crate::view::render_pass::shadow_module::ShadowTemplateKey>,
+    ) {
+        self.shadow_templates.resident = resident;
     }
 
     pub fn add_graphics_pass<P: GraphicsPass + 'static>(&mut self, pass: P) -> PassHandle {
@@ -3197,6 +3210,7 @@ impl FrameGraph {
         }
         if execution_error.is_some() {
             ctx.viewport.finish_gpu_paint_frame(false);
+            ctx.viewport.finish_shadow_template_frame(false);
             let failed_retained_color_keys = compiled_graph
                 .texture_stable_keys
                 .values()

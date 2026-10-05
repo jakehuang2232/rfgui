@@ -230,6 +230,17 @@ impl GraphicsPass for BlurStagePass {
     }
 }
 
+/// Integer source-pixel stride at which a blur of `blur_radius` pixels runs.
+pub(crate) fn blur_downsample_factor(blur_radius: f32) -> u32 {
+    if blur_radius >= 28.0 {
+        4
+    } else if blur_radius >= 12.0 {
+        2
+    } else {
+        1
+    }
+}
+
 pub fn build_blur_module(
     graph: &mut FrameGraph,
     params: BlurModuleParams,
@@ -261,13 +272,7 @@ pub fn build_blur_module(
         return true;
     }
 
-    let downsample = if blur_radius >= 28.0 {
-        4_u32
-    } else if blur_radius >= 12.0 {
-        2_u32
-    } else {
-        1_u32
-    };
+    let downsample = blur_downsample_factor(blur_radius);
     let effective_radius = if downsample > 1 {
         blur_radius / downsample as f32
     } else {

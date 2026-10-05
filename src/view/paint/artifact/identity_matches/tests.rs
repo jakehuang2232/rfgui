@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn shared_shadow_replay_preserves_original_when_a_copy_is_corrupted() {
     let original = PreparedShadowOp::new(
-        ShadowMesh::rounded_rect(2.0, 3.0, 16.0, 12.0, 2.0),
+        ShadowShape::rounded_rect(2.0, 3.0, 16.0, 12.0, 2.0),
         ShadowParams {
             color: [0.0, 0.0, 0.0, 1.0],
             ..Default::default()
@@ -11,13 +11,8 @@ fn shared_shadow_replay_preserves_original_when_a_copy_is_corrupted() {
     )
     .unwrap();
     let mut copy = original.clone();
-    assert!(Arc::ptr_eq(&original.mesh, &copy.mesh));
-    assert!(Arc::ptr_eq(
-        &original.identity.vertices_bits,
-        &copy.identity.vertices_bits
-    ));
     assert!(copy.has_canonical_identity());
-    Arc::make_mut(&mut copy.mesh).vertices[0][0] += 1.0;
+    copy.shape.x += 1.0;
     assert!(!copy.has_canonical_identity());
     assert!(original.has_canonical_identity());
 
@@ -26,7 +21,7 @@ fn shared_shadow_replay_preserves_original_when_a_copy_is_corrupted() {
         changed.params.blur_radius = value;
         assert_eq!(
             changed.has_canonical_identity(),
-            PreparedShadowIdentity::from_parts(&changed.mesh, changed.params).as_ref()
+            PreparedShadowIdentity::from_parts(&changed.shape, changed.params).as_ref()
                 == Some(&changed.identity)
         );
     }

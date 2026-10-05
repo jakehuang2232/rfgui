@@ -36,6 +36,8 @@ pub struct UiWorkProfile {
     pub rect_draw_calls: usize,
     /// Rect instances covered by those draw calls.
     pub rect_instances: usize,
+    /// Shadow templates produced; a reused template costs no production.
+    pub shadow_template_builds: usize,
     /// Glyphs inspected for immutable prepared-input validation/hash misses.
     pub text_input_glyph_observations: usize,
     /// Texture/layer composite bind groups actually created on cache misses.
@@ -259,6 +261,9 @@ impl UiWorkProfile {
                 .rect_instance_uploads
                 .saturating_sub(before.rect_instance_uploads),
             rect_draw_calls: self.rect_draw_calls.saturating_sub(before.rect_draw_calls),
+            shadow_template_builds: self
+                .shadow_template_builds
+                .saturating_sub(before.shadow_template_builds),
             rect_instances: self.rect_instances.saturating_sub(before.rect_instances),
             text_input_glyph_observations: self
                 .text_input_glyph_observations

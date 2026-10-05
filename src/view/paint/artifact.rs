@@ -18,7 +18,7 @@ use crate::view::node_arena::NodeKey;
 use crate::view::render_pass::draw_rect_pass::{
     GradientKindGpu, GradientPaint, RectPassParams, RectRenderMode,
 };
-use crate::view::render_pass::shadow_module::{ShadowMesh, ShadowParams};
+use crate::view::render_pass::shadow_module::{ShadowParams, ShadowShape};
 use crate::view::render_pass::text_pass::{
     TextPassPreparedFragment, TextPassPreparedParams, TextPassPreparedStagingGlyphInput,
 };
@@ -2216,24 +2216,24 @@ impl PreparedInlineIfcRectIdentity {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedShadowOp {
-    pub(crate) mesh: Arc<ShadowMesh>,
+    pub(crate) shape: ShadowShape,
     pub(crate) params: ShadowParams,
     pub(crate) identity: PreparedShadowIdentity,
 }
 
 impl PreparedShadowOp {
-    pub(crate) fn new(mesh: impl Into<Arc<ShadowMesh>>, params: ShadowParams) -> Option<Self> {
-        let mesh = mesh.into();
-        let identity = PreparedShadowIdentity::from_parts(&mesh, params)?;
+    pub(crate) fn new(shape: ShadowShape, params: ShadowParams) -> Option<Self> {
+        let identity = PreparedShadowIdentity::from_parts(&shape, params)?;
         Some(Self {
-            mesh,
+            shape,
             params,
             identity,
         })
     }
 
     pub(crate) fn has_canonical_identity(&self) -> bool {
-        self.identity.matches_parts(&self.mesh, self.params)
+        PreparedShadowIdentity::from_parts(&self.shape, self.params).as_ref()
+            == Some(&self.identity)
     }
 
     pub(crate) fn frozen_identity(&self) -> PreparedShadowIdentity {
@@ -2243,13 +2243,12 @@ impl PreparedShadowOp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedShadowIdentity {
-    vertices_bits: Arc<[[u32; 2]]>,
-    indices: Arc<[u32]>,
+    /// x, y, width, height, then the four corner radii.
+    shape_bits: [u32; 8],
     offset_bits: [u32; 2],
     blur_radius_bits: u32,
     color_bits: [u32; 4],
     opacity_bits: u32,
-    spread_bits: u32,
     clip_to_geometry: bool,
 }
 
@@ -2276,7 +2275,7 @@ struct PreparedScrollbarAxisOp {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedScrollbarShadowOp {
-    pub(crate) mesh: ShadowMesh,
+    pub(crate) shape: ShadowShape,
     pub(crate) params: ShadowParams,
 }
 
@@ -2298,16 +2297,7 @@ struct PreparedScrollbarAxisIdentity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PreparedScrollbarShadowIdentity {
-    vertices_bits: Vec<[u32; 2]>,
-    indices: Vec<u32>,
-    offset_bits: [u32; 2],
-    blur_radius_bits: u32,
-    color_bits: [u32; 4],
-    opacity_bits: u32,
-    spread_bits: u32,
-    clip_to_geometry: bool,
-}
+struct PreparedScrollbarShadowIdentity(PreparedShadowIdentity);
 
 impl PreparedScrollbarOverlayOp {
     pub(crate) fn from_witness(witness: ScrollbarOverlayWitness) -> Option<Self> {
@@ -2388,7 +2378,7 @@ impl PreparedScrollbarOverlayOp {
     fn shadow(rect: Rect, blur_radius: f32, alpha: f32) -> Option<PreparedScrollbarShadowOp> {
         let radius = (rect.width.min(rect.height) * 0.5).max(0.0);
         let shadow = PreparedScrollbarShadowOp {
-            mesh: ShadowMesh::rounded_rect(
+            shape: ShadowShape::rounded_rect(
                 rect.x,
                 rect.y,
                 rect.width.max(0.0),
@@ -2401,11 +2391,10 @@ impl PreparedScrollbarOverlayOp {
                 blur_radius,
                 color: [0.0, 0.0, 0.0, alpha],
                 opacity: 1.0,
-                spread: 0.0,
                 clip_to_geometry: true,
             },
         };
-        PreparedScrollbarShadowIdentity::from_parts(&shadow.mesh, shadow.params)?;
+        PreparedScrollbarShadowIdentity::from_parts(&shadow.shape, shadow.params)?;
         Some(shadow)
     }
 
@@ -2481,14 +2470,8 @@ impl PreparedScrollbarOverlayOp {
         }
         let mut translated = self.clone();
         let translate_shadow = |shadow: &mut PreparedScrollbarShadowOp| -> Option<()> {
-            for vertex in &mut shadow.mesh.vertices {
-                vertex[0] += delta[0];
-                vertex[1] += delta[1];
-                if vertex.iter().any(|value| !value.is_finite()) {
-                    return None;
-                }
-            }
-            Some(())
+            shadow.shape = shadow.shape.translated(delta[0], delta[1]);
+            shadow.shape.is_valid().then_some(())
         };
         let translate_rect = |rect: &mut DrawRectOp| -> Option<()> {
             rect.params.position[0] += delta[0];
@@ -2640,12 +2623,12 @@ impl PreparedScrollbarOverlayIdentity {
     ) -> Option<Self> {
         Some(Self {
             track_shadow: PreparedScrollbarShadowIdentity::from_parts(
-                &track_shadow.mesh,
+                &track_shadow.shape,
                 track_shadow.params,
             )?,
             track: PreparedDrawRectIdentity::from_op(track)?,
             thumb_shadow: PreparedScrollbarShadowIdentity::from_parts(
-                &thumb_shadow.mesh,
+                &thumb_shadow.shape,
                 thumb_shadow.params,
             )?,
             thumb: PreparedDrawRectIdentity::from_op(thumb)?,
@@ -2661,12 +2644,12 @@ impl PreparedScrollbarAxisIdentity {
     fn from_axis(axis: &PreparedScrollbarAxisOp) -> Option<Self> {
         Some(Self {
             track_shadow: PreparedScrollbarShadowIdentity::from_parts(
-                &axis.track_shadow.mesh,
+                &axis.track_shadow.shape,
                 axis.track_shadow.params,
             )?,
             track: PreparedDrawRectIdentity::from_op(&axis.track)?,
             thumb_shadow: PreparedScrollbarShadowIdentity::from_parts(
-                &axis.thumb_shadow.mesh,
+                &axis.thumb_shadow.shape,
                 axis.thumb_shadow.params,
             )?,
             thumb: PreparedDrawRectIdentity::from_op(&axis.thumb)?,
@@ -2675,103 +2658,14 @@ impl PreparedScrollbarAxisIdentity {
 }
 
 impl PreparedScrollbarShadowIdentity {
-    fn from_parts(mesh: &ShadowMesh, params: ShadowParams) -> Option<Self> {
-        if mesh.vertices.is_empty()
-            || mesh.indices.is_empty()
-            || mesh.indices.len() % 3 != 0
-            || mesh
-                .vertices
-                .iter()
-                .flatten()
-                .any(|coordinate| !coordinate.is_finite())
-            || mesh
-                .indices
-                .iter()
-                .any(|&index| index as usize >= mesh.vertices.len())
-            || !params.offset_x.is_finite()
-            || !params.offset_y.is_finite()
-            || !params.blur_radius.is_finite()
-            || params.blur_radius < 0.0
-            || params
-                .color
-                .iter()
-                .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(channel))
-            || !params.opacity.is_finite()
-            || !(0.0..=1.0).contains(&params.opacity)
-            || !params.spread.is_finite()
-        {
-            return None;
-        }
-        Some(Self {
-            vertices_bits: mesh
-                .vertices
-                .iter()
-                .map(|vertex| vertex.map(f32::to_bits))
-                .collect(),
-            indices: mesh.indices.clone(),
-            offset_bits: [params.offset_x.to_bits(), params.offset_y.to_bits()],
-            blur_radius_bits: params.blur_radius.to_bits(),
-            color_bits: params.color.map(f32::to_bits),
-            opacity_bits: params.opacity.to_bits(),
-            spread_bits: params.spread.to_bits(),
-            clip_to_geometry: params.clip_to_geometry,
-        })
+    fn from_parts(shape: &ShadowShape, params: ShadowParams) -> Option<Self> {
+        PreparedShadowIdentity::from_parts(shape, params).map(Self)
     }
 }
 
 impl PreparedShadowIdentity {
-    fn from_parts(mesh: &ShadowMesh, params: ShadowParams) -> Option<Self> {
-        if !Self::valid_parts(mesh, params) {
-            return None;
-        }
-        Some(Self {
-            vertices_bits: mesh
-                .vertices
-                .iter()
-                .map(|vertex| vertex.map(f32::to_bits))
-                .collect::<Vec<_>>()
-                .into(),
-            indices: mesh.indices.clone().into(),
-            offset_bits: [params.offset_x.to_bits(), params.offset_y.to_bits()],
-            blur_radius_bits: params.blur_radius.to_bits(),
-            color_bits: params.color.map(f32::to_bits),
-            opacity_bits: params.opacity.to_bits(),
-            spread_bits: params.spread.to_bits(),
-            clip_to_geometry: params.clip_to_geometry,
-        })
-    }
-    // Identity checks borrow mesh storage. Rebuilding the same vertex/index
-    // vectors during replay would undo immutable command sharing.
-    fn matches_parts(&self, mesh: &ShadowMesh, params: ShadowParams) -> bool {
-        Self::valid_parts(mesh, params)
-            && self.vertices_bits.len() == mesh.vertices.len()
-            && self
-                .vertices_bits
-                .iter()
-                .zip(&mesh.vertices)
-                .all(|(bits, vertex)| *bits == vertex.map(f32::to_bits))
-            && self.indices.as_ref() == mesh.indices
-            && self.offset_bits == [params.offset_x.to_bits(), params.offset_y.to_bits()]
-            && self.blur_radius_bits == params.blur_radius.to_bits()
-            && self.color_bits == params.color.map(f32::to_bits)
-            && self.opacity_bits == params.opacity.to_bits()
-            && self.spread_bits == params.spread.to_bits()
-            && self.clip_to_geometry == params.clip_to_geometry
-    }
-
-    fn valid_parts(mesh: &ShadowMesh, params: ShadowParams) -> bool {
-        if mesh.vertices.is_empty()
-            || mesh.indices.is_empty()
-            || mesh.indices.len() % 3 != 0
-            || mesh
-                .vertices
-                .iter()
-                .flatten()
-                .any(|coordinate| !coordinate.is_finite())
-            || mesh
-                .indices
-                .iter()
-                .any(|&index| index as usize >= mesh.vertices.len())
+    fn from_parts(shape: &ShadowShape, params: ShadowParams) -> Option<Self> {
+        if !shape.is_valid()
             || !params.offset_x.is_finite()
             || !params.offset_y.is_finite()
             || !params.blur_radius.is_finite()
@@ -2782,11 +2676,19 @@ impl PreparedShadowIdentity {
                 .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(channel))
             || !params.opacity.is_finite()
             || !(0.0..=1.0).contains(&params.opacity)
-            || params.spread.to_bits() != 0.0_f32.to_bits()
         {
-            return false;
+            return None;
         }
-        true
+        let [tl, tr, br, bl] = shape.radii;
+        Some(Self {
+            shape_bits: [shape.x, shape.y, shape.width, shape.height, tl, tr, br, bl]
+                .map(f32::to_bits),
+            offset_bits: [params.offset_x.to_bits(), params.offset_y.to_bits()],
+            blur_radius_bits: params.blur_radius.to_bits(),
+            color_bits: params.color.map(f32::to_bits),
+            opacity_bits: params.opacity.to_bits(),
+            clip_to_geometry: params.clip_to_geometry,
+        })
     }
 }
 

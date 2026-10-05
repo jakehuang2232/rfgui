@@ -705,7 +705,7 @@ fn scrollbar_overlay_localization_translates_both_axes_and_rebuilds_identity() {
     let original = PreparedScrollbarOverlayOp::from_witness(witness)
         .expect("canonical two-axis scrollbar overlay");
     let original_identity = original.frozen_identity();
-    let original_primary_vertices = original.track_shadow.mesh.vertices.clone();
+    let original_primary_shape = original.track_shadow.shape;
     let original_primary_position = original.track.params.position;
     let (_, original_secondary_track, _, original_secondary_thumb) =
         original.secondary_axis().expect("original secondary axis");
@@ -727,15 +727,10 @@ fn scrollbar_overlay_localization_translates_both_axes_and_rebuilds_identity() {
         ]
         .map(f32::to_bits)
     );
-    for (before, after) in original_primary_vertices
-        .iter()
-        .zip(&localized.track_shadow.mesh.vertices)
-    {
-        assert_eq!(
-            after.map(f32::to_bits),
-            [before[0] + delta[0], before[1] + delta[1]].map(f32::to_bits)
-        );
-    }
+    assert_eq!(
+        localized.track_shadow.shape,
+        original_primary_shape.translated(delta[0], delta[1])
+    );
     let (_, localized_secondary_track, _, localized_secondary_thumb) = localized
         .secondary_axis()
         .expect("localized secondary axis");

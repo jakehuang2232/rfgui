@@ -51,7 +51,7 @@ use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::{GraphicsPassContext, GraphicsPassScissor};
 use crate::view::render_pass::{
-    DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowMesh, ShadowModuleSpec,
+    DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowModuleSpec, ShadowShape,
     ShadowParams, build_shadow_module,
 };
 use crate::view::viewport::ViewportControl;

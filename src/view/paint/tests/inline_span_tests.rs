@@ -118,18 +118,8 @@ fn wrapping_inline_span_shadows_preserve_fragment_order_and_match_legacy() {
             let PaintOp::PreparedShadow(shadow) = op else {
                 unreachable!()
             };
-            let min_x = shadow
-                .mesh
-                .vertices
-                .iter()
-                .map(|vertex| vertex[0])
-                .fold(f32::INFINITY, f32::min);
-            let min_y = shadow
-                .mesh
-                .vertices
-                .iter()
-                .map(|vertex| vertex[1])
-                .fold(f32::INFINITY, f32::min);
+            let min_x = shadow.shape.x;
+            let min_y = shadow.shape.y;
             assert!(
                 (min_x - (fragment.x - 1.25 + shadow_recording_offset[0])).abs() < 0.001,
                 "shadow min_x={min_x}, expected={}, fragment={fragment:?}",

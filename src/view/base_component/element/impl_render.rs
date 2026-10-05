@@ -127,6 +127,7 @@ impl TransformSurfaceGeometrySnapshot {
             source_is_premultiplied: true,
             opacity: 1.0,
             scissor_rect: self.outer_scissor_rect,
+            nine_patch: None,
         }
     }
 
@@ -1237,7 +1238,7 @@ impl Element {
                     fragment.width,
                     fragment.height,
                 );
-                let mesh = ShadowMesh::rounded_rect_with_radii(
+                let mesh = ShadowShape::rounded_rect_with_radii(
                     fragment.x - spread + recording_context.paint_offset[0],
                     fragment.y - spread + recording_context.paint_offset[1],
                     fragment.width + spread * 2.0,
@@ -1252,7 +1253,6 @@ impl Element {
                         blur_radius: shadow.blur.max(0.0),
                         color,
                         opacity,
-                        spread: 0.0,
                         clip_to_geometry: shadow.inset,
                     },
                 )?);
@@ -1876,7 +1876,7 @@ impl Element {
                 );
                 let [shadow_x, shadow_y] =
                     ctx.paint_point(fragment.x - spread, fragment.y - spread);
-                let mesh = ShadowMesh::rounded_rect_with_radii(
+                let mesh = ShadowShape::rounded_rect_with_radii(
                     shadow_x,
                     shadow_y,
                     fragment.width + spread * 2.0,
@@ -1889,7 +1889,6 @@ impl Element {
                     blur_radius: shadow.blur.max(0.0),
                     color: shadow.color.to_rgba_f32(),
                     opacity: opacity.clamp(0.0, 1.0),
-                    spread: 0.0,
                     clip_to_geometry: shadow.inset,
                 };
                 let next_state = self.push_shadow_pass(
@@ -1906,7 +1905,7 @@ impl Element {
 
     fn push_shadow_pass(
         &mut self,
-        mesh: ShadowMesh,
+        shape: ShadowShape,
         params: ShadowParams,
         graph: &mut FrameGraph,
         mut ctx: UiBuildContext,
@@ -1919,7 +1918,7 @@ impl Element {
         let built = build_shadow_module(
             graph,
             ShadowModuleSpec {
-                mesh,
+                shape,
                 params,
                 viewport_width: ctx.viewport.target_width,
                 viewport_height: ctx.viewport.target_height,

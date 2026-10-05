@@ -2335,6 +2335,7 @@ impl Viewport {
         crate::view::paint::work_profile::begin();
         self.clear_debug_overlay_geometry();
         let mut graph = FrameGraph::new();
+        graph.set_resident_shadow_templates(self.resident_shadow_templates());
         let mut ctx = crate::view::base_component::UiBuildContext::new(
             self.gpu.surface_config.width,
             self.gpu.surface_config.height,
@@ -3591,6 +3592,7 @@ impl Viewport {
 
         frame.discard_unsubmitted();
         self.finish_gpu_paint_frame(false);
+        self.finish_shadow_template_frame(false);
         self.frame.offscreen_render_target_pool.finish_frame();
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -3659,6 +3661,7 @@ impl Viewport {
         }
         profile.present_ms = clock.checkpoint_ms();
         self.finish_gpu_paint_frame(true);
+        self.finish_shadow_template_frame(true);
         profile.resource_cleanup_ms += clock.checkpoint_ms();
         #[cfg(not(target_arch = "wasm32"))]
         {

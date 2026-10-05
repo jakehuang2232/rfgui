@@ -187,7 +187,19 @@ fn empty_artifact_resident_set_replaces_committed_surface_residents() {
     .expect("empty artifact emission");
 
     assert!(actions.is_empty());
-    assert_eq!(empty_graph.declared_persistent_texture_keys().count(), 0);
+    assert_eq!(
+        empty_graph
+            .declared_persistent_texture_keys()
+            .filter(|key| {
+                !matches!(
+                    key,
+                    crate::view::frame_graph::PersistentTextureKey::ShadowTemplate(_)
+                )
+            })
+            .count(),
+        0,
+        "only shared shadow templates may be declared without retained surfaces"
+    );
     assert_eq!(
         viewport.pending_artifact_surface_resident_keys_for_test(),
         Some(Vec::new()),
