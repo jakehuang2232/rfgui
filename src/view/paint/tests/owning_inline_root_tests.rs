@@ -485,7 +485,7 @@ fn owning_inline_root_text_live_shift_drift_falls_back_before_full_hooks() {
         .as_any_mut()
         .downcast_mut::<Text>()
         .unwrap()
-        .shift_inline_ifc_owned_geometry(1.0, 0.0);
+        .offset_inline_ifc_owned_geometry_for_test(1.0, 0.0);
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
     let outcome = record_frame_artifact(

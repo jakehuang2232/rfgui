@@ -4837,6 +4837,100 @@ fn inline_ifc_atomic_subtree_layout_placement_clean(arena: &NodeArena, root: Nod
 }
 
 /// Union of absolute rects; zero rect when empty.
+/// Install one span op of an origin-independent plan at the root's content
+/// origin. Full installs and moved roots share this arithmetic, so the paint
+/// witness re-derives bit-identical geometry on either path.
+fn install_inline_ifc_span_op(
+    arena: &mut NodeArena,
+    node_key: NodeKey,
+    package: Option<&InlineIfcDistributedElementPackages>,
+    paint_fragments: &[InlineIfcPaintRect],
+    origin_x: f32,
+    origin_y: f32,
+    top_offset: f32,
+) {
+    let mut package = package.cloned();
+    if let Some(package) = package
+        .as_mut()
+        .and_then(|package| package.decoration_draw_rect.as_mut())
+    {
+        for fragment in &mut package.fragments {
+            fragment.metadata.position[0] += origin_x;
+            fragment.metadata.position[1] += origin_y - top_offset;
+        }
+    }
+    let absolute = paint_fragments
+        .iter()
+        .map(|rect| Rect {
+            x: origin_x + rect.x,
+            y: origin_y + rect.y - top_offset,
+            width: rect.width,
+            height: rect.height,
+        })
+        .collect::<Vec<_>>();
+    let bounds = bounding_rect_iter(absolute.iter().map(|rect| crate::ui::Rect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }));
+    arena.with_element_taken(node_key, |child, _arena| {
+        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
+            element.install_inline_ifc_rollout_packages_from_candidate(package.as_ref());
+            element.inline_ifc_owned_by_root = true;
+            element.place_as_inline_ifc_owned_box(bounds);
+            element.inline_paint_fragments = absolute;
+        }
+    });
+}
+
+/// Install one text op of an origin-independent plan at the root's content
+/// origin; see [`install_inline_ifc_span_op`].
+#[allow(clippy::too_many_arguments)]
+fn install_inline_ifc_text_op(
+    arena: &mut NodeArena,
+    node_key: NodeKey,
+    lines: &[TextIfcOwnedLine],
+    paint_input: &Arc<InlineIfcTextPassPaintInput>,
+    paint_bounds: &InlineIfcPaintRect,
+    origin_x: f32,
+    origin_y: f32,
+    top_offset: f32,
+) {
+    let absolute = lines
+        .iter()
+        .cloned()
+        .map(|line| line.shifted(origin_x, origin_y - top_offset))
+        .collect::<Vec<_>>();
+    arena.with_element_taken(node_key, |child, _arena| {
+        if let Some(text) = child.as_any_mut().downcast_mut::<Text>() {
+            let mut bounds = bounding_rect_iter(absolute.iter().map(|line| line.rect));
+            if (bounds.width <= 0.0 || bounds.height <= 0.0)
+                && paint_bounds.width > 0.0
+                && paint_bounds.height > 0.0
+            {
+                bounds = crate::ui::Rect {
+                    x: origin_x + paint_bounds.x,
+                    y: origin_y + paint_bounds.y - top_offset,
+                    width: paint_bounds.width,
+                    height: paint_bounds.height,
+                };
+            }
+            text.place_as_inline_ifc_owned_box(bounds);
+            text.install_inline_ifc_owned_geometry(
+                absolute,
+                Arc::clone(paint_input),
+                crate::ui::Rect {
+                    x: origin_x + paint_bounds.x,
+                    y: origin_y + paint_bounds.y - top_offset,
+                    width: paint_bounds.width,
+                    height: paint_bounds.height,
+                },
+            );
+        }
+    });
+}
+
 fn bounding_rect(rects: &[crate::ui::Rect]) -> crate::ui::Rect {
     bounding_rect_iter(rects.iter().copied())
 }
@@ -6599,12 +6693,12 @@ impl Element {
                         profile.inline_ifc_root_install_reuse_calls += 1;
                     });
                     // Same plan, so re-applying it can only change the
-                    // origin shift baked into each absolute coordinate.
-                    // Identical origins mean every installed value is
-                    // already correct; a move is an in-place delta shift
-                    // (no package clones, no absolute-geometry rebuild).
-                    // Atomic boxes still go through child.place so their
-                    // own placement gate decides whether to skip.
+                    // origin baked into each absolute coordinate. Identical
+                    // origins mean every installed value is already correct;
+                    // a move re-installs span/text geometry at the new origin
+                    // without reshaping. Atomic boxes still go through
+                    // child.place so their own placement gate decides whether
+                    // to skip.
                     let origins = self.inline_ifc_apply_origins();
                     let has_atomic = install
                         .plan
@@ -6614,11 +6708,11 @@ impl Element {
                         self.inline_ifc_layout_call_site.current = Some(install);
                         return;
                     }
-                    self.shift_inline_ifc_install_plan(
+                    self.reposition_inline_ifc_install_plan(
                         arena,
                         &install.plan,
-                        origins.0 - install.applied_origins.0,
-                        origins.1 - install.applied_origins.1,
+                        origins.0 != install.applied_origins.0
+                            || origins.1 != install.applied_origins.1,
                         install.content_top_offset,
                         placement,
                         has_atomic,
@@ -6789,22 +6883,25 @@ impl Element {
         )
     }
 
-    /// Pure-move fast path for an unchanged install plan: shift owned
-    /// span/text geometry in place by the origin delta and re-place
-    /// atomic boxes at their line positions. Semantically identical to
-    /// `apply_inline_ifc_install_plan` with the same plan, minus the
-    /// per-op package clones and absolute-geometry rebuilds.
+    /// Pure-move path for an unchanged install plan: re-install owned
+    /// span/text geometry at the root's new origin and re-place atomic boxes
+    /// at their line positions, without reshaping. Span/text ops go through
+    /// the same install helpers as `apply_inline_ifc_install_plan`, so a moved
+    /// root carries bit-identical geometry to a fresh install and the paint
+    /// witness keeps accepting it. Accumulating per-move deltas would drift
+    /// in the last bits and send every moved frame to whole-frame Legacy.
     #[allow(clippy::too_many_arguments)]
-    fn shift_inline_ifc_install_plan(
+    fn reposition_inline_ifc_install_plan(
         &mut self,
         arena: &mut NodeArena,
         plan: &[InlineIfcNodeInstallOp],
-        dx: f32,
-        dy: f32,
+        moved: bool,
         top_offset: f32,
         placement: LayoutPlacement,
         has_atomic: bool,
     ) {
+        let origin_x = self.layout_state.layout_inner_position.x - self.scroll_offset.x;
+        let origin_y = self.layout_state.layout_inner_position.y - self.scroll_offset.y;
         let flow_origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
         let flow_origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
         let visual_offset_x =
@@ -6816,28 +6913,43 @@ impl Element {
             self.push_hit_test_clip_scope(child_parent_hit_test_clip);
             self.push_child_clip_scope(self.child_paint_cull_rect());
         }
-        let moved = dx != 0.0 || dy != 0.0;
         for op in plan {
             match op {
-                InlineIfcNodeInstallOp::Span { node_key, .. } => {
-                    if !moved {
-                        continue;
+                InlineIfcNodeInstallOp::Span {
+                    node_key,
+                    package,
+                    paint_fragments,
+                } => {
+                    if moved {
+                        install_inline_ifc_span_op(
+                            arena,
+                            *node_key,
+                            package.as_ref(),
+                            paint_fragments,
+                            origin_x,
+                            origin_y,
+                            top_offset,
+                        );
                     }
-                    arena.with_element_taken(*node_key, |child, _arena| {
-                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                            element.shift_inline_ifc_owned_geometry(dx, dy);
-                        }
-                    });
                 }
-                InlineIfcNodeInstallOp::Text { node_key, .. } => {
-                    if !moved {
-                        continue;
+                InlineIfcNodeInstallOp::Text {
+                    node_key,
+                    lines,
+                    paint_input,
+                    paint_bounds,
+                } => {
+                    if moved {
+                        install_inline_ifc_text_op(
+                            arena,
+                            *node_key,
+                            lines,
+                            paint_input,
+                            paint_bounds,
+                            origin_x,
+                            origin_y,
+                            top_offset,
+                        );
                     }
-                    arena.with_element_taken(*node_key, |child, _arena| {
-                        if let Some(text) = child.as_any_mut().downcast_mut::<Text>() {
-                            text.shift_inline_ifc_owned_geometry(dx, dy);
-                        }
-                    });
                 }
                 InlineIfcNodeInstallOp::Atomic { witness } => {
                     let child_placement = inline_ifc_atomic_layout_placement(
@@ -6870,10 +6982,10 @@ impl Element {
         }
     }
 
-    /// In-place delta shift of span geometry owned by an inline IFC
-    /// root: decoration fragment positions, paint fragments, and the
-    /// shell box adopted from the fragment union.
-    pub(crate) fn shift_inline_ifc_owned_geometry(&mut self, dx: f32, dy: f32) {
+    /// Moves installed span geometry away from its install plan, so tests can
+    /// prove that live drift fails the paint witness closed.
+    #[cfg(test)]
+    pub(crate) fn offset_inline_ifc_owned_geometry_for_test(&mut self, dx: f32, dy: f32) {
         if let Some(package) = self
             .inline_ifc_rollout_packages
             .decoration_draw_rect
@@ -6928,89 +7040,30 @@ impl Element {
                     node_key,
                     package,
                     paint_fragments,
-                } => {
-                    let mut package = package.clone();
-                    if let Some(package) = package
-                        .as_mut()
-                        .and_then(|package| package.decoration_draw_rect.as_mut())
-                    {
-                        for fragment in &mut package.fragments {
-                            fragment.metadata.position[0] += origin_x;
-                            fragment.metadata.position[1] += origin_y - top_offset;
-                        }
-                    }
-                    let absolute = paint_fragments
-                        .iter()
-                        .map(|rect| Rect {
-                            x: origin_x + rect.x,
-                            y: origin_y + rect.y - top_offset,
-                            width: rect.width,
-                            height: rect.height,
-                        })
-                        .collect::<Vec<_>>();
-                    let bounds = bounding_rect(
-                        &absolute
-                            .iter()
-                            .map(|rect| crate::ui::Rect {
-                                x: rect.x,
-                                y: rect.y,
-                                width: rect.width,
-                                height: rect.height,
-                            })
-                            .collect::<Vec<_>>(),
-                    );
-                    arena.with_element_taken(*node_key, |child, _arena| {
-                        if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                            element.install_inline_ifc_rollout_packages_from_candidate(
-                                package.as_ref(),
-                            );
-                            element.inline_ifc_owned_by_root = true;
-                            element.place_as_inline_ifc_owned_box(bounds);
-                            element.inline_paint_fragments = absolute;
-                        }
-                    });
-                }
+                } => install_inline_ifc_span_op(
+                    arena,
+                    *node_key,
+                    package.as_ref(),
+                    paint_fragments,
+                    origin_x,
+                    origin_y,
+                    top_offset,
+                ),
                 InlineIfcNodeInstallOp::Text {
                     node_key,
                     lines,
                     paint_input,
                     paint_bounds,
-                } => {
-                    let absolute = lines
-                        .iter()
-                        .cloned()
-                        .map(|line| line.shifted(origin_x, origin_y - top_offset))
-                        .collect::<Vec<_>>();
-                    arena.with_element_taken(*node_key, |child, _arena| {
-                        if let Some(text) = child.as_any_mut().downcast_mut::<Text>() {
-                            let mut bounds = bounding_rect(
-                                &absolute.iter().map(|line| line.rect).collect::<Vec<_>>(),
-                            );
-                            if (bounds.width <= 0.0 || bounds.height <= 0.0)
-                                && paint_bounds.width > 0.0
-                                && paint_bounds.height > 0.0
-                            {
-                                bounds = crate::ui::Rect {
-                                    x: origin_x + paint_bounds.x,
-                                    y: origin_y + paint_bounds.y - top_offset,
-                                    width: paint_bounds.width,
-                                    height: paint_bounds.height,
-                                };
-                            }
-                            text.place_as_inline_ifc_owned_box(bounds);
-                            text.install_inline_ifc_owned_geometry(
-                                absolute,
-                                Arc::clone(paint_input),
-                                crate::ui::Rect {
-                                    x: origin_x + paint_bounds.x,
-                                    y: origin_y + paint_bounds.y - top_offset,
-                                    width: paint_bounds.width,
-                                    height: paint_bounds.height,
-                                },
-                            );
-                        }
-                    });
-                }
+                } => install_inline_ifc_text_op(
+                    arena,
+                    *node_key,
+                    lines,
+                    paint_input,
+                    paint_bounds,
+                    origin_x,
+                    origin_y,
+                    top_offset,
+                ),
                 InlineIfcNodeInstallOp::Atomic { witness } => {
                     let child_placement = inline_ifc_atomic_layout_placement(
                         flow_origin_x,

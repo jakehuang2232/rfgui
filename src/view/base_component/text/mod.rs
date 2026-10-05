@@ -344,10 +344,10 @@ impl Text {
         }));
     }
 
-    /// In-place delta shift of installed owned lines: the owning IFC
-    /// root moved without reshaping, so every absolute coordinate moves
-    /// by the same delta.
-    pub(crate) fn shift_inline_ifc_owned_geometry(&mut self, dx: f32, dy: f32) {
+    /// Moves installed owned lines away from their install plan, so tests can
+    /// prove that live drift fails the paint witness closed.
+    #[cfg(test)]
+    pub(crate) fn offset_inline_ifc_owned_geometry_for_test(&mut self, dx: f32, dy: f32) {
         self.line_install_memo.get_mut().take();
         if let Some(owned) = self.inline_ifc_owned.as_mut() {
             for line in Arc::make_mut(&mut owned.lines) {
