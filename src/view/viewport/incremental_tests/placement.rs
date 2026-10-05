@@ -70,3 +70,4 @@ mod flex_replay_tests;
 mod placement_skip_tests;
 mod inline_ifc_tests;
 mod microbench_tests;
+mod nested_paint_cull_tests;

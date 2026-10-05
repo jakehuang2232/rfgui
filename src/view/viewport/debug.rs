@@ -431,7 +431,7 @@ pub(super) fn build_layout_place_trace_nodes(
             ),
             TraceRenderNode::new(
                 format!(
-                    "placement_skip_failures (total={}, dirty_subtree={}, non_base_element={}, non_leaf={}, anchor_name={}, anchor_ref={}, absolute_descendant={}, runtime_state={}, placement_mismatch={}, placement_dirty_self={}, hit_test_clip_mismatch={}, anchor_parent_clip_mismatch={})",
+                    "placement_skip_failures (total={}, dirty_subtree={}, non_base_element={}, non_leaf={}, anchor_name={}, anchor_ref={}, absolute_descendant={}, runtime_state={}, placement_mismatch={}, placement_dirty_self={}, hit_test_clip_mismatch={}, paint_cull_mismatch={}, anchor_parent_clip_mismatch={})",
                     profile.placement_skip_failures.total(),
                     profile.placement_skip_failures.dirty_subtree,
                     profile.placement_skip_failures.non_base_element,
@@ -443,6 +443,7 @@ pub(super) fn build_layout_place_trace_nodes(
                     profile.placement_skip_failures.placement_mismatch,
                     profile.placement_skip_failures.placement_dirty_self,
                     profile.placement_skip_failures.hit_test_clip_mismatch,
+                    profile.placement_skip_failures.paint_cull_mismatch,
                     profile.placement_skip_failures.anchor_parent_clip_mismatch
                 ),
                 0.0,
@@ -531,7 +532,7 @@ pub(super) fn build_layout_place_trace_nodes(
         ),
         TraceRenderNode::new(
             format!(
-                "axis_placement_blockers (total={}, dirty_subtree={}, non_base_element={}, non_leaf={}, anchor_name={}, anchor_ref={}, absolute_descendant={}, runtime_state={}, placement_mismatch={}, placement_dirty_self={}, hit_test_clip_mismatch={}, anchor_parent_clip_mismatch={})",
+                "axis_placement_blockers (total={}, dirty_subtree={}, non_base_element={}, non_leaf={}, anchor_name={}, anchor_ref={}, absolute_descendant={}, runtime_state={}, placement_mismatch={}, placement_dirty_self={}, hit_test_clip_mismatch={}, paint_cull_mismatch={}, anchor_parent_clip_mismatch={})",
                 profile.axis_placement_eligibility.blockers.total(),
                 profile.axis_placement_eligibility.blockers.dirty_subtree,
                 profile.axis_placement_eligibility.blockers.non_base_element,
@@ -555,6 +556,10 @@ pub(super) fn build_layout_place_trace_nodes(
                     .axis_placement_eligibility
                     .blockers
                     .hit_test_clip_mismatch,
+                profile
+                    .axis_placement_eligibility
+                    .blockers
+                    .paint_cull_mismatch,
                 profile
                     .axis_placement_eligibility
                     .blockers

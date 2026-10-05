@@ -801,6 +801,13 @@ impl Element {
             self.current_parent_child_clip_rect()
                 .unwrap_or(parent_clip_rect)
         };
+        // Only an ancestor's overscanned child interest is inherited. The root
+        // and absolute nodes, culled against exact clips, keep their own.
+        self.inherited_paint_cull_rect = if is_absolute {
+            None
+        } else {
+            self.current_parent_child_clip_rect()
+        };
         let transformed_frame_bounds = self.transformed_frame_bounding_rect(frame);
         let intersects_parent_clip = transformed_frame_bounds.intersects(cull_rect);
         let intersects_absolute_clip = self
@@ -1078,6 +1085,12 @@ impl Element {
         if let Some(rect) = self.last_child_hit_test_clip_rect.as_mut() {
             shift_rect(rect);
         }
+        if let Some(rect) = self.inherited_paint_cull_rect.as_mut() {
+            shift_rect(rect);
+        }
+        if let Some(rect) = self.last_child_paint_cull_rect.as_mut() {
+            shift_rect(rect);
+        }
         self.last_parent_layout_x += dx;
         self.last_parent_layout_y += dy;
         if let Some(placement) = self.last_layout_placement.as_mut() {
@@ -1142,10 +1155,39 @@ impl Element {
         PLACEMENT_RUNTIME.with(|runtime| runtime.borrow().child_clip_stack.last().copied())
     }
 
+    /// An in-flow node inherits its parent's child interest; a clean place
+    /// may be skipped only while that input is unchanged.
+    pub(crate) fn paint_cull_matches_current_scope(&self) -> bool {
+        self.computed_style.position.mode() == PositionMode::Absolute
+            || rect_approx_eq(
+                self.inherited_paint_cull_rect,
+                self.current_parent_child_clip_rect(),
+            )
+    }
+
+    pub(crate) fn child_paint_cull_matches_last_place(&self) -> bool {
+        rect_approx_eq(
+            self.last_child_paint_cull_rect,
+            Some(self.child_paint_cull_rect()),
+        )
+    }
+
     /// Conservative paint interest, separate from the exact drawing and hit
     /// test clips. Keep the existing overscan, but align moving axes in content
     /// space so small scroll deltas do not change the recorded child set.
+    ///
+    /// Descendants are clipped by every ancestor, so the interest is this
+    /// node's own rect within the interest it was culled against. A transform
+    /// places children in another space; there the own rect alone applies.
     fn child_paint_cull_rect(&self) -> Rect {
+        let own = self.own_child_paint_cull_rect();
+        match self.inherited_paint_cull_rect {
+            Some(inherited) if self.resolved_transform.is_none() => intersect_rect(own, inherited),
+            _ => own,
+        }
+    }
+
+    fn own_child_paint_cull_rect(&self) -> Rect {
         let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
         let axis = |origin: f32, extent: f32, offset: f32, scrolls: bool| {
             let start = origin - overscan;
@@ -1540,6 +1582,9 @@ impl Element {
         if !rect_approx_eq(self.hit_test_clip_rect, Some(inherited_hit_test_clip)) {
             return Some(PlacementSkipFailureReason::HitTestClipMismatch);
         }
+        if !self.paint_cull_matches_current_scope() {
+            return Some(PlacementSkipFailureReason::PaintCullMismatch);
+        }
         if !rect_approx_eq(self.anchor_parent_clip_rect, Some(inherited_hit_test_clip)) {
             return Some(PlacementSkipFailureReason::AnchorParentClipMismatch);
         }
@@ -1557,6 +1602,9 @@ impl Element {
             )
         {
             return Some(PlacementSkipFailureReason::HitTestClipMismatch);
+        }
+        if !self.children.is_empty() && !self.child_paint_cull_matches_last_place() {
+            return Some(PlacementSkipFailureReason::PaintCullMismatch);
         }
         for child_key in &self.children {
             if let Some(reason) = clean_placement_skip_node_failure(arena, *child_key) {
@@ -1705,7 +1753,9 @@ impl Element {
         let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
         self.last_child_hit_test_clip_rect = Some(child_parent_hit_test_clip);
         self.push_hit_test_clip_scope(child_parent_hit_test_clip);
-        self.push_child_clip_scope(self.child_paint_cull_rect());
+        let child_paint_cull = self.child_paint_cull_rect();
+        self.last_child_paint_cull_rect = Some(child_paint_cull);
+        self.push_child_clip_scope(child_paint_cull);
         // Inline is NOT an axis layout here: its children are placed by the
         // inline IFC install (`run_inline_ifc_root_after_place`), not the
         // flex/flow solver. Routing inline through `place_flex_children`

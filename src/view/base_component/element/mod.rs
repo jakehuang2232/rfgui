@@ -705,6 +705,7 @@ pub(crate) struct PlacementSkipFailureCounters {
     pub placement_mismatch: usize,
     pub placement_dirty_self: usize,
     pub hit_test_clip_mismatch: usize,
+    pub paint_cull_mismatch: usize,
     pub anchor_parent_clip_mismatch: usize,
 }
 
@@ -720,6 +721,7 @@ impl PlacementSkipFailureCounters {
             + self.placement_mismatch
             + self.placement_dirty_self
             + self.hit_test_clip_mismatch
+            + self.paint_cull_mismatch
             + self.anchor_parent_clip_mismatch
     }
 
@@ -734,6 +736,7 @@ impl PlacementSkipFailureCounters {
             PlacementSkipFailureReason::PlacementMismatch => self.placement_mismatch += 1,
             PlacementSkipFailureReason::PlacementDirtySelf => self.placement_dirty_self += 1,
             PlacementSkipFailureReason::HitTestClipMismatch => self.hit_test_clip_mismatch += 1,
+            PlacementSkipFailureReason::PaintCullMismatch => self.paint_cull_mismatch += 1,
             PlacementSkipFailureReason::AnchorParentClipMismatch => {
                 self.anchor_parent_clip_mismatch += 1;
             }
@@ -752,6 +755,7 @@ pub(crate) enum PlacementSkipFailureReason {
     PlacementMismatch,
     PlacementDirtySelf,
     HitTestClipMismatch,
+    PaintCullMismatch,
     AnchorParentClipMismatch,
 }
 
@@ -5732,6 +5736,10 @@ pub struct Element {
     anchor_parent_clip_rect: Option<Rect>,
     hit_test_clip_rect: Option<Rect>,
     last_child_hit_test_clip_rect: Option<Rect>,
+    /// Ancestor paint interest inherited at the last place; `None` limits
+    /// children to this node's own interest.
+    inherited_paint_cull_rect: Option<Rect>,
+    last_child_paint_cull_rect: Option<Rect>,
     children: Vec<crate::view::node_arena::NodeKey>,
 }
 

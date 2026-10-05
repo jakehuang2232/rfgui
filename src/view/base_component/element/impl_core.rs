@@ -808,6 +808,8 @@ impl Element {
             anchor_parent_clip_rect: None,
             hit_test_clip_rect: None,
             last_child_hit_test_clip_rect: None,
+            inherited_paint_cull_rect: None,
+            last_child_paint_cull_rect: None,
             children: Vec::new(),
         };
         el.recompute_style();

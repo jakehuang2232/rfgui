@@ -153,11 +153,12 @@ impl Element {
             && !self.inline_ifc_layout_call_site_dirty_gate(arena, placement)
             && self.last_layout_placement == Some(placement)
             && self.hit_test_clip_matches_current_placement(placement)
+            && self.paint_cull_matches_current_scope()
             && (self.children.is_empty()
-                || rect_approx_eq(
+                || (rect_approx_eq(
                     self.last_child_hit_test_clip_rect,
                     Some(self.current_child_hit_test_clip_rect()),
-                ))
+                ) && self.child_paint_cull_matches_last_place()))
     }
 }
 
@@ -368,11 +369,12 @@ impl Layoutable for Element {
             && !inline_ifc_layout_call_site_dirty
             && self.last_layout_placement == Some(placement)
             && self.hit_test_clip_matches_current_placement(placement)
+            && self.paint_cull_matches_current_scope()
             && (self.children.is_empty()
-                || rect_approx_eq(
+                || (rect_approx_eq(
                     self.last_child_hit_test_clip_rect,
                     Some(self.current_child_hit_test_clip_rect()),
-                ))
+                ) && self.child_paint_cull_matches_last_place()))
         {
             with_layout_place_profile(|p| p.place_returned_clean += 1);
             return;
@@ -384,11 +386,12 @@ impl Layoutable for Element {
             p.place_input_changed += usize::from(self.last_layout_placement != Some(placement));
             p.place_clip_changed += usize::from(
                 !self.hit_test_clip_matches_current_placement(placement)
+                    || !self.paint_cull_matches_current_scope()
                     || (!self.children.is_empty()
-                        && !rect_approx_eq(
+                        && (!rect_approx_eq(
                             self.last_child_hit_test_clip_rect,
                             Some(self.current_child_hit_test_clip_rect()),
-                        )),
+                        ) || !self.child_paint_cull_matches_last_place())),
             );
         });
 
