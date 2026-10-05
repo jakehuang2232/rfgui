@@ -685,11 +685,10 @@ pub(crate) fn as_text_style(value: &PropValue, key: &str) -> Result<Style, Strin
 
 fn style_from_prop_value<P>(value: &PropValue, key: &str, expected: &str) -> Result<Style, String>
 where
-    P: FromPropValue + StylePropTrait,
+    P: StylePropTrait + 'static,
 {
-    let prop = P::from_prop_value(value.clone())
-        .map_err(|_| format!("prop `{key}` expects {expected} value"))?;
-    let style = prop.to_style();
+    let style = crate::view::tags::lowered_host_style::<P>(value)
+        .ok_or_else(|| format!("prop `{key}` expects {expected} value"))?;
     validate_style::<P::Accepted>(&style).map_err(|err| format!("prop `{key}` contains {err}"))?;
     Ok(style)
 }

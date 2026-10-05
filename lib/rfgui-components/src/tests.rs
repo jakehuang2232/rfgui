@@ -55,16 +55,16 @@ fn is_host_tag<T: 'static>(node: &RsxElementNode) -> bool {
 }
 
 fn shared_element_style(node: &RsxElementNode) -> Option<rfgui::view::ElementStylePropSchema> {
-    node.props
-        .iter()
-        .find_map(|(key, value)| match (*key, value) {
-            ("style", PropValue::Shared(shared)) => shared
-                .value()
-                .downcast::<rfgui::view::ElementStylePropSchema>()
+    node.props.iter().find_map(|(key, value)| {
+        (*key == "style")
+            .then(|| {
+                <rfgui::view::ElementStylePropSchema as rfgui::ui::FromPropValue>::from_prop_value(
+                    value.clone(),
+                )
                 .ok()
-                .map(|style| (*style).clone()),
-            _ => None,
-        })
+            })
+            .flatten()
+    })
 }
 
 fn click_once(

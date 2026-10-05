@@ -239,14 +239,33 @@ pub struct RsxFragmentNode {
     pub children: Vec<RsxNode>,
 }
 
+/// Value comparison for a [`SharedPropValue`] payload.
+pub type SharedPropValueEq = fn(&dyn Any, &dyn Any) -> bool;
+
 #[derive(Clone)]
 pub struct SharedPropValue {
     value: Rc<dyn Any>,
+    value_eq: Option<SharedPropValueEq>,
 }
 
 impl SharedPropValue {
+    /// Compared by allocation identity: a fresh `Rc` is a changed prop.
     pub fn new(value: Rc<dyn Any>) -> Self {
-        Self { value }
+        Self {
+            value,
+            value_eq: None,
+        }
+    }
+
+    /// Compared by `value_eq` when allocations differ. Payloads that are
+    /// rebuilt on every render (style objects) then reconcile as unchanged
+    /// when their value is unchanged. `value_eq` must return false when
+    /// either side is not its payload type.
+    pub fn with_value_eq(value: Rc<dyn Any>, value_eq: SharedPropValueEq) -> Self {
+        Self {
+            value,
+            value_eq: Some(value_eq),
+        }
     }
 
     pub fn value(&self) -> Rc<dyn Any> {
@@ -270,6 +289,10 @@ impl fmt::Debug for SharedPropValue {
 impl PartialEq for SharedPropValue {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.value, &other.value)
+            || match (self.value_eq, other.value_eq) {
+                (Some(value_eq), Some(_)) => value_eq(&*self.value, &*other.value),
+                _ => false,
+            }
     }
 }
 

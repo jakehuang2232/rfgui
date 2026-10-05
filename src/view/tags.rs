@@ -801,6 +801,74 @@ fn into_shared_prop_value<T: 'static>(value: T) -> crate::ui::PropValue {
     crate::ui::PropValue::Shared(SharedPropValue::new(Rc::new(value)))
 }
 
+/// Host `style` payload. Hosts consume only the lowered [`Style`], which is
+/// computed once and shared by reconcile comparison and host application.
+struct LoweredStyleProp<T> {
+    schema: T,
+    lowered: std::cell::OnceCell<Style>,
+}
+
+impl<T: StylePropTrait> LoweredStyleProp<T> {
+    fn lowered(&self) -> &Style {
+        self.lowered.get_or_init(|| self.schema.to_style())
+    }
+}
+
+/// Host `style` props are rebuilt on every render; equal lowerings reconcile
+/// as an unchanged prop.
+fn into_lowered_style_prop_value<T: StylePropTrait + 'static>(value: T) -> crate::ui::PropValue {
+    crate::ui::PropValue::Shared(SharedPropValue::with_value_eq(
+        Rc::new(LoweredStyleProp {
+            schema: value,
+            lowered: std::cell::OnceCell::new(),
+        }),
+        lowered_style_eq::<T>,
+    ))
+}
+
+fn lowered_style_eq<T: StylePropTrait + 'static>(
+    a: &dyn std::any::Any,
+    b: &dyn std::any::Any,
+) -> bool {
+    match (
+        a.downcast_ref::<LoweredStyleProp<T>>(),
+        b.downcast_ref::<LoweredStyleProp<T>>(),
+    ) {
+        (Some(a), Some(b)) => a.lowered() == b.lowered(),
+        _ => false,
+    }
+}
+
+fn from_lowered_style_prop_value<T: Clone + 'static>(
+    value: crate::ui::PropValue,
+    expected: &str,
+) -> Result<T, String> {
+    match value {
+        crate::ui::PropValue::Shared(shared) => shared
+            .into_inner()
+            .downcast::<LoweredStyleProp<T>>()
+            .map(|rc| match Rc::try_unwrap(rc) {
+                Ok(prop) => prop.schema,
+                Err(rc) => rc.schema.clone(),
+            })
+            .map_err(|_| format!("expected {expected} value")),
+        _ => Err(format!("expected {expected} value")),
+    }
+}
+
+/// The lowered style of a host `style` prop built from schema `T`.
+pub(crate) fn lowered_host_style<T: StylePropTrait + 'static>(
+    value: &crate::ui::PropValue,
+) -> Option<Style> {
+    match value {
+        crate::ui::PropValue::Shared(shared) => shared
+            .value()
+            .downcast_ref::<LoweredStyleProp<T>>()
+            .map(|prop| prop.lowered().clone()),
+        _ => None,
+    }
+}
+
 fn from_shared_prop_value<T: Clone + 'static>(
     value: crate::ui::PropValue,
     expected: &str,
@@ -816,33 +884,63 @@ fn from_shared_prop_value<T: Clone + 'static>(
 }
 
 macro_rules! impl_shared_style_prop_value {
-    ($ty:ty, $label:literal) => {
+    ($ty:ty, $label:literal, $into:ident, $from:ident) => {
         impl IntoPropValue for $ty {
             fn into_prop_value(self) -> crate::ui::PropValue {
-                into_shared_prop_value(self)
+                $into(self)
             }
         }
 
         impl From<$ty> for crate::ui::PropValue {
             fn from(value: $ty) -> Self {
-                into_shared_prop_value(value)
+                $into(value)
             }
         }
 
         impl FromPropValue for $ty {
             fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
-                from_shared_prop_value(value, $label)
+                $from(value, $label)
             }
         }
     };
 }
 
-impl_shared_style_prop_value!(ElementStylePropSchema, "ElementStylePropSchema");
-impl_shared_style_prop_value!(HoverElementStylePropSchema, "HoverElementStylePropSchema");
-impl_shared_style_prop_value!(TextStylePropSchema, "TextStylePropSchema");
-impl_shared_style_prop_value!(HoverTextStylePropSchema, "HoverTextStylePropSchema");
-impl_shared_style_prop_value!(SelectionStylePropSchema, "SelectionStylePropSchema");
-impl_shared_style_prop_value!(BorderStylePropSchema, "BorderStylePropSchema");
+impl_shared_style_prop_value!(
+    ElementStylePropSchema,
+    "ElementStylePropSchema",
+    into_lowered_style_prop_value,
+    from_lowered_style_prop_value
+);
+impl_shared_style_prop_value!(
+    HoverElementStylePropSchema,
+    "HoverElementStylePropSchema",
+    into_shared_prop_value,
+    from_shared_prop_value
+);
+impl_shared_style_prop_value!(
+    TextStylePropSchema,
+    "TextStylePropSchema",
+    into_lowered_style_prop_value,
+    from_lowered_style_prop_value
+);
+impl_shared_style_prop_value!(
+    HoverTextStylePropSchema,
+    "HoverTextStylePropSchema",
+    into_shared_prop_value,
+    from_shared_prop_value
+);
+impl_shared_style_prop_value!(
+    SelectionStylePropSchema,
+    "SelectionStylePropSchema",
+    into_shared_prop_value,
+    from_shared_prop_value
+);
+impl_shared_style_prop_value!(
+    BorderStylePropSchema,
+    "BorderStylePropSchema",
+    into_shared_prop_value,
+    from_shared_prop_value
+);
 
 fn apply_box_color(
     style: &mut Style,
@@ -1339,6 +1437,9 @@ impl StylePropTrait for TextStylePropSchema {
 
 #[cfg(test)]
 mod style_lowering_tests;
+
+#[cfg(test)]
+mod style_prop_identity_tests;
 
 impl crate::ui::IntoPropValue for ImageFit {
     fn into_prop_value(self) -> crate::ui::PropValue {

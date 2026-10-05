@@ -473,3 +473,64 @@ fn incremental_commit_resolves_em_font_size_via_inherited_cascade() {
     );
     let _ = <FontSize as IntoPropValue>::into_prop_value;
 }
+
+/// A re-render rebuilds every `style` object, but an Element child whose
+/// style value is unchanged receives no patch. Its inherited base layers
+/// (cursor, text wrap, line height) must still follow the ancestor through
+/// the recascade walk rather than through a redundant style re-application.
+#[test]
+fn incremental_commit_recascades_element_child_with_unchanged_style() {
+    use crate::style::TextWrap;
+    use crate::view::base_component::Element as ElementHost;
+
+    fn tree(cursor: Cursor, text_wrap: TextWrap, line_height: f32) -> RsxNode {
+        rsx! {
+            <HostElement style={{
+                width: Length::px(240.0),
+                height: Length::px(120.0),
+                cursor: cursor,
+                text_wrap: text_wrap,
+                line_height: line_height,
+            }}>
+                <HostElement style={{ width: Length::px(100.0), height: Length::px(20.0) }} />
+            </HostElement>
+        }
+    }
+
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+    viewport
+        .render_rsx(&tree(Cursor::Default, TextWrap::Wrap, 1.1))
+        .expect("cold render");
+    let root_key = viewport.scene.ui_root_keys[0];
+    let child_key = viewport.scene.node_arena.children_of(root_key)[0];
+
+    viewport
+        .render_rsx(&tree(Cursor::Pointer, TextWrap::NoWrap, 1.8))
+        .expect("parent cascade update should commit incrementally");
+
+    assert_eq!(viewport.scene.ui_root_keys, vec![root_key]);
+    assert_eq!(
+        viewport.scene.node_arena.children_of(root_key),
+        vec![child_key]
+    );
+    let node = viewport.scene.node_arena.get(child_key).expect("child");
+    let style = node
+        .element
+        .as_any()
+        .downcast_ref::<ElementHost>()
+        .expect("Element host")
+        .parsed_style();
+    assert_eq!(
+        style.get(PropertyId::Cursor),
+        Some(&ParsedValue::Cursor(Cursor::Pointer))
+    );
+    assert_eq!(
+        style.get(PropertyId::TextWrap),
+        Some(&ParsedValue::TextWrap(TextWrap::NoWrap))
+    );
+    assert_eq!(
+        style.get(PropertyId::LineHeight),
+        Some(&ParsedValue::LineHeight(crate::style::LineHeight::new(1.8)))
+    );
+}

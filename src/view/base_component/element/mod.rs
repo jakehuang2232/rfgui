@@ -8404,6 +8404,19 @@ impl ElementTrait for Element {
             }
         }
 
+        if authored.get(PropertyId::TextWrap).is_none() {
+            let next_value = inherited.inherited_text_wrap().map(ParsedValue::TextWrap);
+            if next.get(PropertyId::TextWrap) != next_value.as_ref() {
+                match next_value {
+                    Some(value) => next.insert(PropertyId::TextWrap, value),
+                    None => {
+                        let _ = next.remove(PropertyId::TextWrap);
+                    }
+                }
+                changed = true;
+            }
+        }
+
         if changed {
             self.parsed_style = next;
             self.recompute_style();
