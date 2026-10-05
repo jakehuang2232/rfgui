@@ -287,4 +287,5 @@ mod accordion_tests;
 mod component_composition_tests;
 mod input_tests;
 mod select_tests;
+mod theme_tests;
 mod tree_view_tests;

@@ -258,7 +258,7 @@ fn WindowView(
     let content_padding = content_style_slot
         .and_then(|style| style.padding)
         .unwrap_or(theme.component.card.padding);
-    let content_text_color = theme.color.text.primary;
+    let content_text_color = theme.color.text.primary.clone();
     let content_background = content_style_slot
         .and_then(|style| style.background)
         .unwrap_or_else(|| color_like_to_color(theme.color.layer.surface.as_ref()));

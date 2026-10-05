@@ -3,9 +3,16 @@ use rfgui::style::{
     TransitionTiming,
 };
 use rfgui::ui::global_state;
+use std::rc::Rc;
+
+/// A shared theme snapshot. Clones share one allocation and compare equal,
+/// so components receiving an unchanged theme can skip re-rendering. Editing
+/// through `DerefMut` copies on write: the edited theme is a new value.
+#[derive(Clone)]
+pub struct Theme(Rc<ThemeTokens>);
 
 #[derive(Clone)]
-pub struct Theme {
+pub struct ThemeTokens {
     pub color: ColorTheme,
     pub typography: TypographyTheme,
     pub spacing: SpacingTheme,
@@ -15,9 +22,29 @@ pub struct Theme {
     pub component: ComponentTheme,
 }
 
+impl Theme {
+    pub fn new(tokens: ThemeTokens) -> Self {
+        Self(Rc::new(tokens))
+    }
+}
+
+impl std::ops::Deref for Theme {
+    type Target = ThemeTokens;
+
+    fn deref(&self) -> &ThemeTokens {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Theme {
+    fn deref_mut(&mut self) -> &mut ThemeTokens {
+        Rc::make_mut(&mut self.0)
+    }
+}
+
 impl PartialEq for Theme {
     fn eq(&self, other: &Self) -> bool {
-        return std::ptr::eq(self, other);
+        Rc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -331,7 +358,7 @@ impl Theme {
             purple: hex("#a626a4"),
         };
 
-        Self {
+        Self::new(ThemeTokens {
             color: ColorTheme {
                 atom: atom.clone(),
                 primary: ColorSet {
@@ -512,7 +539,7 @@ impl Theme {
                     thumb_radius: BorderRadius::uniform(Length::px(10.0)),
                 },
             },
-        }
+        })
     }
 
     pub fn dark() -> Self {
@@ -536,7 +563,7 @@ impl Theme {
             purple: hex("#c678dd"),
         };
 
-        Self {
+        Self::new(ThemeTokens {
             color: ColorTheme {
                 atom: atom.clone(),
                 primary: ColorSet {
@@ -717,7 +744,7 @@ impl Theme {
                     thumb_radius: BorderRadius::uniform(Length::px(10.0)),
                 },
             },
-        }
+        })
     }
 }
 

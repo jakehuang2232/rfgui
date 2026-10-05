@@ -87,6 +87,7 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
         let bg = badge_background.clone();
         let bd = badge_border.clone();
         let tx = badge_text.clone();
+        let badge_font_size = theme.typography.size.xl;
         on_text_area_render(
             move |render: &mut rfgui::view::base_component::TextAreaRenderString| {
                 let content_chars: Vec<char> = render.content().chars().collect();
@@ -107,7 +108,7 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                                 border_radius: BorderRadius::uniform(Length::px(4.0)),
                                 padding: Padding::uniform(Length::px(0.0)).x(Length::px(20.0)),
                                 color: badge_text.clone(),
-                                font_size: theme.typography.size.xl,
+                                font_size: badge_font_size,
                                 // opacity: hover.get().then_some(0.8).unwrap_or(1.0),
                             }}>
                             // }} on_pointer_enter={move |_| {hover.set(true)}} on_pointer_leave={move |_| {hover_clone.set(false)}}>

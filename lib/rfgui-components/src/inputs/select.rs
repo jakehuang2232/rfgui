@@ -201,14 +201,14 @@ fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNod
         >
             <Element
                 style={{
-                    color: theme.color.background.on,
+                    color: theme.color.background.on.clone(),
                     max_width: Length::percent(100.0),
                     layout: Layout::flex()
                         .row()
                         .align(Align::Center),
                     border_radius: theme.component.input.radius,
                     border: theme.component.input.border.clone(),
-                    background: theme.color.background.base,
+                    background: theme.color.background.base.clone(),
                     padding: theme.component.input.padding,
                     hover: {
                         background: theme.component.select.trigger_hover_background.clone(),
@@ -333,7 +333,7 @@ fn build_menu_node(menu_items: &[SelectMenuItem], anchor_name: &str) -> RsxNode 
                     .cross_size(CrossSize::Stretch),
                 border_radius: theme.component.input.radius,
                 border: theme.component.input.border.clone(),
-                background: theme.color.background.base,
+                background: theme.color.background.base.clone(),
                 scroll_direction: ScrollDirection::Vertical,
             }}
         >
