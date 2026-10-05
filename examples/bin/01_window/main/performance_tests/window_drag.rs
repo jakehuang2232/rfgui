@@ -54,8 +54,15 @@ fn native_demo_window_drag() -> Result<(), String> {
         ],
     };
     const WARM: u64 = 10;
-    // The last pushed window ("About") starts on top at (384, 384).
-    let grab = (384.0 + 150.0, 384.0 + 12.0);
+    // The last pushed window ("About") starts on top at (384, 384);
+    // `RFGUI_DRAG_GRAB=x,y` grabs another window's title bar instead.
+    let grab = std::env::var("RFGUI_DRAG_GRAB")
+        .ok()
+        .and_then(|v| {
+            let (x, y) = v.split_once(',')?;
+            Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
+        })
+        .unwrap_or((384.0 + 150.0, 384.0 + 12.0));
     for mode in modes {
         let mut viewport = Viewport::new();
         viewport.set_paint_renderer_mode(mode);
@@ -129,7 +136,33 @@ fn native_demo_window_drag() -> Result<(), String> {
                 println!(
                     "drag-frame frame={frame} fallback={} reraster={frame_rerasters} total={:.2} layout={:.2} sync={:.2} build={:.2} compile={:.2} end={:.2}",
                     fallback_frames.last() == Some(&frame),
-                    cpu_ms[0], cpu_ms[2], cpu_ms[4], cpu_ms[5], cpu_ms[6], cpu_ms[9]
+                    cpu_ms[0],
+                    cpu_ms[2],
+                    cpu_ms[4],
+                    cpu_ms[5],
+                    cpu_ms[6],
+                    cpu_ms[9]
+                );
+            }
+            if std::env::var_os("RFGUI_DRAG_WORK").is_some()
+                && (WARM - 3..WARM + 4).contains(&frame)
+            {
+                let profile = viewport.frontend_profile();
+                let w = &profile.work;
+                println!(
+                    "drag-work frame={frame} scene_ms={:.2} unwrap_ms={:.2} reconcile_ms={:.2} translate_ms={:.2} commit_ms={:.2} renders={} memo_hits={} unwrap_nodes={} reconciled={} shared_hits={} patches={} fiber_works={}",
+                    profile.scene_update_ms,
+                    w.unwrap_ms,
+                    w.reconcile_ms,
+                    w.translate_ms,
+                    w.incremental_commit_ms,
+                    w.component_renders,
+                    w.memo_hits,
+                    w.unwrap_nodes,
+                    w.reconciled_nodes,
+                    w.shared_subtree_hits,
+                    w.patches,
+                    w.fiber_works
                 );
             }
             if frame > WARM {
