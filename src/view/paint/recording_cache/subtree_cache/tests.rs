@@ -31,13 +31,9 @@ fn replay_checks_transitive_property_endpoints_outside_arena_ancestry() {
         .key(
             &arena,
             owner,
-            PaintRecordingContext::default(),
-            CoverageOrder {
-                root_index: 0,
-                child_path: Arc::from([]),
-                phase: super::super::super::PaintNodePhase::BeforeChildren,
-                slot: 0,
-            },
+            &PaintRecordingContext::default(),
+            0,
+            &[],
             false,
             &FxHashMap::default(),
         )
@@ -96,13 +92,9 @@ fn completed_commands_reject_intervening_native_ancestor_or_lookup_mutation() {
             .key(
                 &arena,
                 owner,
-                PaintRecordingContext::default(),
-                CoverageOrder {
-                    root_index: 0,
-                    child_path: Arc::from([0]),
-                    phase: super::super::super::PaintNodePhase::BeforeChildren,
-                    slot: 0,
-                },
+                &PaintRecordingContext::default(),
+                0,
+                &[0],
                 false,
                 &FxHashMap::default(),
             )

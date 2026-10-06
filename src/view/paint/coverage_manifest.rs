@@ -940,13 +940,9 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     cache.subtree_key(
                         self.arena,
                         key,
-                        *parent_recording_context,
-                        CoverageOrder {
-                            root_index,
-                            child_path: path.as_slice().into(),
-                            phase: PaintNodePhase::BeforeChildren,
-                            slot: 0,
-                        },
+                        parent_recording_context,
+                        root_index,
+                        path,
                         deferred_phase_root,
                     )
                 })

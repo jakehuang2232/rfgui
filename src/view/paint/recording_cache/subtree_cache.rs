@@ -288,12 +288,17 @@ impl SubtreeCache {
         self.proofs.insert(key, (revision, members.clone()));
         members
     }
+    /// `root_index` and `path` name the owner's BeforeChildren coverage
+    /// order. Both it and the context are copied into a key only after the
+    /// cheap mutation checks pass; most probes of a changing tree stop there.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn key(
         &mut self,
         arena: &NodeArena,
         owner: NodeKey,
-        context: PaintRecordingContext,
-        order: CoverageOrder,
+        context: &PaintRecordingContext,
+        root_index: usize,
+        path: &[usize],
         deferred: bool,
         metadata: &FxHashMap<NodeKey, (u64, Arc<PaintNodePlan<PaintChunkMetadata>>)>,
     ) -> Option<(Key, Arc<[NodeKey]>)> {
@@ -342,9 +347,14 @@ impl SubtreeCache {
             revision,
             index_revision: arena.stable_id_index_revision()?,
             ancestors,
-            context,
+            context: *context,
             offset: context.paint_offset.map(f32::to_bits),
-            order,
+            order: CoverageOrder {
+                root_index,
+                child_path: path.into(),
+                phase: super::super::PaintNodePhase::BeforeChildren,
+                slot: 0,
+            },
             deferred,
             subtree_len,
         };
@@ -462,12 +472,20 @@ impl RecordingCache {
         &mut self,
         arena: &NodeArena,
         owner: NodeKey,
-        context: PaintRecordingContext,
-        order: CoverageOrder,
+        context: &PaintRecordingContext,
+        root_index: usize,
+        path: &[usize],
         deferred: bool,
     ) -> Option<(Key, Arc<[NodeKey]>)> {
-        self.subtrees
-            .key(arena, owner, context, order, deferred, &self.metadata)
+        self.subtrees.key(
+            arena,
+            owner,
+            context,
+            root_index,
+            path,
+            deferred,
+            &self.metadata,
+        )
     }
 
     pub(crate) fn restore_subtree(&mut self, snapshot: &Arc<Snapshot>, arena: &NodeArena) {
