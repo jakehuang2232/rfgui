@@ -4709,15 +4709,7 @@ fn validate_artifact_store_with_cache(
             };
             cursor = parent;
         }
-
-        let mut clip = ResolvedClip::Unclipped;
-        for snapshot in chain.into_iter().rev() {
-            clip = match snapshot.behavior {
-                ClipBehavior::Replace => resolved_scissor(snapshot.logical_scissor),
-                ClipBehavior::Intersect => intersect_resolved_clip(clip, snapshot.logical_scissor),
-            };
-        }
-        resolved.push(clip);
+        resolved.push(fold_resolved_clip_chain(&chain));
     }
     for endpoint in &artifact.owner_property_states {
         for state in [endpoint.paint, endpoint.descendants] {
@@ -4739,6 +4731,75 @@ fn validate_artifact_store_with_cache(
         resolved_clips: resolved,
         target: validated_target,
     })
+}
+
+/// Folds one leaf-to-root clip chain into the scissor its chunk rasterizes
+/// with.
+fn fold_resolved_clip_chain(chain: &[ClipNodeSnapshot]) -> ResolvedClip {
+    chain
+        .iter()
+        .rev()
+        .fold(ResolvedClip::Unclipped, |clip, snapshot| {
+            match snapshot.behavior {
+                ClipBehavior::Replace => resolved_scissor(snapshot.logical_scissor),
+                ClipBehavior::Intersect => intersect_resolved_clip(clip, snapshot.logical_scissor),
+            }
+        })
+}
+
+/// Re-resolves every chunk's clip from current scissor values. The caller
+/// must already hold this artifact's relation proof: clip ids, parents,
+/// behaviors, owner ancestry and each chunk's clip leaf were validated, so
+/// only the numeric fold remains. Chunks sharing a leaf share its result.
+fn resolve_validated_clip_values(artifact: &PaintArtifact) -> Option<Vec<ResolvedClip>> {
+    let clip_nodes = artifact
+        .clip_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let mut by_leaf = FxHashMap::<ClipNodeId, ResolvedClip>::default();
+    let mut chain = Vec::new();
+    artifact
+        .chunks
+        .iter()
+        .map(|chunk| {
+            let Some(leaf) = chunk.properties.clip else {
+                return Some(ResolvedClip::Unclipped);
+            };
+            if let Some(resolved) = by_leaf.get(&leaf) {
+                return Some(*resolved);
+            }
+            chain.clear();
+            let mut cursor = Some(leaf);
+            while let Some(id) = cursor {
+                if chain.len() >= usize::from(u8::MAX) {
+                    return None;
+                }
+                let snapshot = *clip_nodes.get(&id)?;
+                chain.push(snapshot);
+                cursor = snapshot.parent;
+            }
+            let resolved = fold_resolved_clip_chain(&chain);
+            by_leaf.insert(leaf, resolved);
+            Some(resolved)
+        })
+        .collect()
+}
+
+/// Full-validation resolved clips next to the relation-replay numeric fold.
+#[cfg(test)]
+pub(crate) fn resolved_clips_full_and_refreshed_for_test(
+    artifact: &PaintArtifact,
+) -> (Option<Vec<ResolvedClip>>, Option<Vec<ResolvedClip>>) {
+    (
+        validate_artifact_store_with_cache(
+            artifact,
+            ArtifactStoreValidationPolicy::SurfaceDag,
+            None,
+        )
+        .map(|validated| validated.resolved_clips),
+        resolve_validated_clip_values(artifact),
+    )
 }
 
 fn chunk_has_valid_self_clip_shadow_prefix(

@@ -246,31 +246,15 @@ fn forward_receiver_remap_does_not_replace_artifact_painter_order() {
     assert_eq!(painter, (0..artifact.chunks.len()).collect::<Vec<_>>());
 }
 
-#[test]
-fn scroll_clip_closure_keeps_empty_as_neither_and_unions_siblings_in_painter_order() {
-    let (arena, root, properties, generations) =
-        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
-    let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("empty clip closure fixture");
-    let dag = reconstruct(&artifact);
-    let empty = coverage(&artifact, &dag);
-    let scroll = dag
-        .nodes()
-        .iter()
-        .find(|node| matches!(node.kind(), SurfaceDagNodeKind::ScrollContent { .. }))
-        .expect("scroll surface");
-    let empty_closure = empty.nodes()[scroll.id().index()]
-        .clip_closure()
-        .expect("scroll closure capability");
-    assert!(empty_closure.local_clips().is_empty());
-    assert_eq!(
-        empty_closure.receiver_clip(),
-        scroll.clip_rebase().unwrap().receiver_clip()
-    );
-
-    let mut siblings = artifact;
-    let contents_clip = match scroll.kind() {
+/// Gives the frame-root scroll fixture two sibling `SelfClip` owners inside
+/// its scroll contents, so the scroll surface carries rebased clip copies.
+fn with_scroll_sibling_clips(
+    mut siblings: PaintArtifact,
+    arena: &NodeArena,
+    root: NodeKey,
+    scroll: SurfaceDagNodeKind,
+) -> (PaintArtifact, ClipNodeId, ClipNodeId) {
+    let contents_clip = match scroll {
         SurfaceDagNodeKind::ScrollContent { contents_clip, .. } => contents_clip,
         _ => unreachable!(),
     };
@@ -313,6 +297,34 @@ fn scroll_clip_closure_keeps_empty_as_neither_and_unions_siblings_in_painter_ord
     second.id.slot = 1;
     second.properties.clip = Some(second_clip);
     siblings.chunks.push(second);
+    (siblings, first_clip, second_clip)
+}
+
+#[test]
+fn scroll_clip_closure_keeps_empty_as_neither_and_unions_siblings_in_painter_order() {
+    let (arena, root, properties, generations) =
+        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
+    let artifact =
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
+            .expect("empty clip closure fixture");
+    let dag = reconstruct(&artifact);
+    let empty = coverage(&artifact, &dag);
+    let scroll = dag
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.kind(), SurfaceDagNodeKind::ScrollContent { .. }))
+        .expect("scroll surface");
+    let empty_closure = empty.nodes()[scroll.id().index()]
+        .clip_closure()
+        .expect("scroll closure capability");
+    assert!(empty_closure.local_clips().is_empty());
+    assert_eq!(
+        empty_closure.receiver_clip(),
+        scroll.clip_rebase().unwrap().receiver_clip()
+    );
+
+    let (siblings, first_clip, second_clip) =
+        with_scroll_sibling_clips(artifact, &arena, root, scroll.kind());
     let sibling_dag = reconstruct(&siblings);
     let sibling_forest = coverage(&siblings, &sibling_dag);
     let closure = sibling_forest.nodes()[scroll.id().index()]
@@ -338,6 +350,40 @@ fn scroll_clip_closure_keeps_empty_as_neither_and_unions_siblings_in_painter_ord
     assert_eq!(closure.local_clips()[1].logical_scissor, [3, 4, 50, 40]);
     assert_eq!(closure.local_clips()[1].behavior, ClipBehavior::Replace);
     assert_eq!(closure.local_clips()[1].generation, 53);
+}
+
+/// Moved clips keep their relations, so the cached forest only takes the
+/// current scissors: the refreshed copies equal a fresh derivation.
+#[test]
+fn clip_value_refresh_equals_fresh_rebased_coverage() {
+    let (arena, root, properties, generations) =
+        property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
+    let artifact =
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
+            .expect("clip closure fixture");
+    let scroll = reconstruct(&artifact)
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.kind(), SurfaceDagNodeKind::ScrollContent { .. }))
+        .expect("scroll surface")
+        .kind();
+    let (siblings, _, _) = with_scroll_sibling_clips(artifact, &arena, root, scroll);
+    let forest = coverage(&siblings, &reconstruct(&siblings));
+    let mut moved = siblings;
+    for clip in &mut moved.clip_nodes {
+        clip.logical_scissor[0] += 7;
+        clip.logical_scissor[1] += 3;
+        clip.generation += 1;
+    }
+    let refreshed = forest
+        .with_clip_values(&moved.clip_nodes)
+        .expect("every copied clip is current");
+    assert_ne!(refreshed, forest, "the fixture copies moved clips");
+    assert_eq!(refreshed, coverage(&moved, &reconstruct(&moved)));
+
+    let mut missing = moved;
+    missing.clip_nodes.pop();
+    assert!(forest.with_clip_values(&missing.clip_nodes).is_none());
 }
 
 #[test]

@@ -582,6 +582,43 @@ impl ArtifactSurfaceCoverageForest {
         &self.roots
     }
 
+    /// This forest with every copied clip snapshot taking its current scissor
+    /// and generation. Rebased parents are kept: they record where a chain was
+    /// cut at a surface boundary, which depends on clip relations only.
+    pub(super) fn with_clip_values(&self, clips: &[ClipNodeSnapshot]) -> Option<Self> {
+        let current = clips
+            .iter()
+            .map(|snapshot| (snapshot.id, *snapshot))
+            .collect::<FxHashMap<_, _>>();
+        let refresh = |local: &mut Vec<ClipNodeSnapshot>| -> Option<()> {
+            for clip in local {
+                let now = current.get(&clip.id)?;
+                clip.logical_scissor = now.logical_scissor;
+                clip.generation = now.generation;
+            }
+            Some(())
+        };
+        let refresh_steps = |steps: &mut Vec<ArtifactSurfaceCoverageStep>| -> Option<()> {
+            for step in steps {
+                if let ArtifactSurfaceCoverageStep::ArtifactSpan(span) = step {
+                    refresh(&mut span.local_clips)?;
+                }
+            }
+            Some(())
+        };
+        let mut forest = self.clone();
+        for root in &mut forest.roots {
+            refresh_steps(&mut root.steps)?;
+        }
+        for node in &mut forest.nodes {
+            refresh_steps(&mut node.steps)?;
+            if let Some(closure) = node.clip_closure.as_mut() {
+                refresh(&mut closure.local_clips)?;
+            }
+        }
+        Some(forest)
+    }
+
     pub(crate) fn nodes(&self) -> &[ArtifactSurfaceCoverageNode] {
         &self.nodes
     }

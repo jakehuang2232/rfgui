@@ -155,10 +155,16 @@ impl PlanningCache {
         if !relationship_inputs_match(&previous.artifact, artifact) {
             return None;
         }
+        // Moved clips keep every relation; only their scissors fold again.
+        let resolved_clips = if previous.artifact.clip_nodes == artifact.clip_nodes {
+            previous.resolved_clips.clone()
+        } else {
+            super::resolve_validated_clip_values(artifact)?
+        };
         self.relation_hits += 1;
         Some(ValidatedArtifact {
             target: ValidatedArtifactTarget::CurrentTarget,
-            resolved_clips: previous.resolved_clips.clone(),
+            resolved_clips,
         })
     }
 
@@ -173,8 +179,9 @@ impl PlanningCache {
         {
             return None;
         }
+        let coverage = current_clip_coverage(previous, artifact)?;
         self.coverage_hits += 1;
-        Some(previous.coverage.clone())
+        Some(coverage)
     }
 
     pub(super) fn host_placement(
@@ -291,10 +298,11 @@ impl PlanningCache {
             return Ok(None);
         };
         // `graphs` already compared owner order/stable IDs, all property
-        // endpoints/parent edges, and chunk IDs/owners/property states. Only
-        // numeric clip snapshots and operation offsets remain additional
-        // structural inputs (clip rebasing and command cursor/mask schedule).
-        if previous.artifact.clip_nodes != artifact.clip_nodes
+        // endpoints/parent edges, and chunk IDs/owners/property states. Clip
+        // relations (rebasing) and operation offsets (command cursor/mask
+        // schedule) remain additional structural inputs. Clip scissors only
+        // flow into coverage as copied values and are refreshed below.
+        if !clip_topology_matches(&previous.artifact.clip_nodes, &artifact.clip_nodes)
             || !previous
                 .artifact
                 .chunks
@@ -302,11 +310,14 @@ impl PlanningCache {
         {
             return Ok(None);
         }
+        let Some(coverage) = current_clip_coverage(previous, artifact) else {
+            return Ok(None);
+        };
         let dag = previous.surface_dag.refresh_boundary_transfers(artifact)?;
         self.surface_structure_hits += 1;
         self.coverage_hits += 1;
         crate::view::paint::work_profile::count("surface_structure_replays", 1);
-        Ok(Some((dag, previous.coverage.clone())))
+        Ok(Some((dag, coverage)))
     }
 
     pub(super) fn remember_geometry(&mut self, program: &ValidatedArtifactSurfaceDagProgram) {
@@ -413,6 +424,36 @@ impl PlanningCache {
         );
     }
 }
+/// Clip relations without scissor values. Every relation-derived product
+/// (resolved chains, rebasing, coverage membership) reads only these fields;
+/// a current generation must still be live, as full validation requires.
+fn clip_topology_matches(a: &[ClipNodeSnapshot], b: &[ClipNodeSnapshot]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.id == b.id
+                && a.owner == b.owner
+                && a.parent == b.parent
+                && a.behavior == b.behavior
+                && b.generation != 0
+        })
+}
+
+/// The cached coverage forest with this artifact's clip values. Coverage
+/// copies clip snapshots but never branches on their scissors, so refreshing
+/// the copies equals a fresh derivation under matching clip topology.
+fn current_clip_coverage(
+    previous: &ValidatedArtifactSurfaceDagProgram,
+    artifact: &PaintArtifact,
+) -> Option<std::sync::Arc<ArtifactSurfaceCoverageForest>> {
+    if previous.artifact.clip_nodes == artifact.clip_nodes {
+        return Some(previous.coverage.clone());
+    }
+    previous
+        .coverage
+        .with_clip_values(&artifact.clip_nodes)
+        .map(std::sync::Arc::new)
+}
+
 fn geometry_matches(a: &PaintArtifact, b: &PaintArtifact) -> bool {
     a.target == b.target
         && a.clip_nodes == b.clip_nodes
@@ -435,7 +476,8 @@ fn geometry_matches(a: &PaintArtifact, b: &PaintArtifact) -> bool {
 }
 
 /// Coverage stores chunk ranges, localized property ids, receiver edges and
-/// complete local clip snapshots. Numeric transforms and opacity are consumed
+/// complete local clip snapshots, whose scissor values are refreshed on reuse
+/// (`current_clip_coverage`). Numeric transforms and opacity are consumed
 /// by the freshly reconstructed DAG/materialization and raster/composite plan,
 /// not by coverage membership. Current artifact validation and transition
 /// classification still precede this lookup.
@@ -446,7 +488,7 @@ fn coverage_inputs_match(a: &PaintArtifact, b: &PaintArtifact) -> bool {
     // mask chunk schedule determine coverage. The current reconstructed DAG
     // is compared separately before any cached forest is returned.
     a.target == b.target
-        && a.clip_nodes == b.clip_nodes
+        && clip_topology_matches(&a.clip_nodes, &b.clip_nodes)
         && a.scroll_nodes.len() == b.scroll_nodes.len()
         && a.scroll_nodes
             .iter()
@@ -484,7 +526,7 @@ fn relationship_inputs_match(a: &PaintArtifact, b: &PaintArtifact) -> bool {
         && b.target == a.target
         && a.owner_nodes == b.owner_nodes
         && a.owner_property_states == b.owner_property_states
-        && a.clip_nodes == b.clip_nodes
+        && clip_topology_matches(&a.clip_nodes, &b.clip_nodes)
         && a.effect_nodes.len() == b.effect_nodes.len()
         && a.effect_nodes
             .iter()

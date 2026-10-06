@@ -744,4 +744,6 @@ mod topology_history_tests;
 
 mod surface_structure_tests;
 
+mod clip_value_refresh_tests;
+
 mod command_block_tests;
