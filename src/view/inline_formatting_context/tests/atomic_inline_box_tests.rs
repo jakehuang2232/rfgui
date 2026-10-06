@@ -162,3 +162,48 @@ fn multiple_atomic_inline_boxes_keep_distinct_sources_and_measurements() {
     assert!((first_package.placements[0].rect.width - 20.0).abs() < 0.01);
     assert!((second_package.placements[0].rect.width - 36.0).abs() < 0.01);
 }
+
+/// Placements are grouped by source once; a source keeps every one of its
+/// atomic boxes in line order, and text-only sources have none.
+#[test]
+fn atomic_placements_group_each_source_in_line_order() {
+    let input = InlineIfcInput::new(vec![
+        InlineIfcItem::AtomicInlineBox {
+            source: BOX_NODE,
+            measurement: measured_box(50.0, 10.0),
+        },
+        InlineIfcItem::AtomicInlineBox {
+            source: SECOND_BOX_NODE,
+            measurement: measured_box(50.0, 12.0),
+        },
+        InlineIfcItem::AtomicInlineBox {
+            source: BOX_NODE,
+            measurement: measured_box(50.0, 14.0),
+        },
+        InlineIfcItem::TextSpan {
+            source: ROOT,
+            text: " tail".to_string(),
+            style: None,
+        },
+    ])
+    .with_max_width(60.0);
+    let ifc = InlineFormattingContext::build(input);
+
+    let first = ifc.atomic_box_placement_package(BOX_NODE);
+    assert_eq!(first.placements.len(), 2);
+    assert!(first.placements.iter().all(|p| p.source == BOX_NODE));
+    assert!(first.placements[0].line_index < first.placements[1].line_index);
+    assert!((first.placements[0].rect.height - 10.0).abs() < 0.01);
+    assert!((first.placements[1].rect.height - 14.0).abs() < 0.01);
+    let second = ifc.atomic_box_placement_package(SECOND_BOX_NODE);
+    assert_eq!(second.placements.len(), 1);
+    assert_eq!(
+        ifc.atomic_box_placement_package(ROOT),
+        InlineIfcAtomicBoxPlacementPackage {
+            source: ROOT,
+            placements: Vec::new(),
+        }
+    );
+    // Repeated queries read the same grouped placements.
+    assert_eq!(ifc.atomic_box_placement_package(BOX_NODE), first);
+}

@@ -1303,6 +1303,7 @@ impl InlineIfcElementRootCandidateCache {
                 .inline_boxes
                 .retain(|mapping| mapping.source != source);
         }
+        context.clear_derived_caches();
     }
 }
 
@@ -1663,6 +1664,11 @@ pub(crate) struct InlineFormattingContext {
         std::cell::OnceCell<HashMap<InlineIfcSourceId, Vec<InlineIfcPaintRect>>>,
     source_text_line_rects_cache:
         std::cell::OnceCell<HashMap<InlineIfcSourceId, Vec<(usize, InlineIfcPaintRect)>>>,
+    /// Atomic box placements grouped by source, built in one pass over the
+    /// laid-out items. Per-source queries used to rescan every line item,
+    /// and paint validation asks once per atomic child.
+    atomic_placements_cache:
+        std::cell::OnceCell<HashMap<InlineIfcSourceId, Vec<InlineIfcAtomicBoxPlacement>>>,
 }
 
 impl InlineFormattingContext {
@@ -1700,6 +1706,7 @@ impl InlineFormattingContext {
             paint_input_cache: std::cell::OnceCell::new(),
             source_line_rects_cache: std::cell::OnceCell::new(),
             source_text_line_rects_cache: std::cell::OnceCell::new(),
+            atomic_placements_cache: std::cell::OnceCell::new(),
         }
     }
 
@@ -1711,6 +1718,7 @@ impl InlineFormattingContext {
         self.paint_input_cache.take();
         self.source_line_rects_cache.take();
         self.source_text_line_rects_cache.take();
+        self.atomic_placements_cache.take();
     }
 
     pub(crate) fn build(input: InlineIfcInput) -> Self {
@@ -1749,6 +1757,7 @@ impl InlineFormattingContext {
             paint_input_cache: std::cell::OnceCell::new(),
             source_line_rects_cache: std::cell::OnceCell::new(),
             source_text_line_rects_cache: std::cell::OnceCell::new(),
+            atomic_placements_cache: std::cell::OnceCell::new(),
         }
     }
 
@@ -2280,35 +2289,65 @@ impl InlineFormattingContext {
         &self,
         source: InlineIfcSourceId,
     ) -> InlineIfcAtomicBoxPlacementPackage {
-        let mut placements = Vec::new();
-        for (line_index, line) in self.layout.lines().enumerate() {
-            for item in line.items() {
-                let PositionedLayoutItem::InlineBox(inline_box) = item else {
-                    continue;
-                };
-                let Some(mapping) = self.inline_boxes.iter().find(|mapping| {
-                    mapping.id == inline_box.id
-                        && mapping.source == source
-                        && mapping.role == InlineIfcInlineBoxRole::Atomic
-                }) else {
-                    continue;
-                };
-                placements.push(InlineIfcAtomicBoxPlacement {
-                    id: inline_box.id,
-                    source: mapping.source,
-                    insertion_byte: mapping.insertion_byte,
-                    line_index,
-                    rect: InlineIfcPaintRect {
-                        x: inline_box.x,
-                        y: inline_box.y,
-                        width: inline_box.width,
-                        height: inline_box.height,
-                    },
-                    measurement: mapping.measurement.clone(),
-                });
-            }
+        InlineIfcAtomicBoxPlacementPackage {
+            source,
+            placements: self
+                .atomic_placements_by_source()
+                .get(&source)
+                .cloned()
+                .unwrap_or_default(),
         }
-        InlineIfcAtomicBoxPlacementPackage { source, placements }
+    }
+
+    /// Each atomic inline box in line order, under every source with an
+    /// atomic mapping for its id (the first such mapping per source).
+    fn atomic_placements_by_source(
+        &self,
+    ) -> &HashMap<InlineIfcSourceId, Vec<InlineIfcAtomicBoxPlacement>> {
+        self.atomic_placements_cache.get_or_init(|| {
+            let mut placements = HashMap::<_, Vec<_>>::new();
+            if !self
+                .inline_boxes
+                .iter()
+                .any(|mapping| mapping.role == InlineIfcInlineBoxRole::Atomic)
+            {
+                return placements;
+            }
+            let mut mapped_sources = Vec::new();
+            for (line_index, line) in self.layout.lines().enumerate() {
+                for item in line.items() {
+                    let PositionedLayoutItem::InlineBox(inline_box) = item else {
+                        continue;
+                    };
+                    mapped_sources.clear();
+                    for mapping in self.inline_boxes.iter().filter(|mapping| {
+                        mapping.id == inline_box.id
+                            && mapping.role == InlineIfcInlineBoxRole::Atomic
+                    }) {
+                        if mapped_sources.contains(&mapping.source) {
+                            continue;
+                        }
+                        mapped_sources.push(mapping.source);
+                        placements.entry(mapping.source).or_default().push(
+                            InlineIfcAtomicBoxPlacement {
+                                id: inline_box.id,
+                                source: mapping.source,
+                                insertion_byte: mapping.insertion_byte,
+                                line_index,
+                                rect: InlineIfcPaintRect {
+                                    x: inline_box.x,
+                                    y: inline_box.y,
+                                    width: inline_box.width,
+                                    height: inline_box.height,
+                                },
+                                measurement: mapping.measurement.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+            placements
+        })
     }
 
     #[cfg(test)]
@@ -2329,6 +2368,7 @@ impl InlineFormattingContext {
         } else {
             mapping.measurement.measured_size.width += 1.0;
         }
+        self.clear_derived_caches();
     }
 
     #[cfg(test)]
@@ -2341,6 +2381,7 @@ impl InlineFormattingContext {
             })
             .expect("test fixture must retain the atomic source mapping");
         mapping.insertion_byte = mapping.insertion_byte.saturating_add(1);
+        self.clear_derived_caches();
     }
 
     /// Per-line bounding rects of the glyph runs contributed by `source`,
