@@ -12,7 +12,6 @@ use crate::view::svg_resource::{
 };
 use crate::view::{ImageFit, ImageSampling, SvgSource};
 use rustc_hash::FxHashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use super::resource_slot::{self, ActiveSlot, SlotReplacementError};
@@ -1701,7 +1700,7 @@ impl ElementTrait for Svg {
     }
 
     fn retained_paint_signature(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.element.retained_paint_signature().hash(&mut hasher);
         self.source_key.hash(&mut hasher);
         self.source_kind.hash(&mut hasher);

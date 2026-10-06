@@ -687,9 +687,8 @@ impl ElementTrait for TextAreaTextRun {
     /// Hash everything that affects the retained glyph fragment so paint
     /// generations advance on edit, style, preedit, and layout changes.
     fn retained_paint_signature(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.layout_state.should_render.hash(&mut hasher);
         self.layout_state
             .layout_position
@@ -846,9 +845,8 @@ impl ElementTrait for TextAreaLineBreak {
     }
 
     fn retained_paint_signature(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.char_range.start.hash(&mut hasher);
         self.char_range.end.hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);

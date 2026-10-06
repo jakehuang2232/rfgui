@@ -7,7 +7,6 @@ use crate::view::inline_formatting_context::{
     InlineFormattingContext, InlineIfcAlignment, InlineIfcTextPassPaintInput,
 };
 use glam::{Mat4, Vec3, Vec4};
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use super::{BoxModelSnapshot, ElementTrait, Position, Size};
@@ -98,6 +97,9 @@ pub struct Text {
     pub(super) layout_override_width: Option<f32>,
     pub(super) layout_override_height: Option<f32>,
     pub(super) content: String,
+    /// Signature of `content`, refreshed with every write so paint
+    /// observation hashes a word instead of the whole text.
+    pub(super) content_hash: u64,
     pub(super) color: Box<dyn ColorLike>,
     pub(super) font_families: Vec<String>,
     pub(super) font_size: f32,
@@ -182,6 +184,7 @@ impl Text {
         height: f32,
         content: impl Into<String>,
     ) -> Self {
+        let content = content.into();
         Self {
             node_id: id,
             parent_id: None,
@@ -189,7 +192,8 @@ impl Text {
             size: Size { width, height },
             layout_override_width: None,
             layout_override_height: None,
-            content: content.into(),
+            content_hash: content_signature(&content),
+            content,
             color: Box::new(HexColor::new("#111111")),
             font_families: Vec::new(),
             font_size: 16.0,
@@ -545,6 +549,13 @@ pub(crate) use self::measure::measure_text_size;
 struct PreparedShadowTextSelectionPayload {
     bounds: crate::view::base_component::Rect,
     ops: Vec<crate::view::paint::DrawRectOp>,
+}
+
+fn content_signature(content: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = crate::view::compositor::paint_signature_hasher();
+    content.hash(&mut hasher);
+    hasher.finish()
 }
 
 impl Text {
@@ -1166,7 +1177,7 @@ impl ElementTrait for Text {
     }
 
     fn retained_paint_signature(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.layout_state.should_render.hash(&mut hasher);
         self.layout_state
             .layout_position
@@ -1178,7 +1189,7 @@ impl ElementTrait for Text {
             .y
             .to_bits()
             .hash(&mut hasher);
-        self.content.hash(&mut hasher);
+        self.content_hash.hash(&mut hasher);
         self.color.to_rgba_u8().hash(&mut hasher);
         self.font_families.hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);

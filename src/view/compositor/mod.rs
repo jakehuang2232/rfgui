@@ -6,5 +6,5 @@
 pub(crate) mod paint_generation;
 pub(crate) mod property_tree;
 
-pub(crate) use paint_generation::PaintGenerationTracker;
+pub(crate) use paint_generation::{PaintGenerationTracker, paint_signature_hasher};
 pub(crate) use property_tree::PropertyTrees;

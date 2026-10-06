@@ -8176,7 +8176,7 @@ impl ElementTrait for Element {
     }
 
     fn retained_paint_signature(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.layout_state.should_render.hash(&mut hasher);
         self.core.should_paint.hash(&mut hasher);
         hash_f32(&mut hasher, self.layout_state.layout_position.x);

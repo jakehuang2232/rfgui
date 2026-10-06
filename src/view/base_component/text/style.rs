@@ -144,6 +144,7 @@ impl Text {
     pub fn set_text(&mut self, content: impl Into<String>) {
         let next = content.into();
         if self.content != next {
+            self.content_hash = super::content_signature(&next);
             self.content = next;
             self.mark_measure_dirty();
         }

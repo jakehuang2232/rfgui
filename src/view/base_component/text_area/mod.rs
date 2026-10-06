@@ -1626,9 +1626,8 @@ impl ElementTrait for TextArea {
     /// Hash every visible-state field so retained paint generations advance
     /// on edit, cursor, selection, IME, focus, and blink changes.
     fn retained_paint_signature(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.layout_state.should_render.hash(&mut hasher);
         self.layout_state
             .layout_position

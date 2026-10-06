@@ -2645,6 +2645,7 @@ dependencies = [
  "arboard",
  "bitflags 2.11.0",
  "bytemuck",
+ "foldhash",
  "glam",
  "image",
  "js-sys",

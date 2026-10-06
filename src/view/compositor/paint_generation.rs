@@ -14,6 +14,14 @@ mod native_signatures;
 mod native_observations;
 mod generation_records;
 
+/// Hasher for host retained paint signatures. A signature is compared
+/// without its inputs, so it needs a well-distributed 64-bit hash; a fixed
+/// seed keeps it stable across calls. Much cheaper than SipHash per write.
+pub(crate) fn paint_signature_hasher() -> foldhash::quality::FoldHasher<'static> {
+    use std::hash::BuildHasher;
+    foldhash::quality::FixedState::with_seed(0x7061_696e_7473_6967).build_hasher()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaintGenerationCoverage {
     /// A host whose complete retained paint signature is observed.

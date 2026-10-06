@@ -15,7 +15,6 @@ use super::{
 };
 use crate::view::node_arena::{NodeArena, NodeKey};
 use rustc_hash::FxHashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use super::resource_slot::{self, ActiveSlot, SlotReplacementError};
@@ -1050,7 +1049,7 @@ impl ElementTrait for Image {
     }
 
     fn retained_paint_signature(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.element.retained_paint_signature().hash(&mut hasher);
         self.source_handle.asset_id().hash(&mut hasher);
         match self.fit {

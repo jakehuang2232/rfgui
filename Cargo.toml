@@ -29,6 +29,7 @@ rfgui-rsx = { version = "0.1.0-alpha.3", path = "rsx-macro" }
 rfgui-segmenter = { version = "0.1.0-alpha.1", path = "lib/rfgui-segmenter" }
 glam = "0.33.2"
 rustc-hash = "2"
+foldhash = "0.2"
 naga_oil = { version = "0.22", default-features = false }
 naga = { version = "30.0.0", features = ["wgsl-in"] }
 naga29 = { package = "naga", version = "29", features = ["wgsl-out"] }
