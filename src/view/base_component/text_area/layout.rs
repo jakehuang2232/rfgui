@@ -197,6 +197,12 @@ impl Layoutable for TextArea {
         self.flow_offset = Position { x, y };
     }
 
+    fn rebase_inline_atomic_spatial_reference(&mut self, offset: [f32; 2]) {
+        self.spatial_placement = self
+            .spatial_placement
+            .map(|snapshot| snapshot.with_reference_offset(offset));
+    }
+
     fn inline_relative_position(&self) -> (f32, f32) {
         (self.flow_offset.x, self.flow_offset.y)
     }

@@ -1409,6 +1409,10 @@ impl Layoutable for Image {
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         self.element.set_layout_offset(x, y);
     }
+
+    fn rebase_inline_atomic_spatial_reference(&mut self, offset: [f32; 2]) {
+        self.element.rebase_inline_atomic_spatial_reference(offset);
+    }
 }
 
 #[cfg(test)]

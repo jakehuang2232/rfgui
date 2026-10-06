@@ -629,6 +629,12 @@ impl Layoutable for Element {
         (self.core.position.x, self.core.position.y)
     }
 
+    fn rebase_inline_atomic_spatial_reference(&mut self, offset: [f32; 2]) {
+        self.spatial_placement_snapshot = self
+            .spatial_placement_snapshot
+            .map(|snapshot| snapshot.with_reference_offset(offset));
+    }
+
     fn set_layout_offset(&mut self, x: f32, y: f32) {
         if (self.core.position.x - x).abs() > f32::EPSILON
             || (self.core.position.y - y).abs() > f32::EPSILON

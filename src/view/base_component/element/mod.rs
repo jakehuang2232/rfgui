@@ -2122,6 +2122,13 @@ pub trait Layoutable {
         (0.0, 0.0)
     }
     fn set_layout_offset(&mut self, _x: f32, _y: f32) {}
+    /// An inline formatting context places an atomic child at its line
+    /// position rather than at the context's content origin, then rebases
+    /// the child's spatial edge by that offset so the layout-parent edge
+    /// stays relative to the parent's content frame. Hosts without a spatial
+    /// node ignore it.
+    #[doc(hidden)]
+    fn rebase_inline_atomic_spatial_reference(&mut self, _offset: [f32; 2]) {}
 }
 
 /// When a retained component next needs its animation state sampled and painted.
@@ -4342,6 +4349,10 @@ pub enum SpatialPositionReferenceSnapshot {
 pub struct SpatialPlacementSnapshot {
     reference: SpatialPositionReferenceSnapshot,
     translation_at_scroll_zero: [f32; 2],
+    /// Offset of the placement origin from the reference origin, set when a
+    /// parent placed this owner away from its content origin (an inline
+    /// atomic box at its line position). Placement resets it.
+    reference_offset: [f32; 2],
     /// Complete scroll-zero flow position for a frame root. Property sync
     /// selects this only when arena topology resolves `LayoutParent(None)`;
     /// descendants keep the relative edge above. Both values are frozen
@@ -4369,6 +4380,7 @@ impl SpatialPlacementSnapshot {
         Self {
             reference,
             translation_at_scroll_zero,
+            reference_offset: [0.0; 2],
             viewport_translation_at_scroll_zero,
             child_reference_offset_at_scroll_zero: [0.0; 2],
             visual_offset,
@@ -4384,12 +4396,23 @@ impl SpatialPlacementSnapshot {
         self
     }
 
+    /// This placement measured from a reference origin `offset` closer to
+    /// the parent's content origin. See
+    /// [`Layoutable::rebase_inline_atomic_spatial_reference`].
+    pub(crate) const fn with_reference_offset(mut self, offset: [f32; 2]) -> Self {
+        self.reference_offset = offset;
+        self
+    }
+
     pub(crate) const fn reference(self) -> SpatialPositionReferenceSnapshot {
         self.reference
     }
 
-    pub(crate) const fn translation_at_scroll_zero(self) -> [f32; 2] {
-        self.translation_at_scroll_zero
+    pub(crate) fn translation_at_scroll_zero(self) -> [f32; 2] {
+        [
+            self.translation_at_scroll_zero[0] + self.reference_offset[0],
+            self.translation_at_scroll_zero[1] + self.reference_offset[1],
+        ]
     }
 
     pub(crate) const fn viewport_translation_at_scroll_zero(self) -> [f32; 2] {
@@ -4775,6 +4798,8 @@ fn inline_ifc_atomic_witness_bits_eq(
         && inline_ifc_rect_bits_eq(left.aligned_rect, right.aligned_rect)
 }
 
+/// The atomic child's placement at its line position, and that position's
+/// offset from the root's content origin (the child's spatial reference).
 fn inline_ifc_atomic_layout_placement(
     flow_origin_x: f32,
     flow_origin_y: f32,
@@ -4783,10 +4808,11 @@ fn inline_ifc_atomic_layout_placement(
     content_top_offset: f32,
     root_placement: LayoutPlacement,
     aligned_rect: InlineIfcPaintRect,
-) -> LayoutPlacement {
-    LayoutPlacement {
-        parent_x: flow_origin_x + aligned_rect.x,
-        parent_y: flow_origin_y + aligned_rect.y - content_top_offset,
+) -> (LayoutPlacement, [f32; 2]) {
+    let offset = [aligned_rect.x, aligned_rect.y - content_top_offset];
+    let placement = LayoutPlacement {
+        parent_x: flow_origin_x + offset[0],
+        parent_y: flow_origin_y + offset[1],
         visual_offset_x,
         visual_offset_y,
         available_width: aligned_rect.width.max(1.0),
@@ -4795,7 +4821,8 @@ fn inline_ifc_atomic_layout_placement(
         viewport_height: root_placement.viewport_height,
         percent_base_width: root_placement.percent_base_width,
         percent_base_height: root_placement.percent_base_height,
-    }
+    };
+    (placement, offset)
 }
 
 fn layout_placement_bits_eq(left: LayoutPlacement, right: LayoutPlacement) -> bool {
@@ -6305,7 +6332,7 @@ impl Element {
                         .element
                         .inline_atomic_vertical_align()
                         .ok_or_else(reject)?;
-                    let expected_placement = inline_ifc_atomic_layout_placement(
+                    let (expected_placement, _) = inline_ifc_atomic_layout_placement(
                         install.applied_origins.2,
                         install.applied_origins.3,
                         self.layout_state.layout_position.x
@@ -6954,7 +6981,7 @@ impl Element {
                     }
                 }
                 InlineIfcNodeInstallOp::Atomic { witness } => {
-                    let child_placement = inline_ifc_atomic_layout_placement(
+                    let (child_placement, offset) = inline_ifc_atomic_layout_placement(
                         flow_origin_x,
                         flow_origin_y,
                         visual_offset_x,
@@ -6966,6 +6993,7 @@ impl Element {
                     arena.with_element_taken(witness.node_key, |child, arena| {
                         child.set_layout_offset(0.0, 0.0);
                         child.place(child_placement, arena);
+                        child.rebase_inline_atomic_spatial_reference(offset);
                     });
                 }
             }
@@ -7067,7 +7095,7 @@ impl Element {
                     top_offset,
                 ),
                 InlineIfcNodeInstallOp::Atomic { witness } => {
-                    let child_placement = inline_ifc_atomic_layout_placement(
+                    let (child_placement, offset) = inline_ifc_atomic_layout_placement(
                         flow_origin_x,
                         flow_origin_y,
                         visual_offset_x,
@@ -7082,6 +7110,7 @@ impl Element {
                         // (TextAreaTextRun places at parent + visual only).
                         child.set_layout_offset(0.0, 0.0);
                         child.place(child_placement, arena);
+                        child.rebase_inline_atomic_spatial_reference(offset);
                     });
                 }
             }

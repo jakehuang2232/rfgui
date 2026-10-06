@@ -281,3 +281,136 @@ fn inventory_translation_variant_inputs() {
         }
     }
 }
+
+/// The spatial graph's relative edges compose back to every owner's layout
+/// position bit for bit, so the compiler can be the sole relative-to-absolute
+/// conversion.
+fn assert_layout_positions_reproduced(label: &str, arena: &NodeArena, trees: &PropertyTrees) {
+    use crate::view::compositor::property_tree::SpatialProjectionGraph;
+    let transforms = trees
+        .transforms
+        .keys()
+        .filter_map(|id| trees.transform_snapshot_for(*id))
+        .collect::<Vec<_>>();
+    let positions = trees
+        .layout_positions
+        .keys()
+        .filter_map(|id| trees.layout_position_snapshot_for(*id))
+        .collect::<Vec<_>>();
+    let visuals = trees
+        .visual_offsets
+        .keys()
+        .filter_map(|id| trees.visual_offset_snapshot_for(*id))
+        .collect::<Vec<_>>();
+    let scrolls = trees
+        .scrolls
+        .keys()
+        .filter_map(|id| trees.scroll_snapshot_for(*id))
+        .collect::<Vec<_>>();
+    let graph = SpatialProjectionGraph::try_new(&transforms, &positions, &visuals, &scrolls)
+        .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+    assert!(
+        !positions.is_empty(),
+        "{label}: fixture has layout positions"
+    );
+    for snapshot in &positions {
+        let owner = snapshot.owner;
+        let layout = arena.get(owner).unwrap().element.box_model_snapshot();
+        let derived = graph
+            .derive_optional_owner_viewport_position(owner)
+            .unwrap_or_else(|error| panic!("{label} {owner:?}: {error:?}"));
+        assert_eq!(
+            derived.to_array().map(f32::to_bits),
+            [layout.x, layout.y].map(f32::to_bits),
+            "{label} {owner:?}: derived {derived:?} vs layout ({}, {})",
+            layout.x,
+            layout.y
+        );
+    }
+}
+
+fn wrapped_inline_atomics() -> (NodeArena, NodeKey) {
+    let mut arena = new_test_arena();
+    let host = commit_element(
+        &mut arena,
+        Box::new(element(0xc9_1000, HOST, style(HOST, None, None))),
+    );
+    let mut root_style = style([96.0, 120.0], Some([13.0, 7.5]), None);
+    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+    let root = commit_child(
+        &mut arena,
+        host,
+        Box::new(element(0xc9_1001, [96.0, 120.0], root_style)),
+    );
+    commit_child(
+        &mut arena,
+        root,
+        Box::new(Text::new_with_id(
+            0xc9_1002,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            "words that wrap ",
+        )),
+    );
+    commit_child(
+        &mut arena,
+        root,
+        Box::new(element(
+            0xc9_1003,
+            [30.0, 14.0],
+            style([30.0, 14.0], None, Some(RED)),
+        )),
+    );
+    commit_child(
+        &mut arena,
+        root,
+        Box::new(Text::new_with_id(
+            0xc9_1004,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            " and more text after it ",
+        )),
+    );
+    let nested = commit_child(
+        &mut arena,
+        root,
+        Box::new(element(
+            0xc9_1005,
+            [40.0, 18.0],
+            style([40.0, 18.0], None, Some(BLUE)),
+        )),
+    );
+    commit_child(
+        &mut arena,
+        nested,
+        Box::new(element(
+            0xc9_1006,
+            [8.0, 6.0],
+            style([8.0, 6.0], None, Some(GREEN)),
+        )),
+    );
+    (arena, host)
+}
+
+#[test]
+fn spatial_graph_reproduces_every_layout_position() {
+    for scene in Scene::ALL {
+        let mut moved = hosted(scene);
+        let (trees, _) = moved.place([20.0, 10.0]);
+        assert_layout_positions_reproduced(&format!("{scene:?}"), &moved.arena, &trees);
+    }
+    let (mut arena, host) = wrapped_inline_atomics();
+    let mut viewport = crate::view::viewport::Viewport::new();
+    crate::view::viewport::layout_artifact_style_scene_for_test(
+        &mut viewport,
+        &mut arena,
+        host,
+        HOST,
+    );
+    let (trees, _) = sync_identity(&arena, &[host]);
+    assert_layout_positions_reproduced("wrapped inline atomics", &arena, &trees);
+}
