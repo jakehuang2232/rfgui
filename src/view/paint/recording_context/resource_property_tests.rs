@@ -29,14 +29,14 @@ fn generic_resource_property_authority_requires_exact_owner_and_state() {
     assert!(
         !PaintRecordingContext {
             surface_dag: false,
-            ..context
+            ..context.clone()
         }
         .authorizes_surface_dag_paint_properties(owner, 41, properties)
     );
     assert!(
         !PaintRecordingContext {
             surface_dag_paint_state: None,
-            ..context
+            ..context.clone()
         }
         .authorizes_surface_dag_paint_properties(owner, 41, properties)
     );

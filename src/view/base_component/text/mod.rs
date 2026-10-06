@@ -578,7 +578,7 @@ impl Text {
         arena: &crate::view::node_arena::NodeArena,
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<(), super::ShadowPaintBlocker> {
-        let Some(witness) = recording_context.text_area_preedit else {
+        let Some(witness) = recording_context.text_area_preedit.as_deref().copied() else {
             return Ok(());
         };
         let effective_opacity = recording_context.paint_opacity(self.opacity);
@@ -725,14 +725,18 @@ impl ElementTrait for Text {
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> super::ShadowPaintRecordingCapability {
         let effective_opacity = recording_context.paint_opacity(self.opacity);
-        if recording_context.text_area_preedit.is_some_and(|witness| {
-            self.validate_shadow_text_preedit_witness(
-                witness.target_owner,
-                arena,
-                &recording_context,
-            )
-            .is_err()
-        }) {
+        if recording_context
+            .text_area_preedit
+            .as_deref()
+            .is_some_and(|witness| {
+                self.validate_shadow_text_preedit_witness(
+                    witness.target_owner,
+                    arena,
+                    &recording_context,
+                )
+                .is_err()
+            })
+        {
             return super::ShadowPaintRecordingCapability::Legacy(
                 super::ShadowPaintBlocker::TextAreaSelection,
             );

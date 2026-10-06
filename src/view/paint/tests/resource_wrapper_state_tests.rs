@@ -164,32 +164,32 @@ fn generic_resource_wrapper_state_preserves_effects_and_rejects_wrong_authority(
                     &ctx,
                 )
             };
-            assert!(record(context).is_some());
+            assert!(record(context.clone()).is_some());
             assert!(
                 record(PaintRecordingContext {
                     recording_owner: Some(root),
-                    ..context
+                    ..context.clone()
                 })
                 .is_none()
             );
             assert!(
                 record(PaintRecordingContext {
                     recording_owner_stable_id: Some(0),
-                    ..context
+                    ..context.clone()
                 })
                 .is_none()
             );
             assert!(
                 record(PaintRecordingContext {
                     surface_dag_paint_state: None,
-                    ..context
+                    ..context.clone()
                 })
                 .is_none()
             );
             assert!(
                 record(PaintRecordingContext {
                     surface_dag: false,
-                    ..context
+                    ..context.clone()
                 })
                 .is_none()
             );
@@ -199,7 +199,7 @@ fn generic_resource_wrapper_state_preserves_effects_and_rejects_wrong_authority(
             assert!(
                 record(PaintRecordingContext {
                     surface_dag_paint_state: Some(wrong),
-                    ..context
+                    ..context.clone()
                 })
                 .is_none()
             );

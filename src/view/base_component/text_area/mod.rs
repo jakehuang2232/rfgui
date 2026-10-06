@@ -1224,7 +1224,7 @@ impl ElementTrait for TextArea {
         &self,
         parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-        let mut parent = *parent;
+        let mut parent = parent.clone();
         let paint_x = self.layout_state.layout_position.x + parent.paint_offset[0];
         let paint_y = self.layout_state.layout_position.y + parent.paint_offset[1];
         parent.paint_offset[0] += round_layout_value(paint_x) - paint_x;
@@ -1243,7 +1243,9 @@ impl ElementTrait for TextArea {
         let mut child_context = parent.without_text_area_child_authority();
         child_context.text_area_selection =
             self.projection_selection_witness_for_child(child, arena);
-        child_context.text_area_preedit = self.projection_preedit_witness_for_child(child, arena);
+        child_context.text_area_preedit = self
+            .projection_preedit_witness_for_child(child, arena)
+            .map(std::sync::Arc::new);
         child_context
     }
 

@@ -62,7 +62,7 @@ fn generic_recording_deferred_phase_and_scrollbar_overlay_keep_canonical_order()
                 recording_owner_stable_id: Some(0xc1_4300),
                 surface_dag: true,
                 surface_dag_scroll: Some(snapshot.id),
-                surface_dag_scroll_snapshot: Some(snapshot),
+                surface_dag_scroll_snapshot: Some(std::sync::Arc::new(snapshot)),
                 ..Default::default()
             };
             assert_eq!(
@@ -82,37 +82,37 @@ fn generic_recording_deferred_phase_and_scrollbar_overlay_keep_canonical_order()
             for invalid in [
                 PaintRecordingContext {
                     surface_dag: false,
-                    ..context
+                    ..context.clone()
                 },
                 PaintRecordingContext {
                     recording_owner: Some(normal),
-                    ..context
+                    ..context.clone()
                 },
                 PaintRecordingContext {
                     surface_dag_scroll: Some(ScrollNodeId(normal)),
-                    ..context
+                    ..context.clone()
                 },
                 PaintRecordingContext {
                     surface_dag_scroll_snapshot: None,
-                    ..context
+                    ..context.clone()
                 },
                 PaintRecordingContext {
-                    surface_dag_scroll_snapshot: Some(
+                    surface_dag_scroll_snapshot: Some(std::sync::Arc::new(
                         crate::view::compositor::property_tree::ScrollNodeSnapshot {
                             owner: normal,
                             ..snapshot
                         },
-                    ),
-                    ..context
+                    )),
+                    ..context.clone()
                 },
                 PaintRecordingContext {
-                    surface_dag_scroll_snapshot: Some(
+                    surface_dag_scroll_snapshot: Some(std::sync::Arc::new(
                         crate::view::compositor::property_tree::ScrollNodeSnapshot {
                             id: ScrollNodeId(normal),
                             ..snapshot
                         },
-                    ),
-                    ..context
+                    )),
+                    ..context.clone()
                 },
             ] {
                 assert!(

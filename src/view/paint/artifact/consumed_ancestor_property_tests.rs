@@ -96,9 +96,9 @@ fn consumed_transform_projection_is_owner_bound_and_preserves_other_properties()
     };
     let context = PaintRecordingContext {
         recording_owner: Some(descendant),
-        consumed_ancestor_property: Some(ConsumedAncestorProperty::Transform(
+        consumed_ancestor_property: Some(std::sync::Arc::new(ConsumedAncestorProperty::Transform(
             witness.for_target(descendant),
-        )),
+        ))),
         ..Default::default()
     };
     assert_eq!(
@@ -135,8 +135,8 @@ fn consumed_scroll_contents_projection_is_atomic_owner_bound_and_preserves_other
     };
     let context = PaintRecordingContext {
         recording_owner: Some(descendant),
-        consumed_ancestor_property: Some(ConsumedAncestorProperty::ScrollContents(
-            witness.for_target(descendant),
+        consumed_ancestor_property: Some(std::sync::Arc::new(
+            ConsumedAncestorProperty::ScrollContents(witness.for_target(descendant)),
         )),
         ..Default::default()
     };
@@ -214,7 +214,7 @@ fn consumed_property_stack_projects_transform_then_scroll_atomically() {
     };
     let context = PaintRecordingContext {
         recording_owner: Some(content_owner),
-        consumed_ancestor_property_stack: Some(stack),
+        consumed_ancestor_property_stack: Some(std::sync::Arc::new(stack)),
         ..Default::default()
     };
     assert_eq!(
@@ -230,7 +230,7 @@ fn consumed_property_stack_projects_transform_then_scroll_atomically() {
     );
     let retargeted = PaintRecordingContext {
         recording_owner: Some(scroll_owner),
-        consumed_ancestor_property_stack: Some(stack),
+        consumed_ancestor_property_stack: Some(std::sync::Arc::new(stack)),
         ..Default::default()
     };
     assert_eq!(retargeted.project_consumed_ancestor_property(live), None);
@@ -292,7 +292,7 @@ fn consumed_effect_scroll_stack_requires_exact_chain_and_neutral_authority() {
     };
     let neutral = PaintRecordingContext {
         recording_owner: Some(content_owner),
-        consumed_ancestor_property_stack: Some(stack),
+        consumed_ancestor_property_stack: Some(std::sync::Arc::new(stack)),
         opacity_authority: PaintOpacityAuthority::NeutralRootEffect(effect.id),
         ..Default::default()
     };
@@ -389,7 +389,7 @@ fn consumed_transform_effect_scroll_stack_projects_all_three_layers_exactly() {
     };
     let context = PaintRecordingContext {
         recording_owner: Some(content_owner),
-        consumed_ancestor_property_stack: Some(stack),
+        consumed_ancestor_property_stack: Some(std::sync::Arc::new(stack)),
         opacity_authority: PaintOpacityAuthority::NeutralRootEffect(effect.id),
         ..Default::default()
     };
@@ -413,7 +413,7 @@ fn consumed_transform_effect_scroll_stack_projects_all_three_layers_exactly() {
     .expect("the typed DAG also admits exact E->T->S order");
     let effect_transform_context = PaintRecordingContext {
         recording_owner: Some(content_owner),
-        consumed_ancestor_property_stack: Some(effect_transform_stack),
+        consumed_ancestor_property_stack: Some(std::sync::Arc::new(effect_transform_stack)),
         opacity_authority: PaintOpacityAuthority::NeutralRootEffect(effect.id),
         ..Default::default()
     };
@@ -470,7 +470,7 @@ fn scroll_content_local_authority_accepts_only_exact_canonical_stack() {
     .unwrap();
     let context = PaintRecordingContext {
         recording_owner: Some(content_owner),
-        consumed_ancestor_property_stack: Some(stack),
+        consumed_ancestor_property_stack: Some(std::sync::Arc::new(stack)),
         ..Default::default()
     };
     assert!(context.authorizes_scroll_content_local_owner(content_owner));
@@ -489,7 +489,7 @@ fn scroll_content_local_authority_accepts_only_exact_canonical_stack() {
     assert!(
         !PaintRecordingContext {
             recording_owner: Some(content_owner),
-            consumed_ancestor_property_stack: Some(transform_only),
+            consumed_ancestor_property_stack: Some(std::sync::Arc::new(transform_only)),
             ..Default::default()
         }
         .authorizes_scroll_content_local_owner(content_owner)
@@ -507,7 +507,7 @@ fn scroll_content_local_authority_accepts_only_exact_canonical_stack() {
     assert!(
         !PaintRecordingContext {
             recording_owner: Some(content_owner),
-            consumed_ancestor_property_stack: Some(duplicate_scroll),
+            consumed_ancestor_property_stack: Some(std::sync::Arc::new(duplicate_scroll)),
             ..Default::default()
         }
         .authorizes_scroll_content_local_owner(content_owner)
@@ -520,7 +520,7 @@ fn scroll_content_local_authority_accepts_only_exact_canonical_stack() {
     assert!(
         !PaintRecordingContext {
             recording_owner: Some(content_owner),
-            consumed_ancestor_property_stack: Some(noncanonical),
+            consumed_ancestor_property_stack: Some(std::sync::Arc::new(noncanonical)),
             ..Default::default()
         }
         .authorizes_scroll_content_local_owner(content_owner)
@@ -539,18 +539,18 @@ fn wrong_child_boundary_retarget_or_live_transform_cannot_project() {
     };
     let wrong_target = PaintRecordingContext {
         recording_owner: Some(child),
-        consumed_ancestor_property: Some(ConsumedAncestorProperty::Transform(
+        consumed_ancestor_property: Some(std::sync::Arc::new(ConsumedAncestorProperty::Transform(
             witness.for_target(descendant),
-        )),
+        ))),
         ..Default::default()
     };
     assert_eq!(wrong_target.project_consumed_ancestor_property(live), None);
 
     let mismatch = PaintRecordingContext {
         recording_owner: Some(child),
-        consumed_ancestor_property: Some(ConsumedAncestorProperty::Transform(
+        consumed_ancestor_property: Some(std::sync::Arc::new(ConsumedAncestorProperty::Transform(
             witness.for_target(child),
-        )),
+        ))),
         ..Default::default()
     };
     assert_eq!(
@@ -584,8 +584,8 @@ fn same_owner_transform_boundary_is_typed_and_cannot_masquerade_as_ancestor() {
     };
     let wrong_target = PaintRecordingContext {
         recording_owner: Some(child),
-        consumed_ancestor_property: Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(
-            witness.for_target(descendant),
+        consumed_ancestor_property: Some(std::sync::Arc::new(
+            ConsumedAncestorProperty::SameOwnerTransformBoundary(witness.for_target(descendant)),
         )),
         ..Default::default()
     };
@@ -593,8 +593,8 @@ fn same_owner_transform_boundary_is_typed_and_cannot_masquerade_as_ancestor() {
 
     let exact = PaintRecordingContext {
         recording_owner: Some(child),
-        consumed_ancestor_property: Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(
-            witness.for_target(child),
+        consumed_ancestor_property: Some(std::sync::Arc::new(
+            ConsumedAncestorProperty::SameOwnerTransformBoundary(witness.for_target(child)),
         )),
         ..Default::default()
     };
@@ -646,14 +646,14 @@ fn deferred_effect_authority_requires_late_phase_clip_and_exact_effect() {
         recording_owner: Some(owner),
         recording_owner_stable_id: Some(stable_id),
         authoritative_self_clip: Some(clip.id),
-        deferred_viewport_self_clip: Some(clip_witness),
+        deferred_viewport_self_clip: Some(std::sync::Arc::new(clip_witness)),
         opacity_authority: PaintOpacityAuthority::NeutralRootEffect(effect.id),
         ..Default::default()
     };
     assert!(!normal_phase.authorizes_deferred_viewport_effect_for(stable_id, effect.id));
 
     let late_phase = PaintRecordingContext {
-        deferred_viewport_effect: Some(witness),
+        deferred_viewport_effect: Some(std::sync::Arc::new(witness)),
         ..normal_phase
     };
     assert!(late_phase.authorizes_deferred_viewport_effect_for(stable_id, effect.id));

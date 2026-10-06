@@ -450,8 +450,8 @@ fn record_frame_artifact_with_policy_and_stack(
         ));
     }
     let initial_recording_context = PaintRecordingContext {
-        consumed_ancestor_property,
-        consumed_ancestor_property_stack,
+        consumed_ancestor_property: consumed_ancestor_property.map(std::sync::Arc::new),
+        consumed_ancestor_property_stack: consumed_ancestor_property_stack.map(std::sync::Arc::new),
         required_scroll_content_paint_offset_bits,
         opacity_authority: match (neutral_effect_authority, policy) {
             (Some(effect), _) => PaintOpacityAuthority::NeutralRootEffect(effect),
@@ -473,7 +473,7 @@ fn record_frame_artifact_with_policy_and_stack(
         CoverageRecordingMode::MetadataOnly,
         property_trees,
         paint_generations,
-        initial_recording_context,
+        initial_recording_context.clone(),
         None,
         &planned_boundary_cutouts,
         recording_cache.as_deref_mut(),

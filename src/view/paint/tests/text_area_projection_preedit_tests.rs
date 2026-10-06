@@ -70,6 +70,7 @@ fn text_area_projection_preedit_direct_text_is_path_scoped_ordered_and_matches_l
         .shadow_paint_recording_context_for_child(projection, &arena, &root_context);
     let witness = projection_context
         .text_area_preedit
+        .clone()
         .expect("target projection edge must carry preedit authority");
     assert_eq!((witness.local_start_char, witness.local_end_char), (1, 3));
     let text_context = arena
@@ -374,11 +375,8 @@ fn text_area_projection_preedit_topology_and_witness_tamper_fail_closed() {
         .unwrap()
         .element
         .shadow_paint_recording_context_for_child(projected_text, &arena, &projection_context);
-    text_context
-        .text_area_preedit
-        .as_mut()
-        .unwrap()
-        .target_caret_byte = usize::MAX;
+    std::sync::Arc::make_mut(text_context.text_area_preedit.as_mut().unwrap()).target_caret_byte =
+        usize::MAX;
     assert!(
         arena
             .get(projected_text)

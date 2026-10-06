@@ -70,7 +70,7 @@ fn root_opacity_group_records_contents_clip_neutrally_and_metadata_matches_full(
         CoverageRecordingMode::MetadataOnly,
         &properties,
         &generations,
-        recording_context,
+        recording_context.clone(),
         None,
         &Default::default(),
     );

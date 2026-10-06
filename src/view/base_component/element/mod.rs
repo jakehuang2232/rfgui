@@ -3223,7 +3223,7 @@ pub trait ElementTrait:
         &self,
         parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-        *parent
+        parent.clone()
     }
 
     /// Derive path-specific recording authority for one direct child.
@@ -5981,7 +5981,7 @@ impl Element {
             }
             pending.extend_from_slice(node.element.children());
         }
-        let mut context = *context;
+        let mut context = context.clone();
         context.inline_root_recording = None;
         // Preserve the original capability call and rejection precedence. For
         // an owning IFC root, Recordable implies its full live layout witness
@@ -8079,7 +8079,7 @@ impl ElementTrait for Element {
         &self,
         parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-        let mut parent = *parent;
+        let mut parent = parent.clone();
         let paint_x = self.layout_state.layout_position.x + parent.paint_offset[0];
         let paint_y = self.layout_state.layout_position.y + parent.paint_offset[1];
         parent.paint_offset[0] += round_layout_value(paint_x) - paint_x;

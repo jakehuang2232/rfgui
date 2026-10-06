@@ -134,30 +134,30 @@ fn generic_subtree_self_clip_rejects_foreign_state_geometry_and_missing_snapshot
         surface_dag: true,
         surface_dag_paint_state: Some(state),
         authoritative_self_clip: state.clip,
-        subtree_self_clip: Some(witness),
+        subtree_self_clip: Some(std::sync::Arc::new(witness)),
         ..Default::default()
     };
     assert!(context.authorizes_subtree_self_clip_for(stable_id, scissor));
     for altered in [
         PaintRecordingContext {
             recording_owner: Some(roots[0]),
-            ..context
+            ..context.clone()
         },
         PaintRecordingContext {
             recording_owner_stable_id: Some(stable_id + 1),
-            ..context
+            ..context.clone()
         },
         PaintRecordingContext {
             surface_dag: false,
-            ..context
+            ..context.clone()
         },
         PaintRecordingContext {
             surface_dag_paint_state: Some(Default::default()),
-            ..context
+            ..context.clone()
         },
         PaintRecordingContext {
             authoritative_self_clip: None,
-            ..context
+            ..context.clone()
         },
     ] {
         assert!(!altered.authorizes_subtree_self_clip_for(stable_id, scissor));

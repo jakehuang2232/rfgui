@@ -812,7 +812,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         baked_scroll_host_authority: Option<super::PaintBakedScrollHostWitness>,
         consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
         consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
-        scroll_forest_host: Option<super::PaintScrollForestEdgeWitness>,
+        scroll_forest_host: Option<std::sync::Arc<super::PaintScrollForestEdgeWitness>>,
         /// Time-boxed bridge for the pre-V2 exact detached subtree grammars.
         /// It reaches the walker only through the private legacy entry point,
         /// never through a `record_coverage_manifest*` API, never through
@@ -1154,14 +1154,14 @@ fn record_coverage_manifest_with_property_authorities_impl(
             // traversal owner after the hook returns.
             recording_context.consumed_ancestor_property = self
                 .consumed_ancestor_property
-                .map(|witness| witness.for_target(key));
+                .map(|witness| std::sync::Arc::new(witness.for_target(key)));
             recording_context.consumed_ancestor_property_stack = self
                 .consumed_ancestor_property_stack
-                .map(|witness| witness.for_target(key));
+                .map(|witness| std::sync::Arc::new(witness.for_target(key)));
             recording_context.property_forest_projection = self
                 .property_forest_ancestor_chain
                 .and_then(|witness| witness.projection_for_target(key));
-            recording_context.scroll_forest_host = self.scroll_forest_host;
+            recording_context.scroll_forest_host = self.scroll_forest_host.clone();
             // Retired detached-subtree flags cannot be inherited from component hooks.
             recording_context.scroll_content_local_owner = false;
             recording_context.descendant_contents_clip = false;
@@ -1189,7 +1189,8 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 .flatten();
             recording_context.surface_dag_scroll_snapshot = recording_context
                 .surface_dag_scroll
-                .and_then(|id| self.properties.scroll_snapshot_for(id));
+                .and_then(|id| self.properties.scroll_snapshot_for(id))
+                .map(std::sync::Arc::new);
             if let Some(witness) = self.transform_surface_authority
                 && live_properties.transform == Some(witness.transform)
             {
@@ -1199,7 +1200,8 @@ fn record_coverage_manifest_with_property_authorities_impl(
             if let Some(witness) = self.baked_scroll_host_authority
                 && (key == witness.boundary_root() || key == witness.child())
             {
-                recording_context.baked_scroll_host = Some(witness.for_target(key));
+                recording_context.baked_scroll_host =
+                    Some(std::sync::Arc::new(witness.for_target(key)));
             }
             let project = |live| recording_context.project_consumed_ancestor_property(live);
             let Some(mut properties) = project(live_properties) else {
@@ -1307,7 +1309,8 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     )
                 })
                 .flatten()
-                .filter(|witness| witness.matches_recorded_scopes(properties, contents_properties));
+                .filter(|witness| witness.matches_recorded_scopes(properties, contents_properties))
+                .map(std::sync::Arc::new);
             recording_context.deferred_viewport_self_clip = None;
             recording_context.deferred_viewport_effect = None;
             if deferred_phase_root {
@@ -1317,12 +1320,17 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     self.properties,
                     self.surface_dag,
                 );
-                recording_context.deferred_viewport_self_clip = clip;
-                recording_context.deferred_viewport_effect = clip.and_then(|clip| {
-                    let contract = self.effect_surface_authority?;
-                    (contract.boundary_root() == key).then_some(())?;
-                    super::PaintDeferredViewportEffectWitness::new(clip, contract.isolated_leaf())
-                });
+                recording_context.deferred_viewport_self_clip = clip.map(std::sync::Arc::new);
+                recording_context.deferred_viewport_effect = clip
+                    .and_then(|clip| {
+                        let contract = self.effect_surface_authority?;
+                        (contract.boundary_root() == key).then_some(())?;
+                        super::PaintDeferredViewportEffectWitness::new(
+                            clip,
+                            contract.isolated_leaf(),
+                        )
+                    })
+                    .map(std::sync::Arc::new);
             }
             drop(context_profile);
             let capability_profile = super::work_profile::scope("observe_recording_capability");
@@ -2012,11 +2020,19 @@ fn record_coverage_manifest_with_property_authorities_impl(
         surface_dag: initial_recording_context.surface_dag,
         effect_surface_authority,
         property_forest_ancestor_chain,
-        baked_scroll_host_authority: initial_recording_context.baked_scroll_host,
-        consumed_ancestor_property: initial_recording_context.consumed_ancestor_property,
+        baked_scroll_host_authority: initial_recording_context
+            .baked_scroll_host
+            .as_deref()
+            .copied(),
+        consumed_ancestor_property: initial_recording_context
+            .consumed_ancestor_property
+            .as_deref()
+            .copied(),
         consumed_ancestor_property_stack: initial_recording_context
-            .consumed_ancestor_property_stack,
-        scroll_forest_host: initial_recording_context.scroll_forest_host,
+            .consumed_ancestor_property_stack
+            .as_deref()
+            .copied(),
+        scroll_forest_host: initial_recording_context.scroll_forest_host.clone(),
         required_scroll_content_paint_offset_bits: initial_recording_context
             .required_scroll_content_paint_offset_bits,
         opacity_authority: initial_recording_context.opacity_authority,

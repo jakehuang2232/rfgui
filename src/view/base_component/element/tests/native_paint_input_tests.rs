@@ -55,7 +55,7 @@ fn native_paint_capsule_reads_live_colors_and_rejects_invalid_offsets() {
     );
     let invalid = crate::view::paint::PaintRecordingContext {
         paint_offset: [f32::NAN, 0.],
-        ..context
+        ..context.clone()
     };
     assert!(element.prepared_self_paint_record(owner, &invalid).is_err());
     assert_eq!(
@@ -156,7 +156,7 @@ fn child_mask_capsule_rechecks_geometry_order_partition_and_capability() {
     assert_eq!(partitioned.overflow_children(), &[first]);
     let shifted = PaintRecordingContext {
         paint_offset: [4., 2.],
-        ..context
+        ..context.clone()
     };
     let translated = plan(&arena, &shifted);
     let metadata = |mask: &crate::view::paint::RetainedChildMaskPlan| {
@@ -193,7 +193,7 @@ fn child_mask_capsule_rechecks_geometry_order_partition_and_capability() {
     );
     let invalid = PaintRecordingContext {
         paint_offset: [f32::NAN, 0.],
-        ..context
+        ..context.clone()
     };
     let node = arena.get(owner).unwrap();
     assert!(

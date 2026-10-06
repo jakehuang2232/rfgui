@@ -49,9 +49,9 @@ fn component_child_context_cannot_clear_replace_or_retarget_recorder_owned_consu
             super::super::super::ConsumedAncestorTransformWitness::new(parent, child, transform)
                 .unwrap();
         let context = PaintRecordingContext {
-            consumed_ancestor_property: Some(
+            consumed_ancestor_property: Some(std::sync::Arc::new(
                 super::super::super::ConsumedAncestorProperty::Transform(witness),
-            ),
+            )),
             ..Default::default()
         };
         let record = |mode| {
@@ -63,7 +63,7 @@ fn component_child_context_cannot_clear_replace_or_retarget_recorder_owned_consu
                 mode,
                 &properties,
                 &generations,
-                context,
+                context.clone(),
                 None,
                 &Default::default(),
             )
@@ -129,9 +129,9 @@ fn component_hooks_cannot_clear_or_replace_recorder_owned_scroll_contents_author
         )
         .unwrap();
         let context = PaintRecordingContext {
-            consumed_ancestor_property: Some(
+            consumed_ancestor_property: Some(std::sync::Arc::new(
                 super::super::super::ConsumedAncestorProperty::ScrollContents(witness),
-            ),
+            )),
             ..Default::default()
         };
         let record = |mode| {
@@ -143,7 +143,7 @@ fn component_hooks_cannot_clear_or_replace_recorder_owned_scroll_contents_author
                 mode,
                 &properties,
                 &generations,
-                context,
+                context.clone(),
                 None,
                 &Default::default(),
             )
@@ -202,7 +202,7 @@ fn component_hook_cannot_clear_required_scroll_content_paint_offset() {
             mode,
             &properties,
             &generations,
-            context,
+            context.clone(),
             None,
             &Default::default(),
         );
@@ -265,7 +265,7 @@ fn component_node_and_child_hooks_cannot_clear_recorder_owned_opacity_authority(
             mode,
             &properties,
             &generations,
-            context,
+            context.clone(),
             None,
             &Default::default(),
         )

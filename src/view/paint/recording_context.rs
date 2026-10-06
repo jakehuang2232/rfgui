@@ -10,6 +10,7 @@ use crate::view::compositor::property_tree::{
     ClipNodeId, ClipNodeRole, EffectNodeId, PropertyTreeState, ScrollNodeId, TransformNodeId,
 };
 use crate::view::node_arena::NodeKey;
+use std::sync::Arc;
 
 use super::artifact::*;
 
@@ -83,7 +84,10 @@ impl PaintSubtreeSelfClipWitness {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// Large witnesses that only special recorders or a few owners carry are
+/// shared behind `Arc`: the context is cloned for every walked node and every
+/// child edge, and most of those witnesses are absent on the hot path.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PaintRecordingContext {
     /// Scoped to a fused native capability/metadata invocation. The walker
     /// clears inherited values; cached/full recording never receives this token.
@@ -99,7 +103,7 @@ pub(crate) struct PaintRecordingContext {
     /// contains the active IME preedit. Geometry decorations remain owned by
     /// the TextArea; this witness only proves which child glyph payload may
     /// contain the transient insertion.
-    pub(crate) text_area_preedit: Option<PaintTextPreeditWitness>,
+    pub(crate) text_area_preedit: Option<Arc<PaintTextPreeditWitness>>,
     /// Set by the coverage walker from the canonical frame root/path, never
     /// inferred from stable ids or arena parent scans.
     pub(crate) is_frame_root: bool,
@@ -113,14 +117,14 @@ pub(crate) struct PaintRecordingContext {
     pub(crate) authoritative_self_clip: Option<ClipNodeId>,
     /// Rebuilt after hooks, only by the generic recorder. It binds both paint
     /// and descendant clip scope to this owner, never an ambient permission.
-    pub(crate) subtree_self_clip: Option<PaintSubtreeSelfClipWitness>,
+    pub(crate) subtree_self_clip: Option<Arc<PaintSubtreeSelfClipWitness>>,
     /// Recorder-minted proof for the one exact deferred viewport-clipped
     /// native root. Coverage clears and rebinds this frozen replace-scissor
     /// witness after every component context hook.
-    pub(crate) deferred_viewport_self_clip: Option<PaintDeferredViewportSelfClipWitness>,
+    pub(crate) deferred_viewport_self_clip: Option<Arc<PaintDeferredViewportSelfClipWitness>>,
     /// Bound only for the deferred root's late-phase coverage invocation when
     /// the same root owns the active effect-surface contract.
-    pub(crate) deferred_viewport_effect: Option<PaintDeferredViewportEffectWitness>,
+    pub(crate) deferred_viewport_effect: Option<Arc<PaintDeferredViewportEffectWitness>>,
     /// Owner-scoped proof that this coverage invocation belongs to one
     /// canonically planned transform surface. The normal frame recorder never
     /// installs this witness; the surface recorder clears and rebinds it for
@@ -145,10 +149,10 @@ pub(crate) struct PaintRecordingContext {
     /// through copied component context.
     pub(crate) surface_dag_scroll: Option<ScrollNodeId>,
     pub(crate) surface_dag_scroll_snapshot:
-        Option<crate::view::compositor::property_tree::ScrollNodeSnapshot>,
+        Option<Arc<crate::view::compositor::property_tree::ScrollNodeSnapshot>>,
     /// Recorder-owned authority for the one exact M10E1A root/child path.
     /// Coverage clears and rebinds this after every component hook.
-    pub(crate) baked_scroll_host: Option<PaintBakedScrollHostWitness>,
+    pub(crate) baked_scroll_host: Option<Arc<PaintBakedScrollHostWitness>>,
     /// Narrow frame-root receiver authority to encode the scroll host's
     /// retained child mask around a detached content marker. Older baked-host
     /// recorders keep their established H/C/O grammar and leave this false.
@@ -157,12 +161,12 @@ pub(crate) struct PaintRecordingContext {
     /// the parent retained surface.  Recording may project only that exact
     /// property out of the artifact view; live property-tree state remains
     /// untouched and every other property family is preserved verbatim.
-    pub(crate) consumed_ancestor_property: Option<ConsumedAncestorProperty>,
+    pub(crate) consumed_ancestor_property: Option<Arc<ConsumedAncestorProperty>>,
     /// B4 receiver recording may have to project more than one already-owned
     /// ancestor boundary (for example transform + scroll contents).  This is
     /// a fixed-capacity, planner-sealed stack so component hooks cannot append,
     /// reorder, or retarget capabilities while coverage walks the subtree.
-    pub(crate) consumed_ancestor_property_stack: Option<ConsumedAncestorPropertyStackWitness>,
+    pub(crate) consumed_ancestor_property_stack: Option<Arc<ConsumedAncestorPropertyStackWitness>>,
     /// Recorder-bound projection token minted from a complete, immutable
     /// root-to-surface Transform/Effect boundary chain. The owning chain
     /// witness remains with coverage; component hooks only receive this
@@ -171,7 +175,7 @@ pub(crate) struct PaintRecordingContext {
     /// Boundary-local arbitrary-depth host projection. It projects the parent
     /// S/C pair from host self paint while preserving this boundary's own S/C
     /// pair on descendants.
-    pub(crate) scroll_forest_host: Option<PaintScrollForestEdgeWitness>,
+    pub(crate) scroll_forest_host: Option<Arc<PaintScrollForestEdgeWitness>>,
     /// Recorder-derived proof that this exact node's self paint is recorded on
     /// a detached local basis, so it consumes `paint_offset`. Coverage clears
     /// and recomputes it after every component context hook; a component that
@@ -211,7 +215,7 @@ impl PaintRecordingContext {
         stable_id: u64,
         scissor: [u32; 4],
     ) -> bool {
-        self.subtree_self_clip.is_some_and(|witness| {
+        self.subtree_self_clip.as_deref().is_some_and(|witness| {
             witness.stable_id == stable_id
                 && witness.scissor == scissor
                 && self.authorizes_surface_dag_paint_properties(
@@ -242,7 +246,7 @@ impl PaintRecordingContext {
             (
                 self.recording_owner,
                 self.recording_owner_stable_id,
-                self.deferred_viewport_self_clip,
+                self.deferred_viewport_self_clip.as_deref(),
             ),
             (Some(owner), Some(recording_stable_id), Some(witness))
                 if recording_stable_id == stable_id
@@ -263,7 +267,7 @@ impl PaintRecordingContext {
             (
                 self.recording_owner,
                 self.recording_owner_stable_id,
-                self.deferred_viewport_effect,
+                self.deferred_viewport_effect.as_deref(),
             ),
             (Some(owner), Some(recording_stable_id), Some(witness))
                 if recording_stable_id == stable_id
@@ -326,7 +330,7 @@ impl PaintRecordingContext {
             (
                 self.recording_owner,
                 self.recording_owner_stable_id,
-                self.baked_scroll_host,
+                self.baked_scroll_host.as_deref(),
             ),
             (Some(owner), Some(recording_stable_id), Some(witness))
                 if recording_stable_id == stable_id
@@ -361,7 +365,7 @@ impl PaintRecordingContext {
     ) -> Option<crate::view::compositor::property_tree::ScrollNodeSnapshot> {
         self.baked_scroll_host_snapshot_for_root(stable_id)
             .or_else(|| {
-                let snapshot = self.surface_dag_scroll_snapshot?;
+                let snapshot = *self.surface_dag_scroll_snapshot.as_deref()?;
                 (self.authorizes_generic_scroll_host_root(stable_id)
                     && Some(snapshot.id) == self.surface_dag_scroll
                     && Some(snapshot.owner) == self.recording_owner)
@@ -379,15 +383,18 @@ impl PaintRecordingContext {
     ) -> Option<crate::view::compositor::property_tree::ScrollNodeSnapshot> {
         self.authorizes_baked_scroll_host_root(stable_id).then(|| {
             self.baked_scroll_host
+                .as_deref()
                 .expect("authority requires witness")
                 .scroll_snapshot()
         })
     }
 
-    pub(crate) fn without_text_area_child_authority(mut self) -> Self {
-        self.text_area_selection = None;
-        self.text_area_preedit = None;
-        self
+    pub(crate) fn without_text_area_child_authority(&self) -> Self {
+        Self {
+            text_area_selection: None,
+            text_area_preedit: None,
+            ..self.clone()
+        }
     }
 
     pub(crate) fn paint_opacity(&self, baked_opacity: f32) -> f32 {
@@ -401,16 +408,16 @@ impl PaintRecordingContext {
         &self,
         live: PropertyTreeState,
     ) -> Option<PropertyTreeState> {
-        if let Some(witness) = self.scroll_forest_host {
+        if let Some(witness) = self.scroll_forest_host.as_deref() {
             return witness.project_host_for(self.recording_owner?, live);
         }
-        if let Some(stack) = self.consumed_ancestor_property_stack {
+        if let Some(stack) = self.consumed_ancestor_property_stack.as_deref() {
             return stack.project_for(self.recording_owner?, live, self.opacity_authority);
         }
         if let Some(projection) = self.property_forest_projection {
             return projection.project_for(self.recording_owner?, live, self.opacity_authority);
         }
-        match self.consumed_ancestor_property {
+        match self.consumed_ancestor_property.as_deref().copied() {
             None => Some(live),
             Some(ConsumedAncestorProperty::Transform(witness)) => {
                 if witness.is_canonical_for(self.recording_owner?)
@@ -486,12 +493,16 @@ impl PaintRecordingContext {
             return false;
         }
         matches!(
-            self.consumed_ancestor_property,
+            self.consumed_ancestor_property.as_deref(),
             Some(ConsumedAncestorProperty::ScrollContents(witness))
                 if witness.is_canonical_for(owner)
-        ) || self.consumed_ancestor_property_stack.is_some_and(|stack| {
-            stack.authorizes_scroll_content_local_owner(owner, self.opacity_authority)
-        }) || self.scroll_content_local_owner
+        ) || self
+            .consumed_ancestor_property_stack
+            .as_deref()
+            .is_some_and(|stack| {
+                stack.authorizes_scroll_content_local_owner(owner, self.opacity_authority)
+            })
+            || self.scroll_content_local_owner
     }
 
     /// One node inside a recording may keep a descendant contents clip. The

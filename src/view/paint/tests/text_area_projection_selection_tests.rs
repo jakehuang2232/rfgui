@@ -396,7 +396,7 @@ fn text_area_projection_selection_ambiguous_owner_and_witness_tamper_fail_closed
         .element
         .shadow_paint_recording_context_for_child(projected_text, &arena, &wrapper_context);
     for tamper_stable_id in [false, true] {
-        let mut tampered = text_context;
+        let mut tampered = text_context.clone();
         let witness = tampered.text_area_selection.as_mut().unwrap();
         if tamper_stable_id {
             witness.target_stable_id = witness.target_stable_id.wrapping_add(1);

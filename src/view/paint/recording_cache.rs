@@ -166,7 +166,7 @@ impl RecordingCache {
                     properties,
                     contents,
                     revision,
-                    context: *context,
+                    context: context.clone(),
                 },
             );
         }

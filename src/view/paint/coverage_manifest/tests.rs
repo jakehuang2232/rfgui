@@ -340,7 +340,7 @@ impl ElementTrait for PlanHost {
         &self,
         parent: &PaintRecordingContext,
     ) -> PaintRecordingContext {
-        let mut parent = *parent;
+        let mut parent = parent.clone();
         if self.clear_paint_offset_for_node {
             parent.paint_offset = [0.0, 0.0];
         }
@@ -360,22 +360,23 @@ impl ElementTrait for PlanHost {
         _arena: &NodeArena,
         parent: &PaintRecordingContext,
     ) -> PaintRecordingContext {
-        let mut parent = *parent;
+        let mut parent = parent.clone();
         match self.consumed_authority_attack {
             None => {}
             Some(ConsumedAuthorityAttack::Clear) => {
                 parent.consumed_ancestor_property = None;
             }
             Some(ConsumedAuthorityAttack::Replace) => {
-                parent.consumed_ancestor_property =
-                    Some(super::super::ConsumedAncestorProperty::Transform(
+                parent.consumed_ancestor_property = Some(std::sync::Arc::new(
+                    super::super::ConsumedAncestorProperty::Transform(
                         super::super::ConsumedAncestorTransformWitness {
                             parent_boundary: child,
                             child_boundary: child,
                             transform: TransformNodeId(child),
                             target_owner: child,
                         },
-                    ));
+                    ),
+                ));
             }
         }
         if self.clear_opacity_authority_for_child {

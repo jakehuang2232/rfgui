@@ -347,7 +347,7 @@ impl SubtreeCache {
             revision,
             index_revision: arena.stable_id_index_revision()?,
             ancestors,
-            context: *context,
+            context: context.clone(),
             offset: context.paint_offset.map(f32::to_bits),
             order: CoverageOrder {
                 root_index,

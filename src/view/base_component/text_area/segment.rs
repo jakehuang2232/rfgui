@@ -433,7 +433,7 @@ impl ElementTrait for TextAreaProjectionSegment {
         &self,
         parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
-        *parent
+        parent.clone()
     }
 
     #[allow(private_interfaces)]
@@ -460,7 +460,7 @@ impl ElementTrait for TextAreaProjectionSegment {
                 child_context.text_area_selection = Some(witness);
             }
         }
-        if let Some(witness) = parent.text_area_preedit {
+        if let Some(witness) = parent.text_area_preedit.clone() {
             let target_matches = exact_child
                 && witness.projection_owner == self_key
                 && witness.target_owner == child
