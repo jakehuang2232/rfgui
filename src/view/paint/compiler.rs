@@ -4,8 +4,8 @@ use crate::view::base_component::{
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
-    PropertyTreeState, ScrollNodeId, ScrollNodeSnapshot, SpatialProjectionError,
-    SpatialProjectionGraph, TransformNodeId, TransformNodeSnapshot,
+    PropertyTreeState, ScrollNodeId, ScrollNodeSnapshot, SpatialProjectionError, TransformNodeId,
+    TransformNodeSnapshot,
 };
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::NodeKey;
@@ -491,6 +491,7 @@ struct ValidatedArtifactSurfaceDagProgram {
     surface_dag: std::sync::Arc<SurfaceDag>,
     execution_order: std::sync::Arc<SurfaceDagExecutionOrder>,
     coverage: std::sync::Arc<ArtifactSurfaceCoverageForest>,
+    spatial: std::sync::Arc<super::ArtifactSpatialProjection>,
     host_placement: std::sync::Arc<ArtifactSurfaceHostPlacementProjection>,
 }
 
@@ -1048,6 +1049,22 @@ pub(crate) enum SingleTargetSurfaceDagPrepareError {
     SurfaceDag(SurfaceDagError),
 }
 
+/// The artifact's one relative-to-absolute spatial projection, reused while
+/// every spatial snapshot family is unchanged.
+fn artifact_spatial_projection(
+    artifact: &PaintArtifact,
+    cache: Option<&mut PlanningCache>,
+) -> Result<std::sync::Arc<super::ArtifactSpatialProjection>, SingleTargetSurfaceDagPrepareError> {
+    if let Some(spatial) = cache.and_then(|cache| cache.spatial(artifact)) {
+        return Ok(spatial);
+    }
+    super::ArtifactSpatialProjection::try_new(artifact)
+        .map(std::sync::Arc::new)
+        .map_err(TransitionError::SpatialSnapshot)
+        .map_err(SurfaceDagError::Transition)
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)
+}
+
 fn validate_artifact_surface_dag_program(
     artifact: PaintArtifact,
     mut cache: Option<&mut PlanningCache>,
@@ -1086,51 +1103,56 @@ fn validate_artifact_surface_dag_program(
     // command validation already ran above, and `graphs` revalidated numeric
     // snapshots. Transfer obligations and target elimination stay current.
     let structure = if graphs.is_some() {
+        let spatial = artifact_spatial_projection(&artifact, cache.as_deref_mut())?;
         cache
             .as_deref_mut()
-            .map(|cache| cache.surface_structure(&artifact))
+            .map(|cache| cache.surface_structure(&artifact, &spatial))
             .transpose()
             .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
             .flatten()
+            .map(|structure| (structure, spatial))
     } else {
         None
     };
-    let (surface_dag, coverage, graphs) = if let Some((dag, coverage)) = structure {
-        (
-            dag,
-            coverage,
-            graphs.expect("structural replay requires current graph proof"),
-        )
-    } else {
-        let inputs = super::surface_dag::ArtifactSurfaceInputs::with_graphs(
-            &artifact,
-            LayerizationPolicy::ResolveMaterializedTargets,
-            graphs,
-        )
-        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-        let requests = inputs
-            .requests()
+    let (surface_dag, coverage, graphs, spatial) =
+        if let Some(((dag, coverage), spatial)) = structure {
+            (
+                dag,
+                coverage,
+                graphs.expect("structural replay requires current graph proof"),
+                spatial,
+            )
+        } else {
+            let inputs = super::surface_dag::ArtifactSurfaceInputs::with_graphs(
+                &artifact,
+                LayerizationPolicy::ResolveMaterializedTargets,
+                graphs,
+            )
             .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-        let events = inputs
-            .classify(&requests)
-            .map_err(SurfaceDagError::Transition)
-            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-        let surface_dag = inputs
-            .reconstruct(&events)
-            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-        let coverage = match cache
-            .as_deref_mut()
-            .and_then(|cache| cache.coverage(&artifact, &surface_dag))
-        {
-            Some(coverage) => coverage,
-            None => inputs
-                .coverage(&surface_dag)
-                .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
-                .into(),
+            let spatial = artifact_spatial_projection(&artifact, cache.as_deref_mut())?;
+            let requests = inputs
+                .requests()
+                .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+            let events = inputs
+                .classify(&requests)
+                .map_err(SurfaceDagError::Transition)
+                .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+            let surface_dag = inputs
+                .reconstruct(&events, &spatial)
+                .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+            let coverage = match cache
+                .as_deref_mut()
+                .and_then(|cache| cache.coverage(&artifact, &surface_dag))
+            {
+                Some(coverage) => coverage,
+                None => inputs
+                    .coverage(&surface_dag)
+                    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
+                    .into(),
+            };
+            let graphs = inputs.graphs();
+            (surface_dag, coverage, graphs, spatial)
         };
-        let graphs = inputs.graphs();
-        (surface_dag, coverage, graphs)
-    };
     let execution_order = surface_dag
         .derive_materialized_execution_order(
             &coverage,
@@ -1142,7 +1164,7 @@ fn validate_artifact_surface_dag_program(
         .and_then(|cache| cache.host_placement(&artifact))
     {
         Some(placement) => placement,
-        None => ArtifactSurfaceHostPlacementProjection::try_new(&artifact)
+        None => ArtifactSurfaceHostPlacementProjection::try_new(&artifact, &spatial)
             .map_err(TransitionError::SpatialSnapshot)
             .map_err(SurfaceDagError::Transition)
             .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
@@ -1155,6 +1177,7 @@ fn validate_artifact_surface_dag_program(
         surface_dag: surface_dag.into(),
         execution_order: execution_order.into(),
         coverage,
+        spatial,
         host_placement,
     };
     if let Some(cache) = cache {
@@ -1236,20 +1259,18 @@ struct ResolvedArtifactSurfaceHostPlacement {
 }
 
 impl ArtifactSurfaceHostPlacementProjection {
-    fn try_new(artifact: &PaintArtifact) -> Result<Self, SpatialProjectionError> {
-        let graph = SpatialProjectionGraph::try_new(
-            &artifact.transform_nodes,
-            &artifact.layout_position_nodes,
-            &artifact.visual_offset_nodes,
-            &artifact.scroll_nodes,
-        )?;
+    fn try_new(
+        artifact: &PaintArtifact,
+        spatial: &super::ArtifactSpatialProjection,
+    ) -> Result<Self, SpatialProjectionError> {
         let mut owners = Vec::with_capacity(artifact.owner_nodes.len());
         for snapshot in &artifact.owner_nodes {
             owners.push(ArtifactSurfaceOwnerPlacement {
                 owner: snapshot.owner,
                 parent: snapshot.parent,
-                viewport_position_bits: graph
-                    .derive_optional_owner_viewport_position(snapshot.owner)?
+                viewport_position_bits: spatial
+                    .owner_viewport_position(snapshot.owner)
+                    .ok_or(SpatialProjectionError::InvalidSnapshot(snapshot.owner))?
                     .to_array()
                     .map(f32::to_bits),
             });
@@ -2257,6 +2278,7 @@ fn surface_composite_geometry(
     scrolls: &FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
     clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     closure: Option<&SurfaceDagClipClosureProjection>,
+    spatial: &super::ArtifactSpatialProjection,
 ) -> Result<ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterPlanError> {
     // Consumption transitions may borrow the deepest descendant witness's
     // non-consumed dimensions. That descendant's self clip is raster-local
@@ -2303,7 +2325,7 @@ fn surface_composite_geometry(
     let resolved_receiver_clip = ArtifactSurfaceResolvedClip::from_logical(resolved_receiver_clip);
     match node.kind() {
         SurfaceDagNodeKind::Transform(transform) => {
-            let snapshot = transforms.get(&transform).copied().ok_or(
+            transforms.get(&transform).ok_or(
                 ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
             )?;
             // This snapshot is owner-only, not ancestor-composed (see
@@ -2313,7 +2335,9 @@ fn surface_composite_geometry(
             // that has not yet been applied. Each retained boundary applies
             // its authored matrix exactly once; raster-origin rebasing is
             // handled separately by the frozen quad and destination origin.
-            let receiver_transform = snapshot.owner_viewport_transform;
+            let receiver_transform = spatial.owner_viewport_transform(transform).ok_or(
+                ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(node.id()),
+            )?;
             if !receiver_transform.is_finite() {
                 return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(
                     node.id(),
@@ -2652,6 +2676,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 &scrolls,
                 &clips,
                 coverage.clip_closure(),
+                &program.spatial,
             )?;
             fold_materialized_composite_boundaries(
                 geometry,

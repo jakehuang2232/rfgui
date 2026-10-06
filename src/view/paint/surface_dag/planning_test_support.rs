@@ -49,7 +49,9 @@ pub(crate) fn reconstruct_surface_dag(
     policy: LayerizationPolicy,
 ) -> Result<SurfaceDag, SurfaceDagError> {
     let inputs = ArtifactSurfaceInputs::new(artifact, policy)?;
-    reconstruct_surface_from_inputs(&inputs, events)
+    let spatial = super::super::ArtifactSpatialProjection::try_new(artifact)
+        .map_err(TransitionError::SpatialSnapshot)?;
+    reconstruct_surface_from_inputs(&inputs, events, &spatial)
 }
 
 impl SurfaceDagExecutionOrder {

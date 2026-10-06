@@ -345,7 +345,12 @@ fn local_transform_composes_after_layout_and_visual_position() {
                 .expect("viewport-anchored projection")
                 .owner_viewport_transform,
         ),
-        matrix_bits(child_transform.owner_viewport_transform),
+        matrix_bits(
+            trees.transforms[&child_transform.id]
+                .derived_projection
+                .expect("sealed projection")
+                .owner_viewport_transform
+        ),
     );
 }
 
@@ -553,7 +558,12 @@ fn interleaved_projection_matches_owner_compatibility_matrix() {
             .expect("derived owner projection");
         assert_eq!(
             matrix_bits(derived.owner_viewport_transform),
-            matrix_bits(snapshot.owner_viewport_transform),
+            matrix_bits(
+                trees.transforms[&snapshot.id]
+                    .derived_projection
+                    .expect("sealed projection")
+                    .owner_viewport_transform
+            ),
             "the arena-independent graph must reproduce the sealed owner projection bitwise: owner={:?} derived_position={:?} scrolls={:?}",
             snapshot.owner,
             derived.owner_viewport_position,

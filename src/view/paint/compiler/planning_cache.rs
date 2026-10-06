@@ -144,6 +144,7 @@ impl PlanningCache {
             surface_dag: previous.surface_dag.clone(),
             execution_order: previous.execution_order.clone(),
             coverage: previous.coverage.clone(),
+            spatial: previous.spatial.clone(),
             host_placement: previous.host_placement.clone(),
         })
     }
@@ -182,6 +183,22 @@ impl PlanningCache {
         let coverage = current_clip_coverage(previous, artifact)?;
         self.coverage_hits += 1;
         Some(coverage)
+    }
+
+    /// Spatial projection inputs are the four spatial snapshot families plus
+    /// the owner store whose positions it derives.
+    pub(super) fn spatial(
+        &self,
+        artifact: &PaintArtifact,
+    ) -> Option<std::sync::Arc<super::super::ArtifactSpatialProjection>> {
+        let previous = self.geometry.as_ref()?;
+        let old = &previous.artifact;
+        (old.owner_nodes == artifact.owner_nodes
+            && old.transform_nodes == artifact.transform_nodes
+            && old.layout_position_nodes == artifact.layout_position_nodes
+            && old.visual_offset_nodes == artifact.visual_offset_nodes
+            && old.scroll_nodes == artifact.scroll_nodes)
+            .then(|| previous.spatial.clone())
     }
 
     pub(super) fn host_placement(
@@ -292,6 +309,7 @@ impl PlanningCache {
     pub(super) fn surface_structure(
         &mut self,
         artifact: &PaintArtifact,
+        spatial: &super::super::ArtifactSpatialProjection,
     ) -> Result<Option<(SurfaceDag, std::sync::Arc<ArtifactSurfaceCoverageForest>)>, SurfaceDagError>
     {
         let Some(previous) = &self.geometry else {
@@ -313,7 +331,9 @@ impl PlanningCache {
         let Some(coverage) = current_clip_coverage(previous, artifact) else {
             return Ok(None);
         };
-        let dag = previous.surface_dag.refresh_boundary_transfers(artifact)?;
+        let dag = previous
+            .surface_dag
+            .refresh_boundary_transfers(artifact, spatial)?;
         self.surface_structure_hits += 1;
         self.coverage_hits += 1;
         crate::view::paint::work_profile::count("surface_structure_replays", 1);
@@ -376,6 +396,7 @@ impl PlanningCache {
             surface_dag: program.surface_dag.clone(),
             execution_order: program.execution_order.clone(),
             coverage: program.coverage.clone(),
+            spatial: program.spatial.clone(),
             host_placement: program.host_placement.clone(),
         });
     }

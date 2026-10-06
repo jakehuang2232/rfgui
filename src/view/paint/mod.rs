@@ -13,6 +13,8 @@ mod property_transition;
 mod recorder;
 mod recording_context;
 mod shared_sequence;
+mod spatial_projection;
+pub(crate) use spatial_projection::ArtifactSpatialProjection;
 
 mod surface_dag;
 

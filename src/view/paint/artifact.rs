@@ -214,11 +214,7 @@ impl ConsumedPropertyForestAncestorChainWitness {
                         || snapshot.owner.is_null()
                         || snapshot.generation == 0
                         || snapshot.parent != latest_transform
-                        || snapshot
-                            .owner_viewport_transform
-                            .to_cols_array()
-                            .into_iter()
-                            .any(|value| !value.is_finite())
+                        || snapshot.validate_projection_value().is_err()
                     {
                         return None;
                     }

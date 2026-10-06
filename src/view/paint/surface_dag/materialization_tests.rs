@@ -84,6 +84,7 @@ fn materialization_identity_effect_has_no_isolation_but_opacity_does() {
             &FxHashMap::default(),
             &effects,
             &FxHashMap::default(),
+            &empty_spatial(),
         )
         .expect("complete snapshot set");
         if opacity == 1.0 {
@@ -149,7 +150,8 @@ fn materialization_missing_snapshots_are_structural_errors() {
                 None,
                 &FxHashMap::default(),
                 &FxHashMap::default(),
-                &FxHashMap::default()
+                &FxHashMap::default(),
+                &empty_spatial()
             ),
             Err(SurfaceDagError::MissingMaterializationSnapshot(kind))
         );
@@ -174,8 +176,6 @@ fn materialization_missing_parent_precedes_nontranslation_retention() {
             local_origin: glam::Vec3::ZERO,
             local_generation: 1,
             generation: 1,
-            owner_viewport_position: glam::Vec2::ZERO,
-            owner_viewport_transform: glam::Mat4::IDENTITY,
         },
     )]);
     let transition = PropertyStateTransition::between(
@@ -189,10 +189,16 @@ fn materialization_missing_parent_precedes_nontranslation_retention() {
             None,
             &transforms,
             &FxHashMap::default(),
-            &FxHashMap::default()
+            &FxHashMap::default(),
+            &empty_spatial()
         ),
         Err(SurfaceDagError::MissingMaterializationSnapshot(
             SurfaceDagNodeKind::Transform(parent)
         ))
     );
+}
+
+fn empty_spatial() -> super::super::ArtifactSpatialProjection {
+    super::super::ArtifactSpatialProjection::try_new(&PaintArtifact::default())
+        .expect("empty artifact projects")
 }

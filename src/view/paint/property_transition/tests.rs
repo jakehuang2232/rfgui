@@ -175,8 +175,6 @@ fn complete_artifact() -> (
                 local_origin: Vec3::ZERO,
                 local_generation: 1,
                 generation: 1,
-                owner_viewport_position: Vec2::ZERO,
-                owner_viewport_transform: Mat4::IDENTITY,
             },
             TransformNodeSnapshot {
                 id: root_transform,
@@ -186,8 +184,6 @@ fn complete_artifact() -> (
                 local_origin: Vec3::ZERO,
                 local_generation: 1,
                 generation: 1,
-                owner_viewport_position: Vec2::ZERO,
-                owner_viewport_transform: Mat4::IDENTITY,
             },
         ],
         layout_position_nodes: vec![

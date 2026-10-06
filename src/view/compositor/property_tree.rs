@@ -205,10 +205,10 @@ pub(crate) struct TransformNode {
     pub(crate) derived_projection: Option<DerivedSpatialProjection>,
 }
 
-/// Arena-independent, owning copy of one transform-tree node.
-/// `local_matrix` plus `local_origin` is the position-independent authored
-/// source; `owner_viewport_transform` is derived from the complete spatial
-/// snapshot graph and is composite-side data only.
+/// Arena-independent, owning copy of one transform-tree node: only the
+/// position-independent authored source. The owner's viewport transform is
+/// derived from the spatial snapshot graph by the compiler, so moving an
+/// ancestor never changes this snapshot.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TransformNodeSnapshot {
     pub(crate) id: TransformNodeId,
@@ -218,11 +218,6 @@ pub(crate) struct TransformNodeSnapshot {
     pub(crate) local_origin: glam::Vec3,
     pub(crate) local_generation: u64,
     pub(crate) generation: u64,
-    /// Owner position and authored transform derived from local transform,
-    /// layout-position, visual-offset, and scroll snapshots. Consumers use
-    /// these fields rather than querying a component or arena.
-    pub(crate) owner_viewport_position: Vec2,
-    pub(crate) owner_viewport_transform: Mat4,
 }
 
 impl PartialEq for TransformNodeSnapshot {
@@ -236,16 +231,6 @@ impl PartialEq for TransformNodeSnapshot {
                 == other.local_origin.to_array().map(f32::to_bits)
             && self.local_generation == other.local_generation
             && self.generation == other.generation
-            && self.owner_viewport_position.to_array().map(f32::to_bits)
-                == other.owner_viewport_position.to_array().map(f32::to_bits)
-            && self
-                .owner_viewport_transform
-                .to_cols_array()
-                .map(f32::to_bits)
-                == other
-                    .owner_viewport_transform
-                    .to_cols_array()
-                    .map(f32::to_bits)
     }
 }
 
@@ -269,21 +254,6 @@ impl TransformNodeSnapshot {
             return Err(SpatialProjectionError::InvalidSnapshot(self.owner));
         }
         Ok(())
-    }
-
-    pub(crate) fn has_canonical_derived_projection(self) -> bool {
-        let origin = glam::Vec3::new(
-            self.owner_viewport_position.x + self.local_origin.x,
-            self.owner_viewport_position.y + self.local_origin.y,
-            self.local_origin.z,
-        );
-        crate::view::base_component::compose_transform_about_origin(self.local_matrix, origin)
-            .to_cols_array()
-            .map(f32::to_bits)
-            == self
-                .owner_viewport_transform
-                .to_cols_array()
-                .map(f32::to_bits)
     }
 }
 
@@ -1165,8 +1135,9 @@ impl PropertyTrees {
         id: TransformNodeId,
     ) -> Option<TransformNodeSnapshot> {
         let node = self.transforms.get(&id)?;
-        let derived = node.derived_projection?;
-        let mut snapshot = TransformNodeSnapshot {
+        // An underivable projection keeps the node closed to planners.
+        node.derived_projection?;
+        Some(TransformNodeSnapshot {
             id,
             owner: node.owner,
             parent: node.parent,
@@ -1174,17 +1145,7 @@ impl PropertyTrees {
             local_origin: node.local_origin,
             local_generation: node.local_generation,
             generation: node.generation,
-            owner_viewport_position: derived.owner_viewport_position,
-            owner_viewport_transform: derived.owner_viewport_transform,
-        };
-        if !snapshot.has_canonical_derived_projection() {
-            // Preserve owner attribution for fail-closed planners while
-            // making the already-required nonzero generation proof fail.
-            // Returning `None` would make a corrupted existing node
-            // indistinguishable from a missing property-tree node.
-            snapshot.generation = 0;
-        }
-        Some(snapshot)
+        })
     }
 
     pub(crate) fn layout_position_snapshot_for(
@@ -1436,10 +1397,6 @@ impl PropertyTrees {
                 local_origin: node.local_origin,
                 local_generation: node.local_generation,
                 generation: node.generation,
-                // `SpatialProjectionGraph` reads only the canonical source
-                // fields above. These placeholders cannot become inputs.
-                owner_viewport_position: Vec2::ZERO,
-                owner_viewport_transform: Mat4::IDENTITY,
             })
             .collect::<Vec<_>>();
         let mut required_positions = FxHashSet::default();

@@ -165,7 +165,8 @@ fn planning_corpus_preserves_command_order_and_exact_once_ownership() {
                 for node in plan.nodes() {
                     if let crate::view::paint::compiler::ArtifactSurfaceCompositeGeometryStamp::Transform { receiver_transform_bits, .. } = node.geometry() {
                         let snapshot = artifact.transform_nodes.iter().find(|s| s.owner == node.identity().boundary_root).unwrap();
-                        assert_eq!(receiver_transform_bits, snapshot.owner_viewport_transform.to_cols_array().map(f32::to_bits), "an owner-only projection must not cancel the receiver's separately applied transform");
+                        let projection = crate::view::paint::ArtifactSpatialProjection::try_new(&artifact).unwrap();
+                        assert_eq!(receiver_transform_bits, projection.owner_viewport_transform(snapshot.id).unwrap().to_cols_array().map(f32::to_bits), "an owner-only projection must not cancel the receiver's separately applied transform");
                     }
                 }
                 if matches!(

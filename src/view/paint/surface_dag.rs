@@ -237,6 +237,7 @@ fn boundary_transfer(
     transforms: &FxHashMap<TransformNodeId, TransformNodeSnapshot>,
     effects: &FxHashMap<EffectNodeId, EffectNodeSnapshot>,
     scrolls: &FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
+    spatial: &super::ArtifactSpatialProjection,
 ) -> Result<Result<SurfaceBoundaryTransfer, SurfaceMaterializationOutcome>, SurfaceDagError> {
     // Structural failure aborts DAG construction; the inner result describes
     // only a valid boundary's materialization obligations. Resolve required
@@ -250,6 +251,11 @@ fn boundary_transfer(
                 transforms
                     .get(&parent)
                     .ok_or(missing(SurfaceDagNodeKind::Transform(parent)))?;
+            }
+            for id in std::iter::once(id).chain(snapshot.parent) {
+                spatial
+                    .owner_viewport_transform(id)
+                    .ok_or(missing(SurfaceDagNodeKind::Transform(id)))?;
             }
         }
         SurfaceDagNodeKind::Effect(id) => {
@@ -270,16 +276,16 @@ fn boundary_transfer(
             SurfaceDagNodeKind::Transform(id) => {
                 let snapshot = transforms.get(&id).expect("snapshot checked above");
                 finite_translation(snapshot.local_matrix).ok_or(RetainedNonTranslation)?;
-                let current = finite_translation(snapshot.owner_viewport_transform)
-                    .ok_or(RetainedNonTranslation)?;
+                let derived = |id| {
+                    spatial
+                        .owner_viewport_transform(id)
+                        .expect("derived transform checked above")
+                };
+                let current = finite_translation(derived(id)).ok_or(RetainedNonTranslation)?;
                 let parent = match snapshot.parent {
-                    Some(parent) => finite_translation(
-                        transforms
-                            .get(&parent)
-                            .expect("parent snapshot checked above")
-                            .owner_viewport_transform,
-                    )
-                    .ok_or(RetainedNonTranslation)?,
+                    Some(parent) => {
+                        finite_translation(derived(parent)).ok_or(RetainedNonTranslation)?
+                    }
                     None => [0.0; 2],
                 };
                 let delta = [current[0] - parent[0], current[1] - parent[1]];
@@ -707,6 +713,7 @@ impl SurfaceDag {
     pub(super) fn refresh_boundary_transfers(
         &self,
         artifact: &PaintArtifact,
+        spatial: &super::ArtifactSpatialProjection,
     ) -> Result<Self, SurfaceDagError> {
         let transforms = artifact
             .transform_nodes
@@ -724,6 +731,7 @@ impl SurfaceDag {
                 &transforms,
                 &effects,
                 &scrolls,
+                spatial,
             )?;
         }
         Ok(Self {
@@ -1756,8 +1764,9 @@ impl<'a> ArtifactSurfaceInputs<'a> {
     pub(super) fn reconstruct(
         &self,
         events: &[ClassifiedTransitionEvent],
+        spatial: &super::ArtifactSpatialProjection,
     ) -> Result<SurfaceDag, SurfaceDagError> {
-        reconstruct_surface_from_inputs(self, events)
+        reconstruct_surface_from_inputs(self, events, spatial)
     }
     pub(super) fn coverage(
         &self,
@@ -2336,6 +2345,7 @@ fn transition_states(
 fn reconstruct_surface_from_inputs(
     inputs: &ArtifactSurfaceInputs<'_>,
     events: &[ClassifiedTransitionEvent],
+    spatial: &super::ArtifactSpatialProjection,
 ) -> Result<SurfaceDag, SurfaceDagError> {
     let artifact = inputs.artifact;
     let snapshots = &inputs.snapshots;
@@ -2458,6 +2468,7 @@ fn reconstruct_surface_from_inputs(
                 &transforms,
                 &effects,
                 &scrolls,
+                spatial,
             )?,
         });
         previous_id_by_owner.insert(owner, id);
