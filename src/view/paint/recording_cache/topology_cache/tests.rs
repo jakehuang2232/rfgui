@@ -154,3 +154,50 @@ fn boundary_census_does_not_hide_opaque_deferred_observations() {
     cache.finish(false);
     assert!(cache.boundary_nodes(&arena, &[root]).is_none());
 }
+
+/// A translated subtree is mutated without changing topology: its census
+/// still replays, while a changed edge on any mutated owner rejects it.
+#[test]
+fn mutated_owners_with_unchanged_topology_keep_the_census() {
+    let mut arena = NodeArena::new();
+    let root = arena.insert(Node::new(Box::new(Element::new_with_id(
+        91, 0., 0., 10., 10.,
+    ))));
+    let child = arena.insert(Node::new(Box::new(Element::new_with_id(
+        92, 0., 0., 10., 10.,
+    ))));
+    arena.set_children(root, vec![child]);
+    arena.set_parent(child, Some(root));
+    let snapshot = Arc::new(TopologySnapshot {
+        owner_parents: Arc::new([(root, None), (child, Some(root))].into_iter().collect()),
+        covered: Arc::new([root, child].into_iter().collect()),
+        deferred_roots: vec![],
+        deferred: FxHashSet::default(),
+    });
+    let mut cache = TopologyCache::default();
+    cache.remember(
+        &arena,
+        &[root],
+        snapshot.clone(),
+        &[(91, root), (92, child)].into_iter().collect(),
+        &[(root, vec![child]), (child, vec![])].into_iter().collect(),
+    );
+    for key in [root, child] {
+        arena
+            .get_mut(key)
+            .unwrap()
+            .element
+            .translate_in_place(4.0, 2.0);
+    }
+    assert!(Arc::ptr_eq(
+        &snapshot,
+        &cache
+            .replay(&arena, &[root])
+            .expect("geometry-only mutation")
+    ));
+    arena.set_parent(child, None);
+    assert!(
+        cache.replay(&arena, &[root]).is_none(),
+        "changed parent edge"
+    );
+}

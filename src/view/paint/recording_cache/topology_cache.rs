@@ -38,6 +38,26 @@ impl Observation {
         // census, even if the arena's mutation history remained unchanged.
         (value.children == element.children()).then_some(value)
     }
+
+    /// `read(arena, key).as_ref() == Some(self)`, without copying the child
+    /// lists. Replay rechecks every owner mutated since the census, which is
+    /// a whole subtree when it is merely translated.
+    fn still_observed(&self, arena: &NodeArena, key: NodeKey) -> bool {
+        let Some(node) = arena.get(key) else {
+            return false;
+        };
+        let element = node.element.as_ref();
+        let children = element.children();
+        let host = element.as_any();
+        let native = (host.is::<Element>() || host.is::<Text>()) && node.children() == children;
+        self.stable_id == element.stable_id()
+            && self.native == native
+            && self.arena_children == node.children()
+            && self.parent == node.parent()
+            && self.children == children
+            && self.deferred == element.is_deferred_to_root_viewport_render()
+            && element.children() == children
+    }
 }
 struct Entry {
     arena: Arc<()>,
@@ -69,10 +89,10 @@ impl TopologyCache {
             if !seen.insert(key) {
                 continue;
             }
-            if let Some(previous) = entry.observations.get(&key) {
-                if Observation::read(arena, key).as_ref() != Some(previous) {
-                    return None;
-                }
+            if let Some(previous) = entry.observations.get(&key)
+                && !previous.still_observed(arena, key)
+            {
+                return None;
             }
         }
         entry.revision = arena.mutation_clock();
