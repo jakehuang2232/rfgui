@@ -744,6 +744,7 @@ impl Element {
             paint_recording_inputs: RefCell::default(),
             inline_witness_inputs: RefCell::default(),
             child_mask_recording_inputs: RefCell::default(),
+            child_clip_memo: RefCell::default(),
             border_colors: EdgeColors {
                 left: Box::new(Color::hex("#000000")),
                 right: Box::new(Color::hex("#000000")),

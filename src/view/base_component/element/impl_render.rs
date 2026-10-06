@@ -4,6 +4,14 @@ pub(super) struct SelfDecorationPaintOps {
     border: Option<crate::view::paint::DrawRectOp>,
 }
 
+/// Per-child "renders outside the inner clip" flags, in child order, and
+/// whether the remaining children need the inner clip.
+#[derive(Clone)]
+pub(super) struct ChildClipClassification {
+    outside_inner_clip: std::sync::Arc<[bool]>,
+    clip_children: bool,
+}
+
 #[derive(Clone, Copy)]
 struct SelfPaintRecordingGeometry {
     bounds: crate::view::base_component::Rect,
@@ -269,10 +277,25 @@ impl Element {
     }
 
     fn requires_child_mask_surface(&self, arena: &crate::view::node_arena::NodeArena) -> bool {
-        if self.children.is_empty() {
-            return false;
+        !self.children.is_empty() && self.child_clip_classification(arena).clip_children
+    }
+
+    /// Which children render outside the inner clip, and whether the rest
+    /// must be clipped. A coverage walk asks from several hooks per owner and
+    /// reads the arena immutably, so one walk computes it once per owner.
+    pub(super) fn child_clip_classification(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> ChildClipClassification {
+        let memo_key =
+            crate::view::paint::coverage_walk::active().map(|walk| (walk, arena.mutation_clock()));
+        if let Some(key) = memo_key
+            && let Some((cached_key, cached)) = self.child_clip_memo.borrow().as_ref()
+            && *cached_key == key
+        {
+            return cached.clone();
         }
-        let overflow_child_indices: Vec<bool> = (0..self.children.len())
+        let outside_inner_clip: std::sync::Arc<[bool]> = (0..self.children.len())
             .map(|idx| self.child_renders_outside_inner_clip(idx, arena))
             .collect();
         let outer_radii = normalize_corner_radii(
@@ -281,7 +304,14 @@ impl Element {
             self.layout_state.layout_size.height.max(0.0),
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
-        self.should_clip_children(&overflow_child_indices, inner_radii, arena)
+        let classification = ChildClipClassification {
+            clip_children: self.should_clip_children(&outside_inner_clip, inner_radii, arena),
+            outside_inner_clip,
+        };
+        if let Some(key) = memo_key {
+            *self.child_clip_memo.borrow_mut() = Some((key, classification.clone()));
+        }
+        classification
     }
 
     pub(super) fn prepared_retained_child_mask_plan(
@@ -331,23 +361,25 @@ impl Element {
         // Capability above and ordered child classification below are live
         // observations, including changes without dirty notification. Only the
         // immutable mask payload and partition storage survive between calls.
-        if let Some(previous) = self.child_mask_recording_inputs.borrow().as_ref() {
-            if previous.matches_live_inputs(
+        let outside_inner_clip = self.child_clip_classification(arena).outside_inner_clip;
+        if let Some(previous) = self.child_mask_recording_inputs.borrow().as_ref()
+            && previous.matches_live_inputs(
                 bounds,
                 logical_scissor,
                 &op,
-                self.children.iter().enumerate().map(|(index, &child)| {
-                    (child, self.child_renders_outside_inner_clip(index, arena))
-                }),
-            ) {
-                crate::view::paint::work_profile::count("child_mask_input_replays", 1);
-                return Some(previous.clone());
-            }
+                self.children
+                    .iter()
+                    .copied()
+                    .zip(outside_inner_clip.iter().copied()),
+            )
+        {
+            crate::view::paint::work_profile::count("child_mask_input_replays", 1);
+            return Some(previous.clone());
         }
         let mut in_scope_children = Vec::new();
         let mut overflow_children = Vec::new();
-        for (index, &child) in self.children.iter().enumerate() {
-            if self.child_renders_outside_inner_clip(index, arena) {
+        for (&child, &outside) in self.children.iter().zip(outside_inner_clip.iter()) {
+            if outside {
                 overflow_children.push(child);
             } else {
                 in_scope_children.push(child);
@@ -1153,16 +1185,7 @@ impl Element {
         // installed in `layout_state`. Retained recording reads exactly that
         // geometry; clip-dependent cases remain guarded below.
         if !self.children.is_empty() {
-            let overflow_child_indices = (0..self.children.len())
-                .map(|index| self.child_renders_outside_inner_clip(index, arena))
-                .collect::<Vec<_>>();
-            let outer_radii = normalize_corner_radii(
-                self.border_radii,
-                self.layout_state.layout_size.width.max(0.0),
-                self.layout_state.layout_size.height.max(0.0),
-            );
-            let inner_radii = self.inner_clip_radii(outer_radii);
-            if self.should_clip_children(&overflow_child_indices, inner_radii, arena)
+            if self.child_clip_classification(arena).clip_children
                 && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
                 && !recording_context.authorizes_generic_scroll_host_root(self.stable_id())
                 && !recording_context.authorizes_descendant_contents_clip(self.stable_id())

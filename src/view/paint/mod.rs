@@ -5,6 +5,7 @@ mod artifact;
 mod compiler;
 mod composite_edge;
 mod coverage_manifest;
+pub(crate) mod coverage_walk;
 
 mod frame_recorder;
 

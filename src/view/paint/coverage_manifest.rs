@@ -659,6 +659,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
     native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
     mut recording_cache: Option<&mut super::RecordingCache>,
 ) -> PaintCoverageManifest {
+    let _walk = super::coverage_walk::begin();
     if let Some(cache) = recording_cache.as_deref_mut() {
         cache.subtrees.bind(arena, roots);
     }

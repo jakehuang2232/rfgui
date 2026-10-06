@@ -5767,6 +5767,8 @@ pub struct Element {
     paint_recording_inputs: RefCell<Option<paint_recording_inputs::NativeSelfPaintInputs>>,
     inline_witness_inputs: RefCell<Option<inline_witness_inputs::NativeInlineWitnessInputs>>,
     child_mask_recording_inputs: RefCell<Option<crate::view::paint::RetainedChildMaskPlan>>,
+    /// `child_clip_classification` for one coverage walk and arena clock.
+    child_clip_memo: RefCell<Option<((u64, u64), ChildClipClassification)>>,
     border_colors: EdgeColors,
     border_widths: EdgeInsets,
     border_radii: CornerRadii,
