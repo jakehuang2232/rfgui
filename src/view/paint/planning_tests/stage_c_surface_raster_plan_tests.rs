@@ -13,8 +13,8 @@ use crate::view::render_pass::render_target::GraphicsPassScissor;
 
 pub(super) fn scroll_surface_artifact() -> PaintArtifact {
     use crate::view::base_component::{
-        ScrollAxisSnapshot, ScrollContentsClipWitness, ScrollbarInteractionWitness,
-        ScrollbarOverlayWitness, ScrollbarPaintStateWitness,
+        ScrollAxisSnapshot, ScrollbarInteractionWitness, ScrollbarOverlayWitness,
+        ScrollbarPaintStateWitness,
     };
     use crate::view::compositor::property_tree::{
         ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, ScrollNodeId, ScrollNodeSnapshot,
@@ -92,7 +92,7 @@ pub(super) fn scroll_surface_artifact() -> PaintArtifact {
         id: contents_clip,
         owner: root,
         parent: None,
-        logical_scissor: [0, 0, 100, 100],
+        geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 100, 100]),
         behavior: ClipBehavior::Intersect,
         generation: 7,
     });
@@ -132,7 +132,6 @@ pub(super) fn scroll_surface_artifact() -> PaintArtifact {
             sampled_alpha: 0.0,
             shadow_blur_radius: 0.0,
         },
-        contents_clip: ScrollContentsClipWitness::ExactRect([0, 0, 100, 100]),
         generation: 9,
     });
     let root_endpoints = artifact
@@ -431,7 +430,8 @@ fn empty_self_replace_suffix_keeps_the_shadow_prefix_out_of_opaque_order() {
         .iter_mut()
         .find(|clip| clip.behavior == ClipBehavior::Replace)
         .expect("self Replace clip");
-    self_clip.logical_scissor = [0, 0, 0, 0];
+    self_clip.geometry =
+        crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 0, 0]);
     let plan = prepare_artifact_surface_raster_plan(
         artifact,
         raster_context_with_incoming_scissor([4, 6, 24, 18]),

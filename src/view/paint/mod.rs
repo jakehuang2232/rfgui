@@ -70,7 +70,8 @@ pub(crate) use compiler::{
 };
 #[cfg(test)]
 pub(crate) use compiler::{compile_artifact, take_artifact_compile_count, try_compile_artifact};
-pub(crate) use composite_edge::{PaintCompositeEdge, intersect_logical_scissors};
+#[cfg(test)]
+pub(crate) use composite_edge::PaintCompositeEdge;
 #[allow(unused_imports)]
 pub(crate) use coverage_manifest::{
     CoverageOrder, CoverageRecordingMode, PaintCoverageItem, PaintCoverageManifest,

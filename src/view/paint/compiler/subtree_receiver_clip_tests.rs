@@ -21,7 +21,9 @@ fn receiver_clip_keeps_owner_scope_without_reintroducing_consumed_ancestors() {
                 id,
                 owner: id.owner,
                 parent,
-                logical_scissor: [0, 0, 20, 16],
+                geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                    0, 0, 20, 16,
+                ]),
                 behavior: ClipBehavior::Replace,
                 generation: 1,
             },

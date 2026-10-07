@@ -6,9 +6,9 @@ use std::collections::hash_map::Entry;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::view::compositor::property_tree::{
-    EffectNodeId, LayoutPositionNodeId, LayoutPositionNodeSnapshot, ScrollNodeId,
-    ScrollNodeSnapshot, SpatialPositionReference, TransformNodeId, TransformNodeSnapshot,
-    VisualOffsetNodeId, VisualOffsetNodeSnapshot,
+    ClipNodeSnapshot, EffectNodeId, LayoutPositionNodeId, LayoutPositionNodeSnapshot,
+    PropertyTreeState, ScrollNodeId, ScrollNodeSnapshot, SpatialPositionReference, TransformNodeId,
+    TransformNodeSnapshot, VisualOffsetNodeId, VisualOffsetNodeSnapshot,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
@@ -212,7 +212,7 @@ pub(super) fn populate_referenced_property_snapshots(
     artifact.visual_offset_nodes.clear();
     artifact.scroll_nodes.clear();
 
-    let referenced_states = artifact
+    let mut referenced_states = artifact
         .chunks
         .iter()
         .map(|chunk| (chunk.owner, chunk.properties))
@@ -223,6 +223,22 @@ pub(super) fn populate_referenced_property_snapshots(
             ]
         }))
         .collect::<Vec<_>>();
+    // The compiler places an owner-local clip at its owner's layout frame, so
+    // that owner's spatial chains belong to the closure even when no state
+    // references them. Clips found while walking are appended the same way.
+    let clip_frame = |clip: &ClipNodeSnapshot| {
+        clip.geometry.is_owner_local().then(|| {
+            (
+                clip.owner,
+                PropertyTreeState {
+                    layout_position: Some(LayoutPositionNodeId(clip.owner)),
+                    visual_offset: Some(VisualOffsetNodeId(clip.owner)),
+                    ..PropertyTreeState::default()
+                },
+            )
+        })
+    };
+    referenced_states.extend(artifact.clip_nodes.iter().filter_map(clip_frame));
 
     let mut clips = FxHashMap::default();
     for snapshot in artifact.clip_nodes.iter().copied() {
@@ -256,7 +272,9 @@ pub(super) fn populate_referenced_property_snapshots(
     let mut visual_scratch = snapshot_closure::ChainScratch::default();
     let mut scroll_scratch = snapshot_closure::ChainScratch::default();
     let mut anchor_visual_roots = Vec::new();
-    for (owner, state) in referenced_states {
+    let mut next_state = 0;
+    while let Some(&(owner, state)) = referenced_states.get(next_state) {
+        next_state += 1;
         let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(owner)];
         if checked_clip_leaves.insert(state.clip) {
             for snapshot in property_trees
@@ -264,7 +282,10 @@ pub(super) fn populate_referenced_property_snapshots(
                 .ok_or_else(invalid)?
             {
                 match merge_snapshot(&mut clips, snapshot.id, snapshot) {
-                    SnapshotMerge::Inserted => artifact.clip_nodes.push(snapshot),
+                    SnapshotMerge::Inserted => {
+                        artifact.clip_nodes.push(snapshot);
+                        referenced_states.extend(clip_frame(&snapshot));
+                    }
                     SnapshotMerge::Identical => {}
                     SnapshotMerge::Conflict => return Err(invalid()),
                 }

@@ -599,7 +599,7 @@ impl ArtifactSurfaceCoverageForest {
         let refresh = |local: &mut Vec<ClipNodeSnapshot>| -> Option<()> {
             for clip in local {
                 let now = current.get(&clip.id)?;
-                clip.logical_scissor = now.logical_scissor;
+                clip.geometry = now.geometry;
                 clip.generation = now.generation;
             }
             Some(())

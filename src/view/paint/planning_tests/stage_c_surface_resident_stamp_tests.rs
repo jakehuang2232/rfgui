@@ -101,7 +101,7 @@ pub(super) fn scroll_artifact_with_a_local_clip() -> PaintArtifact {
         id: local_clip,
         owner: chunk_owner,
         parent: Some(receiver_clip),
-        logical_scissor: [4, 6, 80, 70],
+        geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([4, 6, 80, 70]),
         behavior: ClipBehavior::Replace,
         generation: 29,
     });

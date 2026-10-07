@@ -116,5 +116,6 @@ pub(super) fn validate_artifact_store_with_policy(
     artifact: &PaintArtifact,
     policy: ArtifactStoreValidationPolicy,
 ) -> Option<ValidatedArtifact> {
-    validate_artifact_store_with_cache(artifact, policy, None)
+    let artifact = super::direct_command_test_support::with_placed_clips(artifact)?;
+    validate_artifact_store_with_cache(&artifact, policy, None)
 }

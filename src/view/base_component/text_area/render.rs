@@ -3052,74 +3052,6 @@ impl TextArea {
         }))
     }
 
-    pub(crate) fn interactive_caret_composite_edge(
-        &self,
-        owner: NodeKey,
-        arena: &NodeArena,
-        admission_parent_paint_offset: [f32; 2],
-        live_parent_paint_offset: [f32; 2],
-        text_area_clip: crate::view::compositor::property_tree::ClipNodeSnapshot,
-        outer_clip: crate::view::compositor::property_tree::ClipNodeSnapshot,
-        properties: crate::view::compositor::property_tree::PropertyTreeState,
-        admitted_source: crate::view::paint::PaintTextContentSource,
-        admitted_caret_oracle_bounds_bits: Option<[u32; 4]>,
-    ) -> Option<Option<crate::view::paint::PaintCompositeEdge>> {
-        if self
-            .exact_retained_property_scroll_interactive_subtree(
-                owner,
-                arena,
-                admission_parent_paint_offset,
-            )
-            .and_then(|grammar| grammar.artifact_content_source())
-            != Some(admitted_source)
-        {
-            return None;
-        }
-        let effective_offset = self.effective_paint_offset(arena, live_parent_paint_offset);
-        let caret = self.caret_draw_rect_payload(arena, effective_offset).ok()?;
-        let oracle_bounds_bits = caret.as_ref().map(|caret| {
-            [
-                caret.bounds.x,
-                caret.bounds.y,
-                caret.bounds.width,
-                caret.bounds.height,
-            ]
-            .map(f32::to_bits)
-        });
-        if oracle_bounds_bits != admitted_caret_oracle_bounds_bits {
-            return None;
-        }
-        let Some(caret) = caret else {
-            return Some(None);
-        };
-        if !live_caret_bounds_intersect_clip_chain(
-            &caret.bounds,
-            text_area_clip.logical_scissor,
-            outer_clip.logical_scissor,
-        ) {
-            return Some(None);
-        }
-        let logical_scissor = crate::view::paint::intersect_logical_scissors(
-            text_area_clip.logical_scissor,
-            outer_clip.logical_scissor,
-        )?;
-        crate::view::paint::PaintCompositeEdge::new_draw_rect(
-            crate::view::paint::PaintChunkId {
-                owner,
-                scope: crate::view::paint::PaintPropertyScope::Contents,
-                phase: crate::view::paint::PaintNodePhase::AfterChildren,
-                slot: 1,
-                role: crate::view::paint::PaintChunkRole::Caret,
-            },
-            owner,
-            caret.bounds,
-            properties,
-            Some(logical_scissor),
-            caret.op,
-        )
-        .map(Some)
-    }
-
     /// Recomputes the TextArea contents clip in the detached scroll-content
     /// coordinate space.  Recomputing from float layout geometry avoids trying
     /// to translate an already quantized live scissor for fractional offsets.
@@ -3153,50 +3085,31 @@ impl TextArea {
         };
         rect_to_logical_scissor_rect(rect)
     }
-}
 
-fn live_caret_bounds_intersect_clip_chain(
-    bounds: &crate::view::base_component::Rect,
-    text_area_scissor: [u32; 4],
-    outer_scissor: [u32; 4],
-) -> bool {
-    let left = text_area_scissor[0].max(outer_scissor[0]) as f32;
-    let top = text_area_scissor[1].max(outer_scissor[1]) as f32;
-    let (Some(text_right), Some(outer_right), Some(text_bottom), Some(outer_bottom)) = (
-        text_area_scissor[0].checked_add(text_area_scissor[2]),
-        outer_scissor[0].checked_add(outer_scissor[2]),
-        text_area_scissor[1].checked_add(text_area_scissor[3]),
-        outer_scissor[1].checked_add(outer_scissor[3]),
-    ) else {
-        return false;
-    };
-    let right = text_right.min(outer_right) as f32;
-    let bottom = text_bottom.min(outer_bottom) as f32;
-    bounds.x < right
-        && bounds.x + bounds.width > left
-        && bounds.y < bottom
-        && bounds.y + bounds.height > top
+    /// The viewport clip in this TextArea's own layout frame; placing it at
+    /// the layout origin reproduces `viewport_logical_scissor_rect`.
+    pub(super) fn local_viewport_clip_geometry(
+        &self,
+    ) -> crate::view::compositor::property_tree::ClipGeometry {
+        crate::view::compositor::property_tree::ClipGeometry::OwnerLocal(
+            crate::view::base_component::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: self.viewport_size.width,
+                height: self.viewport_size.height,
+            },
+        )
+    }
 }
 
 fn rect_to_logical_scissor_rect(rect: Rect) -> [u32; 4] {
-    let left = rect.x.floor().max(0.0) as i64;
-    let top = rect.y.floor().max(0.0) as i64;
-    let right = (rect.x + rect.width).ceil().max(0.0) as i64;
-    let bottom = (rect.y + rect.height).ceil().max(0.0) as i64;
-    [
-        u32::try_from(left).unwrap_or(u32::MAX),
-        u32::try_from(top).unwrap_or(u32::MAX),
-        if rect.width <= 0.0 {
-            0
-        } else {
-            u32::try_from(right.saturating_sub(left).max(0)).unwrap_or(u32::MAX)
-        },
-        if rect.height <= 0.0 {
-            0
-        } else {
-            u32::try_from(bottom.saturating_sub(top).max(0)).unwrap_or(u32::MAX)
-        },
-    ]
+    crate::view::base_component::logical_scissor_for_clip_rect(crate::view::base_component::Rect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    })
+    .unwrap_or_default()
 }
 
 /// DFS the projection subtree rooted at `root_key` for the first

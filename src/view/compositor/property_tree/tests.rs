@@ -157,8 +157,10 @@ impl crate::view::base_component::ElementTrait for ContentsClipHost {
         self
     }
 
-    fn contents_logical_scissor(&self) -> Option<[u32; 4]> {
-        self.scissor
+    fn contents_clip_geometry(
+        &self,
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
+        self.scissor.map(ClipGeometry::Viewport)
     }
 
     fn retained_paint_properties(&self) -> crate::view::base_component::RetainedPaintProperties {
@@ -534,3 +536,45 @@ mod scroll_geometry_tests;
 
 mod incremental_sync_tests;
 mod incremental_prune_tests;
+
+impl ClipGeometry {
+    /// The same clip moved by whole logical pixels in its own frame.
+    pub(crate) fn translated_for_test(self, dx: u32, dy: u32) -> Self {
+        match self {
+            Self::Viewport([x, y, width, height]) => {
+                Self::Viewport([x + dx, y + dy, width, height])
+            }
+            Self::OwnerLocal(rect) => Self::OwnerLocal(Rect {
+                x: rect.x + dx as f32,
+                y: rect.y + dy as f32,
+                ..rect
+            }),
+        }
+    }
+
+    /// The same clip with no width.
+    pub(crate) fn emptied_for_test(self) -> Self {
+        match self {
+            Self::Viewport([x, y, _, height]) => Self::Viewport([x, y, 0, height]),
+            Self::OwnerLocal(rect) => Self::OwnerLocal(Rect { width: 0.0, ..rect }),
+        }
+    }
+
+    pub(crate) fn is_empty_for_test(self) -> bool {
+        match self {
+            Self::Viewport([_, _, width, height]) => width == 0 || height == 0,
+            Self::OwnerLocal(rect) => rect.width <= 0.0 || rect.height <= 0.0,
+        }
+    }
+}
+
+/// Viewport origin of `key`'s layout frame, from live layout.
+fn layout_origin(arena: &NodeArena, key: NodeKey) -> Vec2 {
+    let snapshot = arena.get(key).unwrap().element.box_model_snapshot();
+    Vec2::new(snapshot.x, snapshot.y)
+}
+
+/// `clip` placed at its owner's live layout origin.
+fn placed_clip(arena: &NodeArena, clip: ClipNode) -> Option<ClipGeometry> {
+    clip.geometry.placed_at(layout_origin(arena, clip.owner))
+}

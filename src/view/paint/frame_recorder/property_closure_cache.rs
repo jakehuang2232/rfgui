@@ -82,12 +82,18 @@ impl PropertyClosureCache {
             return None;
         }
         let writes = trees.property_writes_since(&self.stamp);
+        // An owner-local clip adds its owner's spatial chains to the closure.
         let clips = refresh(
             &self.clips,
             writes.as_deref(),
             |n| n.owner,
             |n| trees.clip_node_snapshot_for(n.id),
-            |a, b| a.id == b.id && a.owner == b.owner && a.parent == b.parent,
+            |a, b| {
+                a.id == b.id
+                    && a.owner == b.owner
+                    && a.parent == b.parent
+                    && a.geometry.is_owner_local() == b.geometry.is_owner_local()
+            },
         )?;
         let effects = refresh(
             &self.effects,

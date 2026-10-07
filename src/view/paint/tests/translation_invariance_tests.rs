@@ -252,7 +252,14 @@ const MOVES: [([f32; 2], [f32; 2]); 2] =
     [([20.0, 10.0], [27.0, 13.0]), ([20.0, 10.0], [22.5, 10.25])];
 
 /// Input families that are already relative and must stay invariant.
-const INVARIANT: [&str; 4] = ["layout_position", "visual_offset", "transform", "effect"];
+const INVARIANT: [&str; 6] = [
+    "layout_position",
+    "visual_offset",
+    "transform",
+    "effect",
+    "clip",
+    "scroll",
+];
 
 #[test]
 fn translation_keeps_relative_property_snapshots() {
@@ -413,4 +420,39 @@ fn spatial_graph_reproduces_every_layout_position() {
     );
     let (trees, _) = sync_identity(&arena, &[host]);
     assert_layout_positions_reproduced("wrapped inline atomics", &arena, &trees);
+}
+
+/// Placing an owner-local self clip at its owner's derived frame reproduces
+/// the scissor legacy paint applies from the owner's live absolute geometry.
+#[test]
+fn placed_self_clips_reproduce_live_scissors() {
+    use crate::view::compositor::property_tree::ClipNodeRole;
+    let mut checked = 0;
+    for scene in Scene::ALL {
+        for (_, at) in MOVES {
+            let mut moved = hosted(scene);
+            let (_, mut artifact) = moved.place(at);
+            let local = artifact.clip_nodes.clone();
+            crate::view::paint::ArtifactSpatialProjection::try_new(&artifact)
+                .and_then(|spatial| spatial.place_clips(&mut artifact.clip_nodes))
+                .unwrap_or_else(|error| panic!("{scene:?} {at:?}: {error:?}"));
+            for (clip, placed) in local.iter().zip(&artifact.clip_nodes) {
+                if clip.id.role != ClipNodeRole::SelfClip || !clip.geometry.is_owner_local() {
+                    continue;
+                }
+                let node = moved.arena.get(clip.owner).unwrap();
+                let Some(element) = node.element.as_any().downcast_ref::<Element>() else {
+                    continue;
+                };
+                assert_eq!(
+                    placed.geometry.viewport_scissor(),
+                    element.absolute_clip_scissor_rect(),
+                    "{scene:?} {at:?} {:?}",
+                    clip.owner
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 0, "the corpus carries owner-local self clips");
 }

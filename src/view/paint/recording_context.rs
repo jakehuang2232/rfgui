@@ -21,7 +21,7 @@ pub(crate) struct PaintSubtreeSelfClipWitness {
     owner: NodeKey,
     stable_id: u64,
     state: crate::view::compositor::property_tree::NodePropertyState,
-    scissor: [u32; 4],
+    geometry: crate::view::compositor::property_tree::ClipGeometry,
 }
 
 impl PaintSubtreeSelfClipWitness {
@@ -45,16 +45,14 @@ impl PaintSubtreeSelfClipWitness {
         if stable_id == 0 {
             return None;
         }
-        let scissor = node.element.exact_generic_subtree_self_clip_scissor_rect(
-            owner,
-            arena,
-            is_frame_root,
-        )?;
+        let geometry =
+            node.element
+                .exact_generic_subtree_self_clip_geometry(owner, arena, is_frame_root)?;
         let state = trees.node_state_for(owner)?;
         let id = trees.authoritative_self_clip_for_owner(owner, state.paint)?;
         let paint_chain = trees.clip_snapshot_for(state.paint.clip)?;
         let clip = paint_chain.first()?;
-        if clip.id != id || clip.logical_scissor != scissor {
+        if clip.id != id || clip.geometry != geometry {
             return None;
         }
         let descendants = trees.clip_snapshot_for(state.descendants.clip)?;
@@ -79,7 +77,7 @@ impl PaintSubtreeSelfClipWitness {
             owner,
             stable_id,
             state,
-            scissor,
+            geometry,
         })
     }
 }
@@ -213,11 +211,11 @@ impl PaintRecordingContext {
     pub(crate) fn authorizes_subtree_self_clip_for(
         &self,
         stable_id: u64,
-        scissor: [u32; 4],
+        geometry: crate::view::compositor::property_tree::ClipGeometry,
     ) -> bool {
         self.subtree_self_clip.as_deref().is_some_and(|witness| {
             witness.stable_id == stable_id
-                && witness.scissor == scissor
+                && witness.geometry == geometry
                 && self.authorizes_surface_dag_paint_properties(
                     witness.owner,
                     stable_id,

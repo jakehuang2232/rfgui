@@ -1932,7 +1932,6 @@ fn scroll_geometry_snapshot_matches_scroll_node(
             live.layout_content_bounds_at_zero,
             snapshot.layout_content_bounds_at_zero,
         )
-        && live.contents_clip == snapshot.contents_clip
         && scrollbar_overlays_bitwise_equal(live.scrollbar_overlay, snapshot.scrollbar_overlay)
 }
 

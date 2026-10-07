@@ -1342,31 +1342,29 @@ impl ElementTrait for Svg {
         ))
     }
 
-    fn exact_generic_subtree_self_clip_scissor_rect(
+    #[allow(private_interfaces)]
+    fn exact_generic_subtree_self_clip_geometry(
         &self,
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
         is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         self.element
-            .exact_anchor_parent_subtree_self_clip_scissor_rect(owner, arena, is_frame_root)
+            .exact_anchor_parent_subtree_self_clip_geometry(owner, arena, is_frame_root)
     }
 
-    fn exact_retained_self_clip_scissor_rect(
+    #[allow(private_interfaces)]
+    fn exact_retained_self_clip_geometry(
         &self,
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
         is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         self.element
-            .exact_anchor_parent_leaf_self_clip_scissor_rect(owner, arena, is_frame_root)
+            .exact_anchor_parent_leaf_self_clip_geometry(owner, arena, is_frame_root)
             .or_else(|| {
                 self.element
-                    .exact_deferred_viewport_root_self_clip_scissor_rect(
-                        owner,
-                        arena,
-                        is_frame_root,
-                    )
+                    .exact_deferred_viewport_root_self_clip_geometry(owner, arena, is_frame_root)
             })
     }
 

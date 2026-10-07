@@ -27,7 +27,7 @@ fn generic_subtree_self_clip_records_descendants_only_with_matching_phase_order(
         // The previous leaf/deferred route must not acquire subtree authority.
         assert_eq!(
             node.element
-                .exact_retained_self_clip_scissor_rect(owner, &arena, false),
+                .exact_retained_self_clip_geometry(owner, &arena, false),
             None
         );
         let witness = PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false);
@@ -118,9 +118,9 @@ fn generic_subtree_self_clip_rejects_foreign_state_geometry_and_missing_snapshot
     let (mut trees, _) = sync_identity(&arena, &roots);
     let node = arena.get(owner).unwrap();
     let stable_id = node.element.stable_id();
-    let scissor = node
+    let geometry = node
         .element
-        .exact_generic_subtree_self_clip_scissor_rect(owner, &arena, false)
+        .exact_generic_subtree_self_clip_geometry(owner, &arena, false)
         .unwrap();
     let state = trees.paint_state_for(owner).unwrap();
     let witness =
@@ -137,7 +137,7 @@ fn generic_subtree_self_clip_rejects_foreign_state_geometry_and_missing_snapshot
         subtree_self_clip: Some(std::sync::Arc::new(witness)),
         ..Default::default()
     };
-    assert!(context.authorizes_subtree_self_clip_for(stable_id, scissor));
+    assert!(context.authorizes_subtree_self_clip_for(stable_id, geometry));
     for altered in [
         PaintRecordingContext {
             recording_owner: Some(roots[0]),
@@ -160,14 +160,12 @@ fn generic_subtree_self_clip_rejects_foreign_state_geometry_and_missing_snapshot
             ..context.clone()
         },
     ] {
-        assert!(!altered.authorizes_subtree_self_clip_for(stable_id, scissor));
+        assert!(!altered.authorizes_subtree_self_clip_for(stable_id, geometry));
     }
-    let mut wrong_scissor = scissor;
-    wrong_scissor[2] += 1;
-    assert!(!context.authorizes_subtree_self_clip_for(stable_id, wrong_scissor));
+    let wrong_geometry = geometry.translated_for_test(1, 0);
+    assert!(!context.authorizes_subtree_self_clip_for(stable_id, wrong_geometry));
     let clip = trees.clips.get_mut(&state.clip.unwrap()).unwrap();
-    clip.geometry =
-        crate::view::compositor::property_tree::ClipGeometry::LogicalScissor(wrong_scissor);
+    clip.geometry = wrong_geometry;
     assert!(PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).is_none());
     trees.clips.remove(&state.clip.unwrap());
     assert!(PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).is_none());
@@ -205,7 +203,7 @@ fn generic_subtree_self_clip_requires_descendants_to_preserve_the_exact_scope() 
         ClipNode {
             owner,
             parent: Some(self_clip),
-            geometry: ClipGeometry::LogicalScissor([0, 0, 8, 8]),
+            geometry: ClipGeometry::Viewport([0, 0, 8, 8]),
             behavior: ClipBehavior::Intersect,
             generation: 1,
         },

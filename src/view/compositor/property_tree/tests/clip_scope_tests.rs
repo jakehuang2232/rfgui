@@ -14,10 +14,11 @@ fn anchor_parent_self_clip_is_stable_replace_and_generation_is_monotonic() {
     assert_eq!(first.owner, root);
     assert_eq!(first.parent, None);
     assert_eq!(first.behavior, ClipBehavior::Replace);
-    assert!(matches!(
-        first.geometry,
-        ClipGeometry::LogicalScissor([0, 0, 320, 240])
-    ));
+    assert!(first.geometry.is_owner_local());
+    assert_eq!(
+        placed_clip(&arena, first),
+        Some(ClipGeometry::Viewport([0, 0, 320, 240]))
+    );
     assert!(trees.changes_for(root).contains(PropertyChangeFlags::CLIP));
     assert!(
         trees
@@ -57,7 +58,7 @@ fn nested_anchor_parent_leaf_is_exact_only_after_normal_siblings() {
     let clip = trees.clips[&id];
     assert_eq!(clip.parent, None);
     assert_eq!(clip.behavior, ClipBehavior::Replace);
-    assert!(matches!(clip.geometry, ClipGeometry::LogicalScissor(_)));
+    assert!(clip.geometry.is_owner_local());
     assert_eq!(trees.states[&normal].paint.clip, None);
     assert_eq!(trees.states[&anchor].paint.clip, Some(id));
     assert_eq!(trees.states[&anchor].descendants.clip, Some(id));
@@ -174,10 +175,7 @@ fn contents_clip_applies_only_to_descendants_and_is_inherited() {
     assert_eq!(clip.owner, root);
     assert_eq!(clip.parent, None);
     assert_eq!(clip.behavior, ClipBehavior::Intersect);
-    assert!(matches!(
-        clip.geometry,
-        ClipGeometry::LogicalScissor([10, 20, 80, 40])
-    ));
+    assert_eq!(clip.geometry, ClipGeometry::Viewport([10, 20, 80, 40]));
 }
 
 #[test]
@@ -204,10 +202,10 @@ fn nested_contents_clips_intersect_in_owner_order_and_preserve_explicit_empty() 
     assert_eq!(trees.states[&inner].descendants.clip, Some(inner_id));
     assert_eq!(trees.states[&leaf].paint.clip, Some(inner_id));
     assert_eq!(trees.clips[&inner_id].parent, Some(outer_id));
-    assert!(matches!(
+    assert_eq!(
         trees.clips[&inner_id].geometry,
-        ClipGeometry::LogicalScissor([20, 30, 0, 0])
-    ));
+        ClipGeometry::Viewport([20, 30, 0, 0])
+    );
     assert_eq!(
         trees
             .clip_snapshot_for(Some(inner_id))

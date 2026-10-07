@@ -92,12 +92,11 @@ pub(super) async fn run(gpu: &Gpu) -> Result<usize, String> {
             viewport.set_paint_renderer_mode(mode);
             viewport.install_single_viewport_forest_for_test(arena, vec![root, independent]);
             let mut first_targets = None;
-            // Ordered sequence: an independent-root offset round trip must
-            // reuse every target. Then retain the ancestor-scroll round trip:
-            // it also moves child scrollports and changes their clipped bounds
-            // at y=0, so it does not establish placement-only raster inputs.
-            // Its pixels and resident descriptors remain mandatory; do not
-            // claim that those last two frames prove all-target reuse.
+            // Ordered sequence: an independent-root offset round trip, then an
+            // ancestor-scroll round trip. The latter moves the child scrollports
+            // in viewport space, but their clips are relative to their owners
+            // and every receiver-space composite input is unchanged, so both
+            // round trips reuse every target.
             for (frame, (outer, independent_offset)) in
                 [(8_u32, 16_u32), (8, 24), (8, 16), (16, 16), (8, 16)]
                     .into_iter()
@@ -151,40 +150,16 @@ pub(super) async fn run(gpu: &Gpu) -> Result<usize, String> {
                         4,
                         "two roots plus two nested sibling targets"
                     );
-                    if frame <= 2 {
-                        let action = if frame == 0 {
-                            RetainedSurfaceCompileAction::Reraster
-                        } else {
-                            RetainedSurfaceCompileAction::Reuse
-                        };
-                        assert!(
-                            observed.actions.iter().all(|a| *a == action),
-                            "{label}: {:?}",
-                            observed.actions
-                        );
-                    }
-                    if frame > 2 {
-                        // The receiver's child-composite clip changes; the
-                        // three child/independent rasters themselves stay exact.
-                        assert_eq!(
-                            observed
-                                .actions
-                                .iter()
-                                .filter(|a| **a == RetainedSurfaceCompileAction::Reraster)
-                                .count(),
-                            1,
-                            "{label}"
-                        );
-                        assert_eq!(
-                            observed
-                                .actions
-                                .iter()
-                                .filter(|a| **a == RetainedSurfaceCompileAction::Reuse)
-                                .count(),
-                            3,
-                            "{label}"
-                        );
-                    }
+                    let action = if frame == 0 {
+                        RetainedSurfaceCompileAction::Reraster
+                    } else {
+                        RetainedSurfaceCompileAction::Reuse
+                    };
+                    assert!(
+                        observed.actions.iter().all(|a| *a == action),
+                        "{label}: {:?}",
+                        observed.actions
+                    );
                     #[cfg(not(target_arch = "wasm32"))]
                     eprintln!("{label}: actions={:?}", observed.actions);
                     // The parent conservatively unions complete child destinations,

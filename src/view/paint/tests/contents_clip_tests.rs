@@ -47,7 +47,7 @@ fn contents_clip_intersects_ancestor_replace_and_explicit_empty_culls() {
         id: outer,
         owner: outer_owner,
         parent: None,
-        logical_scissor: [0, 0, 50, 60],
+        geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 50, 60]),
         behavior: ClipBehavior::Replace,
         generation: 1,
     });
@@ -67,7 +67,7 @@ fn contents_clip_intersects_ancestor_replace_and_explicit_empty_culls() {
         .iter_mut()
         .find(|snapshot| snapshot.id == contents)
         .expect("contents clip")
-        .logical_scissor = [20, 30, 0, 0];
+        .geometry = crate::view::compositor::property_tree::ClipGeometry::Viewport([20, 30, 0, 0]);
     let mut graph = compiled_whole_frame_graph(&empty);
     assert!(
         graph
@@ -105,7 +105,9 @@ fn nested_self_replace_escapes_ancestor_contents_intersection() {
             id: contents,
             owner: outer_owner,
             parent: None,
-            logical_scissor: [20, 30, 10, 10],
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                20, 30, 10, 10,
+            ]),
             behavior: ClipBehavior::Intersect,
             generation: 1,
         },
@@ -113,7 +115,9 @@ fn nested_self_replace_escapes_ancestor_contents_intersection() {
             id: own,
             owner: leaf,
             parent: Some(contents),
-            logical_scissor: [5, 6, 80, 70],
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                5, 6, 80, 70,
+            ]),
             behavior: ClipBehavior::Replace,
             generation: 1,
         },
@@ -211,7 +215,9 @@ fn compiler_rejects_every_invalid_clip_snapshot_before_emit() {
             id,
             owner: id.owner,
             parent: ids.get(index + 1).copied(),
-            logical_scissor: [0, 0, 320, 240],
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                0, 0, 320, 240,
+            ]),
             behavior: ClipBehavior::Replace,
             generation: 1,
         });
@@ -222,7 +228,7 @@ fn compiler_rejects_every_invalid_clip_snapshot_before_emit() {
 #[test]
 fn empty_clip_emits_nothing_and_does_not_consume_opaque_order() {
     let mut artifact = compiler_clip_test_artifact();
-    artifact.clip_nodes[0].logical_scissor[2] = 0;
+    artifact.clip_nodes[0].geometry = artifact.clip_nodes[0].geometry.emptied_for_test();
 
     let graph = compiled_whole_frame_graph(&artifact);
     let snapshots = graph.test_rect_pass_snapshots();

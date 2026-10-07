@@ -124,7 +124,7 @@ pub(super) struct BoundaryInputs {
     parent: Option<NodeKey>,
     reference_scroll: Option<ScrollNodeId>,
     visual_parent: Option<VisualOffsetNodeId>,
-    pub(super) self_clip: Option<[u32; 4]>,
+    pub(super) self_clip: Option<ClipGeometry>,
 }
 impl BoundaryInputs {
     pub(super) fn observe(
@@ -148,13 +148,10 @@ impl BoundaryInputs {
             // current result even when neither this node nor its parent changed.
             self_clip: node
                 .element
-                .exact_retained_self_clip_scissor_rect(key, arena, is_frame_root)
+                .exact_retained_self_clip_geometry(key, arena, is_frame_root)
                 .or_else(|| {
-                    node.element.exact_generic_subtree_self_clip_scissor_rect(
-                        key,
-                        arena,
-                        is_frame_root,
-                    )
+                    node.element
+                        .exact_generic_subtree_self_clip_geometry(key, arena, is_frame_root)
                 }),
         })
     }

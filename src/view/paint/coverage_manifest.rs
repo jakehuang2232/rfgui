@@ -391,9 +391,9 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
 ) -> Option<super::PaintDeferredViewportSelfClipWitness> {
     let node = arena.get(owner)?;
     let stable_id = node.element.stable_id();
-    let logical_scissor = node
+    let geometry = node
         .element
-        .exact_retained_deferred_viewport_self_clip_scissor_rect(owner, arena)?;
+        .exact_retained_deferred_viewport_self_clip_geometry(owner, arena)?;
     let id = ClipNodeId {
         owner,
         role: crate::view::compositor::property_tree::ClipNodeRole::SelfClip,
@@ -461,7 +461,7 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
     } else if clip_chain.len() != 1 {
         return None;
     }
-    super::PaintDeferredViewportSelfClipWitness::new(owner, stable_id, clip, logical_scissor)
+    super::PaintDeferredViewportSelfClipWitness::new(owner, stable_id, clip, geometry)
 }
 
 pub(crate) fn record_coverage_manifest(

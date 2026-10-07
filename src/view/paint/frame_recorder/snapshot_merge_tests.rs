@@ -6,8 +6,7 @@ use crate::style::{
 };
 use crate::view::base_component::{
     Element, LayoutConstraints, LayoutPlacement, Rect, ScrollAxisSnapshot,
-    ScrollContentsClipWitness, ScrollbarInteractionWitness, ScrollbarOverlayWitness,
-    ScrollbarPaintStateWitness, Size,
+    ScrollbarInteractionWitness, ScrollbarOverlayWitness, ScrollbarPaintStateWitness, Size,
 };
 use crate::view::compositor::property_tree::{
     LayoutPositionNodeId, ScrollNode, ScrollNodeId, SpatialProjectionGraph, TransformNodeId,
@@ -122,7 +121,6 @@ fn artifact_snapshots_complete_spatial_ancestor_graphs_without_arena_queries() {
                 sampled_alpha: 0.0,
                 shadow_blur_radius: 0.0,
             },
-            contents_clip: ScrollContentsClipWitness::ExactRect([0, 0, 180, 100]),
             generation: 1,
         },
     );

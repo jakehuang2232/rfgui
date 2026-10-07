@@ -40,8 +40,13 @@ fn scroll_state_applies_to_descendants_not_owner_paint() {
     );
     let scroll = trees.scrolls[&ScrollNodeId(root)];
     assert_eq!(scroll.configured_axis, ScrollAxisSnapshot::Vertical);
+    let origin = layout_origin(&arena, root);
     assert!(rect_bits_equal(
-        scroll.viewport,
+        Rect {
+            x: origin.x + scroll.viewport.x,
+            y: origin.y + scroll.viewport.y,
+            ..scroll.viewport
+        },
         Rect {
             x: 10.0,
             y: 20.0,
@@ -164,13 +169,14 @@ fn canonical_scroll_geometry_and_live_observation_preserve_full_2d_state_for_all
             offset.map(f32::to_bits)
         );
         let child_bounds = arena.get(child).unwrap().element.box_model_snapshot();
+        let origin = layout_origin(&arena, root);
         assert_eq!(
             (child_bounds.x + live_scroll.offset[0]).to_bits(),
-            live_scroll.layout_content_bounds_at_zero.x.to_bits()
+            (origin.x + live_scroll.layout_content_bounds_at_zero.x).to_bits()
         );
         assert_eq!(
             (child_bounds.y + live_scroll.offset[1]).to_bits(),
-            live_scroll.layout_content_bounds_at_zero.y.to_bits()
+            (origin.y + live_scroll.layout_content_bounds_at_zero.y).to_bits()
         );
 
         if expected_axis == ScrollAxisSnapshot::Both {
@@ -263,10 +269,10 @@ fn scroll_snapshot_generations_track_axis_viewport_content_clip_and_overlay_fiel
         ScrollAxisSnapshot::Both
     );
     assert!(trees.clips[&clip_id].generation > stable_clip);
-    assert!(matches!(
-        trees.clips[&clip_id].geometry,
-        ClipGeometry::LogicalScissor([11, 21, 97, 77])
-    ));
+    assert_eq!(
+        placed_clip(&arena, trees.clips[&clip_id]),
+        Some(ClipGeometry::Viewport([11, 21, 97, 77]))
+    );
     assert!(
         trees
             .changes_for(root)
@@ -339,11 +345,17 @@ fn nested_scroll_geometry_validator_binds_scroll_and_clip_parent_edges() {
         scroll: Some(inner_scroll.id),
         ..Default::default()
     };
-    assert_eq!(trees.states[&outer].paint, PropertyTreeState::default());
-    assert_eq!(trees.states[&outer].descendants, outer_state);
-    assert_eq!(trees.states[&inner].paint, outer_state);
-    assert_eq!(trees.states[&inner].descendants, inner_state);
-    assert_eq!(trees.states[&leaf].paint, inner_state);
+    // Spatial dimensions are each owner's own frame; only clip and scroll
+    // edges are under test.
+    for (actual, expected) in [
+        (trees.states[&outer].paint, PropertyTreeState::default()),
+        (trees.states[&outer].descendants, outer_state),
+        (trees.states[&inner].paint, outer_state),
+        (trees.states[&inner].descendants, inner_state),
+        (trees.states[&leaf].paint, inner_state),
+    ] {
+        assert!(actual.legacy_boundary_eq(expected), "{actual:?}");
+    }
 
     let mut wrong_scroll_parent = inner_scroll;
     wrong_scroll_parent.parent = None;
@@ -399,10 +411,10 @@ fn scroll_contents_clip_is_owned_by_scroll_host_and_inherits_parent_clip() {
     assert_eq!(clip.owner, root);
     assert_eq!(clip.parent, Some(parent_clip));
     assert_eq!(clip.behavior, ClipBehavior::Intersect);
-    assert!(matches!(
-        clip.geometry,
-        ClipGeometry::LogicalScissor([10, 20, 100, 80])
-    ));
+    assert_eq!(
+        placed_clip(&arena, clip),
+        Some(ClipGeometry::Viewport([10, 20, 100, 80]))
+    );
 }
 
 #[test]

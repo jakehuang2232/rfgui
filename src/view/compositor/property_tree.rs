@@ -11,10 +11,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::Key;
 
 use crate::view::base_component::{
-    Rect, ScrollAxisSnapshot, ScrollContentsClipWitness, ScrollGeometryObservation,
-    ScrollGeometrySnapshot, ScrollbarOverlayWitness, ScrollbarPaintStateWitness, Size,
-    SpatialPositionReferenceSnapshot, canonical_horizontal_scrollbar_geometry,
-    canonical_vertical_scrollbar_geometry, exact_logical_scissor_for_rect,
+    Rect, ScrollAxisSnapshot, ScrollGeometryObservation, ScrollGeometrySnapshot,
+    ScrollbarOverlayWitness, ScrollbarPaintStateWitness, Size, SpatialPositionReferenceSnapshot,
+    canonical_horizontal_scrollbar_geometry, canonical_vertical_scrollbar_geometry,
+    logical_scissor_for_clip_rect,
 };
 use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -330,6 +330,8 @@ pub(crate) enum SpatialProjectionError {
     CyclicVisualOffset(VisualOffsetNodeId),
     CyclicScroll(ScrollNodeId),
     InvalidLayoutReference(LayoutPositionNodeId),
+    /// An owner-local clip has no finite viewport scissor at its owner.
+    InvalidClip(ClipNodeId),
 }
 
 /// Owner projection derived exclusively from the spatial snapshot graph.
@@ -544,6 +546,17 @@ impl<'a> SpatialProjectionGraph<'a> {
         Ok(layout + visual)
     }
 
+    /// Viewport origin of an owner's own layout frame. Unlike
+    /// `derive_optional_owner_viewport_position`, the owner must carry both of
+    /// its spatial nodes: owner-local geometry is never placed at a neutral
+    /// origin.
+    pub(crate) fn derive_owner_frame_origin(
+        &self,
+        owner: NodeKey,
+    ) -> Result<Vec2, SpatialProjectionError> {
+        Ok(self.layout_flow_position(owner)? + self.cumulative_visual_offset(owner)?)
+    }
+
     fn layout_flow_position(&self, owner: NodeKey) -> Result<Vec2, SpatialProjectionError> {
         let mut cache = self.resolved_positions.borrow_mut();
         let ProjectionPrefixCache {
@@ -717,17 +730,56 @@ pub(crate) enum ClipBehavior {
     Replace,
 }
 
+/// Clip geometry in the frame its producer observes it in.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ClipGeometry {
-    Rect(Rect),
-    RoundedRect {
-        rect: Rect,
-        radii: [f32; 4],
-    },
-    /// Already-resolved logical scissor from the legacy layout path. This is
-    /// intentionally stored verbatim; property sync must not repeat the
-    /// floor/ceil conversion and risk drifting from legacy paint.
-    LogicalScissor([u32; 4]),
+    /// Rect relative to its owner's layout origin. It is invariant under any
+    /// translation of the owner; the compiler places it at the owner's derived
+    /// viewport position and snaps it to the logical pixel grid.
+    OwnerLocal(Rect),
+    /// Logical scissor in viewport space: a viewport-fixed clip, or an
+    /// owner-local clip once the compiler has placed it.
+    Viewport([u32; 4]),
+}
+
+impl PartialEq for ClipGeometry {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::OwnerLocal(a), Self::OwnerLocal(b)) => rect_bits_equal(*a, *b),
+            (Self::Viewport(a), Self::Viewport(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ClipGeometry {}
+
+impl ClipGeometry {
+    pub(crate) fn is_owner_local(self) -> bool {
+        matches!(self, Self::OwnerLocal(_))
+    }
+
+    /// The viewport scissor of a placed clip.
+    pub(crate) fn viewport_scissor(self) -> Option<[u32; 4]> {
+        match self {
+            Self::Viewport(scissor) => Some(scissor),
+            Self::OwnerLocal(_) => None,
+        }
+    }
+
+    /// Places an owner-local clip whose owner's layout origin is at `origin`
+    /// in viewport space. Viewport clips are already placed.
+    pub(crate) fn placed_at(self, origin: Vec2) -> Option<Self> {
+        match self {
+            Self::Viewport(_) => Some(self),
+            Self::OwnerLocal(rect) => logical_scissor_for_clip_rect(Rect {
+                x: origin.x + rect.x,
+                y: origin.y + rect.y,
+                ..rect
+            })
+            .map(Self::Viewport),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -744,7 +796,7 @@ pub(crate) struct ClipNodeSnapshot {
     pub(crate) id: ClipNodeId,
     pub(crate) owner: NodeKey,
     pub(crate) parent: Option<ClipNodeId>,
-    pub(crate) logical_scissor: [u32; 4],
+    pub(crate) geometry: ClipGeometry,
     pub(crate) behavior: ClipBehavior,
     pub(crate) generation: u64,
 }
@@ -789,18 +841,25 @@ pub(crate) struct ScrollNode {
     /// Configured input/scrollbar axes, not a translation mask. Consumers
     /// must project the complete 2D `offset`.
     pub(crate) configured_axis: ScrollAxisSnapshot,
+    /// Owner-local scrollport; the owner's contents clip is exactly this rect.
     pub(crate) viewport: Rect,
     pub(crate) content_size: Size,
-    /// Layout extent at offset zero, not paint overflow or raster bounds.
+    /// Owner-local layout extent at offset zero, not paint overflow or raster
+    /// bounds.
     pub(crate) layout_content_bounds_at_zero: Rect,
+    /// Owner-local scrollbar geometry.
     pub(crate) scrollbar_overlay: ScrollbarOverlayWitness,
-    pub(crate) contents_clip: ScrollContentsClipWitness,
     pub(crate) generation: u64,
 }
 
+/// One scrollbar axis: its track and thumb rects, if the axis is painted.
+type ScrollbarTrackThumb = Option<(Rect, Rect)>;
+
 /// Arena-independent, owning snapshot of one exact M10E0 scroll node.
 /// Configured axes remain interaction/scrollbar metadata only; consumers must
-/// always preserve the complete two-dimensional baked offset.
+/// always preserve the complete two-dimensional baked offset. All rects are
+/// in the owner's layout frame, so translating the owner leaves the snapshot
+/// unchanged.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScrollNodeSnapshot {
     pub(crate) id: ScrollNodeId,
@@ -812,7 +871,6 @@ pub(crate) struct ScrollNodeSnapshot {
     pub(crate) content_size: Size,
     pub(crate) layout_content_bounds_at_zero: Rect,
     pub(crate) scrollbar_overlay: ScrollbarOverlayWitness,
-    pub(crate) contents_clip: ScrollContentsClipWitness,
     pub(crate) generation: u64,
 }
 
@@ -832,7 +890,6 @@ impl PartialEq for ScrollNodeSnapshot {
                 other.layout_content_bounds_at_zero,
             )
             && scrollbar_overlay_bits_equal(self.scrollbar_overlay, other.scrollbar_overlay)
-            && self.contents_clip == other.contents_clip
             && self.generation == other.generation
     }
 }
@@ -851,7 +908,6 @@ impl ScrollNodeSnapshot {
             scrollport_rect: self.viewport,
             content_size: [self.content_size.width, self.content_size.height],
             layout_content_bounds_at_zero: self.layout_content_bounds_at_zero,
-            contents_clip: self.contents_clip,
             scrollbar_overlay: self.scrollbar_overlay,
         };
         self.id.0 == self.owner
@@ -862,7 +918,7 @@ impl ScrollNodeSnapshot {
             && clip.owner == self.owner
             && clip.behavior == ClipBehavior::Intersect
             && clip.generation != 0
-            && self.contents_clip == ScrollContentsClipWitness::ExactRect(clip.logical_scissor)
+            && clip.geometry == ClipGeometry::OwnerLocal(self.viewport)
             && scroll_geometry_snapshot_is_valid(geometry)
     }
 
@@ -909,6 +965,62 @@ impl ScrollNodeSnapshot {
         )
     }
 
+    /// Canonical vertical and horizontal track/thumb pairs for this node's
+    /// axes, extents and offset in a scrollport at `viewport`.
+    fn canonical_scrollbar_geometry(
+        self,
+        viewport: Rect,
+    ) -> (ScrollbarTrackThumb, ScrollbarTrackThumb) {
+        let can_scroll_x = matches!(
+            self.configured_axis,
+            ScrollAxisSnapshot::Horizontal | ScrollAxisSnapshot::Both
+        ) && self.content_size.width > viewport.width;
+        let can_scroll_y = matches!(
+            self.configured_axis,
+            ScrollAxisSnapshot::Vertical | ScrollAxisSnapshot::Both
+        ) && self.content_size.height > viewport.height;
+        let vertical = can_scroll_y
+            .then(|| {
+                canonical_vertical_scrollbar_geometry(
+                    viewport,
+                    self.content_size.height,
+                    self.offset.y,
+                    can_scroll_x,
+                )
+            })
+            .flatten();
+        let horizontal = can_scroll_x
+            .then(|| {
+                canonical_horizontal_scrollbar_geometry(
+                    viewport,
+                    self.content_size.width,
+                    self.offset.x,
+                    can_scroll_y,
+                )
+            })
+            .flatten();
+        (vertical, horizontal)
+    }
+
+    /// The scrollbar overlay with its owner's layout origin at `origin`.
+    /// Recording still paints in viewport space; the geometry is rebuilt
+    /// canonically from the placed scrollport rather than translated, so it is
+    /// exactly the overlay the owner paints there.
+    pub(crate) fn scrollbar_overlay_at(self, origin: [f32; 2]) -> ScrollbarOverlayWitness {
+        let (vertical, horizontal) = self.canonical_scrollbar_geometry(Rect {
+            x: origin[0] + self.viewport.x,
+            y: origin[1] + self.viewport.y,
+            ..self.viewport
+        });
+        ScrollbarOverlayWitness {
+            vertical_track: vertical.map(|(track, _)| track),
+            vertical_thumb: vertical.map(|(_, thumb)| thumb),
+            horizontal_track: horizontal.map(|(track, _)| track),
+            horizontal_thumb: horizontal.map(|(_, thumb)| thumb),
+            ..self.scrollbar_overlay
+        }
+    }
+
     fn has_canonical_geometry_with_contents_clip_and_parents(
         self,
         clip: ClipNodeSnapshot,
@@ -916,34 +1028,8 @@ impl ScrollNodeSnapshot {
         expected_clip_parent: Option<ClipNodeId>,
     ) -> bool {
         let overlay = self.scrollbar_overlay;
-        let can_scroll_x = matches!(
-            self.configured_axis,
-            ScrollAxisSnapshot::Horizontal | ScrollAxisSnapshot::Both
-        ) && self.content_size.width > self.viewport.width;
-        let can_scroll_y = matches!(
-            self.configured_axis,
-            ScrollAxisSnapshot::Vertical | ScrollAxisSnapshot::Both
-        ) && self.content_size.height > self.viewport.height;
-        let expected_vertical = can_scroll_y
-            .then(|| {
-                canonical_vertical_scrollbar_geometry(
-                    self.viewport,
-                    self.content_size.height,
-                    self.offset.y,
-                    can_scroll_x,
-                )
-            })
-            .flatten();
-        let expected_horizontal = can_scroll_x
-            .then(|| {
-                canonical_horizontal_scrollbar_geometry(
-                    self.viewport,
-                    self.content_size.width,
-                    self.offset.x,
-                    can_scroll_y,
-                )
-            })
-            .flatten();
+        let (expected_vertical, expected_horizontal) =
+            self.canonical_scrollbar_geometry(self.viewport);
         let overlay_is_exact = scrollbar_geometry_pair_bits_equal(
             expected_vertical,
             overlay.vertical_track,
@@ -993,7 +1079,6 @@ impl ScrollNodeSnapshot {
             scrollport_rect: self.viewport,
             content_size: [self.content_size.width, self.content_size.height],
             layout_content_bounds_at_zero: self.layout_content_bounds_at_zero,
-            contents_clip: self.contents_clip,
             scrollbar_overlay: self.scrollbar_overlay,
         };
         let geometry_is_non_negative = [
@@ -1022,7 +1107,7 @@ impl ScrollNodeSnapshot {
             && clip.parent == expected_clip_parent
             && clip.behavior == ClipBehavior::Intersect
             && clip.generation != 0
-            && self.contents_clip == ScrollContentsClipWitness::ExactRect(clip.logical_scissor)
+            && clip.geometry == ClipGeometry::OwnerLocal(self.viewport)
             && scroll_geometry_snapshot_is_valid(geometry)
     }
 
@@ -1263,7 +1348,6 @@ impl PropertyTrees {
             content_size: node.content_size,
             layout_content_bounds_at_zero: node.layout_content_bounds_at_zero,
             scrollbar_overlay: node.scrollbar_overlay,
-            contents_clip: node.contents_clip,
             generation: node.generation,
         })
     }
@@ -1303,7 +1387,6 @@ impl PropertyTrees {
             && self.clips.get(&id).is_some_and(|clip| {
                 clip.owner == owner
                     && clip.behavior == ClipBehavior::Replace
-                    && matches!(clip.geometry, ClipGeometry::LogicalScissor(_))
                     && clip.generation != 0
             }))
         .then_some(id)
@@ -1315,14 +1398,11 @@ impl PropertyTrees {
 
     pub(crate) fn clip_node_snapshot_for(&self, id: ClipNodeId) -> Option<ClipNodeSnapshot> {
         let node = self.clips.get(&id)?;
-        let ClipGeometry::LogicalScissor(logical_scissor) = node.geometry else {
-            return None;
-        };
         Some(ClipNodeSnapshot {
             id,
             owner: node.owner,
             parent: node.parent,
-            logical_scissor,
+            geometry: node.geometry,
             behavior: node.behavior,
             generation: node.generation,
         })
@@ -1506,7 +1586,6 @@ impl PropertyTrees {
                 content_size: node.content_size,
                 layout_content_bounds_at_zero: node.layout_content_bounds_at_zero,
                 scrollbar_overlay: node.scrollbar_overlay,
-                contents_clip: node.contents_clip,
                 generation: node.generation,
             })
             .collect::<Vec<_>>();
@@ -1765,29 +1844,22 @@ impl PropertyTrees {
             boundary.self_clip
         } else {
             node.element
-                .exact_retained_self_clip_scissor_rect(key, arena, is_frame_root)
+                .exact_retained_self_clip_geometry(key, arena, is_frame_root)
                 .or_else(|| {
-                    node.element.exact_generic_subtree_self_clip_scissor_rect(
-                        key,
-                        arena,
-                        is_frame_root,
-                    )
+                    node.element
+                        .exact_generic_subtree_self_clip_geometry(key, arena, is_frame_root)
                 })
         };
-        let clip = if let Some(logical_scissor) = clip {
+        let clip = if let Some(geometry) = clip {
             let id = ClipNodeId {
                 owner: key,
                 role: ClipNodeRole::SelfClip,
             };
             let previous = self.clips.get(&id).copied();
-            let geometry = ClipGeometry::LogicalScissor(logical_scissor);
             let parent_changed = previous.is_some_and(|node| node.parent != inherited.clip);
             let changed = previous.is_none_or(|node| {
                 parent_changed
-                    || !matches!(
-                        node.geometry,
-                        ClipGeometry::LogicalScissor(previous) if previous == logical_scissor
-                    )
+                    || node.geometry != geometry
                     || node.behavior != ClipBehavior::Replace
             });
             let generation = if changed {
@@ -1843,26 +1915,20 @@ impl PropertyTrees {
         // same validated owning snapshot as its scroll node. Never combine a
         // malformed/missing scroll snapshot with the generic clip hook.
         let contents_clip = if properties.is_scroll_container {
-            scroll_snapshot.map(|snapshot| match snapshot.contents_clip {
-                ScrollContentsClipWitness::ExactRect(scissor) => scissor,
-            })
+            scroll_snapshot.map(|snapshot| ClipGeometry::OwnerLocal(snapshot.scrollport_rect))
         } else {
-            node.element.contents_logical_scissor()
+            node.element.contents_clip_geometry()
         };
-        let contents_clip = if let Some(logical_scissor) = contents_clip {
+        let contents_clip = if let Some(geometry) = contents_clip {
             let id = ClipNodeId {
                 owner: key,
                 role: ClipNodeRole::ContentsClip,
             };
             let previous = self.clips.get(&id).copied();
-            let geometry = ClipGeometry::LogicalScissor(logical_scissor);
             let parent_changed = previous.is_some_and(|node| node.parent != paint.clip);
             let changed = previous.is_none_or(|node| {
                 parent_changed
-                    || !matches!(
-                        node.geometry,
-                        ClipGeometry::LogicalScissor(previous) if previous == logical_scissor
-                    )
+                    || node.geometry != geometry
                     || node.behavior != ClipBehavior::Intersect
             });
             let generation = if changed {
@@ -1935,7 +2001,6 @@ impl PropertyTrees {
                         },
                         layout_content_bounds_at_zero: snapshot.layout_content_bounds_at_zero,
                         scrollbar_overlay: snapshot.scrollbar_overlay,
-                        contents_clip: snapshot.contents_clip,
                         generation,
                     },
                 );
@@ -2375,7 +2440,6 @@ fn scroll_node_payload_equal(node: ScrollNode, snapshot: ScrollGeometrySnapshot)
             snapshot.layout_content_bounds_at_zero,
         )
         && scrollbar_overlay_bits_equal(node.scrollbar_overlay, snapshot.scrollbar_overlay)
-        && node.contents_clip == snapshot.contents_clip
 }
 
 fn scrollbar_overlay_bits_equal(
@@ -2437,13 +2501,6 @@ fn scroll_geometry_snapshot_is_valid(snapshot: ScrollGeometrySnapshot) -> bool {
     let max_x = (snapshot.content_size[0] - viewport.width).max(0.0);
     let max_y = (snapshot.content_size[1] - viewport.height).max(0.0);
     if snapshot.offset[0] > max_x || snapshot.offset[1] > max_y {
-        return false;
-    }
-
-    let ScrollContentsClipWitness::ExactRect(scissor) = snapshot.contents_clip;
-    // The witness remains clip authority. This shared helper is only an
-    // internal-consistency mirror of the exact legacy conversion.
-    if exact_logical_scissor_for_rect(viewport) != Some(scissor) {
         return false;
     }
 

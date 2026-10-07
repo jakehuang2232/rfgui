@@ -274,20 +274,37 @@ fn assert_complete_artifact_store_profile(
         artifact.effect_nodes, effects,
         "{name}: complete effect store"
     );
-    // This Stage A artifact-only corpus authors no transform, layout-position,
-    // visual-offset, or scroll property nodes. The empty scroll store is an
-    // explicit fixture boundary, not a claim of scroll-graph coverage.
+    // This Stage A artifact-only corpus authors no transform or scroll
+    // property nodes. The empty scroll store is an explicit fixture boundary,
+    // not a claim of scroll-graph coverage. Layout-position and visual-offset
+    // nodes appear only as the frames of owner-local clips.
     assert!(
         artifact.transform_nodes.is_empty(),
         "{name}: Stage A fixture transform store profile"
     );
-    assert!(
+    let framed = artifact
+        .clip_nodes
+        .iter()
+        .filter(|clip| clip.geometry.is_owner_local())
+        .map(|clip| clip.owner)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        framed.is_empty(),
         artifact.layout_position_nodes.is_empty(),
         "{name}: Stage A fixture layout-position store profile"
     );
     assert!(
-        artifact.visual_offset_nodes.is_empty(),
-        "{name}: Stage A fixture visual-offset store profile"
+        framed.iter().all(|owner| {
+            artifact
+                .layout_position_nodes
+                .iter()
+                .any(|node| node.owner == *owner)
+                && artifact
+                    .visual_offset_nodes
+                    .iter()
+                    .any(|node| node.owner == *owner)
+        }),
+        "{name}: owner-local clips carry their owners' frames"
     );
     assert!(
         artifact.scroll_nodes.is_empty(),

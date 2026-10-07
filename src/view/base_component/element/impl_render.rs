@@ -971,10 +971,10 @@ impl Element {
         &self,
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> bool {
-        (self.anchor_parent_leaf_self_clip_scissor_rect().is_some()
+        (self.anchor_parent_leaf_self_clip_geometry().is_some()
             && recording_context.authorizes_self_clip_for(self.stable_id()))
-            || self.absolute_clip_scissor_rect().is_some_and(|scissor| {
-                recording_context.authorizes_subtree_self_clip_for(self.stable_id(), scissor)
+            || self.self_clip_geometry().is_some_and(|geometry| {
+                recording_context.authorizes_subtree_self_clip_for(self.stable_id(), geometry)
             })
             || recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id())
     }

@@ -1453,8 +1453,10 @@ impl ElementTrait for TransparentContentsClipParent {
         ShadowPaintRecordingCapability::Transparent
     }
 
-    fn contents_logical_scissor(&self) -> Option<[u32; 4]> {
-        Some(self.scissor)
+    fn contents_clip_geometry(
+        &self,
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
+        Some(crate::view::compositor::property_tree::ClipGeometry::Viewport(self.scissor))
     }
 
     fn children(&self) -> &[NodeKey] {

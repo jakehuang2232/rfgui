@@ -324,7 +324,7 @@ fn resident_stream_validation_rejects_missing_and_extra_snapshot_entries() {
             },
             owner,
             parent: None,
-            logical_scissor: [0, 0, 8, 8],
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 8, 8]),
             behavior: ClipBehavior::Intersect,
             generation: 1,
         });

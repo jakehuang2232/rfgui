@@ -162,7 +162,8 @@ fn prepared_self_clip_shadow_surface_frame(empty_suffix: bool) -> PreparedArtifa
             .iter_mut()
             .find(|clip| clip.behavior == ClipBehavior::Replace)
             .expect("self Replace clip")
-            .logical_scissor = [0, 0, 0, 0];
+            .geometry =
+            crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 0, 0]);
     }
     let shadow_plan = prepare_artifact_surface_raster_plan(artifact, raster_context())
         .expect("self-clip shadow root raster plan");

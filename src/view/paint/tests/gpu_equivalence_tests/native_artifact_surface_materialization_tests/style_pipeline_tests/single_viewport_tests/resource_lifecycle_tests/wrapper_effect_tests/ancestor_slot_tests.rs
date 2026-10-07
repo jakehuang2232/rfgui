@@ -233,16 +233,16 @@ fn run_ancestor_slots(mode: ViewportPaintRendererMode, svg: bool, dpr: u32) -> R
         }
         begin_resource_frame(&mut viewport, gpu, dpr)?;
         let observed = viewport.render_single_viewport_scene_for_test()?;
+        let node = viewport.node_arena().get(owner).unwrap();
+        let origin = node.element.box_model_snapshot();
         assert_eq!(
-            viewport
-                .node_arena()
-                .get(owner)
-                .unwrap()
-                .element
-                .exact_generic_subtree_self_clip_scissor_rect(owner, viewport.node_arena(), false),
-            Some([0, 0, 20, 16]),
+            node.element
+                .exact_generic_subtree_self_clip_geometry(owner, viewport.node_arena(), false)
+                .and_then(|clip| clip.placed_at(glam::Vec2::new(origin.x, origin.y))),
+            Some(crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 20, 16])),
             "fixture must resolve the intended grandparent clip before interpreting pixels",
         );
+        drop(node);
         let pixels = read_submitted_texture(&observed.texture, gpu, [WIDTH * dpr, HEIGHT * dpr])?;
         let alpha = if frame < 3 {
             64

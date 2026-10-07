@@ -486,7 +486,7 @@ fn recorder_compiles_real_image_and_svg_descendants_with_parent_contents_clip() 
         [ClipNodeSnapshot {
             id,
             owner,
-            logical_scissor: SCISSOR,
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport(SCISSOR),
             behavior: ClipBehavior::Intersect,
             ..
         }] if *id == expected_clip && *owner == parent

@@ -154,14 +154,15 @@ fn run_ready_owner_scope(
                     .is_none(),
                 "the clipped phase must remove the prior transform"
             );
+            let node = viewport.node_arena().get(owner).unwrap();
+            let origin = node.element.box_model_snapshot();
             assert_eq!(
-                viewport
-                    .node_arena()
-                    .get(owner)
-                    .unwrap()
-                    .element
-                    .exact_retained_self_clip_scissor_rect(owner, viewport.node_arena(), false),
-                Some([0, 0, 20, 16]),
+                node.element
+                    .exact_retained_self_clip_geometry(owner, viewport.node_arena(), false)
+                    .and_then(|clip| clip.placed_at(glam::Vec2::new(origin.x, origin.y))),
+                Some(
+                    crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 20, 16])
+                ),
                 "resolve the intended grandparent clip before interpreting pixels"
             );
         }

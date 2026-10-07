@@ -350,8 +350,11 @@ impl ElementTrait for PlanHost {
         parent
     }
 
-    fn contents_logical_scissor(&self) -> Option<[u32; 4]> {
+    fn contents_clip_geometry(
+        &self,
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         self.contents_scissor
+            .map(crate::view::compositor::property_tree::ClipGeometry::Viewport)
     }
 
     fn shadow_paint_recording_context_for_child(

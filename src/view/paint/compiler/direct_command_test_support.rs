@@ -24,12 +24,39 @@ impl ArtifactCompileError {
     }
 }
 
+/// The compiler intake for an artifact compiled outside the production entry:
+/// owner-local clips are placed at their owners' layout frames.
+pub(crate) fn with_placed_clips(
+    artifact: &PaintArtifact,
+) -> Option<std::borrow::Cow<'_, PaintArtifact>> {
+    if !artifact
+        .clip_nodes
+        .iter()
+        .any(|clip| clip.geometry.is_owner_local())
+    {
+        return Some(std::borrow::Cow::Borrowed(artifact));
+    }
+    let mut placed = artifact.clone();
+    super::super::ArtifactSpatialProjection::try_new(&placed)
+        .ok()?
+        .place_clips(&mut placed.clip_nodes)
+        .ok()?;
+    Some(std::borrow::Cow::Owned(placed))
+}
+
 /// Test-only direct command compilation for payload and clip unit tests.
 pub(crate) fn try_compile_artifact(
     artifact: &PaintArtifact,
     graph: &mut FrameGraph,
     mut ctx: UiBuildContext,
 ) -> Result<BuildState, ArtifactCompileError> {
+    let Some(artifact) = with_placed_clips(artifact) else {
+        return Err(ArtifactCompileError {
+            kind: ArtifactCompileErrorKind::InvalidStore,
+            state: ctx.into_state(),
+        });
+    };
+    let artifact = artifact.as_ref();
     let Some(validated) = validate_artifact_store(artifact) else {
         return Err(ArtifactCompileError {
             kind: ArtifactCompileErrorKind::InvalidStore,

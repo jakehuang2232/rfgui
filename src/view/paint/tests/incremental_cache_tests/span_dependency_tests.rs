@@ -36,7 +36,9 @@ fn two_clipped_roots() -> (PaintArtifact, ClipNodeId, ClipNodeId) {
             id,
             owner: id.owner,
             parent: None,
-            logical_scissor: [0, 0, 320, 240],
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                0, 0, 320, 240,
+            ]),
             behavior: ClipBehavior::Replace,
             generation: 1,
         });
@@ -72,7 +74,8 @@ fn local_clip_edit_reprepares_only_spans_that_consume_it() {
                 .iter_mut()
                 .find(|clip| clip.id == first)
                 .unwrap();
-            clip.logical_scissor = [0, 0, 12, 8];
+            clip.geometry =
+                crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 12, 8]);
             clip.generation = 2;
         }
         if frame == 3 {
@@ -81,7 +84,8 @@ fn local_clip_edit_reprepares_only_spans_that_consume_it() {
                 .iter_mut()
                 .find(|clip| clip.id == second)
                 .unwrap();
-            clip.logical_scissor = [0, 0, 7, 6];
+            clip.geometry =
+                crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 7, 6]);
             clip.generation = 2;
         }
         let cached =

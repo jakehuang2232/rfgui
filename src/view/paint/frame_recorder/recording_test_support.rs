@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// These recorders keep frozen spatial stores, except that the compiler
+/// places an owner-local clip at its owner's layout frame: an artifact that
+/// carries one closes its spatial snapshots as production recording does.
+fn close_for_owner_local_clips(
+    outcome: FrameArtifactRecordOutcome,
+    property_trees: &PropertyTrees,
+    mode: RendererMode,
+) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+    match &outcome {
+        FrameArtifactRecordOutcome::Artifact { artifact, .. }
+            if artifact
+                .clip_nodes
+                .iter()
+                .any(|clip| clip.geometry.is_owner_local()) =>
+        {
+            close_recorded_artifact_property_snapshots(outcome, property_trees, mode, None)
+        }
+        _ => Ok(outcome),
+    }
+}
+
 /// B1 typed compiler bridge. The validated pair is consumed in one step and
 /// only an opaque fixed H/content/O plan authority can escape.
 pub(crate) fn record_frame_artifact(
@@ -11,15 +32,19 @@ pub(crate) fn record_frame_artifact(
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    record_frame_artifact_with_policy(
-        arena,
-        roots,
+    close_for_owner_local_clips(
+        record_frame_artifact_with_policy(
+            arena,
+            roots,
+            property_trees,
+            paint_generations,
+            mode,
+            FrameArtifactAuthorityPolicy::ExistingBakedProperties,
+            None,
+            None,
+        )?,
         property_trees,
-        paint_generations,
         mode,
-        FrameArtifactAuthorityPolicy::ExistingBakedProperties,
-        None,
-        None,
     )
 }
 
@@ -33,21 +58,45 @@ pub(crate) fn record_property_neutral_frame_artifact(
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    record_frame_artifact_with_policy(
-        arena,
-        roots,
+    close_for_owner_local_clips(
+        record_frame_artifact_with_policy(
+            arena,
+            roots,
+            property_trees,
+            paint_generations,
+            mode,
+            FrameArtifactAuthorityPolicy::PropertyNeutral,
+            None,
+            None,
+        )?,
         property_trees,
-        paint_generations,
         mode,
-        FrameArtifactAuthorityPolicy::PropertyNeutral,
-        None,
-        None,
     )
 }
 
 /// Production baked-opacity authority that admits validated property-tree
 /// clips while keeping every other property family on legacy.
 pub(crate) fn record_clip_enabled_frame_artifact(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    mode: RendererMode,
+) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+    close_for_owner_local_clips(
+        record_frozen_clip_enabled_frame_artifact(
+            arena,
+            roots,
+            property_trees,
+            paint_generations,
+            mode,
+        )?,
+        property_trees,
+        mode,
+    )
+}
+
+fn record_frozen_clip_enabled_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
     property_trees: &PropertyTrees,
@@ -66,10 +115,8 @@ pub(crate) fn record_clip_enabled_frame_artifact(
     )
 }
 
-/// C3a current-target producer entry point. It is the only pre-cutover
-/// production path allowed to close the artifact's transitive spatial
-/// snapshots; existing retained and ArtifactCanary recorders deliberately
-/// keep their frozen stores unchanged.
+/// C3a current-target producer entry point. It closes the artifact's
+/// transitive spatial snapshots unconditionally.
 pub(crate) fn record_closed_single_target_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -77,8 +124,13 @@ pub(crate) fn record_closed_single_target_frame_artifact(
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    let outcome =
-        record_clip_enabled_frame_artifact(arena, roots, property_trees, paint_generations, mode)?;
+    let outcome = record_frozen_clip_enabled_frame_artifact(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        mode,
+    )?;
     close_recorded_artifact_property_snapshots(outcome, property_trees, mode, None)
 }
 
@@ -113,15 +165,19 @@ pub(crate) fn record_root_group_opacity_frame_artifact(
             );
         }
     };
-    record_frame_artifact_with_policy(
-        arena,
-        roots,
+    close_for_owner_local_clips(
+        record_frame_artifact_with_policy(
+            arena,
+            roots,
+            property_trees,
+            paint_generations,
+            mode,
+            FrameArtifactAuthorityPolicy::RootOpacityGroup(plan),
+            None,
+            None,
+        )?,
         property_trees,
-        paint_generations,
         mode,
-        FrameArtifactAuthorityPolicy::RootOpacityGroup(plan),
-        None,
-        None,
     )
 }
 

@@ -42,7 +42,7 @@ fn property_effect_contract_detaches_the_local_clip_root_parent() {
         owner: ancestor,
         parent: None,
         behavior: crate::view::compositor::property_tree::ClipBehavior::Intersect,
-        logical_scissor: [0, 0, 20, 20],
+        geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 20, 20]),
         generation: 8,
     };
     let local_clip = ClipNodeSnapshot {
@@ -53,7 +53,7 @@ fn property_effect_contract_detaches_the_local_clip_root_parent() {
         owner: boundary,
         parent: Some(ancestor_clip.id),
         behavior: crate::view::compositor::property_tree::ClipBehavior::Replace,
-        logical_scissor: [2, 2, 10, 10],
+        geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([2, 2, 10, 10]),
         generation: 9,
     };
     let contract = EffectPropertySurfaceArtifactContract::new(
@@ -616,12 +616,11 @@ fn deferred_effect_authority_requires_late_phase_clip_and_exact_effect() {
         owner,
         parent: None,
         behavior: ClipBehavior::Replace,
-        logical_scissor: [0, 0, 40, 30],
+        geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([0, 0, 40, 30]),
         generation: 7,
     };
     let clip_witness =
-        PaintDeferredViewportSelfClipWitness::new(owner, stable_id, clip, clip.logical_scissor)
-            .unwrap();
+        PaintDeferredViewportSelfClipWitness::new(owner, stable_id, clip, clip.geometry).unwrap();
     let effect = EffectNodeSnapshot {
         id: EffectNodeId(owner),
         owner,

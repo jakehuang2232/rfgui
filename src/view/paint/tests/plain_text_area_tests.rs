@@ -240,7 +240,7 @@ fn empty_focused_plain_text_area_is_caret_only_and_contents_clip_can_cull_it() {
         artifact
             .clip_nodes
             .iter()
-            .any(|clip| clip.logical_scissor[2] == 0 || clip.logical_scissor[3] == 0)
+            .any(|clip| clip.geometry.is_empty_for_test())
     );
     assert!(
         compiled_whole_frame_graph(&artifact)
@@ -498,7 +498,7 @@ fn plain_text_area_selection_contents_clip_handles_explicit_empty_viewport() {
         artifact
             .clip_nodes
             .iter()
-            .any(|clip| clip.logical_scissor[2] == 0 || clip.logical_scissor[3] == 0),
+            .any(|clip| clip.geometry.is_empty_for_test()),
         "clips={:?}",
         artifact.clip_nodes
     );

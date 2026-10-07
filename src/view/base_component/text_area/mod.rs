@@ -1215,8 +1215,11 @@ impl ElementTrait for TextArea {
         self.tick_caret_blink(now)
     }
 
-    fn contents_logical_scissor(&self) -> Option<[u32; 4]> {
-        Some(self.viewport_logical_scissor_rect())
+    #[allow(private_interfaces)]
+    fn contents_clip_geometry(
+        &self,
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
+        Some(self.local_viewport_clip_geometry())
     }
 
     #[allow(private_interfaces)]

@@ -99,7 +99,8 @@ fn root_opacity_group_records_contents_clip_neutrally_and_metadata_matches_full(
             _ => None,
         })
         .expect("child chunk carries the root contents clip snapshot");
-    std::sync::Arc::make_mut(clip_snapshot)[0].logical_scissor[0] += 1;
+    let clip = &mut std::sync::Arc::make_mut(clip_snapshot)[0];
+    clip.geometry = clip.geometry.translated_for_test(1, 0);
     assert!(
         !super::super::frame_recorder::canonical_manifest_matches(&metadata, &full),
         "clip snapshot drift must fail metadata/full parity"
@@ -115,7 +116,7 @@ fn root_opacity_group_records_contents_clip_neutrally_and_metadata_matches_full(
         [ClipNodeSnapshot {
             id,
             owner,
-            logical_scissor: SCISSOR,
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport(SCISSOR),
             behavior: ClipBehavior::Intersect,
             ..
         }] if *id == expected_clip && *owner == root

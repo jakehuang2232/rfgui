@@ -257,18 +257,6 @@ pub enum ScrollAxisSnapshot {
     Both,
 }
 
-/// Exact logical contents clip observed from the legacy layout/paint path.
-///
-/// The contents-clip witness remains the exact rectangular scrollport
-/// scissor. A rounded scroll host carries its corner geometry separately in
-/// the retained child-mask grammar, rather than approximating it here.
-#[doc(hidden)]
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrollContentsClipWitness {
-    ExactRect([u32; 4]),
-}
-
 /// Scrollbar interaction state sampled without consulting wall-clock time.
 #[doc(hidden)]
 #[non_exhaustive]
@@ -411,6 +399,10 @@ pub(crate) fn canonical_horizontal_scrollbar_geometry(
 
 /// Owning, backend-independent observation of one layout scroll container.
 ///
+/// Every rect is in the owner's layout frame. The scrollport is also the
+/// exact rectangular contents clip; a rounded scroll host carries its corner
+/// geometry separately in the retained child-mask grammar.
+///
 /// `layout_content_bounds_at_zero` is the layout scroll extent projected at
 /// offset zero. It is not paint overflow and must not be used as raster bounds.
 #[doc(hidden)]
@@ -424,7 +416,6 @@ pub struct ScrollGeometrySnapshot {
     pub scrollport_rect: Rect,
     pub content_size: [f32; 2],
     pub layout_content_bounds_at_zero: Rect,
-    pub contents_clip: ScrollContentsClipWitness,
     pub scrollbar_overlay: ScrollbarOverlayWitness,
 }
 
@@ -481,6 +472,43 @@ pub(crate) fn exact_logical_scissor_for_rect(rect: Rect) -> Option<[u32; 4]> {
         top as u32,
         (right - left) as u32,
         (bottom - top) as u32,
+    ])
+}
+
+/// Total logical scissor conversion for retained clip geometry. Nonempty
+/// rects convert exactly as [`exact_logical_scissor_for_rect`]; an empty axis
+/// keeps its origin with zero extent, so an empty clip still clips everything.
+/// Only nonfinite geometry has no scissor.
+pub(crate) fn logical_scissor_for_clip_rect(rect: Rect) -> Option<[u32; 4]> {
+    if ![
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        rect.x + rect.width,
+        rect.y + rect.height,
+    ]
+    .into_iter()
+    .all(f32::is_finite)
+    {
+        return None;
+    }
+    let left = rect.x.floor().max(0.0) as i64;
+    let top = rect.y.floor().max(0.0) as i64;
+    let right = (rect.x + rect.width).ceil().max(0.0) as i64;
+    let bottom = (rect.y + rect.height).ceil().max(0.0) as i64;
+    let extent = |size: f32, start: i64, end: i64| {
+        if size <= 0.0 {
+            0
+        } else {
+            u32::try_from(end.saturating_sub(start).max(0)).unwrap_or(u32::MAX)
+        }
+    };
+    Some([
+        u32::try_from(left).unwrap_or(u32::MAX),
+        u32::try_from(top).unwrap_or(u32::MAX),
+        extent(rect.width, left, right),
+        extent(rect.height, top, bottom),
     ])
 }
 
@@ -2771,24 +2799,26 @@ pub trait ElementTrait:
     /// tree. Native wrappers must forward this to their embedded `Element`;
     /// custom hosts remain unsupported unless they can provide an equivalent
     /// closed proof.
-    fn exact_retained_self_clip_scissor_rect(
+    #[allow(private_interfaces)]
+    fn exact_retained_self_clip_geometry(
         &self,
         _owner: crate::view::node_arena::NodeKey,
         _arena: &crate::view::node_arena::NodeArena,
         _is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         None
     }
 
     /// Additional self-clip snapshot for generic command recording. The older
     /// leaf/deferred capability remains separate; this alone grants no paint
     /// authority. Coverage must bind the exact owner and descendant clip scope.
-    fn exact_generic_subtree_self_clip_scissor_rect(
+    #[allow(private_interfaces)]
+    fn exact_generic_subtree_self_clip_geometry(
         &self,
         _owner: crate::view::node_arena::NodeKey,
         _arena: &crate::view::node_arena::NodeArena,
         _is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         None
     }
 
@@ -2797,16 +2827,17 @@ pub trait ElementTrait:
     ///
     /// Native wrappers can inherit this default by forwarding both
     /// [`Self::is_deferred_to_root_viewport_render`] and
-    /// [`Self::exact_retained_self_clip_scissor_rect`] to their embedded
+    /// [`Self::exact_retained_self_clip_geometry`] to their embedded
     /// `Element`.
     #[doc(hidden)]
-    fn exact_retained_deferred_viewport_self_clip_scissor_rect(
+    #[allow(private_interfaces)]
+    fn exact_retained_deferred_viewport_self_clip_geometry(
         &self,
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
-    ) -> Option<[u32; 4]> {
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         self.is_deferred_to_root_viewport_render()
-            .then(|| self.exact_retained_self_clip_scissor_rect(owner, arena, false))
+            .then(|| self.exact_retained_self_clip_geometry(owner, arena, false))
             .flatten()
     }
 
@@ -3013,7 +3044,7 @@ pub trait ElementTrait:
                     ScrollbarPaintStateWitness::OpaqueNow
                     | ScrollbarPaintStateWitness::TranslucentNow => {
                         let overlay = crate::view::paint::PreparedScrollbarOverlayOp::from_witness(
-                            scroll.scrollbar_overlay,
+                            scroll.scrollbar_overlay_at([bounds.x, bounds.y]),
                         )?;
                         crate::view::paint::PaintPayloadIdentity::prepared_scrollbar_overlay(
                             &overlay,
@@ -3117,7 +3148,7 @@ pub trait ElementTrait:
                     ScrollbarPaintStateWitness::OpaqueNow
                     | ScrollbarPaintStateWitness::TranslucentNow => {
                         let overlay = crate::view::paint::PreparedScrollbarOverlayOp::from_witness(
-                            scroll.scrollbar_overlay,
+                            scroll.scrollbar_overlay_at([bounds.x, bounds.y]),
                         )?;
                         let identity =
                             crate::view::paint::PaintPayloadIdentity::prepared_scrollbar_overlay(
@@ -3203,12 +3234,16 @@ pub trait ElementTrait:
         None
     }
 
-    /// Logical viewport-space scissor applied to this host's contents and
-    /// arena children, but not to its own self-paint. `None` means the host
-    /// has no contents clip; an explicit empty clip must be returned as
-    /// `Some([x, y, 0, 0])`.
+    /// Clip applied to this host's contents and arena children, but not to its
+    /// own self-paint: an owner-local rect for a clip that moves with the
+    /// host, a viewport scissor for a viewport-fixed one. `None` means the
+    /// host has no contents clip; an explicit empty clip is an empty rect or
+    /// scissor.
     #[doc(hidden)]
-    fn contents_logical_scissor(&self) -> Option<[u32; 4]> {
+    #[allow(private_interfaces)]
+    fn contents_clip_geometry(
+        &self,
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         None
     }
 
@@ -7752,28 +7787,26 @@ impl ElementTrait for Element {
         ))
     }
 
-    fn exact_generic_subtree_self_clip_scissor_rect(
+    #[allow(private_interfaces)]
+    fn exact_generic_subtree_self_clip_geometry(
         &self,
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
         is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
-        self.exact_anchor_parent_subtree_self_clip_scissor_rect(owner, arena, is_frame_root)
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
+        self.exact_anchor_parent_subtree_self_clip_geometry(owner, arena, is_frame_root)
     }
 
-    fn exact_retained_self_clip_scissor_rect(
+    #[allow(private_interfaces)]
+    fn exact_retained_self_clip_geometry(
         &self,
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
         is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
-        self.exact_anchor_parent_leaf_self_clip_scissor_rect(owner, arena, is_frame_root)
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
+        self.exact_anchor_parent_leaf_self_clip_geometry(owner, arena, is_frame_root)
             .or_else(|| {
-                self.exact_deferred_viewport_root_self_clip_scissor_rect(
-                    owner,
-                    arena,
-                    is_frame_root,
-                )
+                self.exact_deferred_viewport_root_self_clip_geometry(owner, arena, is_frame_root)
             })
     }
 
@@ -7848,10 +7881,12 @@ impl ElementTrait for Element {
             return ScrollGeometryObservation::Inactive;
         }
 
-        let scrollport_rect = self.inner_clip_rect();
-        let Some(logical_scissor) = self.inner_clip_scissor_rect() else {
+        // The contents scissor must exist at the owner's current placement;
+        // the snapshot itself is owner-local.
+        if self.inner_clip_scissor_rect().is_none() {
             return ScrollGeometryObservation::Unsupported;
-        };
+        }
+        let scrollport_rect = self.local_inner_clip_rect();
         let normalize_extent = |raw: f32, scrollport: f32| {
             if raw.is_finite() && raw >= 0.0 && scrollport.is_finite() && scrollport >= 0.0 {
                 raw.max(scrollport)
@@ -7901,7 +7936,6 @@ impl ElementTrait for Element {
             scrollport_rect,
             content_size,
             layout_content_bounds_at_zero,
-            contents_clip: ScrollContentsClipWitness::ExactRect(logical_scissor),
             scrollbar_overlay: ScrollbarOverlayWitness {
                 vertical_track: geometry.vertical_track,
                 vertical_thumb: geometry.vertical_thumb,
@@ -8392,9 +8426,16 @@ impl ElementTrait for Element {
     }
 
     fn compositor_spatial_placement_snapshot(&self) -> Option<SpatialPlacementSnapshot> {
+        // Fixtures that skip layout still need an owner frame wherever the
+        // retained pipeline consumes one: an authored transform, a scroll
+        // container, or an owner-local self clip.
         #[cfg(test)]
         if self.spatial_placement_snapshot.is_none()
-            && self.resolved_local_transform_for_test.is_some()
+            && (self.resolved_local_transform_for_test.is_some()
+                || self.scroll_direction != ScrollDirection::None
+                || self
+                    .self_clip_geometry()
+                    .is_some_and(|clip| clip.is_owner_local()))
         {
             let position = [
                 self.layout_state.layout_position.x,

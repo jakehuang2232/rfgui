@@ -172,7 +172,7 @@ fn deeper_witness_rejects_a_consumed_dimension_disagreement() {
         id: self_clip,
         owner: root,
         parent: None,
-        logical_scissor: [5, 7, 80, 60],
+        geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([5, 7, 80, 60]),
         behavior: ClipBehavior::Replace,
         generation: 43,
     });
@@ -289,7 +289,7 @@ fn scroll_terminal_closure_carries_a_self_clip_without_minting_a_surface() {
         id: self_clip,
         owner: root,
         parent: None,
-        logical_scissor: [2, 3, 90, 70],
+        geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([2, 3, 90, 70]),
         behavior: ClipBehavior::Replace,
         generation: 37,
     });

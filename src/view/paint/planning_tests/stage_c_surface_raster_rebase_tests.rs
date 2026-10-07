@@ -358,7 +358,9 @@ fn artifact_clip_resolver_seals_unclipped_replace_intersect_and_empty_results() 
             id: replace,
             owner: root,
             parent: None,
-            logical_scissor: [10, 10, 20, 20],
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                10, 10, 20, 20,
+            ]),
             behavior: ClipBehavior::Replace,
             generation: 71,
         },
@@ -366,7 +368,9 @@ fn artifact_clip_resolver_seals_unclipped_replace_intersect_and_empty_results() 
             id: intersect,
             owner: child,
             parent: Some(replace),
-            logical_scissor: [15, 15, 20, 20],
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                15, 15, 20, 20,
+            ]),
             behavior: ClipBehavior::Intersect,
             generation: 73,
         },
@@ -374,7 +378,9 @@ fn artifact_clip_resolver_seals_unclipped_replace_intersect_and_empty_results() 
             id: inherited_intersect,
             owner: root,
             parent: None,
-            logical_scissor: [15, 15, 20, 20],
+            geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                15, 15, 20, 20,
+            ]),
             behavior: ClipBehavior::Intersect,
             generation: 75,
         },
@@ -436,7 +442,7 @@ fn receiver_clip_is_sealed_and_nested_receivers_exclude_frame_scissor() {
         id: receiver_clip,
         owner: scroll_owner,
         parent: None,
-        logical_scissor: [10, 12, 80, 70],
+        geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([10, 12, 80, 70]),
         behavior: ClipBehavior::Replace,
         generation: 79,
     });
@@ -511,7 +517,7 @@ fn empty_surface_chunk_stays_in_identity_but_not_opaque_emission_order() {
         .iter_mut()
         .find(|clip| clip.parent.is_some())
         .expect("local clip");
-    local.logical_scissor[2] = 0;
+    local.geometry = local.geometry.emptied_for_test();
     let empty = seal_prepared_artifact_surface_frame(
         prepare_artifact_surface_raster_plan(
             empty_artifact,

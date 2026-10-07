@@ -85,7 +85,6 @@ fn projection_scroll_node(owner: NodeKey, offset: Vec2) -> ScrollNode {
             sampled_alpha: 0.0,
             shadow_blur_radius: 0.0,
         },
-        contents_clip: ScrollContentsClipWitness::ExactRect([0, 0, 180, 100]),
         generation: 1,
     }
 }

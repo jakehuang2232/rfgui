@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::view::compositor::property_tree::{
-    ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, PropertyTreeState,
+    ClipBehavior, ClipGeometry, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, PropertyTreeState,
 };
 use crate::view::paint::{
     ArtifactSurfaceCoverageForest, ArtifactSurfaceCoverageStep, SurfaceDag, SurfaceDagError,
@@ -266,7 +266,7 @@ fn with_scroll_sibling_clips(
         id: first_clip,
         owner: root,
         parent: Some(contents_clip),
-        logical_scissor: [1, 2, 70, 60],
+        geometry: ClipGeometry::Viewport([1, 2, 70, 60]),
         behavior: ClipBehavior::Replace,
         generation: 51,
     });
@@ -281,7 +281,7 @@ fn with_scroll_sibling_clips(
         id: second_clip,
         owner: sibling_owner,
         parent: Some(contents_clip),
-        logical_scissor: [3, 4, 50, 40],
+        geometry: ClipGeometry::Viewport([3, 4, 50, 40]),
         behavior: ClipBehavior::Replace,
         generation: 53,
     });
@@ -344,10 +344,16 @@ fn scroll_clip_closure_keeps_empty_as_neither_and_unions_siblings_in_painter_ord
             .iter()
             .all(|clip| clip.parent.is_none())
     );
-    assert_eq!(closure.local_clips()[0].logical_scissor, [1, 2, 70, 60]);
+    assert_eq!(
+        closure.local_clips()[0].geometry,
+        ClipGeometry::Viewport([1, 2, 70, 60])
+    );
     assert_eq!(closure.local_clips()[0].behavior, ClipBehavior::Replace);
     assert_eq!(closure.local_clips()[0].generation, 51);
-    assert_eq!(closure.local_clips()[1].logical_scissor, [3, 4, 50, 40]);
+    assert_eq!(
+        closure.local_clips()[1].geometry,
+        ClipGeometry::Viewport([3, 4, 50, 40])
+    );
     assert_eq!(closure.local_clips()[1].behavior, ClipBehavior::Replace);
     assert_eq!(closure.local_clips()[1].generation, 53);
 }
@@ -371,8 +377,7 @@ fn clip_value_refresh_equals_fresh_rebased_coverage() {
     let forest = coverage(&siblings, &reconstruct(&siblings));
     let mut moved = siblings;
     for clip in &mut moved.clip_nodes {
-        clip.logical_scissor[0] += 7;
-        clip.logical_scissor[1] += 3;
+        clip.geometry = clip.geometry.translated_for_test(7, 3);
         clip.generation += 1;
     }
     let refreshed = forest

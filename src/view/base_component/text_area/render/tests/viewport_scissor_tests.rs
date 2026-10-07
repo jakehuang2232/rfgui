@@ -31,8 +31,9 @@ fn legacy_and_typed_viewport_scissor_preserve_explicit_empty() {
     assert_eq!(text_area.viewport_logical_scissor_rect(), [12, 18, 0, 20]);
     assert_eq!(text_area.viewport_scissor_rect(), Some([12, 18, 0, 20]));
     assert_eq!(
-        ElementTrait::contents_logical_scissor(&text_area),
-        Some([12, 18, 0, 20]),
+        ElementTrait::contents_clip_geometry(&text_area)
+            .and_then(|clip| clip.placed_at(glam::Vec2::new(12.0, 18.0))),
+        Some(crate::view::compositor::property_tree::ClipGeometry::Viewport([12, 18, 0, 20])),
         "legacy and typed clip authorities must agree on explicit empty",
     );
 }

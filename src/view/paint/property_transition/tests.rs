@@ -3,8 +3,8 @@ use glam::{Mat4, Vec2, Vec3};
 use super::*;
 use crate::view::{
     base_component::{
-        Element, Rect, ScrollAxisSnapshot, ScrollContentsClipWitness, ScrollbarInteractionWitness,
-        ScrollbarOverlayWitness, ScrollbarPaintStateWitness, Size,
+        Element, Rect, ScrollAxisSnapshot, ScrollbarInteractionWitness, ScrollbarOverlayWitness,
+        ScrollbarPaintStateWitness, Size,
     },
     compositor::property_tree::{
         ClipNodeSnapshot, EffectNodeSnapshot, LayoutPositionNodeSnapshot, ScrollNodeSnapshot,
@@ -90,7 +90,6 @@ fn scroll_snapshot(id: ScrollNodeId, parent: Option<ScrollNodeId>) -> ScrollNode
             sampled_alpha: 0.0,
             shadow_blur_radius: 0.0,
         },
-        contents_clip: ScrollContentsClipWitness::ExactRect([0, 0, 10, 10]),
         generation: 1,
     }
 }
@@ -137,7 +136,9 @@ fn complete_artifact() -> (
                 id: child_clip,
                 owner: child,
                 parent: Some(root_clip),
-                logical_scissor: [1, 1, 8, 8],
+                geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                    1, 1, 8, 8,
+                ]),
                 behavior: ClipBehavior::Replace,
                 generation: 1,
             },
@@ -145,7 +146,9 @@ fn complete_artifact() -> (
                 id: root_clip,
                 owner: root,
                 parent: None,
-                logical_scissor: [0, 0, 10, 10],
+                geometry: crate::view::compositor::property_tree::ClipGeometry::Viewport([
+                    0, 0, 10, 10,
+                ]),
                 behavior: ClipBehavior::Intersect,
                 generation: 1,
             },
@@ -663,6 +666,7 @@ fn transition_error_taxonomy_is_exhaustive() {
             SpatialProjectionError::CyclicVisualOffset(_) => "cyclic-visual-offset",
             SpatialProjectionError::CyclicScroll(_) => "cyclic-scroll",
             SpatialProjectionError::InvalidLayoutReference(_) => "invalid-layout-reference",
+            SpatialProjectionError::InvalidClip(_) => "unplaceable-clip",
         }
     }
 

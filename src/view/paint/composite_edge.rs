@@ -159,9 +159,10 @@ fn resolved_artifact_scissor(
         if clip.behavior != ClipBehavior::Intersect {
             return None;
         }
+        let scissor = clip.geometry.viewport_scissor()?;
         intersection = Some(match intersection {
-            Some(current) => intersect_logical_scissors(current, clip.logical_scissor)?,
-            None => clip.logical_scissor,
+            Some(current) => intersect_logical_scissors(current, scissor)?,
+            None => scissor,
         });
         let Some(parent) = clip.parent else {
             break;

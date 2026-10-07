@@ -186,7 +186,8 @@ impl PlanningCache {
     }
 
     /// Spatial projection inputs are the four spatial snapshot families plus
-    /// the owner store whose positions it derives.
+    /// the owner store whose positions it derives. The previous projection
+    /// must also hold the frame of every owner-local clip of `artifact`.
     pub(super) fn spatial(
         &self,
         artifact: &PaintArtifact,
@@ -197,8 +198,9 @@ impl PlanningCache {
             && old.transform_nodes == artifact.transform_nodes
             && old.layout_position_nodes == artifact.layout_position_nodes
             && old.visual_offset_nodes == artifact.visual_offset_nodes
-            && old.scroll_nodes == artifact.scroll_nodes)
-            .then(|| previous.spatial.clone())
+            && old.scroll_nodes == artifact.scroll_nodes
+            && previous.spatial.frames_clips(&artifact.clip_nodes))
+        .then(|| previous.spatial.clone())
     }
 
     pub(super) fn host_placement(

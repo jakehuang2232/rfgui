@@ -1060,16 +1060,34 @@ fn artifact_spatial_projection(
     }
     super::ArtifactSpatialProjection::try_new(artifact)
         .map(std::sync::Arc::new)
-        .map_err(TransitionError::SpatialSnapshot)
-        .map_err(SurfaceDagError::Transition)
-        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)
+        .map_err(spatial_prepare_error)
+}
+
+fn spatial_prepare_error(error: SpatialProjectionError) -> SingleTargetSurfaceDagPrepareError {
+    SingleTargetSurfaceDagPrepareError::SurfaceDag(SurfaceDagError::Transition(
+        TransitionError::SpatialSnapshot(error),
+    ))
+}
+
+/// Compiler intake: every consumer below reads viewport clip scissors, so
+/// owner-local clips are placed before the artifact is validated.
+fn place_artifact_clips(
+    artifact: &mut PaintArtifact,
+    cache: Option<&mut PlanningCache>,
+) -> Result<std::sync::Arc<super::ArtifactSpatialProjection>, SingleTargetSurfaceDagPrepareError> {
+    let spatial = artifact_spatial_projection(artifact, cache)?;
+    spatial
+        .place_clips(&mut artifact.clip_nodes)
+        .map_err(spatial_prepare_error)?;
+    Ok(spatial)
 }
 
 fn validate_artifact_surface_dag_program(
-    artifact: PaintArtifact,
+    mut artifact: PaintArtifact,
     mut cache: Option<&mut PlanningCache>,
 ) -> Result<ValidatedArtifactSurfaceDagProgram, SingleTargetSurfaceDagPrepareError> {
     let _profile = crate::view::paint::work_profile::scope("validate_artifact_surface_dag_program");
+    let spatial = place_artifact_clips(&mut artifact, cache.as_deref_mut())?;
     let Some(validated) = validate_artifact_store_with_cache(
         &artifact,
         ArtifactStoreValidationPolicy::SurfaceDag,
@@ -1103,56 +1121,51 @@ fn validate_artifact_surface_dag_program(
     // command validation already ran above, and `graphs` revalidated numeric
     // snapshots. Transfer obligations and target elimination stay current.
     let structure = if graphs.is_some() {
-        let spatial = artifact_spatial_projection(&artifact, cache.as_deref_mut())?;
         cache
             .as_deref_mut()
             .map(|cache| cache.surface_structure(&artifact, &spatial))
             .transpose()
             .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
             .flatten()
-            .map(|structure| (structure, spatial))
     } else {
         None
     };
-    let (surface_dag, coverage, graphs, spatial) =
-        if let Some(((dag, coverage), spatial)) = structure {
-            (
-                dag,
-                coverage,
-                graphs.expect("structural replay requires current graph proof"),
-                spatial,
-            )
-        } else {
-            let inputs = super::surface_dag::ArtifactSurfaceInputs::with_graphs(
-                &artifact,
-                LayerizationPolicy::ResolveMaterializedTargets,
-                graphs,
-            )
+    let (surface_dag, coverage, graphs) = if let Some((dag, coverage)) = structure {
+        (
+            dag,
+            coverage,
+            graphs.expect("structural replay requires current graph proof"),
+        )
+    } else {
+        let inputs = super::surface_dag::ArtifactSurfaceInputs::with_graphs(
+            &artifact,
+            LayerizationPolicy::ResolveMaterializedTargets,
+            graphs,
+        )
+        .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+        let requests = inputs
+            .requests()
             .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-            let spatial = artifact_spatial_projection(&artifact, cache.as_deref_mut())?;
-            let requests = inputs
-                .requests()
-                .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-            let events = inputs
-                .classify(&requests)
-                .map_err(SurfaceDagError::Transition)
-                .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-            let surface_dag = inputs
-                .reconstruct(&events, &spatial)
-                .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
-            let coverage = match cache
-                .as_deref_mut()
-                .and_then(|cache| cache.coverage(&artifact, &surface_dag))
-            {
-                Some(coverage) => coverage,
-                None => inputs
-                    .coverage(&surface_dag)
-                    .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
-                    .into(),
-            };
-            let graphs = inputs.graphs();
-            (surface_dag, coverage, graphs, spatial)
+        let events = inputs
+            .classify(&requests)
+            .map_err(SurfaceDagError::Transition)
+            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+        let surface_dag = inputs
+            .reconstruct(&events, &spatial)
+            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?;
+        let coverage = match cache
+            .as_deref_mut()
+            .and_then(|cache| cache.coverage(&artifact, &surface_dag))
+        {
+            Some(coverage) => coverage,
+            None => inputs
+                .coverage(&surface_dag)
+                .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
+                .into(),
         };
+        let graphs = inputs.graphs();
+        (surface_dag, coverage, graphs)
+    };
     let execution_order = surface_dag
         .derive_materialized_execution_order(
             &coverage,
@@ -1563,14 +1576,7 @@ fn resolve_artifact_surface_clip(
         };
         cursor = parent;
     }
-    let mut resolved = ResolvedClip::Unclipped;
-    for snapshot in chain.iter().rev() {
-        resolved = match snapshot.behavior {
-            ClipBehavior::Replace => resolved_scissor(snapshot.logical_scissor),
-            ClipBehavior::Intersect => intersect_resolved_clip(resolved, snapshot.logical_scissor),
-        };
-    }
-    Some((resolved, chain))
+    Some((fold_resolved_clip_chain(&chain)?, chain))
 }
 
 fn intersect_optional_scissor(
@@ -4084,7 +4090,7 @@ fn exact_self_clip_shadow_prefix_len(
             id: self_clip,
             owner: chunk.owner,
             parent: None,
-            logical_scissor: clip.logical_scissor,
+            geometry: clip.geometry,
             behavior: ClipBehavior::Replace,
             generation: clip.generation,
         })
@@ -4734,7 +4740,7 @@ fn validate_artifact_store_with_cache(
             };
             cursor = parent;
         }
-        resolved.push(fold_resolved_clip_chain(&chain));
+        resolved.push(fold_resolved_clip_chain(&chain)?);
     }
     for endpoint in &artifact.owner_property_states {
         for state in [endpoint.paint, endpoint.descendants] {
@@ -4759,16 +4765,17 @@ fn validate_artifact_store_with_cache(
 }
 
 /// Folds one leaf-to-root clip chain into the scissor its chunk rasterizes
-/// with.
-fn fold_resolved_clip_chain(chain: &[ClipNodeSnapshot]) -> ResolvedClip {
+/// with. Every clip must already be placed.
+fn fold_resolved_clip_chain(chain: &[ClipNodeSnapshot]) -> Option<ResolvedClip> {
     chain
         .iter()
         .rev()
-        .fold(ResolvedClip::Unclipped, |clip, snapshot| {
-            match snapshot.behavior {
-                ClipBehavior::Replace => resolved_scissor(snapshot.logical_scissor),
-                ClipBehavior::Intersect => intersect_resolved_clip(clip, snapshot.logical_scissor),
-            }
+        .try_fold(ResolvedClip::Unclipped, |clip, snapshot| {
+            let scissor = snapshot.geometry.viewport_scissor()?;
+            Some(match snapshot.behavior {
+                ClipBehavior::Replace => resolved_scissor(scissor),
+                ClipBehavior::Intersect => intersect_resolved_clip(clip, scissor),
+            })
         })
 }
 
@@ -4804,7 +4811,7 @@ fn resolve_validated_clip_values(artifact: &PaintArtifact) -> Option<Vec<Resolve
                 chain.push(snapshot);
                 cursor = snapshot.parent;
             }
-            let resolved = fold_resolved_clip_chain(&chain);
+            let resolved = fold_resolved_clip_chain(&chain)?;
             by_leaf.insert(leaf, resolved);
             Some(resolved)
         })
@@ -4816,14 +4823,16 @@ fn resolve_validated_clip_values(artifact: &PaintArtifact) -> Option<Vec<Resolve
 pub(crate) fn resolved_clips_full_and_refreshed_for_test(
     artifact: &PaintArtifact,
 ) -> (Option<Vec<ResolvedClip>>, Option<Vec<ResolvedClip>>) {
+    let artifact = direct_command_test_support::with_placed_clips(artifact)
+        .expect("owner-local clips have layout frames");
     (
         validate_artifact_store_with_cache(
-            artifact,
+            &artifact,
             ArtifactStoreValidationPolicy::SurfaceDag,
             None,
         )
         .map(|validated| validated.resolved_clips),
-        resolve_validated_clip_values(artifact),
+        resolve_validated_clip_values(&artifact),
     )
 }
 
@@ -5219,7 +5228,9 @@ fn intersect_resolved_clip(current: ResolvedClip, next: [u32; 4]) -> ResolvedCli
 #[cfg(test)]
 mod direct_command_test_support;
 #[cfg(test)]
-pub(crate) use direct_command_test_support::{compile_artifact, try_compile_artifact};
+pub(crate) use direct_command_test_support::{
+    compile_artifact, try_compile_artifact, with_placed_clips,
+};
 
 #[cfg(test)]
 mod child_mask_tests;

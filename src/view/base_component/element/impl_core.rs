@@ -56,6 +56,16 @@ impl Element {
     }
 
     fn inner_rect_for_frame_size(&self, frame_width: f32, frame_height: f32) -> Rect {
+        let local = self.local_inner_rect_for_frame_size(frame_width, frame_height);
+        Rect {
+            x: self.layout_state.layout_position.x + local.x,
+            y: self.layout_state.layout_position.y + local.y,
+            ..local
+        }
+    }
+
+    /// The inner (padding) box in this element's own layout frame.
+    fn local_inner_rect_for_frame_size(&self, frame_width: f32, frame_height: f32) -> Rect {
         let max_bw = (frame_width.min(frame_height)) * 0.5;
         let border_left = self.border_widths.left.clamp(0.0, max_bw);
         let border_right = self.border_widths.right.clamp(0.0, max_bw);
@@ -66,8 +76,8 @@ impl Element {
         let inset_top = border_top + self.padding.top.max(0.0);
         let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
         Rect {
-            x: self.layout_state.layout_position.x + inset_left,
-            y: self.layout_state.layout_position.y + inset_top,
+            x: inset_left,
+            y: inset_top,
             width: (frame_width - inset_left - inset_right).max(0.0),
             height: (frame_height - inset_top - inset_bottom).max(0.0),
         }
@@ -118,17 +128,42 @@ impl Element {
         }
     }
 
+    /// Retained geometry of the clip `absolute_clip_scissor_rect` applies.
+    /// A viewport clip is viewport-fixed. An `AnchorParent` clip moves with
+    /// its owner, so it is kept in the owner's layout frame.
+    pub(crate) fn self_clip_geometry(
+        &self,
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
+        use crate::view::compositor::property_tree::ClipGeometry;
+        let scissor = self.absolute_clip_scissor_rect()?;
+        match self.computed_style.position.clip_mode() {
+            ClipMode::Parent => None,
+            ClipMode::Viewport => Some(ClipGeometry::Viewport(scissor)),
+            ClipMode::AnchorParent => {
+                let rect = self.absolute_clip_rect?;
+                let origin = self.layout_state.layout_position;
+                Some(ClipGeometry::OwnerLocal(Rect {
+                    x: rect.x - origin.x,
+                    y: rect.y - origin.y,
+                    ..rect
+                }))
+            }
+        }
+    }
+
     /// Exact resolved self-clip payload admitted by the first clip-authority
-    /// slice. Keep this deliberately narrower than `absolute_clip_scissor_rect`:
+    /// slice. Keep this deliberately narrower than `self_clip_geometry`:
     /// viewport/deferred clips and non-leaf contents scopes remain legacy.
-    pub(crate) fn anchor_parent_leaf_self_clip_scissor_rect(&self) -> Option<[u32; 4]> {
+    pub(crate) fn anchor_parent_leaf_self_clip_geometry(
+        &self,
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         if !self.children.is_empty()
             || self.computed_style.position.mode() != PositionMode::Absolute
             || self.computed_style.position.clip_mode() != ClipMode::AnchorParent
         {
             return None;
         }
-        self.absolute_clip_scissor_rect()
+        self.self_clip_geometry()
     }
 
     /// Exact retained self-clip for a viewport-clipped absolute node.
@@ -137,19 +172,19 @@ impl Element {
     /// position and the deferred late-phase DFS records it once. Descendants
     /// remain in that late subtree; nested viewport-deferred descendants are
     /// cut out again and emitted as their own later roots in document order.
-    pub(crate) fn exact_deferred_viewport_root_self_clip_scissor_rect(
+    pub(crate) fn exact_deferred_viewport_root_self_clip_geometry(
         &self,
         _owner: crate::view::node_arena::NodeKey,
         _arena: &crate::view::node_arena::NodeArena,
         _is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         if self.computed_style.position.mode() != PositionMode::Absolute
             || self.computed_style.position.clip_mode() != ClipMode::Viewport
             || !self.should_append_to_root_viewport_render()
         {
             return None;
         }
-        self.absolute_clip_scissor_rect()
+        self.self_clip_geometry()
     }
 
     /// Exact `AnchorParent` self clip that the artifact walk may own.
@@ -159,29 +194,29 @@ impl Element {
     /// nested leaf is admissible only when the parent's children are already
     /// partitioned normal-before-overflow. Checking the complete parent order
     /// here prevents one admitted child from hiding a later ordering mismatch.
-    pub(crate) fn exact_anchor_parent_leaf_self_clip_scissor_rect(
+    pub(crate) fn exact_anchor_parent_leaf_self_clip_geometry(
         &self,
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
         is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
-        let scissor = self.anchor_parent_leaf_self_clip_scissor_rect()?;
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
+        let geometry = self.anchor_parent_leaf_self_clip_geometry()?;
         if !arena.children_of(owner).is_empty() {
             return None;
         }
-        self.anchor_parent_self_clip_with_parent_order(scissor, owner, arena, is_frame_root)
+        self.anchor_parent_self_clip_with_parent_order(geometry, owner, arena, is_frame_root)
     }
 
     /// The generic recorder can retain a nonempty scope when both child mirrors
     /// and the parent's normal-before-overflow phase agree with arena order.
     /// Descendants are still visited and validated individually by coverage;
     /// this proof does not authorize unsupported paint inside the subtree.
-    pub(crate) fn exact_anchor_parent_subtree_self_clip_scissor_rect(
+    pub(crate) fn exact_anchor_parent_subtree_self_clip_geometry(
         &self,
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
         is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         if self.children.is_empty()
             || self.computed_style.position.mode() != PositionMode::Absolute
             || self.computed_style.position.clip_mode() != ClipMode::AnchorParent
@@ -201,7 +236,7 @@ impl Element {
             }
         }
         self.anchor_parent_self_clip_with_parent_order(
-            self.absolute_clip_scissor_rect()?,
+            self.self_clip_geometry()?,
             owner,
             arena,
             is_frame_root,
@@ -210,13 +245,13 @@ impl Element {
 
     fn anchor_parent_self_clip_with_parent_order(
         &self,
-        scissor: [u32; 4],
+        geometry: crate::view::compositor::property_tree::ClipGeometry,
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
         is_frame_root: bool,
-    ) -> Option<[u32; 4]> {
+    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         if is_frame_root {
-            return Some(scissor);
+            return Some(geometry);
         }
 
         let parent_key = arena.parent_of(owner)?;
@@ -258,7 +293,7 @@ impl Element {
                 return None;
             }
         }
-        owner_seen.then_some(scissor)
+        owner_seen.then_some(geometry)
     }
 
     /// Apply this element's own clip scissor on top of `ctx`. For most
@@ -289,6 +324,11 @@ impl Element {
     fn inner_clip_rect(&self) -> Rect {
         let (frame_width, frame_height) = self.current_clip_layout_size();
         self.inner_rect_for_frame_size(frame_width, frame_height)
+    }
+
+    fn local_inner_clip_rect(&self) -> Rect {
+        let (frame_width, frame_height) = self.current_clip_layout_size();
+        self.local_inner_rect_for_frame_size(frame_width, frame_height)
     }
 
     fn inner_clip_scissor_rect(&self) -> Option<[u32; 4]> {

@@ -82,14 +82,14 @@ impl PaintDeferredViewportSelfClipWitness {
         target_owner: NodeKey,
         stable_id: u64,
         clip: ClipNodeSnapshot,
-        logical_scissor: [u32; 4],
+        geometry: crate::view::compositor::property_tree::ClipGeometry,
     ) -> Option<Self> {
         (stable_id != 0
             && clip.id.owner == target_owner
             && clip.id.role == ClipNodeRole::SelfClip
             && clip.owner == target_owner
             && clip.parent.is_none()
-            && clip.logical_scissor == logical_scissor
+            && clip.geometry == geometry
             && clip.behavior == ClipBehavior::Replace
             && clip.generation != 0)
             .then_some(Self {

@@ -111,9 +111,10 @@ fn moved_artifact(
     )
 }
 
-/// Dragging a window keeps every clip relation. Relation, structure and
-/// coverage proofs replay; only the clip scissors (including those copied
-/// into scroll-content coverage) are folded again, matching a cold plan.
+/// Dragging a window keeps every clip relation and, since clips are relative
+/// to their owners, every recorded clip. Relation, structure and coverage
+/// proofs replay; only the placed scissors (including those copied into
+/// scroll-content coverage) are folded again, matching a cold plan.
 #[test]
 fn moved_window_clips_reuse_relations_and_structure_with_current_scissors() {
     let (mut arena, root, window) = window_scene();
@@ -127,7 +128,10 @@ fn moved_window_clips_reuse_relations_and_structure_with_current_scissors() {
         let input = moved_artifact(&mut viewport, &mut arena, root, window, left);
         assert!(!input.scroll_nodes.is_empty(), "fixture must scroll");
         if let Some(previous) = previous_clips.replace(input.clip_nodes.clone()) {
-            assert_ne!(previous, input.clip_nodes, "fixture must move its clips");
+            assert_eq!(
+                previous, input.clip_nodes,
+                "recorded clips are relative to their owners"
+            );
         }
         // Relation replay folds current scissors exactly as full validation.
         let (full, refreshed) = resolved_clips_full_and_refreshed_for_test(&input);
