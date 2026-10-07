@@ -5,7 +5,7 @@ use super::super::super::{
 use super::*;
 
 #[test]
-fn owner_scoped_host_placement_replays_parent_then_child_snapping() {
+fn owner_scoped_host_placement_adds_only_the_host_change_to_the_snap_chain() {
     let mut arena = crate::view::test_support::new_test_arena();
     let root = crate::view::test_support::commit_element(
         &mut arena,
@@ -35,37 +35,37 @@ fn owner_scoped_host_placement_replays_parent_then_child_snapping() {
     let resolved = projection
         .resolve([0.0, 0.0])
         .expect("canonical owner-scoped placement");
-
-    assert_eq!(
-        resolved
-            .owner_paint_offset(root)
-            .map(|value| value.map(f32::to_bits)),
-        Some([(-0.25_f32).to_bits(), 0.0_f32.to_bits()])
-    );
-    assert_eq!(
-        resolved
-            .owner_paint_offset(child)
-            .map(|value| value.map(f32::to_bits)),
-        Some([(-0.5_f32).to_bits(), 0.0_f32.to_bits()]),
-        "child snapping must inherit the parent's correction instead of recomputing directly from the frame offset"
-    );
+    // Recorded commands already carry the zero-host snap chain.
+    for owner in [root, child] {
+        assert_eq!(resolved.owner_paint_offset(owner), Some([0.0, 0.0]));
+    }
     let warm = projection.clone().resolve([0.0, 0.0]).unwrap();
     assert!(std::sync::Arc::ptr_eq(
-        &resolved.owner_paint_offset_bits,
-        &warm.owner_paint_offset_bits
+        &resolved.host_delta_bits,
+        &warm.host_delta_bits
     ));
     let shifted = projection.resolve([2.0, 3.0]).unwrap();
-    assert_eq!(shifted.owner_paint_offset(child), Some([1.5, 3.0]));
+    assert_eq!(shifted.owner_paint_offset(child), Some([2.0, 3.0]));
     assert!(!std::sync::Arc::ptr_eq(
-        &warm.owner_paint_offset_bits,
-        &shifted.owner_paint_offset_bits
+        &warm.host_delta_bits,
+        &shifted.host_delta_bits
     ));
+    // A half-pixel host moves the root from 5.25 to 5.75, which snaps to 6
+    // instead of 5. Snapping its own frame offset directly, the child would
+    // stay at 18; it must inherit the root's correction instead.
+    let fractional = projection.resolve([0.5, 0.0]).unwrap();
+    assert_eq!(fractional.owner_paint_offset(root), Some([1.0, 0.0]));
+    assert_eq!(
+        fractional.owner_paint_offset(child),
+        Some([1.0, 0.0]),
+        "child snapping must inherit the parent's correction instead of recomputing directly from the frame offset"
+    );
     assert!(projection.resolve([f32::NAN, 0.0]).is_err());
     // Replacing a same-id owner observation cannot inherit another allocation's proof.
-    std::sync::Arc::make_mut(&mut projection.owners)[0].viewport_position_bits[0] =
-        17.75_f32.to_bits();
-    let changed = projection.resolve([2.0, 3.0]).unwrap();
-    assert_eq!(changed.owner_paint_offset(child), Some([2.25, 3.0]));
+    std::sync::Arc::make_mut(&mut projection.owners)[1].viewport_position_bits[0] =
+        5.5_f32.to_bits();
+    let changed = projection.resolve([0.5, 0.0]).unwrap();
+    assert_eq!(changed.owner_paint_offset(child), Some([0.0, 0.0]));
 }
 
 #[test]

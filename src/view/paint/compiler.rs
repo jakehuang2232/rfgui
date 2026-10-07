@@ -1457,7 +1457,9 @@ struct ArtifactSurfaceOwnerPlacement {
 
 #[derive(Clone, Debug)]
 struct ResolvedArtifactSurfaceHostPlacement {
-    owner_paint_offset_bits: std::sync::Arc<FxHashMap<NodeKey, [u32; 2]>>,
+    /// Per owner, the host offset's change to the owner's snapped paint
+    /// offset; zero for a zero host.
+    host_delta_bits: std::sync::Arc<FxHashMap<NodeKey, [u32; 2]>>,
 }
 
 impl ArtifactSurfaceHostPlacementProjection {
@@ -1481,6 +1483,56 @@ impl ArtifactSurfaceHostPlacementProjection {
             owners: owners.into(),
             resolved: Default::default(),
         })
+    }
+
+    /// Every owner's paint offset after its ancestors' and its own pixel
+    /// snap, starting from `start` at the owner roots.
+    fn snap_chain(
+        &self,
+        placements: &FxHashMap<NodeKey, ArtifactSurfaceOwnerPlacement>,
+        start: [f32; 2],
+    ) -> Result<FxHashMap<NodeKey, [f32; 2]>, SpatialProjectionError> {
+        let mut offsets: FxHashMap<NodeKey, [f32; 2]> =
+            FxHashMap::with_capacity_and_hasher(self.owners.len(), Default::default());
+        let mut chain = Vec::new();
+        let mut seen = FxHashSet::default();
+        for placement in self.owners.iter() {
+            if offsets.contains_key(&placement.owner) {
+                continue;
+            }
+            chain.clear();
+            seen.clear();
+            let mut cursor = placement.owner;
+            // Artifact owner stores preserve canonical traversal order, not a
+            // parent-first topological order. Resolve the bounded ancestry
+            // explicitly so a child-first store cannot change snap semantics.
+            let mut parent_paint_offset = loop {
+                if let Some(offset) = offsets.get(&cursor) {
+                    break *offset;
+                }
+                if chain.len() >= usize::from(u8::MAX) || !seen.insert(cursor) {
+                    return Err(SpatialProjectionError::InvalidSnapshot(cursor));
+                }
+                let current = placements
+                    .get(&cursor)
+                    .copied()
+                    .ok_or(SpatialProjectionError::InvalidSnapshot(cursor))?;
+                chain.push(current);
+                match current.parent {
+                    Some(parent) => cursor = parent,
+                    None => break start,
+                }
+            };
+            for current in chain.drain(..).rev() {
+                parent_paint_offset = paint_offset_after_owner_snap(
+                    current.viewport_position_bits.map(f32::from_bits),
+                    parent_paint_offset,
+                )
+                .ok_or(SpatialProjectionError::InvalidSnapshot(current.owner))?;
+                offsets.insert(current.owner, parent_paint_offset);
+            }
+        }
+        Ok(offsets)
     }
 
     fn resolve(
@@ -1507,49 +1559,34 @@ impl ArtifactSurfaceHostPlacementProjection {
                 return Err(SpatialProjectionError::InvalidSnapshot(placement.owner));
             }
         }
-        let mut owner_paint_offset_bits: FxHashMap<NodeKey, [u32; 2]> =
-            FxHashMap::with_capacity_and_hasher(self.owners.len(), Default::default());
-        let mut chain = Vec::new();
-        let mut seen = FxHashSet::default();
-        for placement in self.owners.iter() {
-            if owner_paint_offset_bits.contains_key(&placement.owner) {
-                continue;
-            }
-            chain.clear();
-            seen.clear();
-            let mut cursor = placement.owner;
-            // Artifact owner stores preserve canonical traversal order, not a
-            // parent-first topological order. Resolve the bounded ancestry
-            // explicitly so a child-first store cannot change snap semantics.
-            let mut parent_paint_offset = loop {
-                if let Some(bits) = owner_paint_offset_bits.get(&cursor) {
-                    break bits.map(f32::from_bits);
-                }
-                if chain.len() >= usize::from(u8::MAX) || !seen.insert(cursor) {
-                    return Err(SpatialProjectionError::InvalidSnapshot(cursor));
-                }
-                let current = placements
-                    .get(&cursor)
-                    .copied()
-                    .ok_or(SpatialProjectionError::InvalidSnapshot(cursor))?;
-                chain.push(current);
-                match current.parent {
-                    Some(parent) => cursor = parent,
-                    None => break host_paint_offset,
-                }
-            };
-            for current in chain.drain(..).rev() {
-                parent_paint_offset = paint_offset_after_owner_snap(
-                    current.viewport_position_bits.map(f32::from_bits),
-                    parent_paint_offset,
-                )
-                .ok_or(SpatialProjectionError::InvalidSnapshot(current.owner))?;
-                owner_paint_offset_bits
-                    .insert(current.owner, parent_paint_offset.map(f32::to_bits));
-            }
-        }
+        // Recorded commands already carry each owner's pixel snap for a zero
+        // host. Placement adds only what this host offset changes in that
+        // chain, so a snap is never applied twice.
+        let host_chain = self.snap_chain(&placements, host_paint_offset)?;
+        let host_delta_bits = if offset_bits == [0.0_f32, 0.0_f32].map(f32::to_bits) {
+            host_chain
+                .keys()
+                .map(|owner| (*owner, [0.0_f32, 0.0_f32].map(f32::to_bits)))
+                .collect()
+        } else {
+            let zero_chain = self.snap_chain(&placements, [0.0, 0.0])?;
+            host_chain
+                .iter()
+                .map(|(owner, host)| {
+                    let zero = zero_chain
+                        .get(owner)
+                        .ok_or(SpatialProjectionError::InvalidSnapshot(*owner))?;
+                    let delta = [host[0] - zero[0], host[1] - zero[1]];
+                    delta
+                        .iter()
+                        .all(|value| value.is_finite())
+                        .then(|| (*owner, delta.map(f32::to_bits)))
+                        .ok_or(SpatialProjectionError::InvalidSnapshot(*owner))
+                })
+                .collect::<Result<FxHashMap<_, _>, _>>()?
+        };
         let resolved = ResolvedArtifactSurfaceHostPlacement {
-            owner_paint_offset_bits: std::sync::Arc::new(owner_paint_offset_bits),
+            host_delta_bits: std::sync::Arc::new(host_delta_bits),
         };
         *self
             .resolved
@@ -1565,7 +1602,7 @@ impl ArtifactSurfaceHostPlacementProjection {
 
 impl ResolvedArtifactSurfaceHostPlacement {
     fn owner_paint_offset(&self, owner: NodeKey) -> Option<[f32; 2]> {
-        self.owner_paint_offset_bits
+        self.host_delta_bits
             .get(&owner)
             .copied()
             .map(|bits| bits.map(f32::from_bits))

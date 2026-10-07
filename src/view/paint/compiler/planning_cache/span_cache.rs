@@ -55,7 +55,7 @@ impl PlacementProof {
                 *old == base_delta.map(f32::to_bits)
             }
             (Self::SceneRoot(old), ArtifactSurfaceSpanPlacement::SceneRoot(now)) => {
-                Arc::ptr_eq(&old.owner_paint_offset_bits, &now.owner_paint_offset_bits)
+                Arc::ptr_eq(&old.host_delta_bits, &now.host_delta_bits)
             }
             _ => false,
         }
