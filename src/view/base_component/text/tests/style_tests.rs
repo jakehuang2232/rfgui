@@ -91,10 +91,10 @@ fn text_transform_setters_mark_runtime_and_update_exact_bounds() {
     assert!(text.local_dirty_flags().contains(DirtyFlags::RUNTIME));
     let arena = arena();
     let source = text
-        .retained_transform_surface_bounds(&arena, [0.0, 0.0])
+        .retained_transform_surface_bounds(&arena, [0.0, 0.0], 1.0)
         .expect("direct Text transform source bounds");
     let output = text
-        .retained_transform_output_bounds(&arena, [0.0, 0.0])
+        .retained_transform_output_bounds(&arena, [0.0, 0.0], 1.0)
         .expect("direct Text transform output bounds");
     assert_eq!(source.width.to_bits(), 80.0_f32.to_bits());
     assert_eq!(source.height.to_bits(), 24.0_f32.to_bits());
@@ -117,7 +117,7 @@ fn text_rotate_matrix_and_nonfinite_transform_observations_fail_closed() {
 
     text.set_transform(Transform::new([Rotate::deg(90.0)]));
     let rotated = text
-        .retained_transform_output_bounds(&arena, [0.0, 0.0])
+        .retained_transform_output_bounds(&arena, [0.0, 0.0], 1.0)
         .expect("finite rotation bounds");
     assert!((rotated.width - 24.0).abs() < 0.001);
     assert!((rotated.height - 80.0).abs() < 0.001);
@@ -143,7 +143,7 @@ fn text_rotate_matrix_and_nonfinite_transform_observations_fail_closed() {
     assert!(text.has_retained_transform_surface());
     assert!(text.compositor_local_transform_snapshot().is_some());
     assert!(
-        text.retained_transform_output_bounds(&arena, [0.0, 0.0])
+        text.retained_transform_output_bounds(&arena, [0.0, 0.0], 1.0)
             .is_none(),
         "non-finite geometry must not produce a sealable output bound"
     );

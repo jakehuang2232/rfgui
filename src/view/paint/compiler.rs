@@ -1072,43 +1072,56 @@ fn spatial_prepare_error(error: SpatialProjectionError) -> SingleTargetSurfaceDa
 /// owner-local clips and chunks are placed before the artifact is validated.
 fn place_artifact_geometry(
     artifact: &mut PaintArtifact,
+    scale_factor: f32,
     mut cache: Option<&mut PlanningCache>,
 ) -> Result<std::sync::Arc<super::ArtifactSpatialProjection>, SingleTargetSurfaceDagPrepareError> {
     let spatial = artifact_spatial_projection(artifact, cache.as_deref_mut())?;
     spatial
         .place_clips(&mut artifact.clip_nodes)
         .map_err(spatial_prepare_error)?;
-    place_artifact_chunks(artifact, &spatial, cache).map_err(|error| match error {
-        ChunkPlacementError::MissingFrame(owner) => {
-            spatial_prepare_error(SpatialProjectionError::InvalidSnapshot(owner))
-        }
-        ChunkPlacementError::InvalidChunk => {
-            SingleTargetSurfaceDagPrepareError::InvalidArtifactStore
-        }
-    })?;
+    place_artifact_chunks(artifact, &spatial, scale_factor, cache).map_err(
+        |error| match error {
+            ChunkPlacementError::MissingFrame(owner) => {
+                spatial_prepare_error(SpatialProjectionError::InvalidSnapshot(owner))
+            }
+            ChunkPlacementError::Spatial(error) => spatial_prepare_error(error),
+            ChunkPlacementError::InvalidChunk => {
+                SingleTargetSurfaceDagPrepareError::InvalidArtifactStore
+            }
+        },
+    )?;
     Ok(spatial)
 }
 
 /// Places every layout-frame chunk and its commands at its frame's origin,
-/// then every chunk at its owner's snapped paint offset. Command order and
-/// every chunk's op range are unchanged. Recorded
-/// blocks are placed block by block, so an unmoved block keeps the same
-/// placed allocation and every allocation-keyed proof downstream still holds.
+/// then every chunk at its owner's paint offset snapped to the physical pixel
+/// grid of `scale_factor`. Command order and every chunk's op range are
+/// unchanged. Recorded blocks are placed block by block, so an unmoved block
+/// keeps the same placed allocation and every allocation-keyed proof
+/// downstream still holds.
 pub(crate) fn place_artifact_chunks(
     artifact: &mut PaintArtifact,
     spatial: &super::ArtifactSpatialProjection,
+    scale_factor: f32,
     cache: Option<&mut PlanningCache>,
 ) -> Result<(), ChunkPlacementError> {
     let _profile = crate::view::paint::work_profile::scope("place_artifact_chunks");
+    let snaps = spatial
+        .owner_paint_offsets(scale_factor)
+        .map_err(ChunkPlacementError::Spatial)?;
+    let sources = ChunkPlacementSources {
+        spatial,
+        snaps: &snaps,
+    };
     if artifact.chunks.iter().all(|chunk| {
         chunk.frame == super::PaintChunkFrame::Viewport
-            && spatial
-                .owner_paint_offset(chunk.owner)
+            && snaps
+                .get(&chunk.owner)
                 .is_some_and(|snap| snap.map(f32::to_bits) == [0.0_f32.to_bits(); 2])
     }) {
         return Ok(());
     }
-    if let Some((chunks, ops)) = place_shared_chunk_blocks(artifact, spatial, cache)? {
+    if let Some((chunks, ops)) = place_shared_chunk_blocks(artifact, sources, cache)? {
         artifact.chunks = chunks;
         artifact.ops = ops;
         return Ok(());
@@ -1120,7 +1133,7 @@ pub(crate) fn place_artifact_chunks(
         let local_ops = ops
             .get(chunk.op_range.clone())
             .ok_or(ChunkPlacementError::InvalidChunk)?;
-        let (placed, placed_ops) = place_chunk(chunk, local_ops, spatial)?;
+        let (placed, placed_ops) = place_chunk(chunk, local_ops, sources)?;
         if let Some(placed_ops) = placed_ops {
             ops[start..start + placed_ops.len()].clone_from_slice(&placed_ops);
         }
@@ -1138,8 +1151,11 @@ pub(crate) fn place_artifact_chunks(
 /// Why one artifact's chunks could not be placed.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ChunkPlacementError {
-    /// A layout-frame chunk names no derivable layout frame.
+    /// A layout-frame chunk names no derivable layout frame, or a chunk's
+    /// owner has no snap.
     MissingFrame(NodeKey),
+    /// The owner snap chain is invalid.
+    Spatial(SpatialProjectionError),
     /// A chunk's command range or translated geometry is malformed.
     InvalidChunk,
 }
@@ -1148,9 +1164,16 @@ pub(crate) enum ChunkPlacementError {
 /// chunk, and its owner's snapped paint offset.
 type ChunkPlacement = (Option<[u32; 2]>, [u32; 2]);
 
+/// The two inputs of chunk placement: frame origins and owner snaps.
+#[derive(Clone, Copy)]
+struct ChunkPlacementSources<'a> {
+    spatial: &'a super::ArtifactSpatialProjection,
+    snaps: &'a FxHashMap<NodeKey, [f32; 2]>,
+}
+
 fn chunk_placement(
     chunk: &super::PaintChunk,
-    spatial: &super::ArtifactSpatialProjection,
+    sources: ChunkPlacementSources<'_>,
 ) -> Result<ChunkPlacement, ChunkPlacementError> {
     let missing = ChunkPlacementError::MissingFrame(chunk.owner);
     let origin = match chunk.frame {
@@ -1159,11 +1182,11 @@ fn chunk_placement(
             chunk
                 .properties
                 .layout_position
-                .and_then(|frame| spatial.frame_origin(frame.0))
+                .and_then(|frame| sources.spatial.frame_origin(frame.0))
                 .ok_or(missing)?,
         ),
     };
-    let snap = spatial.owner_paint_offset(chunk.owner).ok_or(missing)?;
+    let snap = *sources.snaps.get(&chunk.owner).ok_or(missing)?;
     Ok((
         origin.map(|origin| origin.map(f32::to_bits)),
         snap.map(f32::to_bits),
@@ -1181,9 +1204,9 @@ fn is_unmoved(placement: ChunkPlacement) -> bool {
 fn place_chunk(
     chunk: &super::PaintChunk,
     local_ops: &[PaintOp],
-    spatial: &super::ArtifactSpatialProjection,
+    sources: ChunkPlacementSources<'_>,
 ) -> Result<(super::PaintChunk, Option<Vec<PaintOp>>), ChunkPlacementError> {
-    let placement = chunk_placement(chunk, spatial)?;
+    let placement = chunk_placement(chunk, sources)?;
     if is_unmoved(placement) {
         return Ok((chunk.clone(), None));
     }
@@ -1207,7 +1230,7 @@ fn place_chunk(
 #[allow(clippy::type_complexity)]
 fn place_shared_chunk_blocks(
     artifact: &PaintArtifact,
-    spatial: &super::ArtifactSpatialProjection,
+    sources: ChunkPlacementSources<'_>,
     mut cache: Option<&mut PlanningCache>,
 ) -> Result<
     Option<(
@@ -1240,7 +1263,7 @@ fn place_shared_chunk_blocks(
         };
         let placements = block
             .iter()
-            .map(|chunk| chunk_placement(chunk, spatial))
+            .map(|chunk| chunk_placement(chunk, sources))
             .collect::<Result<Vec<_>, _>>()?;
         let placed = if placements.iter().copied().all(is_unmoved) {
             Some((block.clone(), op_block.cloned()))
@@ -1260,7 +1283,7 @@ fn place_shared_chunk_blocks(
                     let local_ops = placed_ops
                         .get(range.clone())
                         .ok_or(ChunkPlacementError::InvalidChunk)?;
-                    let (placed, chunk_ops) = place_chunk(chunk, local_ops, spatial)?;
+                    let (placed, chunk_ops) = place_chunk(chunk, local_ops, sources)?;
                     if let Some(chunk_ops) = chunk_ops {
                         placed_ops[range].clone_from_slice(&chunk_ops);
                     }
@@ -1293,10 +1316,11 @@ fn place_shared_chunk_blocks(
 
 fn validate_artifact_surface_dag_program(
     mut artifact: PaintArtifact,
+    scale_factor: f32,
     mut cache: Option<&mut PlanningCache>,
 ) -> Result<ValidatedArtifactSurfaceDagProgram, SingleTargetSurfaceDagPrepareError> {
     let _profile = crate::view::paint::work_profile::scope("validate_artifact_surface_dag_program");
-    let spatial = place_artifact_geometry(&mut artifact, cache.as_deref_mut())?;
+    let spatial = place_artifact_geometry(&mut artifact, scale_factor, cache.as_deref_mut())?;
     let Some(validated) = validate_artifact_store_with_cache(
         &artifact,
         ArtifactStoreValidationPolicy::SurfaceDag,
@@ -1461,6 +1485,7 @@ struct ArtifactSurfaceHostPlacementProjection {
 struct HostPlacementResolutionMemo {
     owners: std::sync::Arc<[super::OwnerSnapPoints]>,
     offset_bits: [u32; 2],
+    scale_factor_bits: u32,
     resolved: ResolvedArtifactSurfaceHostPlacement,
 }
 
@@ -1482,8 +1507,10 @@ impl ArtifactSurfaceHostPlacementProjection {
     fn resolve(
         &self,
         host_paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Result<ResolvedArtifactSurfaceHostPlacement, SpatialProjectionError> {
         let offset_bits = host_paint_offset.map(f32::to_bits);
+        let scale_factor_bits = scale_factor.to_bits();
         if let Some(memo) = self
             .resolved
             .lock()
@@ -1492,6 +1519,7 @@ impl ArtifactSurfaceHostPlacementProjection {
             .filter(|memo| {
                 std::sync::Arc::ptr_eq(&memo.owners, &self.owners)
                     && memo.offset_bits == offset_bits
+                    && memo.scale_factor_bits == scale_factor_bits
             })
         {
             return Ok(memo.resolved.clone());
@@ -1499,14 +1527,16 @@ impl ArtifactSurfaceHostPlacementProjection {
         // Intake already placed every chunk at its owner's snapped paint
         // offset for a zero host. Placement adds only what this host offset
         // changes in that chain, so a snap is never applied twice.
-        let zero_chain = super::snapped_owner_paint_offsets(&self.owners, [0.0, 0.0])?;
+        let zero_chain =
+            super::snapped_owner_paint_offsets(&self.owners, [0.0, 0.0], scale_factor)?;
         let host_delta_bits = if offset_bits == [0.0_f32, 0.0_f32].map(f32::to_bits) {
             zero_chain
                 .keys()
                 .map(|owner| (*owner, [0.0_f32, 0.0_f32].map(f32::to_bits)))
                 .collect()
         } else {
-            let host_chain = super::snapped_owner_paint_offsets(&self.owners, host_paint_offset)?;
+            let host_chain =
+                super::snapped_owner_paint_offsets(&self.owners, host_paint_offset, scale_factor)?;
             host_chain
                 .iter()
                 .map(|(owner, host)| {
@@ -1531,6 +1561,7 @@ impl ArtifactSurfaceHostPlacementProjection {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(HostPlacementResolutionMemo {
             owners: self.owners.clone(),
             offset_bits,
+            scale_factor_bits,
             resolved: resolved.clone(),
         });
         Ok(resolved)
@@ -2659,7 +2690,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
     }
     let host_placement = program
         .host_placement
-        .resolve(context.paint_offset())
+        .resolve(context.paint_offset(), context.scale_factor())
         .map_err(TransitionError::SpatialSnapshot)
         .map_err(SurfaceDagError::Transition)
         .map_err(ArtifactSurfaceRasterPlanError::SurfaceDag)?;
@@ -3131,7 +3162,7 @@ pub(crate) fn prepare_artifact_surface_raster_plan(
     context: ArtifactSurfaceRasterContext,
 ) -> Result<PreparedArtifactSurfaceRasterPlan, ArtifactSurfaceRasterPlanError> {
     let _profile = crate::view::paint::work_profile::scope("prepare_artifact_surface_raster_plan");
-    let program = validate_artifact_surface_dag_program(artifact, None)
+    let program = validate_artifact_surface_dag_program(artifact, context.scale_factor(), None)
         .map_err(ArtifactSurfaceRasterPlanError::ArtifactProgram)?;
     prepare_artifact_surface_raster_plan_from_program(program, context, None)
 }
@@ -3143,11 +3174,12 @@ pub(crate) fn prepare_artifact_surface_raster_plan_cached(
 ) -> Result<PreparedArtifactSurfaceRasterPlan, ArtifactSurfaceRasterPlanError> {
     let _profile = crate::view::paint::work_profile::scope("prepare_artifact_surface_raster_plan");
     cache.begin();
-    let result = validate_artifact_surface_dag_program(artifact, Some(cache))
-        .map_err(ArtifactSurfaceRasterPlanError::ArtifactProgram)
-        .and_then(|program| {
-            prepare_artifact_surface_raster_plan_from_program(program, context, Some(cache))
-        });
+    let result =
+        validate_artifact_surface_dag_program(artifact, context.scale_factor(), Some(cache))
+            .map_err(ArtifactSurfaceRasterPlanError::ArtifactProgram)
+            .and_then(|program| {
+                prepare_artifact_surface_raster_plan_from_program(program, context, Some(cache))
+            });
     cache.finish(result.is_ok());
     result
 }
@@ -4980,7 +5012,7 @@ fn resolve_validated_clip_values(artifact: &PaintArtifact) -> Option<Vec<Resolve
 pub(crate) fn resolved_clips_full_and_refreshed_for_test(
     artifact: &PaintArtifact,
 ) -> (Option<Vec<ResolvedClip>>, Option<Vec<ResolvedClip>>) {
-    let artifact = direct_command_test_support::with_placed_geometry(artifact)
+    let artifact = direct_command_test_support::with_placed_geometry(artifact, 1.0)
         .expect("owner-local clips have layout frames");
     (
         validate_artifact_store_with_cache(

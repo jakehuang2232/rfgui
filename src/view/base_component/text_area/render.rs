@@ -379,12 +379,21 @@ impl TextArea {
     /// The legacy paint offset of this TextArea's content: the owner snap,
     /// then the content anchor snap, over `parent`. It walks the same snap
     /// points `paint_snap_points` hands the compiler.
-    fn effective_paint_offset(&self, arena: &NodeArena, parent: [f32; 2]) -> [f32; 2] {
+    fn effective_paint_offset(
+        &self,
+        arena: &NodeArena,
+        parent: [f32; 2],
+        scale_factor: f32,
+    ) -> [f32; 2] {
         self.paint_snap_points(arena)
             .into_iter()
             .flatten()
             .try_fold(parent, |offset, point| {
-                crate::view::base_component::paint_offset_after_owner_snap(point, offset)
+                crate::view::base_component::paint_offset_after_owner_snap(
+                    point,
+                    offset,
+                    scale_factor,
+                )
             })
             .unwrap_or([f32::NAN; 2])
     }
@@ -1891,7 +1900,8 @@ impl Renderable for TextArea {
         mut ctx: UiBuildContext,
     ) -> BuildState {
         let parent_paint_offset = ctx.paint_offset();
-        ctx.set_paint_offset(self.effective_paint_offset(arena, parent_paint_offset));
+        let scale_factor = ctx.viewport().scale_factor();
+        ctx.set_paint_offset(self.effective_paint_offset(arena, parent_paint_offset, scale_factor));
 
         let previous_scissor = ctx.push_scissor_rect(self.viewport_scissor_rect());
         let unified_render_package = self.unified_inline_ifc_render_package(arena);
@@ -2182,7 +2192,7 @@ impl TextArea {
                 owner,
                 arena,
                 false,
-                self.effective_paint_offset(arena, parent_paint_offset),
+                self.effective_paint_offset(arena, parent_paint_offset, ORACLE_SCALE_FACTOR),
             )
             .ok()?;
         let Some(root_glyph) = payload.glyph_op.as_ref() else {
@@ -2273,7 +2283,7 @@ impl TextArea {
                 owner,
                 arena,
                 false,
-                self.effective_paint_offset(arena, parent_paint_offset),
+                self.effective_paint_offset(arena, parent_paint_offset, ORACLE_SCALE_FACTOR),
             )
             .ok()?;
         let root_glyph = payload.glyph_op.as_ref()?;
@@ -2671,7 +2681,7 @@ impl TextArea {
                 owner,
                 arena,
                 false,
-                self.effective_paint_offset(arena, parent_paint_offset),
+                self.effective_paint_offset(arena, parent_paint_offset, ORACLE_SCALE_FACTOR),
             ),
             Ok(PlainTextAreaPaintPayload {
                 glyph_op: Some(_),
@@ -2745,7 +2755,7 @@ impl TextArea {
                 owner,
                 arena,
                 false,
-                self.effective_paint_offset(arena, parent_paint_offset),
+                self.effective_paint_offset(arena, parent_paint_offset, ORACLE_SCALE_FACTOR),
             )
             .ok()?
         else {
@@ -2841,7 +2851,7 @@ impl TextArea {
                 owner,
                 arena,
                 false,
-                self.effective_paint_offset(arena, parent_paint_offset),
+                self.effective_paint_offset(arena, parent_paint_offset, ORACLE_SCALE_FACTOR),
             )
             .ok()?;
         let glyph = payload.glyph_op.as_ref()?;
@@ -2905,7 +2915,7 @@ impl TextArea {
                 owner,
                 arena,
                 false,
-                self.effective_paint_offset(arena, parent_paint_offset),
+                self.effective_paint_offset(arena, parent_paint_offset, ORACLE_SCALE_FACTOR),
             )
             .ok()?;
         let actual_glyph = actual_payload.glyph_op.as_ref()?;
@@ -3019,7 +3029,8 @@ impl TextArea {
         {
             return None;
         }
-        let effective_offset = self.effective_paint_offset(arena, live_parent_paint_offset);
+        let effective_offset =
+            self.effective_paint_offset(arena, live_parent_paint_offset, ORACLE_SCALE_FACTOR);
         let caret = self.caret_draw_rect_payload(arena, effective_offset).ok()?;
         Some(caret.map(|caret| {
             [
@@ -3304,3 +3315,7 @@ fn draw_rect_union(
         && bounds.height >= 0.0)
         .then_some(bounds)
 }
+
+/// The retained grammar oracles below the legacy build describe recorded
+/// TextArea geometry on the logical grid, where their fixtures place it.
+const ORACLE_SCALE_FACTOR: f32 = 1.0;

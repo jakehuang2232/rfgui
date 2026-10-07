@@ -141,7 +141,7 @@ fn owner_projection_preserves_the_preexisting_active_snap_bit_for_bit() {
     let parent = [3.5, -2.25];
     let owner = [4.75, 1.5];
     ctx.set_paint_offset(parent);
-    let expected = crate::view::base_component::paint_offset_after_owner_snap(owner, parent)
+    let expected = crate::view::base_component::paint_offset_after_owner_snap(owner, parent, 1.0)
         .expect("finite fixture");
     ctx.snap_owner_paint_offset(owner);
     let projection = ctx.owner_paint_offset_projection();

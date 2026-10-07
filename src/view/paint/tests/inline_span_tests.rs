@@ -67,6 +67,7 @@ fn wrapping_inline_span_shadows_preserve_fragment_order_and_match_legacy() {
                     span.layout_state.layout_position.y,
                 ],
                 [0.0, 0.0],
+                1.0,
             )
             .unwrap(),
         )

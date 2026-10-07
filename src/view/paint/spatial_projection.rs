@@ -21,9 +21,12 @@ pub(crate) struct ArtifactSpatialProjection {
     /// Origins of the layout frames owner-local clips and chunks are placed in.
     frames: FxHashMap<NodeKey, Vec2>,
     owner_snap_points: std::sync::Arc<[OwnerSnapPoints]>,
-    /// Every owner's snapped paint offset for a zero host offset.
-    owner_paint_offsets: FxHashMap<NodeKey, [f32; 2]>,
+    /// Every owner's snapped paint offset for a zero host offset, for the
+    /// last scale factor asked.
+    owner_paint_offsets: std::sync::Mutex<Option<(u32, OwnerPaintOffsets)>>,
 }
+
+pub(crate) type OwnerPaintOffsets = std::sync::Arc<FxHashMap<NodeKey, [f32; 2]>>;
 
 /// The viewport points where one owner meets the pixel grid, in order; each
 /// snaps the paint offset reaching it. An owner without points paints at its
@@ -69,12 +72,14 @@ impl OwnerSnapPoints {
     }
 }
 
-/// Every owner's paint offset after its ancestors' snaps and its own,
-/// starting from `start` at the owner roots. This is the legacy renderer's
-/// owner snap chain, so placement reproduces its pixel positions.
+/// Every owner's paint offset after its ancestors' snaps and its own onto the
+/// physical pixel grid of `scale_factor`, starting from `start` at the owner
+/// roots. This is the legacy renderer's owner snap chain, so placement
+/// reproduces its pixel positions.
 pub(crate) fn snapped_owner_paint_offsets(
     owners: &[OwnerSnapPoints],
     start: [f32; 2],
+    scale_factor: f32,
 ) -> Result<FxHashMap<NodeKey, [f32; 2]>, SpatialProjectionError> {
     let mut by_owner = FxHashMap::with_capacity_and_hasher(owners.len(), Default::default());
     for owner in owners {
@@ -115,9 +120,12 @@ pub(crate) fn snapped_owner_paint_offsets(
         };
         for current in chain.drain(..).rev() {
             for point in current.points_bits.into_iter().flatten() {
-                paint_offset =
-                    paint_offset_after_owner_snap(point.map(f32::from_bits), paint_offset)
-                        .ok_or(SpatialProjectionError::InvalidSnapshot(current.owner))?;
+                paint_offset = paint_offset_after_owner_snap(
+                    point.map(f32::from_bits),
+                    paint_offset,
+                    scale_factor,
+                )
+                .ok_or(SpatialProjectionError::InvalidSnapshot(current.owner))?;
             }
             offsets.insert(current.owner, paint_offset);
         }
@@ -156,12 +164,11 @@ impl ArtifactSpatialProjection {
                 OwnerSnapPoints::try_new(&graph, snapshot.owner, snapshot.parent, snapshot.snap)
             })
             .collect::<Result<std::sync::Arc<[_]>, _>>()?;
-        let owner_paint_offsets = snapped_owner_paint_offsets(&owner_snap_points, [0.0, 0.0])?;
         Ok(Self {
             transforms,
             frames,
             owner_snap_points,
-            owner_paint_offsets,
+            owner_paint_offsets: Default::default(),
         })
     }
 
@@ -214,10 +221,29 @@ impl ArtifactSpatialProjection {
         &self.owner_snap_points
     }
 
-    /// The paint offset an owner of this artifact paints at for a zero host
-    /// offset: the sum of its ancestors' pixel snaps and its own.
-    pub(crate) fn owner_paint_offset(&self, owner: NodeKey) -> Option<[f32; 2]> {
-        self.owner_paint_offsets.get(&owner).copied()
+    /// The paint offset every owner of this artifact paints at for a zero
+    /// host offset on the physical pixel grid of `scale_factor`: the sum of
+    /// its ancestors' pixel snaps and its own.
+    pub(crate) fn owner_paint_offsets(
+        &self,
+        scale_factor: f32,
+    ) -> Result<OwnerPaintOffsets, SpatialProjectionError> {
+        let mut memo = self
+            .owner_paint_offsets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((scale_bits, offsets)) = memo.as_ref()
+            && *scale_bits == scale_factor.to_bits()
+        {
+            return Ok(offsets.clone());
+        }
+        let offsets = std::sync::Arc::new(snapped_owner_paint_offsets(
+            &self.owner_snap_points,
+            [0.0, 0.0],
+            scale_factor,
+        )?);
+        *memo = Some((scale_factor.to_bits(), offsets.clone()));
+        Ok(offsets)
     }
 }
 

@@ -26,33 +26,35 @@ impl ArtifactCompileError {
 
 /// The compiler intake for an artifact compiled outside the production entry:
 /// owner-local clips and layout-frame chunks are placed at their frames, and
-/// every chunk takes its owner's pixel snap.
+/// every chunk takes its owner's snap to the physical pixel grid of
+/// `scale_factor`.
 pub(crate) fn with_placed_geometry(
     artifact: &PaintArtifact,
+    scale_factor: f32,
 ) -> Option<std::borrow::Cow<'_, PaintArtifact>> {
     let spatial = super::super::ArtifactSpatialProjection::try_new(artifact).ok()?;
     if !artifact
         .clip_nodes
         .iter()
         .any(|clip| clip.geometry.is_owner_local())
-        && !chunks_move(artifact, &spatial)
+        && !chunks_move(artifact, &spatial, scale_factor)
     {
         return Some(std::borrow::Cow::Borrowed(artifact));
     }
     let mut placed = artifact.clone();
     spatial.place_clips(&mut placed.clip_nodes).ok()?;
-    super::place_artifact_chunks(&mut placed, &spatial, None).ok()?;
+    super::place_artifact_chunks(&mut placed, &spatial, scale_factor, None).ok()?;
     Some(std::borrow::Cow::Owned(placed))
 }
 
-/// `artifact` as the compiler reads it: every chunk placed in viewport space
-/// at its owner's pixel snap. Owner snaps are then cleared, so compiling the
-/// result places nothing a second time.
-pub(crate) fn with_placed_chunks(mut artifact: PaintArtifact) -> PaintArtifact {
+/// `artifact` as the compiler reads it at `scale_factor`: every chunk placed
+/// in viewport space at its owner's pixel snap. Owner snaps are then cleared,
+/// so compiling the result places nothing a second time.
+pub(crate) fn with_placed_chunks(mut artifact: PaintArtifact, scale_factor: f32) -> PaintArtifact {
     let spatial = super::super::ArtifactSpatialProjection::try_new(&artifact)
         .expect("recorded artifacts have derivable frames and owner snaps");
-    if chunks_move(&artifact, &spatial) {
-        super::place_artifact_chunks(&mut artifact, &spatial, None)
+    if chunks_move(&artifact, &spatial, scale_factor) {
+        super::place_artifact_chunks(&mut artifact, &spatial, scale_factor, None)
             .expect("chunks place at their frames and owner snaps");
     }
     for owner in &mut artifact.owner_nodes {
@@ -66,11 +68,15 @@ pub(crate) fn with_placed_chunks(mut artifact: PaintArtifact) -> PaintArtifact {
 fn chunks_move(
     artifact: &PaintArtifact,
     spatial: &super::super::ArtifactSpatialProjection,
+    scale_factor: f32,
 ) -> bool {
+    let Ok(snaps) = spatial.owner_paint_offsets(scale_factor) else {
+        return true;
+    };
     artifact.chunks.iter().any(|chunk| {
         chunk.frame == crate::view::paint::PaintChunkFrame::Layout
-            || spatial
-                .owner_paint_offset(chunk.owner)
+            || snaps
+                .get(&chunk.owner)
                 .is_some_and(|snap| snap.map(f32::to_bits) != [0.0_f32.to_bits(); 2])
     })
 }
@@ -81,7 +87,7 @@ pub(crate) fn try_compile_artifact(
     graph: &mut FrameGraph,
     mut ctx: UiBuildContext,
 ) -> Result<BuildState, ArtifactCompileError> {
-    let Some(artifact) = with_placed_geometry(artifact) else {
+    let Some(artifact) = with_placed_geometry(artifact, ctx.viewport().scale_factor()) else {
         return Err(ArtifactCompileError {
             kind: ArtifactCompileErrorKind::InvalidStore,
             state: ctx.into_state(),

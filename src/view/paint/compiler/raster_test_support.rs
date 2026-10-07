@@ -116,6 +116,6 @@ pub(super) fn validate_artifact_store_with_policy(
     artifact: &PaintArtifact,
     policy: ArtifactStoreValidationPolicy,
 ) -> Option<ValidatedArtifact> {
-    let artifact = super::direct_command_test_support::with_placed_geometry(artifact)?;
+    let artifact = super::direct_command_test_support::with_placed_geometry(artifact, 1.0)?;
     validate_artifact_store_with_cache(&artifact, policy, None)
 }

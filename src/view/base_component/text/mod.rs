@@ -1111,14 +1111,17 @@ impl ElementTrait for Text {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<super::RetainedSurfaceBounds> {
         if let Some(matrix) = self.resolved_transform {
-            let source_bounds = self.retained_transform_surface_bounds(arena, paint_offset)?;
+            let source_bounds =
+                self.retained_transform_surface_bounds(arena, paint_offset, scale_factor)?;
             let visual_bounds =
                 crate::view::viewport::scene_helpers::paint_snapped_retained_surface_bounds(
                     self,
                     source_bounds,
                     paint_offset,
+                    scale_factor,
                 );
             return super::TransformSurfaceGeometrySnapshot::new(
                 source_bounds,
@@ -1146,12 +1149,14 @@ impl ElementTrait for Text {
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
         parent_snapped_paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<super::RetainedSurfaceBounds> {
         super::exact_native_nested_isolation_render_output_bounds(
             self,
             owner,
             arena,
             parent_snapped_paint_offset,
+            scale_factor,
         )
     }
 
@@ -1159,8 +1164,9 @@ impl ElementTrait for Text {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<super::RetainedSurfaceBounds> {
-        self.retained_transform_output_bounds(arena, paint_offset)
+        self.retained_transform_output_bounds(arena, paint_offset, scale_factor)
     }
 
     fn has_active_animator(&self) -> bool {
@@ -1232,6 +1238,7 @@ impl ElementTrait for Text {
         &self,
         _arena: &crate::view::node_arena::NodeArena,
         _paint_offset: [f32; 2],
+        _scale_factor: f32,
     ) -> Option<super::RetainedSurfaceBounds> {
         self.resolved_transform
             .map(|_| self.untransformed_retained_paint_bounds())

@@ -1762,19 +1762,21 @@ impl ElementTrait for Svg {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<super::RetainedSurfaceBounds> {
         self.element
-            .retained_transform_surface_bounds(arena, paint_offset)
+            .retained_transform_surface_bounds(arena, paint_offset, scale_factor)
     }
 
     fn retained_transform_output_bounds(
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<super::RetainedSurfaceBounds> {
         // Ready raster paint shares the owner's transform and fits its box.
         self.element
-            .retained_transform_render_output_bounds(arena, paint_offset)
+            .retained_transform_render_output_bounds(arena, paint_offset, scale_factor)
     }
 
     fn exact_nested_isolation_render_output_bounds(
@@ -1782,12 +1784,14 @@ impl ElementTrait for Svg {
         owner: crate::view::node_arena::NodeKey,
         arena: &crate::view::node_arena::NodeArena,
         parent_snapped_paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<super::RetainedSurfaceBounds> {
         super::exact_native_nested_isolation_render_output_bounds(
             self,
             owner,
             arena,
             parent_snapped_paint_offset,
+            scale_factor,
         )
     }
 
@@ -1795,9 +1799,10 @@ impl ElementTrait for Svg {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<super::RetainedSurfaceBounds> {
         self.element
-            .legacy_transform_render_output_bounds(arena, paint_offset)
+            .legacy_transform_render_output_bounds(arena, paint_offset, scale_factor)
     }
 
     fn retained_transform_raster_seed_bounds(&self) -> Option<super::RetainedSurfaceBounds> {

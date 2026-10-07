@@ -1566,12 +1566,19 @@ impl UiBuildContext {
 
     fn snap_owner_paint_offset(&mut self, owner_viewport_position: [f32; 2]) {
         let projection = self.owner_paint_offset_projection();
-        self.viewport.paint_offset =
-            super::paint_offset_after_owner_snap(owner_viewport_position, projection.active)
-                .expect("canonical owner placement produces a finite active paint offset");
-        self.viewport.host_neutral_owner_paint_offset =
-            super::paint_offset_after_owner_snap(owner_viewport_position, projection.host_neutral)
-                .expect("canonical owner placement produces a finite host-neutral paint offset");
+        let scale_factor = self.viewport.scale_factor;
+        self.viewport.paint_offset = super::paint_offset_after_owner_snap(
+            owner_viewport_position,
+            projection.active,
+            scale_factor,
+        )
+        .expect("canonical owner placement produces a finite active paint offset");
+        self.viewport.host_neutral_owner_paint_offset = super::paint_offset_after_owner_snap(
+            owner_viewport_position,
+            projection.host_neutral,
+            scale_factor,
+        )
+        .expect("canonical owner placement produces a finite host-neutral paint offset");
     }
 
     fn restore_owner_paint_offset_projection(&mut self, projection: OwnerPaintOffsetProjection) {
@@ -3349,6 +3356,7 @@ pub trait ElementTrait:
         &self,
         _arena: &crate::view::node_arena::NodeArena,
         _paint_offset: [f32; 2],
+        _scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
         None
     }
@@ -3360,6 +3368,7 @@ pub trait ElementTrait:
         &self,
         _arena: &crate::view::node_arena::NodeArena,
         _paint_offset: [f32; 2],
+        _scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
         None
     }
@@ -3378,6 +3387,7 @@ pub trait ElementTrait:
         _owner: crate::view::node_arena::NodeKey,
         _arena: &crate::view::node_arena::NodeArena,
         _parent_snapped_paint_offset: [f32; 2],
+        _scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
         None
     }
@@ -3390,6 +3400,7 @@ pub trait ElementTrait:
         &self,
         _arena: &crate::view::node_arena::NodeArena,
         _paint_offset: [f32; 2],
+        _scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
         let snapshot = self.box_model_snapshot();
         Some(RetainedSurfaceBounds {
@@ -3673,6 +3684,7 @@ pub(crate) fn exact_native_nested_isolation_render_output_bounds(
     owner: crate::view::node_arena::NodeKey,
     arena: &crate::view::node_arena::NodeArena,
     parent_snapped_paint_offset: [f32; 2],
+    scale_factor: f32,
 ) -> Option<RetainedSurfaceBounds> {
     if arena
         .get(owner)
@@ -3715,7 +3727,8 @@ pub(crate) fn exact_native_nested_isolation_render_output_bounds(
         );
     }
 
-    let bounds = host.retained_transform_output_bounds(arena, parent_snapped_paint_offset)?;
+    let bounds =
+        host.retained_transform_output_bounds(arena, parent_snapped_paint_offset, scale_factor)?;
     (bounds.x.is_finite()
         && bounds.y.is_finite()
         && bounds.width.is_finite()
@@ -7573,8 +7586,9 @@ impl Element {
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
         require_exact: bool,
+        scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
-        let child_paint_offset = self.paint_offset_after_own_snap(paint_offset)?;
+        let child_paint_offset = self.paint_offset_after_own_snap(paint_offset, scale_factor)?;
         let mut own_bounds = self.untransformed_paint_bounds();
         if self.resolved_transform.is_none() {
             // Without a transform this is receiver-space output, not a raw
@@ -7592,13 +7606,17 @@ impl Element {
         for child_key in &self.children {
             let child_node = arena.get(*child_key)?;
             let child_bounds = if require_exact {
-                child_node
-                    .element
-                    .retained_transform_output_bounds(arena, child_paint_offset)?
+                child_node.element.retained_transform_output_bounds(
+                    arena,
+                    child_paint_offset,
+                    scale_factor,
+                )?
             } else {
-                child_node
-                    .element
-                    .legacy_transform_output_bounds(arena, child_paint_offset)?
+                child_node.element.legacy_transform_output_bounds(
+                    arena,
+                    child_paint_offset,
+                    scale_factor,
+                )?
             };
             if !Self::is_valid_transform_surface_bounds(child_bounds) {
                 return None;
@@ -7623,21 +7641,24 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
-        self.resolved_transform
-            .and_then(|_| self.transform_subtree_raster_bounds(arena, paint_offset, false))
+        self.resolved_transform.and_then(|_| {
+            self.transform_subtree_raster_bounds(arena, paint_offset, false, scale_factor)
+        })
     }
 
     pub(crate) fn retained_transform_render_output_bounds(
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
         if self.resolved_transform.is_some() {
-            self.exact_transform_surface_geometry_snapshot(arena, paint_offset, None)?
+            self.exact_transform_surface_geometry_snapshot(arena, paint_offset, None, scale_factor)?
                 .quad_aabb()
         } else {
-            self.transform_subtree_raster_bounds(arena, paint_offset, true)
+            self.transform_subtree_raster_bounds(arena, paint_offset, true, scale_factor)
         }
     }
 
@@ -7645,18 +7666,19 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
         if self.resolved_transform.is_some() {
-            self.transform_surface_geometry_snapshot(arena, paint_offset, None)?
+            self.transform_surface_geometry_snapshot(arena, paint_offset, None, scale_factor)?
                 .quad_aabb()
         } else {
-            self.transform_subtree_raster_bounds(arena, paint_offset, false)
+            self.transform_subtree_raster_bounds(arena, paint_offset, false, scale_factor)
         }
     }
 
-    fn paint_offset_after_own_snap(&self, parent: [f32; 2]) -> Option<[f32; 2]> {
+    fn paint_offset_after_own_snap(&self, parent: [f32; 2], scale_factor: f32) -> Option<[f32; 2]> {
         let position = self.layout_state.layout_position;
-        super::paint_offset_after_owner_snap([position.x, position.y], parent)
+        super::paint_offset_after_owner_snap([position.x, position.y], parent, scale_factor)
     }
 
     fn is_canonical_transform_surface_bounds(bounds: RetainedSurfaceBounds) -> bool {
@@ -8401,25 +8423,29 @@ impl ElementTrait for Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
-        self.resolved_transform
-            .and_then(|_| self.transform_subtree_raster_bounds(arena, paint_offset, true))
+        self.resolved_transform.and_then(|_| {
+            self.transform_subtree_raster_bounds(arena, paint_offset, true, scale_factor)
+        })
     }
 
     fn retained_transform_output_bounds(
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
-        self.retained_transform_render_output_bounds(arena, paint_offset)
+        self.retained_transform_render_output_bounds(arena, paint_offset, scale_factor)
     }
 
     fn legacy_transform_output_bounds(
         &self,
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> Option<RetainedSurfaceBounds> {
-        self.legacy_transform_render_output_bounds(arena, paint_offset)
+        self.legacy_transform_render_output_bounds(arena, paint_offset, scale_factor)
     }
 
     fn retained_transform_raster_seed_bounds(&self) -> Option<RetainedSurfaceBounds> {

@@ -107,7 +107,7 @@ fn generic_preedit_edge_survives_absent_caret_edge() {
             .all(|chunk| chunk.id.role != PaintChunkRole::Caret),
         "hidden caret must not create a composite edge",
     );
-    let placed = crate::view::paint::compiler::with_placed_geometry(&artifact)
+    let placed = crate::view::paint::compiler::with_placed_geometry(&artifact, 1.0)
         .expect("owner-local clips have layout frames");
     let underline_chunks = placed
         .chunks

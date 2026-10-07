@@ -23,10 +23,10 @@ fn nested_transform_bounds_use_child_c0_quad_and_local_matrix_product() {
 
     let paint_offset = [0.2, -0.3];
     let parent_geometry = crate::view::test_support::get_element::<Element>(&arena, parent_key)
-        .transform_surface_geometry_snapshot(&arena, paint_offset, None)
+        .transform_surface_geometry_snapshot(&arena, paint_offset, None, 1.0)
         .expect("finite nested transform geometry must be canonical");
     let exact_geometry = crate::view::test_support::get_element::<Element>(&arena, parent_key)
-        .exact_transform_surface_geometry_snapshot(&arena, paint_offset, None)
+        .exact_transform_surface_geometry_snapshot(&arena, paint_offset, None, 1.0)
         .expect("the built-in nested tree has exact retained coverage");
     assert!(
         parent_geometry.bitwise_eq(exact_geometry),
@@ -120,7 +120,7 @@ fn untransformed_wrapper_propagates_fractional_snap_to_nested_transform_bounds()
         .resolved_transform = Some(Mat4::from_translation(Vec3::new(30.0, 0.0, 0.0)));
 
     let parent_geometry = crate::view::test_support::get_element::<Element>(&arena, parent_key)
-        .transform_surface_geometry_snapshot(&arena, [0.2, -0.3], None)
+        .transform_surface_geometry_snapshot(&arena, [0.2, -0.3], None, 1.0)
         .expect("wrapper snap propagation must keep nested geometry canonical");
     assert_eq!(
         [
@@ -143,7 +143,7 @@ fn untransformed_wrapper_propagates_fractional_snap_to_nested_transform_bounds()
     // boundary and deliberately differs by one logical pixel from
     // incorrectly forwarding only the parent's offset.
     let child_geometry = crate::view::test_support::get_element::<Element>(&arena, child_key)
-        .transform_surface_geometry_snapshot(&arena, [0.2, 0.2], None)
+        .transform_surface_geometry_snapshot(&arena, [0.2, 0.2], None, 1.0)
         .expect("nested child geometry");
     assert_eq!(
         child_geometry
@@ -158,7 +158,7 @@ fn untransformed_wrapper_propagates_fractional_snap_to_nested_transform_bounds()
     );
     let wrong_parent_only =
         crate::view::test_support::get_element::<Element>(&arena, child_key)
-            .transform_surface_geometry_snapshot(&arena, [-0.25, -0.25], None)
+            .transform_surface_geometry_snapshot(&arena, [-0.25, -0.25], None, 1.0)
             .expect("finite wrong-offset comparison fixture");
     assert_ne!(
         child_geometry
@@ -241,7 +241,7 @@ fn nested_transform_graph_orders_child_surface_before_parent_composite() {
             71_101,
         ))
         .expect("child transformed color surface");
-    assert_eq!((parent_color.width(), parent_color.height()), (57, 32));
+    assert_eq!((parent_color.width(), parent_color.height()), (58, 34));
     assert_eq!(parent_color.origin(), (0, 0));
     assert_eq!((child_color.width(), child_color.height()), (9, 4));
     assert_eq!(child_color.origin(), (24, 3));
@@ -264,7 +264,7 @@ fn invalid_nested_projective_geometry_fails_parent_surface_closed() {
 
     assert!(
         crate::view::test_support::get_element::<Element>(&arena, parent_key)
-            .transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
+            .transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None, 1.0)
             .is_none(),
         "child projective W=0 must invalidate parent source coverage"
     );
@@ -386,7 +386,7 @@ fn transformed_build_declares_exact_color_depth_descriptor_pair_at_scale_two() {
         },
     );
     let geometry = crate::view::test_support::get_element::<Element>(&arena, root)
-        .transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
+        .transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None, 1.0)
         .expect("positive transformed fixture");
     assert_eq!(
         [
@@ -522,12 +522,14 @@ fn legacy_transform_surface_freezes_raster_then_composite_contract() {
         let raster_paint_offset = crate::view::base_component::paint_offset_after_owner_snap(
             owner_position,
             [0.0, 0.0],
+            2.0,
         )
         .expect("finite zero-host owner placement");
         let composite_paint_offset =
             crate::view::base_component::paint_offset_after_owner_snap(
                 owner_position,
                 paint_offset,
+                2.0,
             )
             .expect("finite active owner placement");
         let geometry = root
@@ -536,6 +538,7 @@ fn legacy_transform_surface_freezes_raster_then_composite_contract() {
                 raster_paint_offset,
                 composite_paint_offset,
                 Some(outer_scissor),
+                2.0,
             )
             .expect("measured transformed root must expose legacy surface geometry");
         assert!(
@@ -635,7 +638,7 @@ fn legacy_transform_surface_freezes_raster_then_composite_contract() {
             geometry.source_bounds.height.to_bits(),
         ],
         [
-            (-21.0_f32).to_bits(),
+            (-20.5_f32).to_bits(),
             11.0_f32.to_bits(),
             60.0_f32.to_bits(),
             30.0_f32.to_bits(),
@@ -657,9 +660,9 @@ fn legacy_transform_surface_freezes_raster_then_composite_contract() {
         ])
     );
     // Independent scale-2 oracle: full logical X coverage is
-    // floor(-21.0 * 2)=-42 through ceil(39.0 * 2)=78, i.e. 120 pixels.
-    // The raster is rebased by +21 logical px; the receiver quad above
+    // floor(-20.5 * 2)=-41 through ceil(39.5 * 2)=79, i.e. 120 pixels.
+    // The raster is rebased by +20.5 logical px; the receiver quad above
     // retains the original geometry. No negative source texels are lost.
-    assert_eq!(78_i32 - (-42_i32), 120);
+    assert_eq!(79_i32 - (-41_i32), 120);
     assert_eq!(transformed_desc.width(), 120);
 }

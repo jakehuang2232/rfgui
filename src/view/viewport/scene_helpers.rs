@@ -4,7 +4,7 @@ use super::dispatch::local_point_for_node;
 use super::*;
 use crate::ui::{PointerEnterEvent, PointerLeaveEvent};
 use crate::view::base_component::{
-    BoxModelSnapshot, DirtyFlags, ElementTrait, RetainedSurfaceBounds, round_layout_value,
+    BoxModelSnapshot, DirtyFlags, ElementTrait, RetainedSurfaceBounds, snap_to_device_pixel,
 };
 
 impl Viewport {
@@ -534,10 +534,11 @@ pub(crate) fn paint_snapped_retained_surface_bounds(
     node: &dyn ElementTrait,
     bounds: RetainedSurfaceBounds,
     paint_offset: [f32; 2],
+    scale_factor: f32,
 ) -> RetainedSurfaceBounds {
     let snap = node.box_model_snapshot();
-    let dx = round_layout_value(snap.x + paint_offset[0]) - snap.x;
-    let dy = round_layout_value(snap.y + paint_offset[1]) - snap.y;
+    let dx = snap_to_device_pixel(snap.x + paint_offset[0], scale_factor) - snap.x;
+    let dy = snap_to_device_pixel(snap.y + paint_offset[1], scale_factor) - snap.y;
     RetainedSurfaceBounds {
         x: bounds.x + dx,
         y: bounds.y + dy,

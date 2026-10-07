@@ -201,14 +201,14 @@ fn transform_surface_bounds_ignore_finite_zero_area_child() {
     let parent = crate::view::test_support::get_element::<Element>(&arena, parent_key);
     let expected = [10.0_f32, 20.0, 120.0, 80.0].map(f32::to_bits);
     let legacy = parent
-        .legacy_transform_surface_bounds(&arena, [0.0, 0.0])
+        .legacy_transform_surface_bounds(&arena, [0.0, 0.0], 1.0)
         .expect("zero-area child is an empty contribution, not a bounds failure");
     assert_eq!(
         [legacy.x, legacy.y, legacy.width, legacy.height].map(f32::to_bits),
         expected
     );
     let retained = parent
-        .retained_transform_surface_bounds(&arena, [0.0, 0.0])
+        .retained_transform_surface_bounds(&arena, [0.0, 0.0], 1.0)
         .expect("retained transform bounds use the same empty contribution semantics");
     assert_eq!(
         [retained.x, retained.y, retained.width, retained.height,].map(f32::to_bits),

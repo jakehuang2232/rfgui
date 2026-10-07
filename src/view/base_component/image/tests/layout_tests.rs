@@ -57,7 +57,7 @@ fn transformed_image_media_stays_inside_owner_surface_and_parent_bounds() {
     let parent_key = commit_element(&mut arena, Box::new(parent));
     let _image_key = commit_child(&mut arena, parent_key, Box::new(image));
     let geometry = crate::view::test_support::get_element::<Element>(&arena, parent_key)
-        .exact_transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
+        .exact_transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None, 1.0)
         .expect("Image supplies the transformed owner scope covering its media");
     assert_eq!(
         [

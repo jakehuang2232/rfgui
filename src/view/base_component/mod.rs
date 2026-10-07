@@ -39,19 +39,27 @@ pub(crate) fn round_layout_value(value: f32) -> f32 {
     }
 }
 
+/// The logical coordinate of the physical pixel boundary nearest `value`.
+pub(crate) fn snap_to_device_pixel(value: f32, scale_factor: f32) -> f32 {
+    round_layout_value(value * scale_factor) / scale_factor
+}
+
 /// Paint offset inherited past one snap point: the incoming paint offset plus
-/// the correction that moves the point onto the pixel grid. The legacy build
-/// and the compiler's owner snap chain both use this one derivation, so they
-/// agree bit for bit. The correction is added as a whole, so a point already
-/// on the grid leaves the offset unchanged.
+/// the correction that moves the point onto the physical pixel grid. The
+/// legacy build and the compiler's owner snap chain both use this one
+/// derivation, so they agree bit for bit. The correction is added as a
+/// whole, so a point already on the grid leaves the offset unchanged.
 pub(crate) fn paint_offset_after_owner_snap(
     owner_viewport_position: [f32; 2],
     parent_paint_offset: [f32; 2],
+    scale_factor: f32,
 ) -> Option<[f32; 2]> {
     if owner_viewport_position
         .into_iter()
         .chain(parent_paint_offset)
         .any(|value| !value.is_finite())
+        || !scale_factor.is_finite()
+        || scale_factor <= 0.0
     {
         return None;
     }
@@ -60,8 +68,8 @@ pub(crate) fn paint_offset_after_owner_snap(
         owner_viewport_position[1] + parent_paint_offset[1],
     ];
     let next = [
-        parent_paint_offset[0] + (round_layout_value(paint[0]) - paint[0]),
-        parent_paint_offset[1] + (round_layout_value(paint[1]) - paint[1]),
+        parent_paint_offset[0] + (snap_to_device_pixel(paint[0], scale_factor) - paint[0]),
+        parent_paint_offset[1] + (snap_to_device_pixel(paint[1], scale_factor) - paint[1]),
     ];
     next.into_iter().all(f32::is_finite).then_some(next)
 }

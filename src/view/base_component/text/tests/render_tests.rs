@@ -55,14 +55,14 @@ fn retained_transform_text_bounds_apply_nonzero_inherited_paint_offset() {
     let text = Text::new(3.25, 4.5, 10.0, 5.0, "offset bounds");
     let arena = arena();
     let exact = text
-        .retained_transform_output_bounds(&arena, [0.2, -0.3])
+        .retained_transform_output_bounds(&arena, [0.2, -0.3], 1.0)
         .expect("Text explicitly owns exact transformed-ancestor coverage");
     assert_eq!(
         [exact.x, exact.y, exact.width, exact.height].map(f32::to_bits),
         [3.45, 4.2, 10.0, 5.0].map(f32::to_bits)
     );
     let legacy = text
-        .legacy_transform_output_bounds(&arena, [0.2, -0.3])
+        .legacy_transform_output_bounds(&arena, [0.2, -0.3], 1.0)
         .expect("legacy Text coverage");
     assert_eq!(
         [legacy.x, legacy.y, legacy.width, legacy.height].map(f32::to_bits),

@@ -118,7 +118,7 @@ fn co_located_surface_artifact() -> PaintArtifact {
     // The chunks are rebound to another fixture's property trees below, so
     // they leave the layout frames their recorded states named first.
     let mut artifact =
-        crate::view::paint::compiler::with_placed_geometry(&scroll_surface_artifact())
+        crate::view::paint::compiler::with_placed_geometry(&scroll_surface_artifact(), 1.0)
             .expect("scroll surface artifact places")
             .into_owned();
     assert_eq!(

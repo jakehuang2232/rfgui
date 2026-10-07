@@ -79,7 +79,7 @@ pub(super) fn scroll_surface_artifact() -> PaintArtifact {
     };
     // The chunks are rebound to synthetic property states below, so they
     // leave the layout frames their recorded states named first.
-    let mut artifact = crate::view::paint::compiler::with_placed_chunks(artifact);
+    let mut artifact = crate::view::paint::compiler::with_placed_chunks(artifact, 1.0);
 
     let scroll = ScrollNodeId(root);
     let contents_clip = ClipNodeId {

@@ -1761,6 +1761,18 @@ fn whole_frame_artifact(
     properties: &PropertyTrees,
     generations: &PaintGenerationTracker,
 ) -> (PaintArtifact, FrameArtifactEligibility) {
+    whole_frame_artifact_at(arena, roots, properties, generations, 1.0)
+}
+
+/// The whole frame as the compiler reads it on the physical pixel grid of
+/// `scale_factor`.
+fn whole_frame_artifact_at(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    properties: &PropertyTrees,
+    generations: &PaintGenerationTracker,
+    scale_factor: f32,
+) -> (PaintArtifact, FrameArtifactEligibility) {
     let FrameArtifactRecordOutcome::Artifact {
         artifact,
         eligibility,
@@ -1776,7 +1788,10 @@ fn whole_frame_artifact(
         panic!("forced artifact recording cannot silently fall back")
     };
     // Inspected in viewport space, as the compiler reads it.
-    (super::compiler::with_placed_chunks(artifact), eligibility)
+    (
+        super::compiler::with_placed_chunks(artifact, scale_factor),
+        eligibility,
+    )
 }
 
 fn root_group_artifact(
@@ -1799,7 +1814,10 @@ fn root_group_artifact(
     else {
         panic!("forced root group recording cannot silently fall back")
     };
-    (super::compiler::with_placed_chunks(artifact), eligibility)
+    (
+        super::compiler::with_placed_chunks(artifact, 1.0),
+        eligibility,
+    )
 }
 
 fn assert_neutral_opacity(op: &PaintOp) {
@@ -2003,8 +2021,13 @@ where
 {
     let (artifact_arena, artifact_roots) = fixture();
     let (properties, generations) = sync_identity(&artifact_arena, &artifact_roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&artifact_arena, &artifact_roots, &properties, &generations);
+    let (artifact, eligibility) = whole_frame_artifact_at(
+        &artifact_arena,
+        &artifact_roots,
+        &properties,
+        &generations,
+        config.scale_factor,
+    );
     assert!(eligibility.eligible);
     drop(artifact_arena);
     let mut artifact_graph = compiled_whole_frame_graph_with_config(&artifact, config);

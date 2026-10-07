@@ -1934,11 +1934,13 @@ impl Element {
         &self,
         bounds: crate::view::base_component::RetainedSurfaceBounds,
         paint_offset: [f32; 2],
+        scale_factor: f32,
     ) -> crate::view::base_component::RetainedSurfaceBounds {
         crate::view::viewport::scene_helpers::paint_snapped_retained_surface_bounds(
             self,
             bounds,
             paint_offset,
+            scale_factor,
         )
     }
 
@@ -1947,12 +1949,14 @@ impl Element {
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
         outer_scissor_rect: Option<[u32; 4]>,
+        scale_factor: f32,
     ) -> Option<TransformSurfaceGeometrySnapshot> {
         self.transform_surface_geometry_snapshot_with_placement(
             arena,
             paint_offset,
             paint_offset,
             outer_scissor_rect,
+            scale_factor,
         )
     }
 
@@ -1962,11 +1966,16 @@ impl Element {
         raster_paint_offset: [f32; 2],
         composite_paint_offset: [f32; 2],
         outer_scissor_rect: Option<[u32; 4]>,
+        scale_factor: f32,
     ) -> Option<TransformSurfaceGeometrySnapshot> {
         let viewport_transform = self.resolved_transform?;
-        let source_bounds = self.legacy_transform_surface_bounds(arena, raster_paint_offset)?;
-        let visual_bounds =
-            self.paint_snapped_own_composite_bounds(source_bounds, composite_paint_offset);
+        let source_bounds =
+            self.legacy_transform_surface_bounds(arena, raster_paint_offset, scale_factor)?;
+        let visual_bounds = self.paint_snapped_own_composite_bounds(
+            source_bounds,
+            composite_paint_offset,
+            scale_factor,
+        );
         TransformSurfaceGeometrySnapshot::new(
             source_bounds,
             visual_bounds,
@@ -1980,10 +1989,13 @@ impl Element {
         arena: &crate::view::node_arena::NodeArena,
         paint_offset: [f32; 2],
         outer_scissor_rect: Option<[u32; 4]>,
+        scale_factor: f32,
     ) -> Option<TransformSurfaceGeometrySnapshot> {
         let viewport_transform = self.resolved_transform?;
-        let source_bounds = self.retained_transform_surface_bounds(arena, paint_offset)?;
-        let visual_bounds = self.paint_snapped_own_composite_bounds(source_bounds, paint_offset);
+        let source_bounds =
+            self.retained_transform_surface_bounds(arena, paint_offset, scale_factor)?;
+        let visual_bounds =
+            self.paint_snapped_own_composite_bounds(source_bounds, paint_offset, scale_factor);
         TransformSurfaceGeometrySnapshot::new(
             source_bounds,
             visual_bounds,
@@ -2002,6 +2014,7 @@ impl Element {
         owner_texture: Option<LegacyOwnerTexturePaint>,
     ) -> BuildState {
         let placement = ctx.owner_paint_offset_projection();
+        let scale_factor = ctx.viewport().scale_factor();
         let transformed = self.resolved_transform.is_some();
         let geometry = if transformed {
             self.transform_surface_geometry_snapshot_with_placement(
@@ -2009,11 +2022,12 @@ impl Element {
                 placement.host_neutral,
                 placement.active,
                 ctx.scissor_rect(),
+                scale_factor,
             )
         } else {
             // Opacity alone keeps the caller's coordinate space and snap.
             // Include descendant output, even outside the owner's layout box.
-            self.transform_subtree_raster_bounds(arena, ctx.paint_offset(), false)
+            self.transform_subtree_raster_bounds(arena, ctx.paint_offset(), false, scale_factor)
                 .and_then(|bounds| {
                     TransformSurfaceGeometrySnapshot::new(
                         bounds,

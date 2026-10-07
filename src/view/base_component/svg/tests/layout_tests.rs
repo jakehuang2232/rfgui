@@ -17,7 +17,7 @@ fn transformed_svg_owner_scope_bounds_exclude_untransformed_media_tail() {
     let parent_key = commit_element(&mut arena, Box::new(parent));
     let _svg_key = commit_child(&mut arena, parent_key, Box::new(svg));
     let geometry = crate::view::test_support::get_element::<Element>(&arena, parent_key)
-        .exact_transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
+        .exact_transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None, 1.0)
         .expect("Svg supplies one transformed owner scope covering its fitted media");
     assert_eq!(
         [

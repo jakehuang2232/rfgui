@@ -11,7 +11,7 @@ fn transformed_quad_positions_use_snapped_destination_without_changing_source_bo
         corner_radii: [0.0; 4],
     };
 
-    let visual_bounds = element.paint_snapped_own_composite_bounds(source_bounds, [0.2, -0.3]);
+    let visual_bounds = element.paint_snapped_own_composite_bounds(source_bounds, [0.2, -0.3], 1.0);
     let geometry = TransformSurfaceGeometrySnapshot::new(
         source_bounds,
         visual_bounds,
@@ -42,7 +42,7 @@ fn transformed_quad_applies_paint_snap_after_transforming_raw_bounds() {
         height: 20.5,
         corner_radii: [0.0; 4],
     };
-    let visual_bounds = element.paint_snapped_own_composite_bounds(source_bounds, [0.2, -0.3]);
+    let visual_bounds = element.paint_snapped_own_composite_bounds(source_bounds, [0.2, -0.3], 1.0);
 
     let raw_transformed =
         TransformSurfaceGeometrySnapshot::new(source_bounds, source_bounds, transform, None)
@@ -328,7 +328,7 @@ fn zero_blur_outer_shadow_expands_negative_transform_surface_source_bounds() {
     let element = crate::view::test_support::get_element::<Element>(&arena, key);
     let own = element.box_model_snapshot();
     let geometry = element
-        .transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None)
+        .transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None, 1.0)
         .expect("transformed shadow host must expose source bounds");
     assert!(geometry.source_bounds.x < own.x);
     assert!(geometry.source_bounds.y <= own.y);

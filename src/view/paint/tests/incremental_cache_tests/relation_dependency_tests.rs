@@ -31,7 +31,7 @@ fn changed_command_geometry_reuses_relations_but_validates_current_bounds() {
         );
         // Recorded chunks are owner-local; the move changes where the
         // compiler places them.
-        let bounds = crate::view::paint::compiler::with_placed_chunks(input.clone()).chunks[0]
+        let bounds = crate::view::paint::compiler::with_placed_chunks(input.clone(), 1.0).chunks[0]
             .bounds
             .x
             .to_bits();

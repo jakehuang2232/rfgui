@@ -33,18 +33,18 @@ fn owner_scoped_host_placement_adds_only_the_host_change_to_the_snap_chain() {
         resolved: Default::default(),
     };
     let resolved = projection
-        .resolve([0.0, 0.0])
+        .resolve([0.0, 0.0], 1.0)
         .expect("canonical owner-scoped placement");
     // Recorded commands already carry the zero-host snap chain.
     for owner in [root, child] {
         assert_eq!(resolved.owner_paint_offset(owner), Some([0.0, 0.0]));
     }
-    let warm = projection.clone().resolve([0.0, 0.0]).unwrap();
+    let warm = projection.clone().resolve([0.0, 0.0], 1.0).unwrap();
     assert!(std::sync::Arc::ptr_eq(
         &resolved.host_delta_bits,
         &warm.host_delta_bits
     ));
-    let shifted = projection.resolve([2.0, 3.0]).unwrap();
+    let shifted = projection.resolve([2.0, 3.0], 1.0).unwrap();
     assert_eq!(shifted.owner_paint_offset(child), Some([2.0, 3.0]));
     assert!(!std::sync::Arc::ptr_eq(
         &warm.host_delta_bits,
@@ -53,18 +53,18 @@ fn owner_scoped_host_placement_adds_only_the_host_change_to_the_snap_chain() {
     // A half-pixel host moves the root from 5.25 to 5.75, which snaps to 6
     // instead of 5. Snapping its own frame offset directly, the child would
     // stay at 18; it must inherit the root's correction instead.
-    let fractional = projection.resolve([0.5, 0.0]).unwrap();
+    let fractional = projection.resolve([0.5, 0.0], 1.0).unwrap();
     assert_eq!(fractional.owner_paint_offset(root), Some([1.0, 0.0]));
     assert_eq!(
         fractional.owner_paint_offset(child),
         Some([1.0, 0.0]),
         "child snapping must inherit the parent's correction instead of recomputing directly from the frame offset"
     );
-    assert!(projection.resolve([f32::NAN, 0.0]).is_err());
+    assert!(projection.resolve([f32::NAN, 0.0], 1.0).is_err());
     // Replacing a same-id owner observation cannot inherit another allocation's proof.
     std::sync::Arc::make_mut(&mut projection.owners)[1].points_bits[0] =
         Some([5.5_f32.to_bits(), 5.0_f32.to_bits()]);
-    let changed = projection.resolve([0.5, 0.0]).unwrap();
+    let changed = projection.resolve([0.5, 0.0], 1.0).unwrap();
     assert_eq!(changed.owner_paint_offset(child), Some([0.0, 0.0]));
 }
 
