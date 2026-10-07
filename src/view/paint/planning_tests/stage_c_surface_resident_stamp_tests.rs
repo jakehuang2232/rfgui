@@ -115,7 +115,12 @@ pub(super) fn scroll_artifact_with_a_local_clip() -> PaintArtifact {
 
 fn co_located_surface_artifact() -> PaintArtifact {
     let (arena, root, properties, _) = same_owner_transform_effect_scroll_roles_fixture();
-    let mut artifact = scroll_surface_artifact();
+    // The chunks are rebound to another fixture's property trees below, so
+    // they leave the layout frames their recorded states named first.
+    let mut artifact =
+        crate::view::paint::compiler::with_placed_geometry(&scroll_surface_artifact())
+            .expect("scroll surface artifact places")
+            .into_owned();
     assert_eq!(
         artifact.owner_nodes.first().map(|owner| owner.owner),
         Some(root)

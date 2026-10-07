@@ -1453,6 +1453,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                                 );
                                 return;
                             };
+                            let plan = super::metadata_plan_in_layout_frame(plan, self.arena);
                             if node.element.supports_retained_command_replay() {
                                 if let Some(cache) = self.recording_cache.as_deref_mut() {
                                     cache.metadata(
@@ -1483,14 +1484,18 @@ fn record_coverage_manifest_with_property_authorities_impl(
                                 .and_then(|cache| cache.replay(key));
                             let was_replayed = replayed.is_some();
                             let Some(plan) = replayed.or_else(|| {
-                                node.element.record_shadow_paint_artifact_plan(
-                                    key,
-                                    properties,
-                                    contents_properties,
-                                    revision,
-                                    self.arena,
-                                    &recording_context,
-                                )
+                                node.element
+                                    .record_shadow_paint_artifact_plan(
+                                        key,
+                                        properties,
+                                        contents_properties,
+                                        revision,
+                                        self.arena,
+                                        &recording_context,
+                                    )
+                                    .and_then(|plan| {
+                                        super::artifact_plan_in_layout_frame(plan, self.arena)
+                                    })
                             }) else {
                                 self.push_legacy_boundary(
                                     key,
@@ -1670,6 +1675,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 }
                 recorded.push(RecordedPlanItem {
                     chunk: PaintChunkMetadata {
+                        frame: artifact_chunk.frame,
                         id: artifact_chunk.id,
                         owner: artifact_chunk.owner,
                         bounds: artifact_chunk.bounds,

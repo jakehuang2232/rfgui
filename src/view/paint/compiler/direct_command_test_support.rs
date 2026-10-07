@@ -25,23 +25,42 @@ impl ArtifactCompileError {
 }
 
 /// The compiler intake for an artifact compiled outside the production entry:
-/// owner-local clips are placed at their owners' layout frames.
-pub(crate) fn with_placed_clips(
+/// owner-local clips and layout-frame chunks are placed at their frames.
+pub(crate) fn with_placed_geometry(
     artifact: &PaintArtifact,
 ) -> Option<std::borrow::Cow<'_, PaintArtifact>> {
     if !artifact
         .clip_nodes
         .iter()
         .any(|clip| clip.geometry.is_owner_local())
+        && artifact
+            .chunks
+            .iter()
+            .all(|chunk| chunk.frame == crate::view::paint::PaintChunkFrame::Viewport)
     {
         return Some(std::borrow::Cow::Borrowed(artifact));
     }
     let mut placed = artifact.clone();
-    super::super::ArtifactSpatialProjection::try_new(&placed)
-        .ok()?
-        .place_clips(&mut placed.clip_nodes)
-        .ok()?;
+    let spatial = super::super::ArtifactSpatialProjection::try_new(&placed).ok()?;
+    spatial.place_clips(&mut placed.clip_nodes).ok()?;
+    super::place_artifact_chunks(&mut placed, &spatial, None).ok()?;
     Some(std::borrow::Cow::Owned(placed))
+}
+
+/// `artifact` with every layout-frame chunk placed at its frame origin, as
+/// the compiler reads it; clips keep their recorded frames.
+pub(crate) fn with_placed_chunks(mut artifact: PaintArtifact) -> PaintArtifact {
+    if artifact
+        .chunks
+        .iter()
+        .any(|chunk| chunk.frame == crate::view::paint::PaintChunkFrame::Layout)
+    {
+        let spatial = super::super::ArtifactSpatialProjection::try_new(&artifact)
+            .expect("layout-frame chunks have derivable frames");
+        super::place_artifact_chunks(&mut artifact, &spatial, None)
+            .expect("layout-frame chunks place at their frames");
+    }
+    artifact
 }
 
 /// Test-only direct command compilation for payload and clip unit tests.
@@ -50,7 +69,7 @@ pub(crate) fn try_compile_artifact(
     graph: &mut FrameGraph,
     mut ctx: UiBuildContext,
 ) -> Result<BuildState, ArtifactCompileError> {
-    let Some(artifact) = with_placed_clips(artifact) else {
+    let Some(artifact) = with_placed_geometry(artifact) else {
         return Err(ArtifactCompileError {
             kind: ArtifactCompileErrorKind::InvalidStore,
             state: ctx.into_state(),

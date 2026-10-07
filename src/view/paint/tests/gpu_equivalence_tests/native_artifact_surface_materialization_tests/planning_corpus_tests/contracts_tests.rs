@@ -302,7 +302,8 @@ fn deferred_clip_proof_preserves_scope_checks_with_complete_generic_state() {
 #[test]
 fn decorated_inline_cross_feature_records_fragments_and_glyphs() {
     let f = fixture(Scene::DecoratedInlineClip);
-    let artifact = record(&f);
+    // Viewport-space geometry, as the compiler reads it.
+    let artifact = crate::view::paint::compiler::with_placed_chunks(record(&f));
     let decorations = artifact
         .ops
         .iter()

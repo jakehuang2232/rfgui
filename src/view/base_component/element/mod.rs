@@ -3053,6 +3053,7 @@ pub trait ElementTrait:
                 };
                 plan.after_children
                     .push(crate::view::paint::PaintChunkMetadata {
+                        frame: crate::view::paint::PaintChunkFrame::Viewport,
                         id: crate::view::paint::PaintChunkId {
                             owner,
                             scope: crate::view::paint::PaintPropertyScope::SelfPaint,
@@ -3164,6 +3165,7 @@ pub trait ElementTrait:
                 plan.after_children.push(crate::view::paint::PaintArtifact {
                     target: Default::default(),
                     chunks: vec![crate::view::paint::PaintChunk {
+                        frame: crate::view::paint::PaintChunkFrame::Viewport,
                         id: crate::view::paint::PaintChunkId {
                             owner,
                             scope: crate::view::paint::PaintPropertyScope::SelfPaint,
@@ -3740,6 +3742,7 @@ impl PreparedCustomLeafPaint {
         content_revision: crate::view::paint::PaintContentRevision,
     ) -> crate::view::paint::PaintChunkMetadata {
         crate::view::paint::PaintChunkMetadata {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: self.chunk_id(owner),
             owner,
             bounds: self.bounds,
@@ -3758,6 +3761,7 @@ impl PreparedCustomLeafPaint {
         crate::view::paint::PaintArtifact {
             target: Default::default(),
             chunks: vec![crate::view::paint::PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: self.chunk_id(owner),
                 owner,
                 op_range: 0..1,
@@ -3980,6 +3984,7 @@ impl PreparedCustomWrapperPaint {
         phase: crate::view::paint::PaintNodePhase,
     ) -> crate::view::paint::PaintChunkMetadata {
         crate::view::paint::PaintChunkMetadata {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: Self::chunk_id(owner, phase, fill.slot),
             owner,
             bounds: self.bounds,
@@ -4036,6 +4041,7 @@ impl PreparedCustomWrapperPaint {
         crate::view::paint::PaintArtifact {
             target: Default::default(),
             chunks: vec![crate::view::paint::PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: Self::chunk_id(owner, phase, fill.slot),
                 owner,
                 op_range: 0..1,
@@ -8025,6 +8031,7 @@ impl ElementTrait for Element {
                 .prepared_inline_ifc_decoration_payload(&recording_context)
                 .ok()?;
             return Some(crate::view::paint::PaintChunkMetadata {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: crate::view::paint::PaintChunkId {
                     owner,
                     scope: crate::view::paint::PaintPropertyScope::SelfPaint,
@@ -8087,6 +8094,7 @@ impl ElementTrait for Element {
             return Some(crate::view::paint::PaintArtifact {
                 target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
+                    frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
                         owner,
                         scope: crate::view::paint::PaintPropertyScope::SelfPaint,

@@ -252,22 +252,32 @@ const MOVES: [([f32; 2], [f32; 2]); 2] =
     [([20.0, 10.0], [27.0, 13.0]), ([20.0, 10.0], [22.5, 10.25])];
 
 /// Input families that are already relative and must stay invariant.
-const INVARIANT: [&str; 6] = [
+const INVARIANT: [&str; 7] = [
     "layout_position",
     "visual_offset",
     "transform",
     "effect",
     "clip",
     "scroll",
+    "chunk",
 ];
+
+/// Whether a move is a whole number of logical pixels.
+fn is_integral(from: [f32; 2], to: [f32; 2]) -> bool {
+    (0..2).all(|axis| (to[axis] - from[axis]).fract() == 0.0)
+}
 
 #[test]
 fn translation_keeps_relative_property_snapshots() {
     for scene in Scene::ALL {
         for (from, to) in MOVES {
+            // Recording snaps every owner origin to the pixel grid, so a
+            // fractional move legitimately re-snaps recorded commands. Every
+            // property snapshot stays exact under any move.
             let variant = translated_inputs(scene, from, to)
                 .into_iter()
                 .filter(|variant| INVARIANT.contains(&variant.kind))
+                .filter(|variant| is_integral(from, to) || variant.kind != "chunk")
                 .collect::<Vec<_>>();
             assert!(
                 variant.is_empty(),
@@ -455,4 +465,27 @@ fn placed_self_clips_reproduce_live_scissors() {
         }
     }
     assert!(checked > 0, "the corpus carries owner-local self clips");
+}
+
+/// Every chunk whose property state names a layout frame is recorded in it:
+/// the round trip to its frame origin is exact throughout the corpus.
+#[test]
+fn recorded_chunks_take_their_layout_frames() {
+    let mut framed = 0;
+    for scene in Scene::ALL {
+        let mut moved = hosted(scene);
+        let (_, artifact) = moved.place([20.0, 10.0]);
+        for chunk in artifact.chunks.iter() {
+            if chunk.properties.layout_position.is_some() {
+                assert_eq!(
+                    chunk.frame,
+                    crate::view::paint::PaintChunkFrame::Layout,
+                    "{scene:?} {:?}",
+                    chunk.id
+                );
+                framed += 1;
+            }
+        }
+    }
+    assert!(framed > 0, "the corpus records layout-frame chunks");
 }

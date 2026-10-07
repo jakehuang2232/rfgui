@@ -15,6 +15,7 @@ pub(crate) struct PlanningCache {
     geometry: Option<ValidatedArtifactSurfaceDagProgram>,
     graphs: Option<super::super::surface_dag::ArtifactSurfaceInputGraphs>,
     localized: FxHashMap<super::super::PaintChunkId, LocalizedEntry>,
+    placed_blocks: FxHashMap<usize, PlacedBlock>,
     pub(crate) geometry_hits: usize,
     pub(crate) graph_hits: usize,
     pub(crate) surface_structure_hits: usize,
@@ -23,6 +24,17 @@ pub(crate) struct PlanningCache {
     pub(crate) placement_hits: usize,
     pub(crate) localized_hits: usize,
     pub(crate) localized_misses: usize,
+    pub(crate) placed_hits: usize,
+}
+/// One recorded block placed with these per-chunk origins. The source
+/// allocations are held so the pointer key cannot be reused by another block.
+struct PlacedBlock {
+    source_chunks: std::sync::Arc<[super::super::PaintChunk]>,
+    source_ops: Option<std::sync::Arc<[PaintOp]>>,
+    origins: Vec<Option<[u32; 2]>>,
+    chunks: std::sync::Arc<[super::super::PaintChunk]>,
+    ops: Option<std::sync::Arc<[PaintOp]>>,
+    seen: bool,
 }
 struct LocalizedEntry {
     source: PaintPayloadIdentity,
@@ -95,13 +107,18 @@ impl PlanningCache {
         self.placement_hits = 0;
         self.localized_hits = 0;
         self.localized_misses = 0;
+        self.placed_hits = 0;
         for entry in self.localized.values_mut() {
+            entry.seen = false;
+        }
+        for entry in self.placed_blocks.values_mut() {
             entry.seen = false;
         }
     }
     pub(crate) fn finish(&mut self, accepted: bool) {
         self.spans.finish(accepted);
         self.commands.finish(accepted);
+        self.placed_blocks.retain(|_, entry| accepted && entry.seen);
         self.localized.retain(|_, entry| {
             accepted
                 && (entry.seen
@@ -187,7 +204,7 @@ impl PlanningCache {
 
     /// Spatial projection inputs are the four spatial snapshot families plus
     /// the owner store whose positions it derives. The previous projection
-    /// must also hold the frame of every owner-local clip of `artifact`.
+    /// must also hold the frame of every owner of owner-local geometry.
     pub(super) fn spatial(
         &self,
         artifact: &PaintArtifact,
@@ -199,7 +216,7 @@ impl PlanningCache {
             && old.layout_position_nodes == artifact.layout_position_nodes
             && old.visual_offset_nodes == artifact.visual_offset_nodes
             && old.scroll_nodes == artifact.scroll_nodes
-            && previous.spatial.frames_clips(&artifact.clip_nodes))
+            && previous.spatial.frames_owner_geometry(artifact))
         .then(|| previous.spatial.clone())
     }
 
@@ -422,6 +439,52 @@ impl PlanningCache {
             None
         }
     }
+    #[allow(clippy::type_complexity)]
+    pub(super) fn placed_block(
+        &mut self,
+        chunks: &std::sync::Arc<[super::super::PaintChunk]>,
+        ops: Option<&std::sync::Arc<[PaintOp]>>,
+        origins: &[Option<[u32; 2]>],
+    ) -> Option<(
+        std::sync::Arc<[super::super::PaintChunk]>,
+        Option<std::sync::Arc<[PaintOp]>>,
+    )> {
+        let key = std::sync::Arc::as_ptr(chunks) as *const () as usize;
+        let entry = self.placed_blocks.get_mut(&key).filter(|entry| {
+            std::sync::Arc::ptr_eq(&entry.source_chunks, chunks)
+                && match (&entry.source_ops, ops) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                    _ => false,
+                }
+                && entry.origins == origins
+        })?;
+        entry.seen = true;
+        self.placed_hits += entry.chunks.len();
+        Some((entry.chunks.clone(), entry.ops.clone()))
+    }
+
+    pub(super) fn remember_placed_block(
+        &mut self,
+        source_chunks: &std::sync::Arc<[super::super::PaintChunk]>,
+        source_ops: Option<&std::sync::Arc<[PaintOp]>>,
+        origins: Vec<Option<[u32; 2]>>,
+        chunks: &std::sync::Arc<[super::super::PaintChunk]>,
+        ops: Option<&std::sync::Arc<[PaintOp]>>,
+    ) {
+        self.placed_blocks.insert(
+            std::sync::Arc::as_ptr(source_chunks) as *const () as usize,
+            PlacedBlock {
+                source_chunks: source_chunks.clone(),
+                source_ops: source_ops.cloned(),
+                origins,
+                chunks: chunks.clone(),
+                ops: ops.cloned(),
+                seen: true,
+            },
+        );
+    }
+
     pub(super) fn remember_localized(
         &mut self,
         chunk: &super::super::PaintChunk,

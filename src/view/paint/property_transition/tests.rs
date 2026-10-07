@@ -28,6 +28,7 @@ fn insert_owner(arena: &mut NodeArena, stable_id: u64) -> NodeKey {
 
 fn chunk(owner: NodeKey, phase: PaintNodePhase, op_range: std::ops::Range<usize>) -> PaintChunk {
     PaintChunk {
+        frame: crate::view::paint::PaintChunkFrame::Viewport,
         id: PaintChunkId {
             owner,
             scope: PaintPropertyScope::SelfPaint,

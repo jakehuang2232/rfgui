@@ -600,6 +600,7 @@ fn stage_c_classification_artifact_fixture(
                 descendants: state.descendants,
             });
         artifact.chunks.push(PaintChunk {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: PaintChunkId {
                 owner,
                 scope: PaintPropertyScope::SelfPaint,

@@ -1069,17 +1069,206 @@ fn spatial_prepare_error(error: SpatialProjectionError) -> SingleTargetSurfaceDa
     ))
 }
 
-/// Compiler intake: every consumer below reads viewport clip scissors, so
-/// owner-local clips are placed before the artifact is validated.
-fn place_artifact_clips(
+/// Compiler intake: every consumer below reads viewport geometry, so
+/// owner-local clips and chunks are placed before the artifact is validated.
+fn place_artifact_geometry(
     artifact: &mut PaintArtifact,
-    cache: Option<&mut PlanningCache>,
+    mut cache: Option<&mut PlanningCache>,
 ) -> Result<std::sync::Arc<super::ArtifactSpatialProjection>, SingleTargetSurfaceDagPrepareError> {
-    let spatial = artifact_spatial_projection(artifact, cache)?;
+    let spatial = artifact_spatial_projection(artifact, cache.as_deref_mut())?;
     spatial
         .place_clips(&mut artifact.clip_nodes)
         .map_err(spatial_prepare_error)?;
+    place_artifact_chunks(artifact, &spatial, cache).map_err(|error| match error {
+        ChunkPlacementError::MissingFrame(owner) => {
+            spatial_prepare_error(SpatialProjectionError::InvalidSnapshot(owner))
+        }
+        ChunkPlacementError::InvalidChunk => {
+            SingleTargetSurfaceDagPrepareError::InvalidArtifactStore
+        }
+    })?;
     Ok(spatial)
+}
+
+/// Places every layout-frame chunk and its commands at its frame's origin. Command order and every chunk's op range are unchanged. Recorded
+/// blocks are placed block by block, so an unmoved block keeps the same
+/// placed allocation and every allocation-keyed proof downstream still holds.
+pub(crate) fn place_artifact_chunks(
+    artifact: &mut PaintArtifact,
+    spatial: &super::ArtifactSpatialProjection,
+    cache: Option<&mut PlanningCache>,
+) -> Result<(), ChunkPlacementError> {
+    let _profile = crate::view::paint::work_profile::scope("place_artifact_chunks");
+    if artifact
+        .chunks
+        .iter()
+        .all(|chunk| chunk.frame == super::PaintChunkFrame::Viewport)
+    {
+        return Ok(());
+    }
+    if let Some((chunks, ops)) = place_shared_chunk_blocks(artifact, spatial, cache)? {
+        artifact.chunks = chunks;
+        artifact.ops = ops;
+        return Ok(());
+    }
+    let mut ops = artifact.ops.iter().cloned().collect::<Vec<_>>();
+    let mut chunks = super::shared_sequence::SharedSequence::new();
+    for chunk in artifact.chunks.iter() {
+        let start = chunk.op_range.start;
+        let local_ops = ops
+            .get(chunk.op_range.clone())
+            .ok_or(ChunkPlacementError::InvalidChunk)?;
+        let (placed, placed_ops) = place_chunk(chunk, local_ops, spatial)?;
+        if let Some(placed_ops) = placed_ops {
+            ops[start..start + placed_ops.len()].clone_from_slice(&placed_ops);
+        }
+        chunks.push(placed);
+    }
+    let mut placed_ops = super::shared_sequence::SharedSequence::new();
+    for op in ops {
+        placed_ops.push(op);
+    }
+    artifact.chunks = chunks;
+    artifact.ops = placed_ops;
+    Ok(())
+}
+
+/// Why one artifact's chunks could not be placed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ChunkPlacementError {
+    /// A layout-frame chunk names no derivable layout frame.
+    MissingFrame(NodeKey),
+    /// A chunk's command range or translated geometry is malformed.
+    InvalidChunk,
+}
+
+/// Origin of the layout frame a layout-frame chunk names.
+fn layout_frame_origin(
+    chunk: &super::PaintChunk,
+    spatial: &super::ArtifactSpatialProjection,
+) -> Result<[f32; 2], ChunkPlacementError> {
+    chunk
+        .properties
+        .layout_position
+        .and_then(|frame| spatial.frame_origin(frame.0))
+        .ok_or(ChunkPlacementError::MissingFrame(chunk.owner))
+}
+
+/// One chunk placed at its layout frame's origin, with its placed commands;
+/// a viewport chunk is returned unchanged with no commands to replace. No
+/// cache is consulted: commands are not yet validated against their payload
+/// identity, so only an unchanged allocation may stand in for them.
+fn place_chunk(
+    chunk: &super::PaintChunk,
+    local_ops: &[PaintOp],
+    spatial: &super::ArtifactSpatialProjection,
+) -> Result<(super::PaintChunk, Option<Vec<PaintOp>>), ChunkPlacementError> {
+    if chunk.frame == super::PaintChunkFrame::Viewport {
+        return Ok((chunk.clone(), None));
+    }
+    let origin = layout_frame_origin(chunk, spatial)?;
+    let invalid = ChunkPlacementError::InvalidChunk;
+    if local_ops.len() != chunk.op_range.len() {
+        return Err(invalid);
+    }
+    let (placed, ops) = chunk
+        .placed_at(local_ops.iter().cloned(), origin)
+        .ok_or(invalid)?;
+    Ok((placed, Some(ops)))
+}
+
+/// Block-preserving placement. `None` means the recorded sequences are not a
+/// one-to-one schedule of chunk and command blocks.
+#[allow(clippy::type_complexity)]
+fn place_shared_chunk_blocks(
+    artifact: &PaintArtifact,
+    spatial: &super::ArtifactSpatialProjection,
+    mut cache: Option<&mut PlanningCache>,
+) -> Result<
+    Option<(
+        super::shared_sequence::SharedSequence<super::PaintChunk>,
+        super::shared_sequence::SharedSequence<PaintOp>,
+    )>,
+    ChunkPlacementError,
+> {
+    let Some(blocks) = artifact.chunks.shared_blocks() else {
+        return Ok(None);
+    };
+    let mut chunks = super::shared_sequence::SharedSequence::with_shared_capacity(blocks.len());
+    let mut ops = super::shared_sequence::SharedSequence::with_shared_capacity(blocks.len());
+    for block in blocks {
+        let (Some(first), Some(last)) = (block.first(), block.last()) else {
+            continue;
+        };
+        let op_block = if first.op_range.start == last.op_range.end {
+            None
+        } else {
+            match artifact.ops.shared_block_at(first.op_range.start) {
+                Some((start, op_block))
+                    if start == first.op_range.start
+                        && start + op_block.len() == last.op_range.end =>
+                {
+                    Some(op_block)
+                }
+                _ => return Ok(None),
+            }
+        };
+        let origins = block
+            .iter()
+            .map(|chunk| match chunk.frame {
+                super::PaintChunkFrame::Viewport => Ok(None),
+                super::PaintChunkFrame::Layout => {
+                    layout_frame_origin(chunk, spatial).map(|origin| Some(origin.map(f32::to_bits)))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let placed = if origins.iter().all(Option::is_none) {
+            Some((block.clone(), op_block.cloned()))
+        } else {
+            cache
+                .as_deref_mut()
+                .and_then(|cache| cache.placed_block(block, op_block, &origins))
+        };
+        let (placed_chunks, placed_ops) = match placed {
+            Some(placed) => placed,
+            None => {
+                let base = first.op_range.start;
+                let mut placed_ops = op_block.map(|ops| ops.to_vec()).unwrap_or_default();
+                let mut placed_chunks = Vec::with_capacity(block.len());
+                for chunk in block.iter() {
+                    let range = chunk.op_range.start - base..chunk.op_range.end - base;
+                    let local_ops = placed_ops
+                        .get(range.clone())
+                        .ok_or(ChunkPlacementError::InvalidChunk)?;
+                    let (placed, chunk_ops) = place_chunk(chunk, local_ops, spatial)?;
+                    if let Some(chunk_ops) = chunk_ops {
+                        placed_ops[range].clone_from_slice(&chunk_ops);
+                    }
+                    placed_chunks.push(placed);
+                }
+                let placed_chunks: std::sync::Arc<[super::PaintChunk]> = placed_chunks.into();
+                let placed_ops = op_block.map(|_| std::sync::Arc::<[PaintOp]>::from(placed_ops));
+                if let Some(cache) = cache.as_deref_mut() {
+                    cache.remember_placed_block(
+                        block,
+                        op_block,
+                        origins,
+                        &placed_chunks,
+                        placed_ops.as_ref(),
+                    );
+                }
+                (placed_chunks, placed_ops)
+            }
+        };
+        chunks.append_shared(placed_chunks);
+        if let Some(placed_ops) = placed_ops {
+            ops.append_shared(placed_ops);
+        }
+    }
+    Ok(
+        (chunks.len() == artifact.chunks.len() && ops.len() == artifact.ops.len())
+            .then_some((chunks, ops)),
+    )
 }
 
 fn validate_artifact_surface_dag_program(
@@ -1087,7 +1276,7 @@ fn validate_artifact_surface_dag_program(
     mut cache: Option<&mut PlanningCache>,
 ) -> Result<ValidatedArtifactSurfaceDagProgram, SingleTargetSurfaceDagPrepareError> {
     let _profile = crate::view::paint::work_profile::scope("validate_artifact_surface_dag_program");
-    let spatial = place_artifact_clips(&mut artifact, cache.as_deref_mut())?;
+    let spatial = place_artifact_geometry(&mut artifact, cache.as_deref_mut())?;
     let Some(validated) = validate_artifact_store_with_cache(
         &artifact,
         ArtifactStoreValidationPolicy::SurfaceDag,
@@ -4289,28 +4478,10 @@ pub(crate) fn localize_artifact_surface_op(
             .map(PaintOp::scrollbar_overlay)
             .ok_or_else(invalid),
         PaintOp::PreparedText(text) => {
-            let mut params = text.params.as_ref().clone();
-            if params.scissor_rect.is_some() || params.stencil_clip_id.is_some() {
+            if text.params.scissor_rect.is_some() || text.params.stencil_clip_id.is_some() {
                 return Err(ArtifactSurfaceLocalizationError::EmbeddedClip(kind));
             }
-            for fragment in &mut params.fragments {
-                translate_nested_scroll_position(&mut fragment.origin, delta)
-                    .ok_or_else(invalid)?;
-            }
-            for glyph in &mut params.staging_input.glyphs {
-                let fragment = params
-                    .fragments
-                    .get(glyph.paint.fragment_index as usize)
-                    .ok_or_else(invalid)?;
-                glyph.final_paint_pos = [
-                    fragment.origin[0] + glyph.paint.local_pos[0],
-                    fragment.origin[1] + glyph.paint.local_pos[1],
-                ];
-                if glyph.final_paint_pos.iter().any(|value| !value.is_finite()) {
-                    return Err(invalid());
-                }
-            }
-            PreparedTextOp::new(params)
+            text.translated(delta)
                 .map(PaintOp::PreparedText)
                 .ok_or_else(invalid)
         }
@@ -4443,6 +4614,15 @@ fn validate_artifact_store_with_cache(
     mut cache: Option<&mut PlanningCache>,
 ) -> Option<ValidatedArtifact> {
     let _profile = crate::view::paint::work_profile::scope("validate_artifact_store");
+    // Intake placed every layout-frame chunk; the rest of the compiler reads
+    // viewport geometry only.
+    if artifact
+        .chunks
+        .iter()
+        .any(|chunk| chunk.frame != super::PaintChunkFrame::Viewport)
+    {
+        return None;
+    }
     planning_cache::command_blocks::validate(artifact, policy, cache.as_deref_mut())?;
     if policy == ArtifactStoreValidationPolicy::SurfaceDag
         && let Some(validated) = cache.and_then(|cache| cache.relations(artifact))
@@ -4823,7 +5003,7 @@ fn resolve_validated_clip_values(artifact: &PaintArtifact) -> Option<Vec<Resolve
 pub(crate) fn resolved_clips_full_and_refreshed_for_test(
     artifact: &PaintArtifact,
 ) -> (Option<Vec<ResolvedClip>>, Option<Vec<ResolvedClip>>) {
-    let artifact = direct_command_test_support::with_placed_clips(artifact)
+    let artifact = direct_command_test_support::with_placed_geometry(artifact)
         .expect("owner-local clips have layout frames");
     (
         validate_artifact_store_with_cache(
@@ -5229,7 +5409,7 @@ fn intersect_resolved_clip(current: ResolvedClip, next: [u32; 4]) -> ResolvedCli
 mod direct_command_test_support;
 #[cfg(test)]
 pub(crate) use direct_command_test_support::{
-    compile_artifact, try_compile_artifact, with_placed_clips,
+    compile_artifact, try_compile_artifact, with_placed_chunks, with_placed_geometry,
 };
 
 #[cfg(test)]

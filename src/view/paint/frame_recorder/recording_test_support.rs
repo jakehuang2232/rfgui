@@ -3,9 +3,10 @@
 use super::*;
 
 /// These recorders keep frozen spatial stores, except that the compiler
-/// places an owner-local clip at its owner's layout frame: an artifact that
-/// carries one closes its spatial snapshots as production recording does.
-fn close_for_owner_local_clips(
+/// places owner-local clips and layout-frame chunks at their frames: an
+/// artifact that carries either closes its spatial snapshots as production
+/// recording does.
+fn close_for_owner_local_geometry(
     outcome: FrameArtifactRecordOutcome,
     property_trees: &PropertyTrees,
     mode: RendererMode,
@@ -15,7 +16,11 @@ fn close_for_owner_local_clips(
             if artifact
                 .clip_nodes
                 .iter()
-                .any(|clip| clip.geometry.is_owner_local()) =>
+                .any(|clip| clip.geometry.is_owner_local())
+                || artifact
+                    .chunks
+                    .iter()
+                    .any(|chunk| chunk.frame == crate::view::paint::PaintChunkFrame::Layout) =>
         {
             close_recorded_artifact_property_snapshots(outcome, property_trees, mode, None)
         }
@@ -32,7 +37,7 @@ pub(crate) fn record_frame_artifact(
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    close_for_owner_local_clips(
+    close_for_owner_local_geometry(
         record_frame_artifact_with_policy(
             arena,
             roots,
@@ -58,7 +63,7 @@ pub(crate) fn record_property_neutral_frame_artifact(
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    close_for_owner_local_clips(
+    close_for_owner_local_geometry(
         record_frame_artifact_with_policy(
             arena,
             roots,
@@ -83,7 +88,7 @@ pub(crate) fn record_clip_enabled_frame_artifact(
     paint_generations: &PaintGenerationTracker,
     mode: RendererMode,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    close_for_owner_local_clips(
+    close_for_owner_local_geometry(
         record_frozen_clip_enabled_frame_artifact(
             arena,
             roots,
@@ -165,7 +170,7 @@ pub(crate) fn record_root_group_opacity_frame_artifact(
             );
         }
     };
-    close_for_owner_local_clips(
+    close_for_owner_local_geometry(
         record_frame_artifact_with_policy(
             arena,
             roots,

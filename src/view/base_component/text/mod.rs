@@ -794,6 +794,7 @@ impl ElementTrait for Text {
         let mut before_children = Vec::with_capacity(1 + usize::from(selection.is_some()));
         if let Some(selection) = selection {
             before_children.push(crate::view::paint::PaintChunkMetadata {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: crate::view::paint::PaintChunkId {
                     owner,
                     scope: crate::view::paint::PaintPropertyScope::SelfPaint,
@@ -811,6 +812,7 @@ impl ElementTrait for Text {
             });
         }
         before_children.push(crate::view::paint::PaintChunkMetadata {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: crate::view::paint::PaintChunkId {
                 owner,
                 scope: crate::view::paint::PaintPropertyScope::SelfPaint,
@@ -871,6 +873,7 @@ impl ElementTrait for Text {
             before_children.push(crate::view::paint::PaintArtifact {
                 target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
+                    frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
                         owner,
                         scope: crate::view::paint::PaintPropertyScope::SelfPaint,
@@ -911,6 +914,7 @@ impl ElementTrait for Text {
         before_children.push(crate::view::paint::PaintArtifact {
             target: Default::default(),
             chunks: vec![crate::view::paint::PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: crate::view::paint::PaintChunkId {
                     owner,
                     scope: crate::view::paint::PaintPropertyScope::SelfPaint,
@@ -966,6 +970,7 @@ impl ElementTrait for Text {
         let payload_bounds =
             self.shadow_text_recording_bounds(owner, payload.bounds, &recording_context);
         Some(crate::view::paint::PaintChunkMetadata {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: crate::view::paint::PaintChunkId {
                 owner,
                 scope: crate::view::paint::PaintPropertyScope::SelfPaint,
@@ -1016,6 +1021,7 @@ impl ElementTrait for Text {
         Some(crate::view::paint::PaintArtifact {
             target: Default::default(),
             chunks: vec![crate::view::paint::PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: crate::view::paint::PaintChunkId {
                     owner,
                     scope: crate::view::paint::PaintPropertyScope::SelfPaint,

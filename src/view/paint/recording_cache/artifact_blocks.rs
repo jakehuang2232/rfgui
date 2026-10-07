@@ -47,6 +47,7 @@ impl RecordingCache {
                         let start = op_start + commands.len();
                         commands.extend(ops.iter().cloned());
                         chunks.push(PaintChunk {
+                            frame: chunk.frame,
                             id: chunk.id,
                             owner: chunk.owner,
                             op_range: start..op_start + commands.len(),

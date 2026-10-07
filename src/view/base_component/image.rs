@@ -983,6 +983,7 @@ impl ElementTrait for Image {
                 crate::view::paint::PaintArtifact {
                     target: Default::default(),
                     chunks: vec![crate::view::paint::PaintChunk {
+                        frame: crate::view::paint::PaintChunkFrame::Viewport,
                         id: metadata.id,
                         owner: metadata.owner,
                         op_range: 0..ops.len(),

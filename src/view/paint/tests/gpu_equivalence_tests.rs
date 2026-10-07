@@ -716,6 +716,7 @@ fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
         target: PaintArtifactTarget::RootOpacityGroup { root, effect },
         chunks: vec![
             PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: PaintChunkId {
                     owner: first,
                     scope: crate::view::paint::PaintPropertyScope::SelfPaint,
@@ -736,6 +737,7 @@ fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
                 payload_identity: identities[0].clone(),
             },
             PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: PaintChunkId {
                     owner: second,
                     scope: crate::view::paint::PaintPropertyScope::SelfPaint,

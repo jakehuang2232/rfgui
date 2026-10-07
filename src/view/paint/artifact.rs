@@ -1689,11 +1689,26 @@ pub(super) fn chunk_raster_property_snapshot_closure(
     ))
 }
 
+/// The frame a chunk's geometry — bounds, payload identity and commands — is
+/// expressed in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaintChunkFrame {
+    /// Relative to the origin of the layout frame named by the chunk's
+    /// `properties.layout_position`: the owner's own frame, or the nearest
+    /// ancestor's for a host without one. Translating that frame leaves the
+    /// chunk unchanged; the compiler places it at the frame's derived origin.
+    Layout,
+    /// Viewport space: hosts without a layout frame, and every chunk once the
+    /// compiler has placed it.
+    Viewport,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PaintChunk {
     pub(crate) id: PaintChunkId,
     pub(crate) owner: NodeKey,
     pub(crate) op_range: Range<usize>,
+    pub(crate) frame: PaintChunkFrame,
     pub(crate) bounds: Rect,
     /// Observational identity only in this slice. Property trees do not drive
     /// rendering until transform/clip/effect coverage is complete.
@@ -1722,6 +1737,7 @@ pub(crate) struct PaintChunkRasterIdentity {
 pub(crate) struct PaintChunkMetadata {
     pub(crate) id: PaintChunkId,
     pub(crate) owner: NodeKey,
+    pub(crate) frame: PaintChunkFrame,
     pub(crate) bounds: Rect,
     pub(crate) properties: PropertyTreeState,
     pub(crate) content_revision: PaintContentRevision,
@@ -1907,6 +1923,7 @@ impl RetainedChildMaskPlan {
         content_revision: PaintContentRevision,
     ) -> PaintChunkMetadata {
         PaintChunkMetadata {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: PaintChunkId {
                 owner,
                 scope: PaintPropertyScope::Contents,
@@ -1932,6 +1949,7 @@ impl RetainedChildMaskPlan {
         PaintArtifact {
             target: Default::default(),
             chunks: vec![PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: PaintChunkId {
                     owner,
                     scope: PaintPropertyScope::Contents,
@@ -4285,6 +4303,9 @@ impl PreparedSvgIdentity {
         })
     }
 }
+
+mod layout_frame;
+pub(crate) use layout_frame::{artifact_plan_in_layout_frame, metadata_plan_in_layout_frame};
 
 #[cfg(test)]
 mod consumed_ancestor_property_tests;

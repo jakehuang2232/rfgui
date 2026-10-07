@@ -128,6 +128,7 @@ fn artifact_snapshots_complete_spatial_ancestor_graphs_without_arena_queries() {
 
     let mut artifact = PaintArtifact {
         chunks: vec![PaintChunk {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: PaintChunkId {
                 owner: child,
                 scope: PaintPropertyScope::SelfPaint,
@@ -281,6 +282,7 @@ fn artifact_snapshot_closure_includes_named_anchor_visual_chain() {
 
     let mut artifact = PaintArtifact {
         chunks: vec![PaintChunk {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: PaintChunkId {
                 owner: child,
                 scope: PaintPropertyScope::SelfPaint,

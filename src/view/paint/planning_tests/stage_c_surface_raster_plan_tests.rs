@@ -65,7 +65,7 @@ pub(super) fn scroll_surface_artifact() -> PaintArtifact {
     properties.sync(&arena, &[root]);
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
-    let FrameArtifactRecordOutcome::Artifact { mut artifact, .. } =
+    let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
         record_closed_single_target_frame_artifact(
             &arena,
             &[root],
@@ -77,6 +77,9 @@ pub(super) fn scroll_surface_artifact() -> PaintArtifact {
     else {
         panic!("forced scroll fixture cannot silently fall back")
     };
+    // The chunks are rebound to synthetic property states below, so they
+    // leave the layout frames their recorded states named first.
+    let mut artifact = crate::view::paint::compiler::with_placed_chunks(artifact);
 
     let scroll = ScrollNodeId(root);
     let contents_clip = ClipNodeId {

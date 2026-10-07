@@ -866,6 +866,7 @@ impl Element {
         Ok(PaintArtifact {
             target: Default::default(),
             chunks: vec![PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: metadata.id,
                 owner: metadata.owner,
                 op_range: 0..op_len,
@@ -919,6 +920,7 @@ impl Element {
         Ok(PaintArtifact {
             target: Default::default(),
             chunks: vec![PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: metadata.id,
                 owner: metadata.owner,
                 op_range: 0..ops.len(),
@@ -1075,6 +1077,7 @@ impl Element {
         let prepared = self.prepared_self_paint_record(owner, &recording_context)?;
 
         Ok(PaintChunkMetadata {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: PaintChunkId {
                 owner,
                 scope: crate::view::paint::PaintPropertyScope::SelfPaint,

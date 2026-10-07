@@ -29,11 +29,16 @@ fn changed_command_geometry_reuses_relations_but_validates_current_bounds() {
             )
             .unwrap(),
         );
-        let bounds = input.chunks[0].bounds.x.to_bits();
+        // Recorded chunks are owner-local; the move changes where the
+        // compiler places them.
+        let bounds = crate::view::paint::compiler::with_placed_chunks(input.clone()).chunks[0]
+            .bounds
+            .x
+            .to_bits();
         if let Some(previous) = previous_bounds {
             assert_ne!(
                 bounds, previous,
-                "fixture must actually move recorded geometry"
+                "fixture must actually move placed geometry"
             );
         }
         previous_bounds = Some(bounds);

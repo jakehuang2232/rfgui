@@ -113,6 +113,7 @@ impl PlanHost {
         slot: u16,
     ) -> PaintChunkMetadata {
         PaintChunkMetadata {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: crate::view::paint::PaintChunkId {
                 owner,
                 scope,
@@ -184,6 +185,7 @@ impl PlanHost {
         let artifact = |chunk: PaintChunkMetadata| crate::view::paint::PaintArtifact {
             target: Default::default(),
             chunks: vec![crate::view::paint::PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: chunk.id,
                 owner: chunk.owner,
                 op_range: 0..0,

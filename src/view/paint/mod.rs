@@ -27,7 +27,7 @@ pub(crate) use artifact::{
     EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactContractRejection,
     PaintArtifactContractViolation, PaintArtifactSpaceTransition,
     PaintArtifactSpaceTranslationBits, PaintArtifactTarget, PaintAtomicProjectionArtifactSource,
-    PaintBakedScrollHostWitness, PaintChunk, PaintChunkId, PaintChunkMetadata,
+    PaintBakedScrollHostWitness, PaintChunk, PaintChunkFrame, PaintChunkId, PaintChunkMetadata,
     PaintChunkRasterIdentity, PaintChunkRole, PaintContentRevision,
     PaintDeferredViewportEffectWitness, PaintDeferredViewportSelfClipWitness, PaintNodePhase,
     PaintNodePlan, PaintOp, PaintOpacityAuthority, PaintOwnerPropertyStateSnapshot,
@@ -130,6 +130,7 @@ pub(crate) use planning_tests::{
 };
 
 pub(crate) use artifact::PreparedGpuOp;
+pub(crate) use artifact::{artifact_plan_in_layout_frame, metadata_plan_in_layout_frame};
 
 pub(crate) mod work_profile;
 

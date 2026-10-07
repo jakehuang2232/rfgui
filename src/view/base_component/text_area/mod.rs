@@ -1305,6 +1305,7 @@ impl ElementTrait for TextArea {
         let mut before_children = Vec::with_capacity(2);
         if let Some(selection) = payload.selection.as_ref() {
             before_children.push(crate::view::paint::PaintChunkMetadata {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: crate::view::paint::PaintChunkId {
                     owner,
                     scope: crate::view::paint::PaintPropertyScope::Contents,
@@ -1323,6 +1324,7 @@ impl ElementTrait for TextArea {
         }
         if let Some(op) = payload.glyph_op.as_ref() {
             before_children.push(crate::view::paint::PaintChunkMetadata {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: crate::view::paint::PaintChunkId {
                     owner,
                     scope: crate::view::paint::PaintPropertyScope::Contents,
@@ -1340,6 +1342,7 @@ impl ElementTrait for TextArea {
         let mut after_children = Vec::with_capacity(2);
         if let Some(decoration) = payload.decoration.as_ref() {
             after_children.push(crate::view::paint::PaintChunkMetadata {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: crate::view::paint::PaintChunkId {
                     owner,
                     scope: crate::view::paint::PaintPropertyScope::Contents,
@@ -1358,6 +1361,7 @@ impl ElementTrait for TextArea {
         }
         if let Some(caret) = payload.caret.as_ref() {
             after_children.push(crate::view::paint::PaintChunkMetadata {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: crate::view::paint::PaintChunkId {
                     owner,
                     scope: crate::view::paint::PaintPropertyScope::Contents,
@@ -1406,6 +1410,7 @@ impl ElementTrait for TextArea {
             before_children.push(crate::view::paint::PaintArtifact {
                 target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
+                    frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
                         owner,
                         scope: crate::view::paint::PaintPropertyScope::Contents,
@@ -1444,6 +1449,7 @@ impl ElementTrait for TextArea {
             before_children.push(crate::view::paint::PaintArtifact {
                 target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
+                    frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
                         owner,
                         scope: crate::view::paint::PaintPropertyScope::Contents,
@@ -1481,6 +1487,7 @@ impl ElementTrait for TextArea {
             after_children.push(crate::view::paint::PaintArtifact {
                 target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
+                    frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
                         owner,
                         scope: crate::view::paint::PaintPropertyScope::Contents,
@@ -1520,6 +1527,7 @@ impl ElementTrait for TextArea {
             after_children.push(crate::view::paint::PaintArtifact {
                 target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
+                    frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
                         owner,
                         scope: crate::view::paint::PaintPropertyScope::Contents,

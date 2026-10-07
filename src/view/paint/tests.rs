@@ -687,6 +687,20 @@ impl ElementTrait for TransparentContentsClipParent {
         Some(crate::view::compositor::property_tree::ClipGeometry::Viewport(self.scissor))
     }
 
+    /// The host sits at the viewport origin. Owning that frame lets its native
+    /// children record owner-local paint the compiler can place.
+    fn compositor_spatial_placement_snapshot(
+        &self,
+    ) -> Option<crate::view::base_component::SpatialPlacementSnapshot> {
+        Some(crate::view::base_component::SpatialPlacementSnapshot::new(
+            crate::view::base_component::SpatialPositionReferenceSnapshot::Viewport,
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 0.0],
+        ))
+    }
+
     fn retained_paint_properties(&self) -> crate::view::base_component::RetainedPaintProperties {
         crate::view::base_component::RetainedPaintProperties {
             opacity: self.opacity,
@@ -1203,6 +1217,7 @@ impl MalformedRecordingHost {
             },
         };
         PaintChunkMetadata {
+            frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: PaintChunkId {
                 owner,
                 scope: PaintPropertyScope::SelfPaint,
@@ -1310,6 +1325,7 @@ impl ElementTrait for MalformedRecordingHost {
         Some(PaintArtifact {
             target: Default::default(),
             chunks: vec![PaintChunk {
+                frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: chunk.id,
                 owner: chunk.owner,
                 op_range: if matches!(self.malformed, MalformedChunk::FullRange) {
@@ -1757,7 +1773,8 @@ fn whole_frame_artifact(
     else {
         panic!("forced artifact recording cannot silently fall back")
     };
-    (artifact, eligibility)
+    // Inspected in viewport space, as the compiler reads it.
+    (super::compiler::with_placed_chunks(artifact), eligibility)
 }
 
 fn root_group_artifact(
@@ -1780,7 +1797,7 @@ fn root_group_artifact(
     else {
         panic!("forced root group recording cannot silently fall back")
     };
-    (artifact, eligibility)
+    (super::compiler::with_placed_chunks(artifact), eligibility)
 }
 
 fn assert_neutral_opacity(op: &PaintOp) {

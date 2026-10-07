@@ -240,13 +240,16 @@ impl RecordingCache {
             let commands = {
                 let request = self.requests.get(&owner)?;
                 let node = arena.get(owner)?;
-                let commands = node.element.record_shadow_paint_artifact_plan(
-                    owner,
-                    request.properties,
-                    request.contents,
-                    request.revision,
+                let commands = super::artifact_plan_in_layout_frame(
+                    node.element.record_shadow_paint_artifact_plan(
+                        owner,
+                        request.properties,
+                        request.contents,
+                        request.revision,
+                        arena,
+                        &request.context,
+                    )?,
                     arena,
-                    &request.context,
                 )?;
                 let as_metadata =
                     |artifacts: &Vec<PaintArtifact>| -> Option<Vec<PaintChunkMetadata>> {
@@ -260,6 +263,7 @@ impl RecordingCache {
                                     return None;
                                 }
                                 Some(PaintChunkMetadata {
+                                    frame: chunk.frame,
                                     id: chunk.id,
                                     owner: chunk.owner,
                                     bounds: chunk.bounds,
