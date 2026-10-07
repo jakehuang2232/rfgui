@@ -91,7 +91,6 @@ pub(crate) struct PaintRecordingContext {
     /// clears inherited values; cached/full recording never receives this token.
     pub(crate) inline_root_recording:
         Option<crate::view::base_component::InlineRootRecordingWitness>,
-    pub(crate) paint_offset: [f32; 2],
     pub(crate) inside_text_area: bool,
     /// Path-scoped authority for a single projection-owned Text selection.
     /// The coverage walker derives this independently for every child edge;
@@ -174,11 +173,6 @@ pub(crate) struct PaintRecordingContext {
     /// S/C pair from host self paint while preserving this boundary's own S/C
     /// pair on descendants.
     pub(crate) scroll_forest_host: Option<Arc<PaintScrollForestEdgeWitness>>,
-    /// Recorder-derived proof that this exact node's self paint is recorded on
-    /// a detached local basis, so it consumes `paint_offset`. Coverage clears
-    /// and recomputes it after every component context hook; a component that
-    /// sets it is overwritten before its own paint runs.
-    pub(crate) scroll_content_local_owner: bool,
     /// Recorder-derived proof that this exact node may keep one descendant
     /// contents clip inside the recording. Like the flag above it is per-node
     /// and never inherited: a child inherits the value by copy and coverage
@@ -188,10 +182,6 @@ pub(crate) struct PaintRecordingContext {
     /// caret, so the recording must not paint a second one. Same per-node
     /// lifetime as the two flags above.
     pub(crate) resident_caret_suppressed: bool,
-    /// Recorder-owned post-hook paint offset required by the bounded detached
-    /// scroll-content canary. Coverage rebinds this after every component hook
-    /// and compares bitwise; all other recording policies leave it absent.
-    pub(crate) required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
     pub(crate) opacity_authority: PaintOpacityAuthority,
 }
 
@@ -484,23 +474,6 @@ impl PaintRecordingContext {
                 }
             }
         }
-    }
-
-    pub(crate) fn authorizes_scroll_content_local_owner(&self, owner: NodeKey) -> bool {
-        if self.recording_owner != Some(owner) {
-            return false;
-        }
-        matches!(
-            self.consumed_ancestor_property.as_deref(),
-            Some(ConsumedAncestorProperty::ScrollContents(witness))
-                if witness.is_canonical_for(owner)
-        ) || self
-            .consumed_ancestor_property_stack
-            .as_deref()
-            .is_some_and(|stack| {
-                stack.authorizes_scroll_content_local_owner(owner, self.opacity_authority)
-            })
-            || self.scroll_content_local_owner
     }
 
     /// One node inside a recording may keep a descendant contents clip. The

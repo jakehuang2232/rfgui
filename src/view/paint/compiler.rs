@@ -1,6 +1,5 @@
 use crate::view::base_component::{
     Rect, RetainedSurfaceBounds, UiBuildContext, exact_logical_scissor_for_rect,
-    paint_offset_after_owner_snap,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
@@ -1090,7 +1089,9 @@ fn place_artifact_geometry(
     Ok(spatial)
 }
 
-/// Places every layout-frame chunk and its commands at its frame's origin. Command order and every chunk's op range are unchanged. Recorded
+/// Places every layout-frame chunk and its commands at its frame's origin,
+/// then every chunk at its owner's snapped paint offset. Command order and
+/// every chunk's op range are unchanged. Recorded
 /// blocks are placed block by block, so an unmoved block keeps the same
 /// placed allocation and every allocation-keyed proof downstream still holds.
 pub(crate) fn place_artifact_chunks(
@@ -1099,11 +1100,12 @@ pub(crate) fn place_artifact_chunks(
     cache: Option<&mut PlanningCache>,
 ) -> Result<(), ChunkPlacementError> {
     let _profile = crate::view::paint::work_profile::scope("place_artifact_chunks");
-    if artifact
-        .chunks
-        .iter()
-        .all(|chunk| chunk.frame == super::PaintChunkFrame::Viewport)
-    {
+    if artifact.chunks.iter().all(|chunk| {
+        chunk.frame == super::PaintChunkFrame::Viewport
+            && spatial
+                .owner_paint_offset(chunk.owner)
+                .is_some_and(|snap| snap.map(f32::to_bits) == [0.0_f32.to_bits(); 2])
+    }) {
         return Ok(());
     }
     if let Some((chunks, ops)) = place_shared_chunk_blocks(artifact, spatial, cache)? {
@@ -1142,20 +1144,38 @@ pub(crate) enum ChunkPlacementError {
     InvalidChunk,
 }
 
-/// Origin of the layout frame a layout-frame chunk names.
-fn layout_frame_origin(
+/// Where one chunk is placed: its layout frame's origin, for a layout-frame
+/// chunk, and its owner's snapped paint offset.
+type ChunkPlacement = (Option<[u32; 2]>, [u32; 2]);
+
+fn chunk_placement(
     chunk: &super::PaintChunk,
     spatial: &super::ArtifactSpatialProjection,
-) -> Result<[f32; 2], ChunkPlacementError> {
-    chunk
-        .properties
-        .layout_position
-        .and_then(|frame| spatial.frame_origin(frame.0))
-        .ok_or(ChunkPlacementError::MissingFrame(chunk.owner))
+) -> Result<ChunkPlacement, ChunkPlacementError> {
+    let missing = ChunkPlacementError::MissingFrame(chunk.owner);
+    let origin = match chunk.frame {
+        super::PaintChunkFrame::Viewport => None,
+        super::PaintChunkFrame::Layout => Some(
+            chunk
+                .properties
+                .layout_position
+                .and_then(|frame| spatial.frame_origin(frame.0))
+                .ok_or(missing)?,
+        ),
+    };
+    let snap = spatial.owner_paint_offset(chunk.owner).ok_or(missing)?;
+    Ok((
+        origin.map(|origin| origin.map(f32::to_bits)),
+        snap.map(f32::to_bits),
+    ))
 }
 
-/// One chunk placed at its layout frame's origin, with its placed commands;
-/// a viewport chunk is returned unchanged with no commands to replace. No
+fn is_unmoved(placement: ChunkPlacement) -> bool {
+    placement == (None, [0.0_f32.to_bits(); 2])
+}
+
+/// One chunk placed in viewport space, with its placed commands; a chunk
+/// that does not move is returned unchanged with no commands to replace. No
 /// cache is consulted: commands are not yet validated against their payload
 /// identity, so only an unchanged allocation may stand in for them.
 fn place_chunk(
@@ -1163,16 +1183,21 @@ fn place_chunk(
     local_ops: &[PaintOp],
     spatial: &super::ArtifactSpatialProjection,
 ) -> Result<(super::PaintChunk, Option<Vec<PaintOp>>), ChunkPlacementError> {
-    if chunk.frame == super::PaintChunkFrame::Viewport {
+    let placement = chunk_placement(chunk, spatial)?;
+    if is_unmoved(placement) {
         return Ok((chunk.clone(), None));
     }
-    let origin = layout_frame_origin(chunk, spatial)?;
     let invalid = ChunkPlacementError::InvalidChunk;
     if local_ops.len() != chunk.op_range.len() {
         return Err(invalid);
     }
+    let (origin, snap) = placement;
     let (placed, ops) = chunk
-        .placed_at(local_ops.iter().cloned(), origin)
+        .placed(
+            local_ops.iter().cloned(),
+            origin.map(|origin| origin.map(f32::from_bits)),
+            snap.map(f32::from_bits),
+        )
         .ok_or(invalid)?;
     Ok((placed, Some(ops)))
 }
@@ -1213,21 +1238,16 @@ fn place_shared_chunk_blocks(
                 _ => return Ok(None),
             }
         };
-        let origins = block
+        let placements = block
             .iter()
-            .map(|chunk| match chunk.frame {
-                super::PaintChunkFrame::Viewport => Ok(None),
-                super::PaintChunkFrame::Layout => {
-                    layout_frame_origin(chunk, spatial).map(|origin| Some(origin.map(f32::to_bits)))
-                }
-            })
+            .map(|chunk| chunk_placement(chunk, spatial))
             .collect::<Result<Vec<_>, _>>()?;
-        let placed = if origins.iter().all(Option::is_none) {
+        let placed = if placements.iter().copied().all(is_unmoved) {
             Some((block.clone(), op_block.cloned()))
         } else {
             cache
                 .as_deref_mut()
-                .and_then(|cache| cache.placed_block(block, op_block, &origins))
+                .and_then(|cache| cache.placed_block(block, op_block, &placements))
         };
         let (placed_chunks, placed_ops) = match placed {
             Some(placed) => placed,
@@ -1252,7 +1272,7 @@ fn place_shared_chunk_blocks(
                     cache.remember_placed_block(
                         block,
                         op_block,
-                        origins,
+                        placements,
                         &placed_chunks,
                         placed_ops.as_ref(),
                     );
@@ -1366,11 +1386,7 @@ fn validate_artifact_surface_dag_program(
         .and_then(|cache| cache.host_placement(&artifact))
     {
         Some(placement) => placement,
-        None => ArtifactSurfaceHostPlacementProjection::try_new(&artifact, &spatial)
-            .map_err(TransitionError::SpatialSnapshot)
-            .map_err(SurfaceDagError::Transition)
-            .map_err(SingleTargetSurfaceDagPrepareError::SurfaceDag)?
-            .into(),
+        None => ArtifactSurfaceHostPlacementProjection::new(&spatial).into(),
     };
 
     let program = ValidatedArtifactSurfaceDagProgram {
@@ -1435,24 +1451,17 @@ fn append_bounds(accumulated: &mut Option<[u32; 4]>, next: [u32; 4]) -> Option<(
 /// detached raster content remains host-independent.
 #[derive(Clone, Debug)]
 struct ArtifactSurfaceHostPlacementProjection {
-    owners: std::sync::Arc<[ArtifactSurfaceOwnerPlacement]>,
-    // Shared only by clones of this exact immutable owner-position program.
+    owners: std::sync::Arc<[super::OwnerSnapPoints]>,
+    // Shared only by clones of this exact immutable owner snap program.
     // Host offset is the remaining input; successful resolution is cached once.
     resolved: std::sync::Arc<std::sync::Mutex<Option<HostPlacementResolutionMemo>>>,
 }
 
 #[derive(Clone, Debug)]
 struct HostPlacementResolutionMemo {
-    owners: std::sync::Arc<[ArtifactSurfaceOwnerPlacement]>,
+    owners: std::sync::Arc<[super::OwnerSnapPoints]>,
     offset_bits: [u32; 2],
     resolved: ResolvedArtifactSurfaceHostPlacement,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ArtifactSurfaceOwnerPlacement {
-    owner: NodeKey,
-    parent: Option<NodeKey>,
-    viewport_position_bits: [u32; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -1463,76 +1472,11 @@ struct ResolvedArtifactSurfaceHostPlacement {
 }
 
 impl ArtifactSurfaceHostPlacementProjection {
-    fn try_new(
-        artifact: &PaintArtifact,
-        spatial: &super::ArtifactSpatialProjection,
-    ) -> Result<Self, SpatialProjectionError> {
-        let mut owners = Vec::with_capacity(artifact.owner_nodes.len());
-        for snapshot in &artifact.owner_nodes {
-            owners.push(ArtifactSurfaceOwnerPlacement {
-                owner: snapshot.owner,
-                parent: snapshot.parent,
-                viewport_position_bits: spatial
-                    .owner_viewport_position(snapshot.owner)
-                    .ok_or(SpatialProjectionError::InvalidSnapshot(snapshot.owner))?
-                    .to_array()
-                    .map(f32::to_bits),
-            });
-        }
-        Ok(Self {
-            owners: owners.into(),
+    fn new(spatial: &super::ArtifactSpatialProjection) -> Self {
+        Self {
+            owners: spatial.owner_snap_points().clone(),
             resolved: Default::default(),
-        })
-    }
-
-    /// Every owner's paint offset after its ancestors' and its own pixel
-    /// snap, starting from `start` at the owner roots.
-    fn snap_chain(
-        &self,
-        placements: &FxHashMap<NodeKey, ArtifactSurfaceOwnerPlacement>,
-        start: [f32; 2],
-    ) -> Result<FxHashMap<NodeKey, [f32; 2]>, SpatialProjectionError> {
-        let mut offsets: FxHashMap<NodeKey, [f32; 2]> =
-            FxHashMap::with_capacity_and_hasher(self.owners.len(), Default::default());
-        let mut chain = Vec::new();
-        let mut seen = FxHashSet::default();
-        for placement in self.owners.iter() {
-            if offsets.contains_key(&placement.owner) {
-                continue;
-            }
-            chain.clear();
-            seen.clear();
-            let mut cursor = placement.owner;
-            // Artifact owner stores preserve canonical traversal order, not a
-            // parent-first topological order. Resolve the bounded ancestry
-            // explicitly so a child-first store cannot change snap semantics.
-            let mut parent_paint_offset = loop {
-                if let Some(offset) = offsets.get(&cursor) {
-                    break *offset;
-                }
-                if chain.len() >= usize::from(u8::MAX) || !seen.insert(cursor) {
-                    return Err(SpatialProjectionError::InvalidSnapshot(cursor));
-                }
-                let current = placements
-                    .get(&cursor)
-                    .copied()
-                    .ok_or(SpatialProjectionError::InvalidSnapshot(cursor))?;
-                chain.push(current);
-                match current.parent {
-                    Some(parent) => cursor = parent,
-                    None => break start,
-                }
-            };
-            for current in chain.drain(..).rev() {
-                parent_paint_offset = paint_offset_after_owner_snap(
-                    current.viewport_position_bits.map(f32::from_bits),
-                    parent_paint_offset,
-                )
-                .ok_or(SpatialProjectionError::InvalidSnapshot(current.owner))?;
-                offsets.insert(current.owner, parent_paint_offset);
-            }
         }
-        Ok(offsets)
     }
 
     fn resolve(
@@ -1552,24 +1496,17 @@ impl ArtifactSurfaceHostPlacementProjection {
         {
             return Ok(memo.resolved.clone());
         }
-        let mut placements =
-            FxHashMap::with_capacity_and_hasher(self.owners.len(), Default::default());
-        for placement in self.owners.iter() {
-            if placements.insert(placement.owner, *placement).is_some() {
-                return Err(SpatialProjectionError::InvalidSnapshot(placement.owner));
-            }
-        }
-        // Recorded commands already carry each owner's pixel snap for a zero
-        // host. Placement adds only what this host offset changes in that
-        // chain, so a snap is never applied twice.
-        let host_chain = self.snap_chain(&placements, host_paint_offset)?;
+        // Intake already placed every chunk at its owner's snapped paint
+        // offset for a zero host. Placement adds only what this host offset
+        // changes in that chain, so a snap is never applied twice.
+        let zero_chain = super::snapped_owner_paint_offsets(&self.owners, [0.0, 0.0])?;
         let host_delta_bits = if offset_bits == [0.0_f32, 0.0_f32].map(f32::to_bits) {
-            host_chain
+            zero_chain
                 .keys()
                 .map(|owner| (*owner, [0.0_f32, 0.0_f32].map(f32::to_bits)))
                 .collect()
         } else {
-            let zero_chain = self.snap_chain(&placements, [0.0, 0.0])?;
+            let host_chain = super::snapped_owner_paint_offsets(&self.owners, host_paint_offset)?;
             host_chain
                 .iter()
                 .map(|(owner, host)| {
@@ -4291,11 +4228,14 @@ fn exact_self_clip_shadow_prefix_len(
     if artifact.target != PaintArtifactTarget::CurrentTarget
         || artifact.chunks.len() != 1
         || artifact.chunks.first()?.id != chunk.id
-        || artifact.owner_nodes.as_slice()
-            != [PaintOwnerSnapshot {
-                owner: chunk.owner,
+        || !matches!(
+            artifact.owner_nodes.as_slice(),
+            [PaintOwnerSnapshot {
+                owner,
                 parent: None,
-            }]
+                ..
+            }] if *owner == chunk.owner
+        )
         || !artifact.effect_nodes.is_empty()
         || chunk.id.scope != PaintPropertyScope::SelfPaint
         || chunk.id.phase != super::PaintNodePhase::BeforeChildren

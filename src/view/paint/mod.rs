@@ -14,7 +14,9 @@ mod recorder;
 mod recording_context;
 mod shared_sequence;
 mod spatial_projection;
-pub(crate) use spatial_projection::ArtifactSpatialProjection;
+pub(crate) use spatial_projection::{
+    ArtifactSpatialProjection, OwnerSnapPoints, snapped_owner_paint_offsets,
+};
 
 mod surface_dag;
 
@@ -30,7 +32,7 @@ pub(crate) use artifact::{
     PaintBakedScrollHostWitness, PaintChunk, PaintChunkFrame, PaintChunkId, PaintChunkMetadata,
     PaintChunkRasterIdentity, PaintChunkRole, PaintContentRevision,
     PaintDeferredViewportEffectWitness, PaintDeferredViewportSelfClipWitness, PaintNodePhase,
-    PaintNodePlan, PaintOp, PaintOpacityAuthority, PaintOwnerPropertyStateSnapshot,
+    PaintNodePlan, PaintOp, PaintOpacityAuthority, PaintOwnerPropertyStateSnapshot, PaintOwnerSnap,
     PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PaintScrollContentWitness,
     PaintScrollForestEdgeWitness, PaintTextContentSource, PaintTextPreeditWitness,
     PaintTextSelectionSource, PaintTextSelectionWitness, PaintTransformSurfaceWitness,

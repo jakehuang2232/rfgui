@@ -1,6 +1,6 @@
 use super::super::super::{
-    ArtifactSurfaceHostPlacementProjection, ArtifactSurfaceOwnerPlacement, ResolvedClip,
-    artifact_surface_terminal_clip, translate_artifact_surface_logical_clip,
+    ArtifactSurfaceHostPlacementProjection, ResolvedClip, artifact_surface_terminal_clip,
+    translate_artifact_surface_logical_clip,
 };
 use super::*;
 
@@ -18,15 +18,15 @@ fn owner_scoped_host_placement_adds_only_the_host_change_to_the_snap_chain() {
     );
     let mut projection = ArtifactSurfaceHostPlacementProjection {
         owners: vec![
-            ArtifactSurfaceOwnerPlacement {
+            crate::view::paint::OwnerSnapPoints {
                 owner: child,
                 parent: Some(root),
-                viewport_position_bits: [17.5_f32.to_bits(), 15.0_f32.to_bits()],
+                points_bits: [Some([17.5_f32.to_bits(), 15.0_f32.to_bits()]), None],
             },
-            ArtifactSurfaceOwnerPlacement {
+            crate::view::paint::OwnerSnapPoints {
                 owner: root,
                 parent: None,
-                viewport_position_bits: [5.25_f32.to_bits(), 5.0_f32.to_bits()],
+                points_bits: [Some([5.25_f32.to_bits(), 5.0_f32.to_bits()]), None],
             },
         ]
         .into(),
@@ -62,8 +62,8 @@ fn owner_scoped_host_placement_adds_only_the_host_change_to_the_snap_chain() {
     );
     assert!(projection.resolve([f32::NAN, 0.0]).is_err());
     // Replacing a same-id owner observation cannot inherit another allocation's proof.
-    std::sync::Arc::make_mut(&mut projection.owners)[1].viewport_position_bits[0] =
-        5.5_f32.to_bits();
+    std::sync::Arc::make_mut(&mut projection.owners)[1].points_bits[0] =
+        Some([5.5_f32.to_bits(), 5.0_f32.to_bits()]);
     let changed = projection.resolve([0.5, 0.0]).unwrap();
     assert_eq!(changed.owner_paint_offset(child), Some([0.0, 0.0]));
 }

@@ -376,20 +376,17 @@ impl TextArea {
         }))
     }
 
+    /// The legacy paint offset of this TextArea's content: the owner snap,
+    /// then the content anchor snap, over `parent`. It walks the same snap
+    /// points `paint_snap_points` hands the compiler.
     fn effective_paint_offset(&self, arena: &NodeArena, parent: [f32; 2]) -> [f32; 2] {
-        let mut offset = parent;
-        let paint_x = self.layout_state.layout_position.x + offset[0];
-        let paint_y = self.layout_state.layout_position.y + offset[1];
-        offset[0] += round_layout_value(paint_x) - paint_x;
-        offset[1] += round_layout_value(paint_y) - paint_y;
-
-        if let Some((content_x, content_y)) = self.content_paint_anchor(arena) {
-            let paint_x = content_x + offset[0];
-            let paint_y = content_y + offset[1];
-            offset[0] += round_layout_value(paint_x) - paint_x;
-            offset[1] += round_layout_value(paint_y) - paint_y;
-        }
-        offset
+        self.paint_snap_points(arena)
+            .into_iter()
+            .flatten()
+            .try_fold(parent, |offset, point| {
+                crate::view::base_component::paint_offset_after_owner_snap(point, offset)
+            })
+            .unwrap_or([f32::NAN; 2])
     }
 
     fn plain_shadow_geometry_is_finite(&self) -> bool {
@@ -1067,35 +1064,11 @@ impl TextArea {
         origin: [f32; 2],
     ) -> Result<Option<PlainTextAreaDecorationPayload>, PlainTextAreaPaintFailure> {
         let ops = self.preedit_underline_rect_ops(package, origin)?;
-        let mut iter = ops.iter();
-        let Some(first) = iter.next() else {
+        if ops.is_empty() {
             return Ok(None);
-        };
-        let mut left = first.params.position[0];
-        let mut top = first.params.position[1];
-        let mut right = left + first.params.size[0];
-        let mut bottom = top + first.params.size[1];
-        for op in iter {
-            left = left.min(op.params.position[0]);
-            top = top.min(op.params.position[1]);
-            right = right.max(op.params.position[0] + op.params.size[0]);
-            bottom = bottom.max(op.params.position[1] + op.params.size[1]);
         }
-        if ![left, top, right, bottom].into_iter().all(f32::is_finite)
-            || right < left
-            || bottom < top
-        {
-            return Err(PlainTextAreaPaintFailure::Unsupported);
-        }
-        Ok(Some(PlainTextAreaDecorationPayload {
-            bounds: crate::view::base_component::Rect {
-                x: left,
-                y: top,
-                width: right - left,
-                height: bottom - top,
-            },
-            ops,
-        }))
+        let bounds = draw_rect_union(&ops).ok_or(PlainTextAreaPaintFailure::Unsupported)?;
+        Ok(Some(PlainTextAreaDecorationPayload { bounds, ops }))
     }
 
     fn projection_preedit_decoration_payload(
@@ -1158,36 +1131,11 @@ impl TextArea {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut iter = ops.iter();
-        let Some(first) = iter.next() else {
-            return Err(PlainTextAreaPaintFailure::Unsupported);
-        };
-        let mut left = first.params.position[0];
-        let mut top = first.params.position[1];
-        let mut right = left + first.params.size[0];
-        let mut bottom = top + first.params.size[1];
-        for op in iter {
-            left = left.min(op.params.position[0]);
-            top = top.min(op.params.position[1]);
-            right = right.max(op.params.position[0] + op.params.size[0]);
-            bottom = bottom.max(op.params.position[1] + op.params.size[1]);
-        }
-        if ![left, top, right, bottom].into_iter().all(f32::is_finite)
-            || right < left
-            || bottom < top
-            || crate::view::paint::PaintPayloadIdentity::prepared_rects(ops.iter()).is_none()
-        {
+        let bounds = draw_rect_union(&ops).ok_or(PlainTextAreaPaintFailure::Unsupported)?;
+        if crate::view::paint::PaintPayloadIdentity::prepared_rects(ops.iter()).is_none() {
             return Err(PlainTextAreaPaintFailure::Unsupported);
         }
-        Ok(Some(PlainTextAreaDecorationPayload {
-            bounds: crate::view::base_component::Rect {
-                x: left,
-                y: top,
-                width: right - left,
-                height: bottom - top,
-            },
-            ops,
-        }))
+        Ok(Some(PlainTextAreaDecorationPayload { bounds, ops }))
     }
 
     fn caret_draw_rect_payload(
@@ -1231,15 +1179,17 @@ impl TextArea {
         }))
     }
 
+    /// The plain payload with its content placed at `effective_offset`: the
+    /// owner's paint offset after its own and its content anchor's snaps.
+    /// Recording passes zero; the compiler applies those snaps.
     pub(super) fn prepared_plain_shadow_text_payload(
         &self,
         owner: NodeKey,
         arena: &NodeArena,
         deferred_phase_root: bool,
-        paint_offset: [f32; 2],
+        effective_offset: [f32; 2],
     ) -> Result<PlainTextAreaPaintPayload, PlainTextAreaPaintFailure> {
         let package = self.exact_plain_unified_package(owner, arena, deferred_phase_root)?;
-        let effective_offset = self.effective_paint_offset(arena, paint_offset);
         if effective_offset.iter().any(|value| !value.is_finite()) {
             return Err(PlainTextAreaPaintFailure::Unsupported);
         }
@@ -1923,7 +1873,7 @@ impl TextArea {
         })
     }
 
-    fn content_paint_anchor(&self, arena: &NodeArena) -> Option<(f32, f32)> {
+    pub(super) fn content_paint_anchor(&self, arena: &NodeArena) -> Option<(f32, f32)> {
         self.children.iter().find_map(|&child_key| {
             arena.with_element_taken_ref(child_key, |el, _| {
                 let snap = el.box_model_snapshot();
@@ -2228,7 +2178,12 @@ impl TextArea {
         }
 
         let payload = self
-            .prepared_plain_shadow_text_payload(owner, arena, false, parent_paint_offset)
+            .prepared_plain_shadow_text_payload(
+                owner,
+                arena,
+                false,
+                self.effective_paint_offset(arena, parent_paint_offset),
+            )
             .ok()?;
         let Some(root_glyph) = payload.glyph_op.as_ref() else {
             return None;
@@ -2314,7 +2269,12 @@ impl TextArea {
         }
 
         let payload = self
-            .prepared_plain_shadow_text_payload(owner, arena, false, parent_paint_offset)
+            .prepared_plain_shadow_text_payload(
+                owner,
+                arena,
+                false,
+                self.effective_paint_offset(arena, parent_paint_offset),
+            )
             .ok()?;
         let root_glyph = payload.glyph_op.as_ref()?;
         if !root_glyph.has_canonical_identity()
@@ -2707,7 +2667,12 @@ impl TextArea {
             }
         }
         matches!(
-            self.prepared_plain_shadow_text_payload(owner, arena, false, parent_paint_offset),
+            self.prepared_plain_shadow_text_payload(
+                owner,
+                arena,
+                false,
+                self.effective_paint_offset(arena, parent_paint_offset),
+            ),
             Ok(PlainTextAreaPaintPayload {
                 glyph_op: Some(_),
                 selection: None,
@@ -2776,7 +2741,12 @@ impl TextArea {
             caret: None,
             ..
         } = self
-            .prepared_plain_shadow_text_payload(owner, arena, false, parent_paint_offset)
+            .prepared_plain_shadow_text_payload(
+                owner,
+                arena,
+                false,
+                self.effective_paint_offset(arena, parent_paint_offset),
+            )
             .ok()?
         else {
             return None;
@@ -2867,7 +2837,12 @@ impl TextArea {
             }
         }
         let payload = self
-            .prepared_plain_shadow_text_payload(owner, arena, false, parent_paint_offset)
+            .prepared_plain_shadow_text_payload(
+                owner,
+                arena,
+                false,
+                self.effective_paint_offset(arena, parent_paint_offset),
+            )
             .ok()?;
         let glyph = payload.glyph_op.as_ref()?;
         if !glyph.has_canonical_identity() {
@@ -2926,7 +2901,12 @@ impl TextArea {
             return None;
         }
         let actual_payload = self
-            .prepared_plain_shadow_text_payload(owner, arena, false, parent_paint_offset)
+            .prepared_plain_shadow_text_payload(
+                owner,
+                arena,
+                false,
+                self.effective_paint_offset(arena, parent_paint_offset),
+            )
             .ok()?;
         let actual_glyph = actual_payload.glyph_op.as_ref()?;
         let actual_decoration = actual_payload.decoration.as_ref()?;
@@ -3286,3 +3266,41 @@ fn same_optional_f32_bits(left: Option<f32>, right: Option<f32>) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// The union of `ops`' rects. A single rect is its own bounds bit for bit:
+/// recomputing its extent from fractional edges could round its size.
+fn draw_rect_union(
+    ops: &[crate::view::paint::DrawRectOp],
+) -> Option<crate::view::base_component::Rect> {
+    let (first, rest) = ops.split_first()?;
+    let [x, y] = first.params.position;
+    let [width, height] = first.params.size;
+    let bounds = if rest.is_empty() {
+        crate::view::base_component::Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    } else {
+        let (mut left, mut top, mut right, mut bottom) = (x, y, x + width, y + height);
+        for op in rest {
+            left = left.min(op.params.position[0]);
+            top = top.min(op.params.position[1]);
+            right = right.max(op.params.position[0] + op.params.size[0]);
+            bottom = bottom.max(op.params.position[1] + op.params.size[1]);
+        }
+        crate::view::base_component::Rect {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        }
+    };
+    ([bounds.x, bounds.y, bounds.width, bounds.height]
+        .into_iter()
+        .all(f32::is_finite)
+        && bounds.width >= 0.0
+        && bounds.height >= 0.0)
+        .then_some(bounds)
+}

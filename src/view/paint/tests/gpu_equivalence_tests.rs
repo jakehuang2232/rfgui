@@ -785,14 +785,17 @@ fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
             PaintOwnerSnapshot {
                 owner: root,
                 parent: None,
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             },
             PaintOwnerSnapshot {
                 owner: first,
                 parent: Some(root),
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             },
             PaintOwnerSnapshot {
                 owner: second,
                 parent: Some(root),
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             },
         ],
     }

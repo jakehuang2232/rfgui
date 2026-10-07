@@ -39,10 +39,11 @@ pub(crate) fn round_layout_value(value: f32) -> f32 {
     }
 }
 
-/// Paint offset inherited by an owner's children after the owner applies the
-/// engine's layout-position snap. Both live traversal and arena-independent
-/// artifact placement use this derivation so they cannot disagree on host
-/// placement at fractional coordinates.
+/// Paint offset inherited past one snap point: the incoming paint offset plus
+/// the correction that moves the point onto the pixel grid. The legacy build
+/// and the compiler's owner snap chain both use this one derivation, so they
+/// agree bit for bit. The correction is added as a whole, so a point already
+/// on the grid leaves the offset unchanged.
 pub(crate) fn paint_offset_after_owner_snap(
     owner_viewport_position: [f32; 2],
     parent_paint_offset: [f32; 2],
@@ -59,8 +60,8 @@ pub(crate) fn paint_offset_after_owner_snap(
         owner_viewport_position[1] + parent_paint_offset[1],
     ];
     let next = [
-        parent_paint_offset[0] + round_layout_value(paint[0]) - paint[0],
-        parent_paint_offset[1] + round_layout_value(paint[1]) - paint[1],
+        parent_paint_offset[0] + (round_layout_value(paint[0]) - paint[0]),
+        parent_paint_offset[1] + (round_layout_value(paint[1]) - paint[1]),
     ];
     next.into_iter().all(f32::is_finite).then_some(next)
 }

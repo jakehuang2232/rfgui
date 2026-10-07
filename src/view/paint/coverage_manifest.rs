@@ -814,12 +814,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
         consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
         consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
         scroll_forest_host: Option<std::sync::Arc<super::PaintScrollForestEdgeWitness>>,
-        /// Time-boxed bridge for the pre-V2 exact detached subtree grammars.
-        /// It reaches the walker only through the private legacy entry point,
-        /// never through a `record_coverage_manifest*` API, never through
-        /// `PaintRecordingContext`, and never into the artifact. It is deleted
-        /// with `legacy_admission` in the Stage C hard cutover.
-        required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
         opacity_authority: super::PaintOpacityAuthority,
         planned_boundary_cutouts: &'a PlannedBoundaryCutoutSet,
         native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
@@ -1128,22 +1122,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
             let mut recording_context = node
                 .element
                 .shadow_paint_recording_context(parent_recording_context);
-            recording_context.required_scroll_content_paint_offset_bits =
-                self.required_scroll_content_paint_offset_bits;
-            if self
-                .required_scroll_content_paint_offset_bits
-                .is_some_and(|required| {
-                    recording_context.paint_offset.map(f32::to_bits) != required
-                })
-            {
-                self.push_legacy_boundary(
-                    key,
-                    stable_id,
-                    LegacyPaintReason::MissingPaintIdentity,
-                    order,
-                );
-                return;
-            }
             recording_context.is_frame_root = path.is_empty() && !deferred_phase_root;
             recording_context.inline_root_recording = None;
             recording_context.recording_owner = Some(key);
@@ -1164,7 +1142,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 .and_then(|witness| witness.projection_for_target(key));
             recording_context.scroll_forest_host = self.scroll_forest_host.clone();
             // Retired detached-subtree flags cannot be inherited from component hooks.
-            recording_context.scroll_content_local_owner = false;
             recording_context.descendant_contents_clip = false;
             recording_context.resident_caret_suppressed = false;
             // Opacity authority is a recorder policy, not ambient component
@@ -1936,10 +1913,17 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     self.effect_snapshot_for(state.descendants)
                         .ok_or(PaintCoverageValidationError::InvalidEffectSnapshot(owner))?,
                 ];
+                let snap = super::PaintOwnerSnap::observe(
+                    self.arena.get(owner).ok_or_else(invalid)?.element.as_ref(),
+                    self.arena,
+                    state.paint.layout_position,
+                )
+                .ok_or_else(invalid)?;
                 let scope = PaintOwnerScope {
                     topology: PaintOwnerSnapshot {
                         owner,
                         parent: parent_key,
+                        snap,
                     },
                     state,
                     clips,
@@ -2040,8 +2024,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
             .as_deref()
             .copied(),
         scroll_forest_host: initial_recording_context.scroll_forest_host.clone(),
-        required_scroll_content_paint_offset_bits: initial_recording_context
-            .required_scroll_content_paint_offset_bits,
         opacity_authority: initial_recording_context.opacity_authority,
         planned_boundary_cutouts,
         native_scroll_receiver,

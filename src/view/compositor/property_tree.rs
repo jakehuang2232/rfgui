@@ -557,6 +557,18 @@ impl<'a> SpatialProjectionGraph<'a> {
         Ok(self.layout_flow_position(owner)? + self.cumulative_visual_offset(owner)?)
     }
 
+    /// The owner's layout frame origin, or `None` when the owner has no
+    /// layout frame of its own.
+    pub(crate) fn derive_optional_owner_frame_origin(
+        &self,
+        owner: NodeKey,
+    ) -> Result<Option<Vec2>, SpatialProjectionError> {
+        if !self.positions.contains_key(&LayoutPositionNodeId(owner)) {
+            return Ok(None);
+        }
+        self.derive_owner_frame_origin(owner).map(Some)
+    }
+
     fn layout_flow_position(&self, owner: NodeKey) -> Result<Vec2, SpatialProjectionError> {
         let mut cache = self.resolved_positions.borrow_mut();
         let ProjectionPrefixCache {

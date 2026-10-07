@@ -234,10 +234,12 @@ fn complete_artifact() -> (
             PaintOwnerSnapshot {
                 owner: root,
                 parent: None,
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             },
             PaintOwnerSnapshot {
                 owner: child,
                 parent: Some(root),
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             },
         ],
         owner_property_states: vec![
@@ -598,6 +600,7 @@ fn scene_root_ordinal_is_derived_from_owner_store_order() {
     artifact.owner_nodes.push(PaintOwnerSnapshot {
         owner: second_root,
         parent: None,
+        snap: crate::view::paint::PaintOwnerSnap::INHERIT,
     });
     artifact
         .owner_property_states

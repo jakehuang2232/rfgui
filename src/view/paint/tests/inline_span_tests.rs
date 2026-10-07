@@ -60,8 +60,15 @@ fn wrapping_inline_span_shadows_preserve_fragment_order_and_match_legacy() {
             .unwrap();
         (
             span.inline_fragment_rects().to_vec(),
-            span.shadow_paint_recording_context(&PaintRecordingContext::default())
-                .paint_offset,
+            // The compiler snaps the span over an unsnapped root.
+            crate::view::base_component::paint_offset_after_owner_snap(
+                [
+                    span.layout_state.layout_position.x,
+                    span.layout_state.layout_position.y,
+                ],
+                [0.0, 0.0],
+            )
+            .unwrap(),
         )
     };
     assert!(

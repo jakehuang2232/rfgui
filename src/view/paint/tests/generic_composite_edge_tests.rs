@@ -107,7 +107,9 @@ fn generic_preedit_edge_survives_absent_caret_edge() {
             .all(|chunk| chunk.id.role != PaintChunkRole::Caret),
         "hidden caret must not create a composite edge",
     );
-    let underline_chunks = artifact
+    let placed = crate::view::paint::compiler::with_placed_geometry(&artifact)
+        .expect("owner-local clips have layout frames");
+    let underline_chunks = placed
         .chunks
         .iter()
         .filter(|chunk| {
@@ -119,8 +121,6 @@ fn generic_preedit_edge_survives_absent_caret_edge() {
     let [underline_chunk] = underline_chunks.as_slice() else {
         panic!("preedit must create exactly one independent underline edge")
     };
-    let placed = crate::view::paint::compiler::with_placed_geometry(&artifact)
-        .expect("owner-local clips have layout frames");
     let underline = PaintCompositeEdge::from_artifact_chunk(&placed, underline_chunk)
         .expect("generic underline edge must be self-canonical");
     let opaque_delta = paint_composite_edge_opaque_delta(std::slice::from_ref(&underline))

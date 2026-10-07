@@ -300,14 +300,12 @@ fn consumed_effect_scroll_stack_requires_exact_chain_and_neutral_authority() {
         neutral.project_consumed_ancestor_property(live),
         Some(PropertyTreeState::default())
     );
-    assert!(neutral.authorizes_scroll_content_local_owner(content_owner));
 
     let baked = PaintRecordingContext {
         opacity_authority: PaintOpacityAuthority::Baked,
         ..neutral
     };
     assert_eq!(baked.project_consumed_ancestor_property(live), None);
-    assert!(!baked.authorizes_scroll_content_local_owner(content_owner));
 
     let mut wrong_chain = effect_witness;
     wrong_chain.projected_after = Some(EffectNodeId(scroll_owner));
@@ -401,7 +399,6 @@ fn consumed_transform_effect_scroll_stack_projects_all_three_layers_exactly() {
             ..Default::default()
         })
     );
-    assert!(context.authorizes_scroll_content_local_owner(content_owner));
     let effect_transform_stack = ConsumedAncestorPropertyStackWitness::new(
         content_owner,
         &[
@@ -439,92 +436,6 @@ fn consumed_transform_effect_scroll_stack_projects_all_three_layers_exactly() {
     ] {
         assert!(ConsumedAncestorPropertyStackWitness::new(content_owner, &invalid).is_none());
     }
-}
-
-#[test]
-fn scroll_content_local_authority_accepts_only_exact_canonical_stack() {
-    let (transform_owner, scroll_owner, content_owner) = keys();
-    let transform_witness = ConsumedAncestorTransformWitness::new(
-        transform_owner,
-        scroll_owner,
-        TransformNodeId(transform_owner),
-    )
-    .unwrap();
-    let scroll_witness = ConsumedAncestorScrollContentsWitness::new(
-        scroll_owner,
-        content_owner,
-        ScrollNodeId(scroll_owner),
-        ClipNodeId {
-            owner: scroll_owner,
-            role: ClipNodeRole::ContentsClip,
-        },
-    )
-    .unwrap();
-    let stack = ConsumedAncestorPropertyStackWitness::new(
-        content_owner,
-        &[
-            ConsumedAncestorProperty::Transform(transform_witness),
-            ConsumedAncestorProperty::ScrollContents(scroll_witness),
-        ],
-    )
-    .unwrap();
-    let context = PaintRecordingContext {
-        recording_owner: Some(content_owner),
-        consumed_ancestor_property_stack: Some(std::sync::Arc::new(stack)),
-        ..Default::default()
-    };
-    assert!(context.authorizes_scroll_content_local_owner(content_owner));
-
-    let wrong_owner = PaintRecordingContext {
-        recording_owner: Some(scroll_owner),
-        ..context
-    };
-    assert!(!wrong_owner.authorizes_scroll_content_local_owner(scroll_owner));
-
-    let transform_only = ConsumedAncestorPropertyStackWitness::new(
-        content_owner,
-        &[ConsumedAncestorProperty::Transform(transform_witness)],
-    )
-    .unwrap();
-    assert!(
-        !PaintRecordingContext {
-            recording_owner: Some(content_owner),
-            consumed_ancestor_property_stack: Some(std::sync::Arc::new(transform_only)),
-            ..Default::default()
-        }
-        .authorizes_scroll_content_local_owner(content_owner)
-    );
-
-    let duplicate_scroll = ConsumedAncestorPropertyStackWitness {
-        entries: [
-            Some(ConsumedAncestorProperty::ScrollContents(scroll_witness)),
-            Some(ConsumedAncestorProperty::ScrollContents(scroll_witness)),
-            None,
-        ],
-        len: 2,
-        target_owner: content_owner,
-    };
-    assert!(
-        !PaintRecordingContext {
-            recording_owner: Some(content_owner),
-            consumed_ancestor_property_stack: Some(std::sync::Arc::new(duplicate_scroll)),
-            ..Default::default()
-        }
-        .authorizes_scroll_content_local_owner(content_owner)
-    );
-
-    let mut noncanonical = stack;
-    noncanonical.entries[1] = Some(ConsumedAncestorProperty::ScrollContents(
-        scroll_witness.for_target(scroll_owner),
-    ));
-    assert!(
-        !PaintRecordingContext {
-            recording_owner: Some(content_owner),
-            consumed_ancestor_property_stack: Some(std::sync::Arc::new(noncanonical)),
-            ..Default::default()
-        }
-        .authorizes_scroll_content_local_owner(content_owner)
-    );
 }
 
 #[test]

@@ -26,12 +26,13 @@ pub(crate) struct PlanningCache {
     pub(crate) localized_misses: usize,
     pub(crate) placed_hits: usize,
 }
-/// One recorded block placed with these per-chunk origins. The source
-/// allocations are held so the pointer key cannot be reused by another block.
+/// One recorded block placed with these per-chunk frame origins and snaps.
+/// The source allocations are held so the pointer key cannot be reused by
+/// another block.
 struct PlacedBlock {
     source_chunks: std::sync::Arc<[super::super::PaintChunk]>,
     source_ops: Option<std::sync::Arc<[PaintOp]>>,
-    origins: Vec<Option<[u32; 2]>>,
+    placements: Vec<super::ChunkPlacement>,
     chunks: std::sync::Arc<[super::super::PaintChunk]>,
     ops: Option<std::sync::Arc<[PaintOp]>>,
     seen: bool,
@@ -226,11 +227,11 @@ impl PlanningCache {
     ) -> Option<std::sync::Arc<ArtifactSurfaceHostPlacementProjection>> {
         let previous = self.geometry.as_ref()?;
         let old = &previous.artifact;
-        // Host placement consumes owner edges and the spatial graph only.
-        // Paint content, clip geometry, opacity and authored transform matrices
-        // cannot invalidate owner viewport position: that position is derived
-        // from layout/visual/scroll edges. Current spatial graph validation
-        // still checks transforms before this lookup.
+        // Host placement consumes owner edges, their snaps and the spatial
+        // graph only. Paint content, clip geometry, opacity and authored
+        // transform matrices cannot invalidate an owner's snap points: they are
+        // derived from layout/visual/scroll edges. Current spatial graph
+        // validation still checks transforms before this lookup.
         if old.owner_nodes != artifact.owner_nodes
             || old.layout_position_nodes != artifact.layout_position_nodes
             || old.visual_offset_nodes != artifact.visual_offset_nodes
@@ -444,7 +445,7 @@ impl PlanningCache {
         &mut self,
         chunks: &std::sync::Arc<[super::super::PaintChunk]>,
         ops: Option<&std::sync::Arc<[PaintOp]>>,
-        origins: &[Option<[u32; 2]>],
+        placements: &[super::ChunkPlacement],
     ) -> Option<(
         std::sync::Arc<[super::super::PaintChunk]>,
         Option<std::sync::Arc<[PaintOp]>>,
@@ -457,7 +458,7 @@ impl PlanningCache {
                     (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
                     _ => false,
                 }
-                && entry.origins == origins
+                && entry.placements == placements
         })?;
         entry.seen = true;
         self.placed_hits += entry.chunks.len();
@@ -468,7 +469,7 @@ impl PlanningCache {
         &mut self,
         source_chunks: &std::sync::Arc<[super::super::PaintChunk]>,
         source_ops: Option<&std::sync::Arc<[PaintOp]>>,
-        origins: Vec<Option<[u32; 2]>>,
+        placements: Vec<super::ChunkPlacement>,
         chunks: &std::sync::Arc<[super::super::PaintChunk]>,
         ops: Option<&std::sync::Arc<[PaintOp]>>,
     ) {
@@ -477,7 +478,7 @@ impl PlanningCache {
             PlacedBlock {
                 source_chunks: source_chunks.clone(),
                 source_ops: source_ops.cloned(),
-                origins,
+                placements,
                 chunks: chunks.clone(),
                 ops: ops.cloned(),
                 seen: true,

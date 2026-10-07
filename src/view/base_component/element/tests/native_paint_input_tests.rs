@@ -25,9 +25,9 @@ fn native_paint_capsule_reads_live_colors_and_rejects_invalid_offsets() {
     let node = arena.get(owner).unwrap();
     let element = node.element.as_any().downcast_ref::<Element>().unwrap();
     let context = crate::view::paint::PaintRecordingContext::default();
-    let first = element.prepared_self_paint_record(owner, &context).unwrap();
+    let first = element.prepared_self_paint_record(&context).unwrap();
     let before = REPLAYS.with(std::cell::Cell::get);
-    let warm = element.prepared_self_paint_record(owner, &context).unwrap();
+    let warm = element.prepared_self_paint_record(&context).unwrap();
     assert_eq!(warm.payload_identity, first.payload_identity);
     assert_eq!(REPLAYS.with(std::cell::Cell::get), before + 1);
     drop(node);
@@ -43,24 +43,19 @@ fn native_paint_capsule_reads_live_colors_and_rejects_invalid_offsets() {
     }
     let node = arena.get(owner).unwrap();
     let element = node.element.as_any().downcast_ref::<Element>().unwrap();
-    let red = element.prepared_self_paint_record(owner, &context).unwrap();
+    let red = element.prepared_self_paint_record(&context).unwrap();
     color.0.set([0., 0., 1., 1.]); // No style setter, generation or dirty notification.
     let before = REPLAYS.with(std::cell::Cell::get);
-    let blue = element.prepared_self_paint_record(owner, &context).unwrap();
+    let blue = element.prepared_self_paint_record(&context).unwrap();
     assert_ne!(red.payload_identity, blue.payload_identity);
     assert_eq!(
         REPLAYS.with(std::cell::Cell::get),
         before,
         "changed resolved color must rebuild"
     );
-    let invalid = crate::view::paint::PaintRecordingContext {
-        paint_offset: [f32::NAN, 0.],
-        ..context.clone()
-    };
-    assert!(element.prepared_self_paint_record(owner, &invalid).is_err());
     assert_eq!(
         element
-            .prepared_self_paint_record(owner, &context)
+            .prepared_self_paint_record(&context)
             .unwrap()
             .payload_identity,
         blue.payload_identity
@@ -78,7 +73,7 @@ fn native_shadow_capsule_tracks_raw_geometry_and_every_shadow_parameter() {
     let element = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
     element.box_shadows = vec![BoxShadow::default()];
     let context = crate::view::paint::PaintRecordingContext::default();
-    let _ = element.prepared_self_paint_record(owner, &context).unwrap();
+    let _ = element.prepared_self_paint_record(&context).unwrap();
     let edits: &[fn(&mut Element)] = &[
         |e| e.box_shadows[0].offset_x = 2.,
         |e| e.box_shadows[0].offset_y = 3.,
@@ -93,15 +88,15 @@ fn native_shadow_capsule_tracks_raw_geometry_and_every_shadow_parameter() {
     for (index, edit) in edits.iter().enumerate() {
         edit(element); // Direct mutation deliberately bypasses dirty reporting.
         let before = REPLAYS.with(std::cell::Cell::get);
-        let actual = element.prepared_self_paint_record(owner, &context).unwrap();
+        let actual = element.prepared_self_paint_record(&context).unwrap();
         assert_eq!(REPLAYS.with(std::cell::Cell::get), before, "edit {index}");
         element.paint_recording_inputs.borrow_mut().take();
-        let fresh = element.prepared_self_paint_record(owner, &context).unwrap();
+        let fresh = element.prepared_self_paint_record(&context).unwrap();
         assert_eq!(
             actual.payload_identity, fresh.payload_identity,
             "edit {index}"
         );
-        let warm = element.prepared_self_paint_record(owner, &context).unwrap();
+        let warm = element.prepared_self_paint_record(&context).unwrap();
         assert!(
             std::sync::Arc::ptr_eq(&warm.shadows, &fresh.shadows),
             "edit {index}"
@@ -154,11 +149,13 @@ fn child_mask_capsule_rechecks_geometry_order_partition_and_capability() {
     let partitioned = plan(&arena, &context);
     assert_eq!(partitioned.in_scope_children(), &[second]);
     assert_eq!(partitioned.overflow_children(), &[first]);
-    let shifted = PaintRecordingContext {
-        paint_offset: [4., 2.],
-        ..context.clone()
-    };
-    let translated = plan(&arena, &shifted);
+    {
+        let mut node = arena.get_mut(owner).unwrap();
+        let element = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
+        element.layout_state.layout_position.x += 4.;
+        element.layout_state.layout_position.y += 2.;
+    }
+    let translated = plan(&arena, &context);
     let metadata = |mask: &crate::view::paint::RetainedChildMaskPlan| {
         mask.metadata(
             owner,
@@ -180,7 +177,7 @@ fn child_mask_capsule_rechecks_geometry_order_partition_and_capability() {
         let element = node.element.as_any().downcast_ref::<Element>().unwrap();
         element.child_mask_recording_inputs.borrow_mut().take();
     }
-    let fresh = plan(&arena, &shifted);
+    let fresh = plan(&arena, &context);
     assert_eq!(
         metadata(&translated).payload_identity,
         metadata(&fresh).payload_identity
@@ -191,17 +188,6 @@ fn child_mask_capsule_rechecks_geometry_order_partition_and_capability() {
         [a.x, a.y, a.width, a.height].map(f32::to_bits),
         [b.x, b.y, b.width, b.height].map(f32::to_bits)
     );
-    let invalid = PaintRecordingContext {
-        paint_offset: [f32::NAN, 0.],
-        ..context.clone()
-    };
-    let node = arena.get(owner).unwrap();
-    assert!(
-        node.element
-            .retained_child_mask_plan(&arena, &invalid)
-            .is_none()
-    );
-    drop(node);
     {
         let mut node = arena.get_mut(owner).unwrap();
         let element = node.element.as_any_mut().downcast_mut::<Element>().unwrap();

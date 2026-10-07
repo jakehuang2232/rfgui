@@ -144,6 +144,10 @@ fn co_located_surface_artifact() -> PaintArtifact {
             .expect("co-located chunk property state")
             .paint;
     }
+    // Placement already applied every owner's snap.
+    for owner in &mut artifact.owner_nodes {
+        owner.snap = crate::view::paint::PaintOwnerSnap::INHERIT;
+    }
     artifact.clip_nodes.clear();
     artifact.effect_nodes.clear();
     artifact.transform_nodes.clear();

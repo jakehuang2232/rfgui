@@ -236,7 +236,14 @@ fn assert_complete_artifact_store_profile(
             let parent = (!roots.contains(&owner))
                 .then(|| arena.parent_of(owner))
                 .flatten();
-            extend_unique(&mut owners, [PaintOwnerSnapshot { owner, parent }]);
+            extend_unique(
+                &mut owners,
+                [PaintOwnerSnapshot {
+                    owner,
+                    parent,
+                    snap: crate::view::paint::PaintOwnerSnap::INHERIT,
+                }],
+            );
             let state = properties
                 .node_state_for(owner)
                 .expect("Stage A owner endpoint state");

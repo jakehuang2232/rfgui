@@ -410,26 +410,42 @@ pub(crate) fn artifact_plan_in_layout_frame(
 }
 
 impl PaintChunk {
-    /// This layout-frame chunk and its commands placed with the frame origin
-    /// at `origin`.
-    pub(crate) fn placed_at(
+    /// This chunk and its commands in viewport space: a layout-frame chunk
+    /// first moves to its frame's `origin`, then every chunk takes its
+    /// owner's pixel snap `snap`. The two translations stay separate so each
+    /// coordinate is the recorded value plus the snap, exactly as the legacy
+    /// renderer adds its paint offset.
+    pub(crate) fn placed(
         &self,
         ops: impl IntoIterator<Item = PaintOp>,
-        origin: [f32; 2],
+        origin: Option<[f32; 2]>,
+        snap: [f32; 2],
     ) -> Option<(Self, Vec<PaintOp>)> {
-        if self.frame != PaintChunkFrame::Layout {
+        if origin.is_some() != (self.frame == PaintChunkFrame::Layout) {
             return None;
         }
+        let snap = (snap.map(f32::to_bits) != [0.0_f32.to_bits(); 2]).then_some(snap);
+        let deltas = origin.into_iter().chain(snap);
         let ops = ops
             .into_iter()
-            .map(|op| super::super::compiler::localize_artifact_surface_op(&op, origin))
+            .map(|op| {
+                deltas.clone().try_fold(op, |op, delta| {
+                    super::super::compiler::localize_artifact_surface_op(&op, delta)
+                })
+            })
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
+        let mut bounds = self.bounds;
+        let mut payload_identity = self.payload_identity.clone();
+        for delta in deltas {
+            bounds = translated_rect(&|bits| translated_point_bits(bits, delta), bounds)?;
+            payload_identity = payload_identity.translated(delta)?;
+        }
         Some((
             Self {
                 frame: PaintChunkFrame::Viewport,
-                bounds: translated_rect(&|bits| translated_point_bits(bits, origin), self.bounds)?,
-                payload_identity: self.payload_identity.translated(origin)?,
+                bounds,
+                payload_identity,
                 ..self.clone()
             },
             ops,

@@ -76,7 +76,6 @@ pub(crate) fn record_surface_dag_frame_artifact(
         mode,
         FrameArtifactAuthorityPolicy::SurfaceDag,
         None,
-        None,
     )?;
     close_recorded_artifact_property_snapshots(outcome, property_trees, mode, None)
 }
@@ -96,7 +95,6 @@ pub(crate) fn record_surface_dag_frame_artifact_cached(
         paint_generations,
         RendererMode::Auto,
         FrameArtifactAuthorityPolicy::SurfaceDag,
-        None,
         None,
         None,
         None,
@@ -428,7 +426,6 @@ fn record_frame_artifact_with_policy(
     mode: RendererMode,
     policy: FrameArtifactAuthorityPolicy,
     consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
-    required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
     record_frame_artifact_with_policy_and_stack(
         arena,
@@ -440,7 +437,6 @@ fn record_frame_artifact_with_policy(
         consumed_ancestor_property,
         None,
         None,
-        required_scroll_content_paint_offset_bits,
         None,
     )
 }
@@ -456,7 +452,6 @@ fn record_frame_artifact_with_policy_and_stack(
     consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
     consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
     neutral_effect_authority: Option<EffectNodeId>,
-    required_scroll_content_paint_offset_bits: Option<[u32; 2]>,
     mut recording_cache: Option<&mut super::RecordingCache>,
 ) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
     let _profile =
@@ -473,7 +468,6 @@ fn record_frame_artifact_with_policy_and_stack(
     let initial_recording_context = PaintRecordingContext {
         consumed_ancestor_property: consumed_ancestor_property.map(std::sync::Arc::new),
         consumed_ancestor_property_stack: consumed_ancestor_property_stack.map(std::sync::Arc::new),
-        required_scroll_content_paint_offset_bits,
         opacity_authority: match (neutral_effect_authority, policy) {
             (Some(effect), _) => PaintOpacityAuthority::NeutralRootEffect(effect),
             #[cfg(test)]

@@ -11,8 +11,8 @@ use crate::view::base_component::{Rect, ScrollbarOverlayWitness, ScrollbarPaintS
 use crate::view::compositor::property_tree::PropertyTreeState;
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
-    LayoutPositionNodeSnapshot, ScrollNodeId, ScrollNodeSnapshot, TransformNodeId,
-    TransformNodeSnapshot, VisualOffsetNodeSnapshot,
+    LayoutPositionNodeId, LayoutPositionNodeSnapshot, ScrollNodeId, ScrollNodeSnapshot,
+    TransformNodeId, TransformNodeSnapshot, VisualOffsetNodeSnapshot,
 };
 use crate::view::node_arena::NodeKey;
 use crate::view::render_pass::draw_rect_pass::{
@@ -541,78 +541,6 @@ impl ConsumedAncestorPropertyStackWitness {
 
     pub(crate) fn entries(self) -> impl Iterator<Item = ConsumedAncestorProperty> {
         self.entries.into_iter().take(self.len as usize).flatten()
-    }
-
-    pub(super) fn authorizes_scroll_content_local_owner(
-        self,
-        owner: NodeKey,
-        opacity_authority: PaintOpacityAuthority,
-    ) -> bool {
-        if owner != self.target_owner
-            || self.len == 0
-            || usize::from(self.len) > MAX_CONSUMED_ANCESTOR_PROPERTIES
-            || self.entries[..usize::from(self.len)]
-                .iter()
-                .any(Option::is_none)
-            || self.entries[usize::from(self.len)..]
-                .iter()
-                .any(Option::is_some)
-        {
-            return false;
-        }
-        let mut transform_seen = false;
-        let mut effect_seen = false;
-        let mut scroll_witness = None;
-        for (index, entry) in self.entries().enumerate() {
-            match entry {
-                ConsumedAncestorProperty::Transform(witness) => {
-                    if scroll_witness.is_some()
-                        || std::mem::replace(&mut transform_seen, true)
-                        || !witness.is_canonical_for(owner)
-                    {
-                        return false;
-                    }
-                }
-                ConsumedAncestorProperty::SameOwnerTransformBoundary(witness) => {
-                    if scroll_witness.is_some()
-                        || std::mem::replace(&mut transform_seen, true)
-                        || !witness.is_canonical_for(owner)
-                    {
-                        return false;
-                    }
-                }
-                ConsumedAncestorProperty::SameOwnerEffectBoundary(witness) => {
-                    if scroll_witness.is_some()
-                        || std::mem::replace(&mut effect_seen, true)
-                        || !witness.is_canonical_for(owner)
-                        || opacity_authority
-                            != PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
-                    {
-                        return false;
-                    }
-                }
-                ConsumedAncestorProperty::ScrollContents(witness) => {
-                    if !witness.is_canonical_for(owner) || scroll_witness.replace(witness).is_some()
-                    {
-                        return false;
-                    }
-                    if index + 1 != usize::from(self.len) {
-                        return false;
-                    }
-                }
-                ConsumedAncestorProperty::Effect(witness) => {
-                    if scroll_witness.is_some()
-                        || std::mem::replace(&mut effect_seen, true)
-                        || !witness.is_canonical_for(owner)
-                        || opacity_authority
-                            != PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-        scroll_witness.is_some()
     }
 
     pub(super) fn project_for(
@@ -1546,6 +1474,70 @@ pub(crate) struct PaintArtifact {
 pub(crate) struct PaintOwnerSnapshot {
     pub(crate) owner: NodeKey,
     pub(crate) parent: Option<NodeKey>,
+    pub(crate) snap: PaintOwnerSnap,
+}
+
+/// Where an owner meets the pixel grid. Recording never snaps: the compiler
+/// applies each owner's snap along the owner chain, so an owner paints at its
+/// parent's snapped paint offset plus its own snap corrections.
+///
+/// Each point, in order, snaps the paint offset reaching it. Points are
+/// relative to the origin of `frame`: the layout frame the owner's paint
+/// state names (its own, or its nearest framed ancestor's), so they move
+/// with the owner, or the viewport without one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PaintOwnerSnap {
+    pub(crate) frame: Option<LayoutPositionNodeId>,
+    pub(crate) points_bits: [Option<[u32; 2]>; 2],
+}
+
+impl PaintOwnerSnap {
+    /// Paints at its parent's paint offset.
+    pub(crate) const INHERIT: Self = Self {
+        frame: None,
+        points_bits: [None, None],
+    };
+
+    /// The snap of `host`, relative to the layout frame `frame`. A point that
+    /// does not return exactly to itself from that frame is kept in viewport
+    /// space instead, so the compiler snaps the very value the legacy build
+    /// snaps.
+    pub(crate) fn observe<H: crate::view::base_component::ElementTrait + ?Sized>(
+        host: &H,
+        arena: &crate::view::node_arena::NodeArena,
+        frame: Option<LayoutPositionNodeId>,
+    ) -> Option<Self> {
+        let points = host.paint_snap_points(arena);
+        if points == [None, None] {
+            return Some(Self::INHERIT);
+        }
+        let viewport = Self {
+            frame: None,
+            points_bits: points.map(|point| point.map(|point| point.map(f32::to_bits))),
+        };
+        let Some(frame) = frame else {
+            return Some(viewport);
+        };
+        let bounds = arena.get(frame.0)?.element.box_model_snapshot();
+        let origin = [bounds.x, bounds.y];
+        let mut points_bits = [None; 2];
+        for (relative, point) in points_bits.iter_mut().zip(points) {
+            let Some(point) = point else {
+                continue;
+            };
+            let local = [point[0] - origin[0], point[1] - origin[1]];
+            if [origin[0] + local[0], origin[1] + local[1]].map(f32::to_bits)
+                != point.map(f32::to_bits)
+            {
+                return Some(viewport);
+            }
+            *relative = Some(local.map(f32::to_bits));
+        }
+        Some(Self {
+            frame: Some(frame),
+            points_bits,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1976,6 +1968,7 @@ impl RetainedChildMaskPlan {
             owner_nodes: vec![PaintOwnerSnapshot {
                 owner,
                 parent: None,
+                snap: PaintOwnerSnap::INHERIT,
             }],
         }
     }
@@ -2926,7 +2919,8 @@ impl PaintTextContentSource {
 pub(crate) struct PaintAtomicProjectionArtifactSource {
     pub(crate) projection_text_owner: NodeKey,
     pub(crate) projection_text_bounds_bits: [u32; 4],
-    pub(crate) descendant_owner_topology: Arc<[PaintOwnerSnapshot]>,
+    /// `(owner, parent)` edges below the TextArea root.
+    pub(crate) descendant_owner_topology: Arc<[(NodeKey, Option<NodeKey>)]>,
 }
 
 impl PaintAtomicProjectionArtifactSource {
@@ -2948,7 +2942,7 @@ impl PaintAtomicProjectionArtifactSource {
         if self
             .descendant_owner_topology
             .iter()
-            .any(|owner| parents.insert(owner.owner, owner.parent).is_some())
+            .any(|&(owner, parent)| parents.insert(owner, parent).is_some())
         {
             return false;
         }
@@ -2957,12 +2951,15 @@ impl PaintAtomicProjectionArtifactSource {
         };
         projection_root != text_area_root
             && parents.get(&projection_root) == Some(&Some(text_area_root))
-            && self.descendant_owner_topology.iter().all(|owner| {
-                owner.owner != text_area_root
-                    && owner.parent.is_some_and(|parent| {
-                        parent == text_area_root || parents.contains_key(&parent)
-                    })
-            })
+            && self
+                .descendant_owner_topology
+                .iter()
+                .all(|&(owner, parent)| {
+                    owner != text_area_root
+                        && parent.is_some_and(|parent| {
+                            parent == text_area_root || parents.contains_key(&parent)
+                        })
+                })
     }
 }
 

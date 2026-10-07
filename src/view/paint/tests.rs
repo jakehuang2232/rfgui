@@ -1626,6 +1626,7 @@ fn add_inherited_contents_clip(
     artifact.owner_nodes.push(PaintOwnerSnapshot {
         owner,
         parent: None,
+        snap: crate::view::paint::PaintOwnerSnap::INHERIT,
     });
     let id = ClipNodeId {
         owner,
@@ -1695,6 +1696,7 @@ fn compiler_sibling_effect_artifact() -> (PaintArtifact, NodeKey, NodeKey, NodeK
     artifact.owner_nodes.push(PaintOwnerSnapshot {
         owner: synthetic_parent,
         parent: None,
+        snap: crate::view::paint::PaintOwnerSnap::INHERIT,
     });
     // This compiler-only fixture models two canonical siblings without
     // introducing Element child-clip eligibility concerns.

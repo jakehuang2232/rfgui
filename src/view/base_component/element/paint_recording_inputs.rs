@@ -14,7 +14,6 @@ pub(super) struct NativeSelfPaintInputs {
     shadow_radii: [u32; 4],
     shadow_params: Vec<([u32; 8], bool)>,
     shadow_enabled: bool,
-    offset: [u32; 2],
     opacity: u32,
     shadows: Arc<[PreparedShadowOp]>,
     payload: PaintPayloadIdentity,
@@ -132,7 +131,6 @@ impl NativeSelfPaintInputs {
         self.shadow_enabled
             && element.core.should_paint
             && !element.box_shadows.is_empty()
-            && self.offset == context.paint_offset.map(f32::to_bits)
             && self.opacity == context.paint_opacity(element.opacity).to_bits()
             && self.shadow_radii == element.border_radii.to_array().map(f32::to_bits)
             && self.shadow_rects.iter().copied().eq(shadow_rects(element))
@@ -162,9 +160,8 @@ impl Element {
     ) -> Result<PreparedSelfPaintRecord, crate::view::paint::LegacyPaintReason> {
         use crate::view::paint::LegacyPaintReason;
         let opacity = context.paint_opacity(self.opacity);
-        let decoration = self.self_decoration_paint_ops(opacity, context.paint_offset);
+        let decoration = self.self_decoration_paint_ops(opacity, [0.0, 0.0]);
         let enabled = self.core.should_paint && !self.box_shadows.is_empty();
-        let offset = context.paint_offset.map(f32::to_bits);
         let radii = self.border_radii.to_array().map(f32::to_bits);
         let memo = self.paint_recording_inputs.borrow();
         if let Some(old) = memo.as_ref().filter(|old| {
@@ -172,8 +169,7 @@ impl Element {
                 && rect_eq(&old.decoration.border, &decoration.border)
                 && old.shadow_enabled == enabled
                 && (!enabled
-                    || (old.offset == offset
-                        && old.opacity == opacity.to_bits()
+                    || (old.opacity == opacity.to_bits()
                         && old.shadow_radii == radii
                         && old.shadow_rects.iter().copied().eq(shadow_rects(self))
                         && old
@@ -215,7 +211,6 @@ impl Element {
                 Vec::new()
             },
             shadow_enabled: enabled,
-            offset,
             opacity: opacity.to_bits(),
             shadows: shadows.clone(),
             payload: payload.clone(),

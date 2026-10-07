@@ -559,19 +559,6 @@ fn content_signature(content: &str) -> u64 {
 }
 
 impl Text {
-    fn shadow_text_recording_bounds(
-        &self,
-        owner: crate::view::node_arena::NodeKey,
-        mut bounds: crate::view::base_component::Rect,
-        recording_context: &crate::view::paint::PaintRecordingContext,
-    ) -> crate::view::base_component::Rect {
-        if recording_context.authorizes_scroll_content_local_owner(owner) {
-            bounds.x += recording_context.paint_offset[0];
-            bounds.y += recording_context.paint_offset[1];
-        }
-        bounds
-    }
-
     fn validate_shadow_text_preedit_witness(
         &self,
         owner: crate::view::node_arena::NodeKey,
@@ -654,10 +641,7 @@ impl Text {
         let mut bottom = f32::NEG_INFINITY;
         for rect in rects {
             let params = crate::view::render_pass::draw_rect_pass::RectPassParams {
-                position: [
-                    rect.x + recording_context.paint_offset[0],
-                    rect.y + recording_context.paint_offset[1],
-                ],
+                position: [rect.x, rect.y],
                 size: [rect.width.max(1.0), rect.height.max(1.0)],
                 fill_color: witness.fill,
                 opacity: 1.0,
@@ -758,9 +742,7 @@ impl ElementTrait for Text {
                 super::ShadowPaintBlocker::TextAreaSelection,
             );
         }
-        if let Err(blocker) =
-            self.validate_shadow_text_payload(recording_context.paint_offset, effective_opacity)
-        {
+        if let Err(blocker) = self.validate_shadow_text_payload([0.0, 0.0], effective_opacity) {
             return super::ShadowPaintRecordingCapability::Legacy(blocker);
         }
         super::ShadowPaintRecordingCapability::Recordable
@@ -783,10 +765,9 @@ impl ElementTrait for Text {
         self.validate_shadow_text_preedit_witness(owner, arena, &recording_context)
             .ok()?;
         let glyph = self
-            .prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+            .prepared_shadow_text_payload([0.0, 0.0], effective_opacity)
             .ok()?;
-        let glyph_bounds =
-            self.shadow_text_recording_bounds(owner, glyph.bounds, &recording_context);
+        let glyph_bounds = glyph.bounds;
         let selection = self
             .prepared_shadow_text_selection_payload(owner, &recording_context)
             .ok()?;
@@ -851,10 +832,9 @@ impl ElementTrait for Text {
         self.validate_shadow_text_preedit_witness(owner, arena, &recording_context)
             .ok()?;
         let glyph = self
-            .prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+            .prepared_shadow_text_payload([0.0, 0.0], effective_opacity)
             .ok()?;
-        let glyph_bounds =
-            self.shadow_text_recording_bounds(owner, glyph.bounds, &recording_context);
+        let glyph_bounds = glyph.bounds;
         let selection = self
             .prepared_shadow_text_selection_payload(owner, &recording_context)
             .ok()?;
@@ -900,6 +880,7 @@ impl ElementTrait for Text {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
+                    snap: crate::view::paint::PaintOwnerSnap::INHERIT,
                 }],
             });
         }
@@ -941,6 +922,7 @@ impl ElementTrait for Text {
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             }],
         });
         Some(crate::view::paint::PaintNodePlan {
@@ -965,10 +947,9 @@ impl ElementTrait for Text {
         self.validate_shadow_text_preedit_witness(owner, arena, &recording_context)
             .ok()?;
         let payload = self
-            .prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+            .prepared_shadow_text_payload([0.0, 0.0], effective_opacity)
             .ok()?;
-        let payload_bounds =
-            self.shadow_text_recording_bounds(owner, payload.bounds, &recording_context);
+        let payload_bounds = payload.bounds;
         Some(crate::view::paint::PaintChunkMetadata {
             frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: crate::view::paint::PaintChunkId {
@@ -1004,10 +985,9 @@ impl ElementTrait for Text {
         self.validate_shadow_text_preedit_witness(owner, arena, &recording_context)
             .ok()?;
         let payload = self
-            .prepared_shadow_text_payload(recording_context.paint_offset, effective_opacity)
+            .prepared_shadow_text_payload([0.0, 0.0], effective_opacity)
             .ok()?;
-        let payload_bounds =
-            self.shadow_text_recording_bounds(owner, payload.bounds, &recording_context);
+        let payload_bounds = payload.bounds;
         #[cfg(test)]
         crate::view::paint::note_full_artifact_record();
         let payload_identity =
@@ -1048,6 +1028,7 @@ impl ElementTrait for Text {
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             }],
         })
     }

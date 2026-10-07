@@ -46,7 +46,6 @@ pub(crate) fn record_frame_artifact(
             mode,
             FrameArtifactAuthorityPolicy::ExistingBakedProperties,
             None,
-            None,
         )?,
         property_trees,
         mode,
@@ -71,7 +70,6 @@ pub(crate) fn record_property_neutral_frame_artifact(
             paint_generations,
             mode,
             FrameArtifactAuthorityPolicy::PropertyNeutral,
-            None,
             None,
         )?,
         property_trees,
@@ -115,7 +113,6 @@ fn record_frozen_clip_enabled_frame_artifact(
         paint_generations,
         mode,
         FrameArtifactAuthorityPolicy::ClipEnabled,
-        None,
         None,
     )
 }
@@ -178,7 +175,6 @@ pub(crate) fn record_root_group_opacity_frame_artifact(
             paint_generations,
             mode,
             FrameArtifactAuthorityPolicy::RootOpacityGroup(plan),
-            None,
             None,
         )?,
         property_trees,

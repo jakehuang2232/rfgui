@@ -588,9 +588,16 @@ fn stage_c_classification_artifact_fixture(
         let generation = generations
             .local_generations_for(owner)
             .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?;
-        artifact
-            .owner_nodes
-            .push(PaintOwnerSnapshot { owner, parent });
+        artifact.owner_nodes.push(PaintOwnerSnapshot {
+            owner,
+            parent,
+            snap: crate::view::paint::PaintOwnerSnap::observe(
+                node.element.as_ref(),
+                arena,
+                state.paint.layout_position,
+            )
+            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?,
+        });
         artifact
             .owner_property_states
             .push(PaintOwnerPropertyStateSnapshot {

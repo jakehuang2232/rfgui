@@ -173,56 +173,6 @@ fn component_hooks_cannot_clear_or_replace_recorder_owned_scroll_contents_author
 }
 
 #[test]
-fn component_hook_cannot_clear_required_scroll_content_paint_offset() {
-    let mut arena = NodeArena::new();
-    let root = insert_plan(&mut arena, PlanHost::recordable(0x8f2f, &[0], &[]));
-    arena
-        .get_mut(root)
-        .unwrap()
-        .element
-        .as_any_mut()
-        .downcast_mut::<PlanHost>()
-        .unwrap()
-        .clear_paint_offset_for_node = true;
-    let (properties, generations) = identity(&arena, &[root]);
-    let context = PaintRecordingContext {
-        paint_offset: [3.5, 47.25],
-        required_scroll_content_paint_offset_bits: Some([3.5_f32, 47.25_f32].map(f32::to_bits)),
-        ..Default::default()
-    };
-    for mode in [
-        CoverageRecordingMode::MetadataOnly,
-        CoverageRecordingMode::FullArtifact,
-    ] {
-        let manifest = record_coverage_manifest_with_context(
-            &arena,
-            &[root],
-            false,
-            false,
-            mode,
-            &properties,
-            &generations,
-            context.clone(),
-            None,
-            &Default::default(),
-        );
-        assert!(manifest.items.iter().any(|item| matches!(
-            item,
-            PaintCoverageItem::LegacyBoundary {
-                reason: LegacyPaintReason::MissingPaintIdentity,
-                ..
-            }
-        )));
-        assert!(
-            !manifest
-                .items
-                .iter()
-                .any(|item| matches!(item, PaintCoverageItem::ArtifactChunk { .. }))
-        );
-    }
-}
-
-#[test]
 fn component_node_and_child_hooks_cannot_clear_recorder_owned_opacity_authority() {
     let mut arena = NodeArena::new();
     let root = insert_plan(&mut arena, PlanHost::transparent(0x8f30));

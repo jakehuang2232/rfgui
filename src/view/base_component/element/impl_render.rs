@@ -324,10 +324,6 @@ impl Element {
                 || recording_context.authorizes_generic_scroll_host_root(self.stable_id())))
             || (self.is_fragmentable_inline_element() && self.inline_paint_fragments.len() > 1)
             || !self.requires_child_mask_surface(arena)
-            || recording_context
-                .paint_offset
-                .iter()
-                .any(|value| !value.is_finite())
         {
             return None;
         }
@@ -337,13 +333,7 @@ impl Element {
             self.layout_state.layout_size.height.max(0.0),
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
-        let inner = self.inner_clip_rect();
-        let bounds = Rect {
-            x: inner.x + recording_context.paint_offset[0],
-            y: inner.y + recording_context.paint_offset[1],
-            width: inner.width,
-            height: inner.height,
-        };
+        let bounds = self.inner_clip_rect();
         let logical_scissor = exact_logical_scissor_for_rect(bounds)?;
         let mut params = RectPassParams {
             position: [bounds.x, bounds.y],
@@ -840,16 +830,8 @@ impl Element {
         let mut metadata =
             self.record_safe_leaf_paint_metadata(owner, properties, content_revision)?;
 
-        // The root artifact path starts from the viewport paint origin. Match
-        // Element's existing root-local pixel snap without mutating BuildState.
-        let paint_offset = [
-            round_layout_value(self.layout_state.layout_position.x)
-                - self.layout_state.layout_position.x,
-            round_layout_value(self.layout_state.layout_position.y)
-                - self.layout_state.layout_position.y,
-        ];
         let ops = self
-            .self_decoration_paint_ops(self.opacity, paint_offset)
+            .self_decoration_paint_ops(self.opacity, [0.0, 0.0])
             .into_iter()
             .map(PaintOp::DrawRect)
             .collect::<Vec<_>>();
@@ -887,6 +869,8 @@ impl Element {
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
+                // `record_root` replaces this topology with the arena-observed one.
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             }],
         })
     }
@@ -900,7 +884,7 @@ impl Element {
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<crate::view::paint::PaintArtifact, crate::view::paint::LegacyPaintReason> {
         use crate::view::paint::{PaintArtifact, PaintChunk, PaintOp};
-        let prepared = self.prepared_self_paint_record(owner, &recording_context)?;
+        let prepared = self.prepared_self_paint_record(&recording_context)?;
         let mut metadata = self.record_shadow_node_paint_metadata(
             owner,
             properties,
@@ -941,6 +925,8 @@ impl Element {
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
+                snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
+                    .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
             }],
         })
     }
@@ -1074,7 +1060,7 @@ impl Element {
             return Err(LegacyPaintReason::StatefulPaint);
         }
 
-        let prepared = self.prepared_self_paint_record(owner, &recording_context)?;
+        let prepared = self.prepared_self_paint_record(&recording_context)?;
 
         Ok(PaintChunkMetadata {
             frame: crate::view::paint::PaintChunkFrame::Viewport,
@@ -1095,32 +1081,19 @@ impl Element {
 
     fn prepared_self_paint_record(
         &self,
-        owner: crate::view::node_arena::NodeKey,
         context: &crate::view::paint::PaintRecordingContext,
     ) -> Result<PreparedSelfPaintRecord, crate::view::paint::LegacyPaintReason> {
-        let geometry = self.self_paint_recording_geometry(owner, &context);
+        let geometry = self.self_paint_recording_geometry();
         self.prepared_self_paint_from_inputs(geometry, &context)
     }
 
     /// Produces the one geometry input shared by metadata-only and full
-    /// artifact recording. A detached scroll-content target is the sole case
-    /// where the chunk bounds consume the recorder's full two-dimensional
-    /// normalization offset; every prepared payload receives that same
-    /// context, so the offset cannot be applied independently or twice.
-    fn self_paint_recording_geometry(
-        &self,
-        owner: crate::view::node_arena::NodeKey,
-        context: &crate::view::paint::PaintRecordingContext,
-    ) -> SelfPaintRecordingGeometry {
-        let bounds_offset = if context.authorizes_scroll_content_local_owner(owner) {
-            context.paint_offset
-        } else {
-            [0.0, 0.0]
-        };
+    /// artifact recording.
+    fn self_paint_recording_geometry(&self) -> SelfPaintRecordingGeometry {
         SelfPaintRecordingGeometry {
             bounds: Rect {
-                x: self.layout_state.layout_position.x + bounds_offset[0],
-                y: self.layout_state.layout_position.y + bounds_offset[1],
+                x: self.layout_state.layout_position.x,
+                y: self.layout_state.layout_position.y,
                 width: self.layout_state.layout_size.width.max(0.0),
                 height: self.layout_state.layout_size.height.max(0.0),
             },
@@ -1223,18 +1196,13 @@ impl Element {
                     height: self.layout_state.layout_size.height,
                 }]
             };
-        if !recording_context
-            .paint_offset
-            .iter()
-            .all(|value| value.is_finite())
-            || fragment_rects.iter().any(|fragment| {
-                [fragment.x, fragment.y, fragment.width, fragment.height]
-                    .iter()
-                    .any(|value| !value.is_finite())
-                    || fragment.width <= 0.0
-                    || fragment.height <= 0.0
-            })
-        {
+        if fragment_rects.iter().any(|fragment| {
+            [fragment.x, fragment.y, fragment.width, fragment.height]
+                .iter()
+                .any(|value| !value.is_finite())
+                || fragment.width <= 0.0
+                || fragment.height <= 0.0
+        }) {
             return None;
         }
         let opacity = recording_context.paint_opacity(self.opacity);
@@ -1265,8 +1233,8 @@ impl Element {
                     fragment.height,
                 );
                 let mesh = ShadowShape::rounded_rect_with_radii(
-                    fragment.x - spread + recording_context.paint_offset[0],
-                    fragment.y - spread + recording_context.paint_offset[1],
+                    fragment.x - spread,
+                    fragment.y - spread,
                     fragment.width + spread * 2.0,
                     fragment.height + spread * 2.0,
                     shadow_radii.to_array(),
@@ -1395,14 +1363,6 @@ impl Element {
         {
             return Err(ShadowPaintBlocker::InlineIfc);
         }
-        if !recording_context
-            .paint_offset
-            .iter()
-            .all(|value| value.is_finite())
-        {
-            return Err(ShadowPaintBlocker::MissingPreparedInlineDecoration);
-        }
-
         let shell_bounds = Rect {
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
@@ -1552,10 +1512,8 @@ impl Element {
             }
             previous_order = Some(order);
 
-            let mut prepared = self.inline_ifc_fragment_draw_rect_pass_metadata(
-                fragment,
-                recording_context.paint_offset,
-            );
+            let mut prepared =
+                self.inline_ifc_fragment_draw_rect_pass_metadata(fragment, [0.0, 0.0]);
             let opacity = recording_context.paint_opacity(metadata.opacity);
             prepared.fill.opacity = opacity;
             if let Some(border) = &mut prepared.border {

@@ -893,7 +893,7 @@ impl Svg {
                 }
                 let prepared = self
                     .prepared_svg_op(
-                        recording_context.paint_offset,
+                        [0.0, 0.0],
                         recording_context
                             .paint_opacity(self.frozen_paint.as_ref().map_or(0.0, |p| p.opacity)),
                     )
@@ -1539,10 +1539,7 @@ impl ElementTrait for Svg {
                 metadata.id.role = crate::view::paint::PaintChunkRole::SvgContent;
                 let decoration = self
                     .element
-                    .self_decoration_paint_ops(
-                        prepared.params.opacity,
-                        recording_context.paint_offset,
-                    )
+                    .self_decoration_paint_ops(prepared.params.opacity, [0.0, 0.0])
                     .into_iter()
                     .collect::<Vec<_>>();
                 let shadows = self.element.prepared_outer_shadow_ops(&recording_context)?;
@@ -1607,10 +1604,7 @@ impl ElementTrait for Svg {
                     .collect::<Vec<_>>();
                 ops.extend(
                     self.element
-                        .self_decoration_paint_ops(
-                            prepared.params.opacity,
-                            recording_context.paint_offset,
-                        )
+                        .self_decoration_paint_ops(prepared.params.opacity, [0.0, 0.0])
                         .into_iter()
                         .map(crate::view::paint::PaintOp::DrawRect),
                 );
@@ -1655,6 +1649,8 @@ impl ElementTrait for Svg {
                     owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                         owner,
                         parent: None,
+                        snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
+                            .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
                     }],
                 }
             }
@@ -1674,12 +1670,11 @@ impl ElementTrait for Svg {
         Some(artifact)
     }
 
-    #[allow(private_interfaces)]
-    fn shadow_paint_recording_context(
+    fn paint_snap_points(
         &self,
-        parent: &crate::view::paint::PaintRecordingContext,
-    ) -> crate::view::paint::PaintRecordingContext {
-        self.element.shadow_paint_recording_context(&parent)
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> [Option<[f32; 2]>; 2] {
+        self.element.paint_snap_points(arena)
     }
 
     fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {

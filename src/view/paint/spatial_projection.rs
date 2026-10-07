@@ -1,25 +1,128 @@
 //! The compiler's single relative-to-absolute conversion. Property snapshots
 //! carry only relative spatial edges, local transforms and owner-local clip
-//! geometry, and recorded chunks are owner-local; owner viewport positions,
-//! owner transforms, clip scissors and chunk placement are derived here, once
-//! per artifact, from one spatial projection graph.
+//! geometry, and recorded chunks are owner-local and unsnapped; owner
+//! transforms, clip scissors, chunk placement and every owner's pixel snap
+//! are derived here, once per artifact, from one spatial projection graph.
 use glam::{Mat4, Vec2};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::view::base_component::paint_offset_after_owner_snap;
 use crate::view::compositor::property_tree::{
     ClipNodeSnapshot, DerivedSpatialProjection, SpatialProjectionError, SpatialProjectionGraph,
     TransformNodeId,
 };
 use crate::view::node_arena::NodeKey;
 
-use super::PaintArtifact;
+use super::{PaintArtifact, PaintOwnerSnap};
 
 #[derive(Debug)]
 pub(crate) struct ArtifactSpatialProjection {
     transforms: FxHashMap<TransformNodeId, DerivedSpatialProjection>,
-    owners: FxHashMap<NodeKey, Vec2>,
     /// Origins of the layout frames owner-local clips and chunks are placed in.
     frames: FxHashMap<NodeKey, Vec2>,
+    owner_snap_points: std::sync::Arc<[OwnerSnapPoints]>,
+    /// Every owner's snapped paint offset for a zero host offset.
+    owner_paint_offsets: FxHashMap<NodeKey, [f32; 2]>,
+}
+
+/// The viewport points where one owner meets the pixel grid, in order; each
+/// snaps the paint offset reaching it. An owner without points paints at its
+/// parent's paint offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OwnerSnapPoints {
+    pub(crate) owner: NodeKey,
+    pub(crate) parent: Option<NodeKey>,
+    pub(crate) points_bits: [Option<[u32; 2]>; 2],
+}
+
+impl OwnerSnapPoints {
+    /// Places the owner's frame-relative snap points at their frame's origin.
+    fn try_new(
+        graph: &SpatialProjectionGraph<'_>,
+        owner: NodeKey,
+        parent: Option<NodeKey>,
+        snap: PaintOwnerSnap,
+    ) -> Result<Self, SpatialProjectionError> {
+        let origin = match snap.frame {
+            Some(frame) if snap.points_bits != [None, None] => {
+                graph.derive_owner_frame_origin(frame.0)?
+            }
+            _ => Vec2::ZERO,
+        };
+        let mut points_bits = [None; 2];
+        for (placed, point) in points_bits.iter_mut().zip(snap.points_bits) {
+            let Some(point) = point else {
+                continue;
+            };
+            let [x, y] = point.map(f32::from_bits);
+            let viewport = [origin.x + x, origin.y + y];
+            if viewport.iter().any(|value| !value.is_finite()) {
+                return Err(SpatialProjectionError::InvalidSnapshot(owner));
+            }
+            *placed = Some(viewport.map(f32::to_bits));
+        }
+        Ok(Self {
+            owner,
+            parent,
+            points_bits,
+        })
+    }
+}
+
+/// Every owner's paint offset after its ancestors' snaps and its own,
+/// starting from `start` at the owner roots. This is the legacy renderer's
+/// owner snap chain, so placement reproduces its pixel positions.
+pub(crate) fn snapped_owner_paint_offsets(
+    owners: &[OwnerSnapPoints],
+    start: [f32; 2],
+) -> Result<FxHashMap<NodeKey, [f32; 2]>, SpatialProjectionError> {
+    let mut by_owner = FxHashMap::with_capacity_and_hasher(owners.len(), Default::default());
+    for owner in owners {
+        if by_owner.insert(owner.owner, *owner).is_some() {
+            return Err(SpatialProjectionError::InvalidSnapshot(owner.owner));
+        }
+    }
+    let mut offsets: FxHashMap<NodeKey, [f32; 2]> =
+        FxHashMap::with_capacity_and_hasher(owners.len(), Default::default());
+    let mut chain = Vec::new();
+    let mut seen = FxHashSet::default();
+    for owner in owners {
+        if offsets.contains_key(&owner.owner) {
+            continue;
+        }
+        chain.clear();
+        seen.clear();
+        let mut cursor = owner.owner;
+        // Artifact owner stores preserve canonical traversal order, not a
+        // parent-first topological order. Resolve the bounded ancestry
+        // explicitly so a child-first store cannot change snap semantics.
+        let mut paint_offset = loop {
+            if let Some(offset) = offsets.get(&cursor) {
+                break *offset;
+            }
+            if chain.len() >= usize::from(u8::MAX) || !seen.insert(cursor) {
+                return Err(SpatialProjectionError::InvalidSnapshot(cursor));
+            }
+            let current = by_owner
+                .get(&cursor)
+                .copied()
+                .ok_or(SpatialProjectionError::InvalidSnapshot(cursor))?;
+            chain.push(current);
+            match current.parent {
+                Some(parent) => cursor = parent,
+                None => break start,
+            }
+        };
+        for current in chain.drain(..).rev() {
+            for point in current.points_bits.into_iter().flatten() {
+                paint_offset =
+                    paint_offset_after_owner_snap(point.map(f32::from_bits), paint_offset)
+                        .ok_or(SpatialProjectionError::InvalidSnapshot(current.owner))?;
+            }
+            offsets.insert(current.owner, paint_offset);
+        }
+    }
+    Ok(offsets)
 }
 
 impl ArtifactSpatialProjection {
@@ -40,26 +143,25 @@ impl ArtifactSpatialProjection {
                 ))
             })
             .collect::<Result<_, SpatialProjectionError>>()?;
-        let owners = artifact
-            .owner_nodes
-            .iter()
-            .map(|snapshot| {
-                Ok((
-                    snapshot.owner,
-                    graph.derive_optional_owner_viewport_position(snapshot.owner)?,
-                ))
-            })
-            .collect::<Result<_, SpatialProjectionError>>()?;
         let mut frames = FxHashMap::default();
         for owner in owner_local_geometry_owners(artifact) {
             if let std::collections::hash_map::Entry::Vacant(frame) = frames.entry(owner) {
                 frame.insert(graph.derive_owner_frame_origin(owner)?);
             }
         }
+        let owner_snap_points = artifact
+            .owner_nodes
+            .iter()
+            .map(|snapshot| {
+                OwnerSnapPoints::try_new(&graph, snapshot.owner, snapshot.parent, snapshot.snap)
+            })
+            .collect::<Result<std::sync::Arc<[_]>, _>>()?;
+        let owner_paint_offsets = snapped_owner_paint_offsets(&owner_snap_points, [0.0, 0.0])?;
         Ok(Self {
             transforms,
-            owners,
             frames,
+            owner_snap_points,
+            owner_paint_offsets,
         })
     }
 
@@ -107,9 +209,15 @@ impl ArtifactSpatialProjection {
             .map(|derived| derived.owner_viewport_transform)
     }
 
-    /// Viewport position of a paint owner of this artifact.
-    pub(crate) fn owner_viewport_position(&self, owner: NodeKey) -> Option<Vec2> {
-        self.owners.get(&owner).copied()
+    /// The snap points of every owner of this artifact.
+    pub(crate) fn owner_snap_points(&self) -> &std::sync::Arc<[OwnerSnapPoints]> {
+        &self.owner_snap_points
+    }
+
+    /// The paint offset an owner of this artifact paints at for a zero host
+    /// offset: the sum of its ancestors' pixel snaps and its own.
+    pub(crate) fn owner_paint_offset(&self, owner: NodeKey) -> Option<[f32; 2]> {
+        self.owner_paint_offsets.get(&owner).copied()
     }
 }
 

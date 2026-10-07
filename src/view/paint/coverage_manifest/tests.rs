@@ -58,7 +58,6 @@ struct PlanHost {
     deferred: bool,
     contents_scissor: Option<[u32; 4]>,
     consumed_authority_attack: Option<ConsumedAuthorityAttack>,
-    clear_paint_offset_for_node: bool,
     clear_opacity_authority_for_node: bool,
     clear_opacity_authority_for_child: bool,
     required_opacity_authority: Option<super::super::PaintOpacityAuthority>,
@@ -78,7 +77,6 @@ impl PlanHost {
             deferred: false,
             contents_scissor: None,
             consumed_authority_attack: None,
-            clear_paint_offset_for_node: false,
             clear_opacity_authority_for_node: false,
             clear_opacity_authority_for_child: false,
             required_opacity_authority: None,
@@ -97,7 +95,6 @@ impl PlanHost {
             deferred: false,
             contents_scissor: None,
             consumed_authority_attack: None,
-            clear_paint_offset_for_node: false,
             clear_opacity_authority_for_node: false,
             clear_opacity_authority_for_child: false,
             required_opacity_authority: None,
@@ -343,9 +340,6 @@ impl ElementTrait for PlanHost {
         parent: &PaintRecordingContext,
     ) -> PaintRecordingContext {
         let mut parent = parent.clone();
-        if self.clear_paint_offset_for_node {
-            parent.paint_offset = [0.0, 0.0];
-        }
         if self.clear_opacity_authority_for_node {
             parent.opacity_authority = super::super::PaintOpacityAuthority::Baked;
         }

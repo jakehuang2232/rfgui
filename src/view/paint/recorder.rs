@@ -124,6 +124,14 @@ pub(crate) fn record_root(
             artifact.owner_nodes = vec![PaintOwnerSnapshot {
                 owner: root,
                 parent: None,
+                // This artifact carries no spatial stores, so the root
+                // snaps at viewport points.
+                snap: match super::PaintOwnerSnap::observe(node.element.as_ref(), arena, None) {
+                    Some(snap) => snap,
+                    None => {
+                        return legacy(root, stable_id, LegacyPaintReason::MissingPaintIdentity);
+                    }
+                },
             }];
             artifact.owner_property_states = vec![PaintOwnerPropertyStateSnapshot {
                 owner: root,

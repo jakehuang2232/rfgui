@@ -320,13 +320,13 @@ fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
             "co-located-transform-effect",
             1.0,
             &co_located,
-            &[12_300, 2_280],
+            &[11_520, 2_160],
         ),
         prepared_row(
             "co-located-transform-effect",
             2.0,
             &co_located,
-            &[46_080, 8_880],
+            &[46_080, 8_640],
         ),
     ];
     assert_eq!(rows, expected, "the 28-row producer corpus is frozen");
@@ -369,7 +369,7 @@ fn surface_dag_producer_preserves_the_frozen_no_scroll_measurement_contract() {
     // under the same convention. Update the index if the corpus size changes.
     let p90 = aggregate_bytes[25];
     let maximum = *aggregate_bytes.last().expect("non-empty producer rows");
-    assert_eq!((median, p90, maximum), (13_338, 82_944, 82_944));
+    assert_eq!((median, p90, maximum), (12_888, 82_944, 82_944));
     assert!(
         maximum <= 32 * 1024 * 1024,
         "exceeding the precommitted headroom bound stops C3b3c1b-1"
@@ -381,17 +381,19 @@ fn co_located_raster_origin_redirects_source_bits_without_changing_pair_bytes() 
     let (arena, roots) = ProducerCase::CoLocatedTransformEffect.build();
     let (properties, generations) = synced_paint_state(&arena, &roots);
     let expectations = [
+        // Owners snap to the pixel grid before rasterization, so every
+        // source starts on a texel.
         (
             1.0_f32,
-            [0.5, 0.5, 40.0, 24.0],
-            [0.75, 0.0, 18.0, 10.0],
-            [12_300_u64, 2_280],
+            [0.0, 0.0, 40.0, 24.0],
+            [0.0, 0.0, 18.0, 10.0],
+            [11_520_u64, 2_160],
         ),
         (
             2.0_f32,
             [0.0, 0.0, 40.0, 24.0],
-            [0.25, 0.0, 18.0, 10.0],
-            [46_080_u64, 8_880],
+            [0.0, 0.0, 18.0, 10.0],
+            [46_080_u64, 8_640],
         ),
     ];
     for (dpr, transform_source, effect_source, expected_pair_bytes) in expectations {

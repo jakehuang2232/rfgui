@@ -3197,6 +3197,8 @@ pub trait ElementTrait:
                     owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                         owner,
                         parent: None,
+                        snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
+                            .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
                     }],
                 });
             }
@@ -3268,6 +3270,18 @@ pub trait ElementTrait:
         parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
         parent.clone()
+    }
+
+    /// The layout points, in order, where this host meets the pixel grid
+    /// when painted retained; each snaps the paint offset reaching it. They
+    /// must match the snaps the legacy renderer applies while building this
+    /// host. Unknown hosts paint at their parent's paint offset.
+    #[doc(hidden)]
+    fn paint_snap_points(
+        &self,
+        _arena: &crate::view::node_arena::NodeArena,
+    ) -> [Option<[f32; 2]>; 2] {
+        [None, None]
     }
 
     /// Derive path-specific recording authority for one direct child.
@@ -3782,6 +3796,7 @@ impl PreparedCustomLeafPaint {
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             }],
         }
     }
@@ -3812,8 +3827,8 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
             return None;
         }
         let bounds = Rect {
-            x: snapshot.x + recording_context.paint_offset[0],
-            y: snapshot.y + recording_context.paint_offset[1],
+            x: snapshot.x,
+            y: snapshot.y,
             width: snapshot.width,
             height: snapshot.height,
         };
@@ -3867,8 +3882,8 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
     }
 
     let bounds = Rect {
-        x: snapshot.x + recording_context.paint_offset[0],
-        y: snapshot.y + recording_context.paint_offset[1],
+        x: snapshot.x,
+        y: snapshot.y,
         width: snapshot.width,
         height: snapshot.height,
     };
@@ -4062,6 +4077,7 @@ impl PreparedCustomWrapperPaint {
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
+                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
             }],
         }
     }
@@ -4240,8 +4256,8 @@ fn prepare_custom_wrapper_paint<T: ElementTrait + ?Sized>(
     }
 
     let bounds = Rect {
-        x: snapshot.x + recording_context.paint_offset[0],
-        y: snapshot.y + recording_context.paint_offset[1],
+        x: snapshot.x,
+        y: snapshot.y,
         width: snapshot.width,
         height: snapshot.height,
     };
@@ -8121,6 +8137,8 @@ impl ElementTrait for Element {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
+                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
                 }],
             });
         }
@@ -8147,17 +8165,12 @@ impl ElementTrait for Element {
         self.prepared_retained_child_mask_plan(arena, &recording_context)
     }
 
-    #[allow(private_interfaces)]
-    fn shadow_paint_recording_context(
+    fn paint_snap_points(
         &self,
-        parent: &crate::view::paint::PaintRecordingContext,
-    ) -> crate::view::paint::PaintRecordingContext {
-        let mut parent = parent.clone();
-        let paint_x = self.layout_state.layout_position.x + parent.paint_offset[0];
-        let paint_y = self.layout_state.layout_position.y + parent.paint_offset[1];
-        parent.paint_offset[0] += round_layout_value(paint_x) - paint_x;
-        parent.paint_offset[1] += round_layout_value(paint_y) - paint_y;
-        parent
+        _arena: &crate::view::node_arena::NodeArena,
+    ) -> [Option<[f32; 2]>; 2] {
+        let position = self.layout_state.layout_position;
+        [Some([position.x, position.y]), None]
     }
 
     fn placement_eligibility_metadata(

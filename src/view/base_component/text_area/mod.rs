@@ -87,7 +87,7 @@ use crate::view::base_component::{BoxModelSnapshot, DirtyFlags, ElementTrait, La
 use crate::view::layout::{FlexLayoutInfo, LayoutState};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
-use super::{next_ui_node_id, round_layout_value};
+use super::next_ui_node_id;
 
 /// TextArea v2 — see `docs/design/textarea-v2.md`.
 ///
@@ -333,15 +333,9 @@ impl RetainedAtomicProjectionTextAreaPaintGrammar {
         self.is_canonical().then_some(())?;
         let mut owners = Vec::with_capacity(self.topology.len().saturating_add(1));
         for topology in self.topology.iter() {
-            owners.push(crate::view::paint::PaintOwnerSnapshot {
-                owner: topology.owner,
-                parent: Some(text_area_root),
-            });
+            owners.push((topology.owner, Some(text_area_root)));
             if topology.owner == self.projection_owner {
-                owners.push(crate::view::paint::PaintOwnerSnapshot {
-                    owner: self.projection_text_owner,
-                    parent: Some(topology.owner),
-                });
+                owners.push((self.projection_text_owner, Some(topology.owner)));
             }
         }
         let source = crate::view::paint::PaintAtomicProjectionArtifactSource {
@@ -1228,12 +1222,18 @@ impl ElementTrait for TextArea {
         parent: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::paint::PaintRecordingContext {
         let mut parent = parent.clone();
-        let paint_x = self.layout_state.layout_position.x + parent.paint_offset[0];
-        let paint_y = self.layout_state.layout_position.y + parent.paint_offset[1];
-        parent.paint_offset[0] += round_layout_value(paint_x) - paint_x;
-        parent.paint_offset[1] += round_layout_value(paint_y) - paint_y;
         parent.inside_text_area = true;
         parent
+    }
+
+    /// The legacy build snaps the owner origin, then the content box, so text
+    /// starts on the pixel grid inside a fractional frame.
+    fn paint_snap_points(&self, arena: &NodeArena) -> [Option<[f32; 2]>; 2] {
+        let position = self.layout_state.layout_position;
+        [
+            Some([position.x, position.y]),
+            self.content_paint_anchor(arena).map(|(x, y)| [x, y]),
+        ]
     }
 
     #[allow(private_interfaces)]
@@ -1257,17 +1257,13 @@ impl ElementTrait for TextArea {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         deferred_phase_root: bool,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::base_component::ShadowPaintRecordingCapability {
         let Some(owner) = self.self_node_key else {
             return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
         };
-        match self.prepared_plain_shadow_text_payload(
-            owner,
-            arena,
-            deferred_phase_root,
-            recording_context.paint_offset,
-        ) {
+        match self.prepared_plain_shadow_text_payload(owner, arena, deferred_phase_root, [0.0, 0.0])
+        {
             Ok(payload)
                 if payload.glyph_op.is_some()
                     || payload.selection.is_some()
@@ -1297,7 +1293,7 @@ impl ElementTrait for TextArea {
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintChunkMetadata>> {
         let mut payload = self
-            .prepared_plain_shadow_text_payload(owner, arena, false, recording_context.paint_offset)
+            .prepared_plain_shadow_text_payload(owner, arena, false, [0.0, 0.0])
             .ok()?;
         if recording_context.suppresses_resident_caret(owner) {
             payload.caret = None;
@@ -1397,7 +1393,7 @@ impl ElementTrait for TextArea {
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintArtifact>> {
         let mut payload = self
-            .prepared_plain_shadow_text_payload(owner, arena, false, recording_context.paint_offset)
+            .prepared_plain_shadow_text_payload(owner, arena, false, [0.0, 0.0])
             .ok()?;
         if recording_context.suppresses_resident_caret(owner) {
             payload.caret = None;
@@ -1441,6 +1437,8 @@ impl ElementTrait for TextArea {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
+                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
                 }],
             });
         }
@@ -1476,6 +1474,8 @@ impl ElementTrait for TextArea {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
+                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
                 }],
             });
         }
@@ -1518,6 +1518,8 @@ impl ElementTrait for TextArea {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
+                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
                 }],
             });
         }
@@ -1554,6 +1556,8 @@ impl ElementTrait for TextArea {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
+                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
                 }],
             });
         }

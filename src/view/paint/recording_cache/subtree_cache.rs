@@ -37,7 +37,6 @@ pub(crate) struct Key {
     index_revision: u64,
     ancestors: Vec<AncestorInput>,
     context: PaintRecordingContext,
-    offset: [u32; 2],
     order: CoverageOrder,
     deferred: bool,
     subtree_len: usize,
@@ -319,7 +318,7 @@ impl SubtreeCache {
         }
         // ScrollNodeSnapshot compares every float by bits, including the
         // sampled overlay. Context equality therefore preserves the complete
-        // parent scroll input as well as our separate paint-offset bit key.
+        // parent scroll input.
         let members = self.closed(arena, owner, 0)?;
         let subtree_len = members.len();
         let mut ancestors = Vec::new();
@@ -348,7 +347,6 @@ impl SubtreeCache {
             index_revision: arena.stable_id_index_revision()?,
             ancestors,
             context: context.clone(),
-            offset: context.paint_offset.map(f32::to_bits),
             order: CoverageOrder {
                 root_index,
                 child_path: path.into(),

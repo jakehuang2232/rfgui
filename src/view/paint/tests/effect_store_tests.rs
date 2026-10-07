@@ -254,6 +254,7 @@ fn compiler_rejects_invalid_owner_store_and_late_failure_before_emit() {
     unreferenced.owner_nodes.push(PaintOwnerSnapshot {
         owner: extra,
         parent: None,
+        snap: crate::view::paint::PaintOwnerSnap::INHERIT,
     });
     assert_compiler_rejects_before_emit(&unreferenced, "unreferenced owner node");
 
@@ -410,13 +411,14 @@ fn neutral_element_text_and_image_direct_artifacts_compile_after_arena_drop() {
     }
 
     fn assert_owning_root_and_compile(artifact: PaintArtifact, owner: NodeKey) {
-        assert_eq!(
-            artifact.owner_nodes,
-            vec![PaintOwnerSnapshot {
-                owner,
+        assert!(matches!(
+            artifact.owner_nodes.as_slice(),
+            [PaintOwnerSnapshot {
+                owner: root,
                 parent: None,
-            }]
-        );
+                ..
+            }] if *root == owner
+        ));
         let mut graph = FrameGraph::new();
         let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
         let target = ctx.allocate_target(&mut graph);

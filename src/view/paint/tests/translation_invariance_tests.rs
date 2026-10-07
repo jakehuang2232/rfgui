@@ -262,22 +262,15 @@ const INVARIANT: [&str; 7] = [
     "chunk",
 ];
 
-/// Whether a move is a whole number of logical pixels.
-fn is_integral(from: [f32; 2], to: [f32; 2]) -> bool {
-    (0..2).all(|axis| (to[axis] - from[axis]).fract() == 0.0)
-}
-
 #[test]
 fn translation_keeps_relative_property_snapshots() {
     for scene in Scene::ALL {
         for (from, to) in MOVES {
-            // Recording snaps every owner origin to the pixel grid, so a
-            // fractional move legitimately re-snaps recorded commands. Every
-            // property snapshot stays exact under any move.
+            // Recording never snaps, so recorded commands stay exact under a
+            // fractional move too; the compiler re-derives every snap.
             let variant = translated_inputs(scene, from, to)
                 .into_iter()
                 .filter(|variant| INVARIANT.contains(&variant.kind))
-                .filter(|variant| is_integral(from, to) || variant.kind != "chunk")
                 .collect::<Vec<_>>();
             assert!(
                 variant.is_empty(),

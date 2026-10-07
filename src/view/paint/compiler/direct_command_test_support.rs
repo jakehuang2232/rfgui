@@ -25,42 +25,54 @@ impl ArtifactCompileError {
 }
 
 /// The compiler intake for an artifact compiled outside the production entry:
-/// owner-local clips and layout-frame chunks are placed at their frames.
+/// owner-local clips and layout-frame chunks are placed at their frames, and
+/// every chunk takes its owner's pixel snap.
 pub(crate) fn with_placed_geometry(
     artifact: &PaintArtifact,
 ) -> Option<std::borrow::Cow<'_, PaintArtifact>> {
+    let spatial = super::super::ArtifactSpatialProjection::try_new(artifact).ok()?;
     if !artifact
         .clip_nodes
         .iter()
         .any(|clip| clip.geometry.is_owner_local())
-        && artifact
-            .chunks
-            .iter()
-            .all(|chunk| chunk.frame == crate::view::paint::PaintChunkFrame::Viewport)
+        && !chunks_move(artifact, &spatial)
     {
         return Some(std::borrow::Cow::Borrowed(artifact));
     }
     let mut placed = artifact.clone();
-    let spatial = super::super::ArtifactSpatialProjection::try_new(&placed).ok()?;
     spatial.place_clips(&mut placed.clip_nodes).ok()?;
     super::place_artifact_chunks(&mut placed, &spatial, None).ok()?;
     Some(std::borrow::Cow::Owned(placed))
 }
 
-/// `artifact` with every layout-frame chunk placed at its frame origin, as
-/// the compiler reads it; clips keep their recorded frames.
+/// `artifact` as the compiler reads it: every chunk placed in viewport space
+/// at its owner's pixel snap. Owner snaps are then cleared, so compiling the
+/// result places nothing a second time.
 pub(crate) fn with_placed_chunks(mut artifact: PaintArtifact) -> PaintArtifact {
-    if artifact
-        .chunks
-        .iter()
-        .any(|chunk| chunk.frame == crate::view::paint::PaintChunkFrame::Layout)
-    {
-        let spatial = super::super::ArtifactSpatialProjection::try_new(&artifact)
-            .expect("layout-frame chunks have derivable frames");
+    let spatial = super::super::ArtifactSpatialProjection::try_new(&artifact)
+        .expect("recorded artifacts have derivable frames and owner snaps");
+    if chunks_move(&artifact, &spatial) {
         super::place_artifact_chunks(&mut artifact, &spatial, None)
-            .expect("layout-frame chunks place at their frames");
+            .expect("chunks place at their frames and owner snaps");
+    }
+    for owner in &mut artifact.owner_nodes {
+        owner.snap = crate::view::paint::PaintOwnerSnap::INHERIT;
     }
     artifact
+}
+
+/// Whether intake moves any chunk: a layout-frame chunk, or one whose owner
+/// snaps by a nonzero offset. Fixtures may omit owners of unmoved chunks.
+fn chunks_move(
+    artifact: &PaintArtifact,
+    spatial: &super::super::ArtifactSpatialProjection,
+) -> bool {
+    artifact.chunks.iter().any(|chunk| {
+        chunk.frame == crate::view::paint::PaintChunkFrame::Layout
+            || spatial
+                .owner_paint_offset(chunk.owner)
+                .is_some_and(|snap| snap.map(f32::to_bits) != [0.0_f32.to_bits(); 2])
+    })
 }
 
 /// Test-only direct command compilation for payload and clip unit tests.

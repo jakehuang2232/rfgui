@@ -32,6 +32,7 @@ fn contents_clip_intersects_ancestor_replace_and_explicit_empty_culls() {
     artifact.owner_nodes.push(PaintOwnerSnapshot {
         owner: outer_owner,
         parent: None,
+        snap: crate::view::paint::PaintOwnerSnap::INHERIT,
     });
     let outer = ClipNodeId {
         owner: outer_owner,
@@ -91,6 +92,7 @@ fn nested_self_replace_escapes_ancestor_contents_intersection() {
     artifact.owner_nodes.push(PaintOwnerSnapshot {
         owner: outer_owner,
         parent: None,
+        snap: crate::view::paint::PaintOwnerSnap::INHERIT,
     });
     let contents = ClipNodeId {
         owner: outer_owner,
