@@ -159,6 +159,7 @@ impl PlanningCache {
         Some(ValidatedArtifactSurfaceDagProgram {
             artifact: PaintArtifact::default(),
             resolved_clips: previous.resolved_clips.clone(),
+            owner_local_clips: Default::default(),
             surface_dag: previous.surface_dag.clone(),
             execution_order: previous.execution_order.clone(),
             coverage: previous.coverage.clone(),
@@ -413,6 +414,7 @@ impl PlanningCache {
         self.geometry = Some(ValidatedArtifactSurfaceDagProgram {
             artifact: shape,
             resolved_clips: program.resolved_clips.clone(),
+            owner_local_clips: Default::default(),
             surface_dag: program.surface_dag.clone(),
             execution_order: program.execution_order.clone(),
             coverage: program.coverage.clone(),

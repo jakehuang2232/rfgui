@@ -1,10 +1,11 @@
 use crate::view::base_component::{
     Rect, RetainedSurfaceBounds, UiBuildContext, exact_logical_scissor_for_rect,
+    logical_scissor_for_clip_rect,
 };
 use crate::view::compositor::property_tree::{
-    ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
-    PropertyTreeState, ScrollNodeId, ScrollNodeSnapshot, SpatialProjectionError, TransformNodeId,
-    TransformNodeSnapshot,
+    ClipBehavior, ClipGeometry, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId,
+    EffectNodeSnapshot, PropertyTreeState, ScrollNodeId, ScrollNodeSnapshot,
+    SpatialProjectionError, TransformNodeId, TransformNodeSnapshot,
 };
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::NodeKey;
@@ -487,6 +488,9 @@ impl From<SurfaceDagError> for ArtifactSurfaceRasterPlanError {
 struct ValidatedArtifactSurfaceDagProgram {
     artifact: PaintArtifact,
     resolved_clips: Vec<ResolvedClip>,
+    /// Each owner-local clip's rect before intake placed it in viewport
+    /// space, where scissors cannot go negative.
+    owner_local_clips: FxHashMap<ClipNodeId, Rect>,
     surface_dag: std::sync::Arc<SurfaceDag>,
     execution_order: std::sync::Arc<SurfaceDagExecutionOrder>,
     coverage: std::sync::Arc<ArtifactSurfaceCoverageForest>,
@@ -697,6 +701,14 @@ impl ArtifactSurfaceCompositeGeometryStamp {
         }
     }
 
+    fn receiver_clip(self) -> Option<ClipNodeId> {
+        match self {
+            Self::Transform { receiver_clip, .. }
+            | Self::Effect { receiver_clip, .. }
+            | Self::ScrollContent { receiver_clip, .. } => receiver_clip,
+        }
+    }
+
     pub(crate) fn resolved_receiver_clip(self) -> ArtifactSurfaceResolvedClip {
         match self {
             Self::Transform {
@@ -861,6 +873,53 @@ impl ArtifactSurfaceCompositeGeometryState {
         };
         geometry.project_into_surface_receiver(projection, receiver_destination_bounds_bits)?;
         *self = Self::Finalized(geometry);
+        Some(())
+    }
+
+    /// Re-resolves a pending child's receiver clip inside a receiver that
+    /// rasters in its own space, such as scroll content, with `raster_scissor`
+    /// giving each clip's scissor in that space. Only the chain below
+    /// `boundary_clips` belongs to that raster: the receiver applies the clips
+    /// above it when it composites, so the child keeps the same clip at every
+    /// scroll offset.
+    fn localize_receiver_clip(
+        &mut self,
+        composite_clip: Option<ClipNodeId>,
+        boundary_clips: &[ClipNodeId],
+        clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+        raster_scissor: impl Fn(&ClipNodeSnapshot) -> Option<[u32; 4]>,
+    ) -> Option<()> {
+        let Self::Pending(geometry) = self else {
+            return None;
+        };
+        let mut local = Vec::new();
+        let mut cursor = composite_clip;
+        while let Some(id) = cursor {
+            if boundary_clips.contains(&id) {
+                break;
+            }
+            if local.len() >= usize::from(u8::MAX) {
+                return None;
+            }
+            let snapshot = *clips.get(&id)?;
+            local.push(snapshot);
+            cursor = snapshot.parent;
+        }
+        let resolved = local
+            .iter()
+            .rev()
+            .try_fold(ResolvedClip::Unclipped, |clip, snapshot| {
+                let scissor = raster_scissor(snapshot)?;
+                Some(match snapshot.behavior {
+                    ClipBehavior::Replace => resolved_scissor(scissor),
+                    ClipBehavior::Intersect => intersect_resolved_clip(clip, scissor),
+                })
+            })?;
+        let receiver_clip = geometry.receiver_clip();
+        geometry.replace_receiver_clip(
+            receiver_clip,
+            ArtifactSurfaceResolvedClip::from_logical(resolved),
+        );
         Some(())
     }
 
@@ -1320,6 +1379,14 @@ fn validate_artifact_surface_dag_program(
     mut cache: Option<&mut PlanningCache>,
 ) -> Result<ValidatedArtifactSurfaceDagProgram, SingleTargetSurfaceDagPrepareError> {
     let _profile = crate::view::paint::work_profile::scope("validate_artifact_surface_dag_program");
+    let owner_local_clips = artifact
+        .clip_nodes
+        .iter()
+        .filter_map(|clip| match clip.geometry {
+            ClipGeometry::OwnerLocal(rect) => Some((clip.id, rect)),
+            ClipGeometry::Viewport(_) => None,
+        })
+        .collect();
     let spatial = place_artifact_geometry(&mut artifact, scale_factor, cache.as_deref_mut())?;
     let Some(validated) = validate_artifact_store_with_cache(
         &artifact,
@@ -1340,6 +1407,7 @@ fn validate_artifact_surface_dag_program(
     {
         cached.artifact = artifact;
         cached.resolved_clips = validated.resolved_clips;
+        cached.owner_local_clips = owner_local_clips;
         return Ok(cached);
     }
 
@@ -1416,6 +1484,7 @@ fn validate_artifact_surface_dag_program(
     let program = ValidatedArtifactSurfaceDagProgram {
         artifact,
         resolved_clips: validated.resolved_clips,
+        owner_local_clips,
         surface_dag: surface_dag.into(),
         execution_order: execution_order.into(),
         coverage,
@@ -2838,8 +2907,8 @@ fn prepare_artifact_surface_raster_plan_from_program(
                     // Direct spans already carry this surface's base translation.
                     // Seal the child's destination in that same parent space once,
                     // then reuse the exact value for both the raw-bounds union and
-                    // final receiver projection. The child's receiver clip remains
-                    // a fixed receiver boundary and must not inherit this delta.
+                    // final receiver projection. The child's receiver clip is
+                    // localized into the same space when it is finalized below.
                     let receiver_destination_bounds_bits = translated_bounds_bits(
                         child_geometry.destination_bounds_bits(),
                         base_delta,
@@ -2957,6 +3026,20 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 }
             }
         }
+        // Scroll content rasters in content space. A nested child's
+        // destination moves there with `base_delta`; its receiver clip must
+        // move with it, and only the part of its chain inside the scrollport
+        // belongs to the raster.
+        let raster_boundary_clips = std::iter::once(source)
+            .chain(folded_boundaries.iter().copied())
+            .filter_map(|boundary| {
+                let node = program.surface_dag.nodes().get(boundary.index())?;
+                match node.kind() {
+                    SurfaceDagNodeKind::ScrollContent { contents_clip, .. } => Some(contents_clip),
+                    SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_) => None,
+                }
+            })
+            .collect::<Vec<_>>();
         for (child_execution, receiver_destination_bounds_bits) in nested_children {
             let child = prepared_nodes
                 .get_mut(child_execution.index())
@@ -2965,6 +3048,63 @@ fn prepare_artifact_surface_raster_plan_from_program(
                     parent: source,
                     child: source,
                 })?;
+            if !raster_boundary_clips.is_empty() {
+                let child_node = program
+                    .surface_dag
+                    .nodes()
+                    .get(child.source.index())
+                    .filter(|node| node.id() == child.source)
+                    .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+                        child.source,
+                    ))?;
+                let composite_clip = match child_node.kind() {
+                    SurfaceDagNodeKind::ScrollContent { contents_clip, .. } => Some(contents_clip),
+                    SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_) => child
+                        .geometry
+                        .pending()
+                        .and_then(ArtifactSurfaceCompositeGeometryStamp::receiver_clip),
+                };
+                // Owner-local clips are placed again in raster space, from
+                // their unclamped rects; a scissor clamped to the viewport
+                // edge would change with every scroll offset.
+                let raster_scissor = |snapshot: &ClipNodeSnapshot| {
+                    let rect = match program.owner_local_clips.get(&snapshot.id) {
+                        Some(rect) => {
+                            let origin = program.spatial.frame_origin(snapshot.owner)?;
+                            Rect {
+                                x: origin[0] + rect.x,
+                                y: origin[1] + rect.y,
+                                ..*rect
+                            }
+                        }
+                        None => {
+                            let [x, y, width, height] = snapshot.geometry.viewport_scissor()?;
+                            Rect {
+                                x: x as f32,
+                                y: y as f32,
+                                width: width as f32,
+                                height: height as f32,
+                            }
+                        }
+                    };
+                    logical_scissor_for_clip_rect(Rect {
+                        x: rect.x + base_delta[0],
+                        y: rect.y + base_delta[1],
+                        ..rect
+                    })
+                };
+                child
+                    .geometry
+                    .localize_receiver_clip(
+                        composite_clip,
+                        &raster_boundary_clips,
+                        &clips,
+                        raster_scissor,
+                    )
+                    .ok_or(ArtifactSurfaceRasterPlanError::InvalidReceiverClip(
+                        child.source,
+                    ))?;
+            }
             child
                 .geometry
                 .finalize_surface_receiver(raster_origin, receiver_destination_bounds_bits)
