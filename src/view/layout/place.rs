@@ -221,11 +221,15 @@ pub(crate) fn place_axis_children(inputs: PlaceAxisChildrenInputs<'_>, arena: &m
                                 placement,
                                 child_parent_hit_test_clip,
                             ) {
-                                child.translate_in_place(dx, dy);
-                                let mut count = 1;
-                                for descendant in arena.children_of(child_key) {
-                                    translate_subtree_walk(descendant, dx, dy, arena, &mut count);
-                                }
+                                let mut count = 0;
+                                translate_node_and_descendants(
+                                    child.as_mut(),
+                                    child_key,
+                                    dx,
+                                    dy,
+                                    arena,
+                                    &mut count,
+                                );
                                 with_layout_place_profile(|profile| {
                                     profile.translated_subtree_roots += 1;
                                     profile.translated_subtree_nodes += count;
@@ -458,6 +462,7 @@ fn translation_replay_delta(
     if !arena
         .cached_placement_eligibility_metadata(child_key)
         .is_translatable()
+        || !subtree_translation_ready(child, arena)
     {
         return None;
     }
@@ -490,17 +495,51 @@ fn rects_approx_eq(a: Rect, b: Rect) -> bool {
         && (a.height - b.height).abs() <= EPS
 }
 
-/// Recursive worker for the translation fast-path: shift `key`'s already
-/// resolved absolute geometry by `(dx, dy)` and recurse. `count`
-/// accumulates the nodes shifted (for profiling).
-fn translate_subtree_walk(key: NodeKey, dx: f32, dy: f32, arena: &NodeArena, count: &mut usize) {
-    if let Some(mut node) = arena.get_mut(key) {
-        node.element.translate_in_place(dx, dy);
-        *count += 1;
+/// Every node of a subtree accepts a translation before the fast path
+/// shifts any of them.
+fn subtree_translation_ready(node: &dyn ElementTrait, arena: &NodeArena) -> bool {
+    node.translation_ready(arena)
+        && node.children().iter().all(|&child| {
+            arena
+                .get(child)
+                .is_some_and(|child| subtree_translation_ready(child.element.as_ref(), arena))
+        })
+}
+
+/// Shifts a node already taken out of the arena, then its descendants:
+/// through `translate_owned_descendants` when the node installs them
+/// itself, else one child at a time.
+fn translate_node_and_descendants(
+    node: &mut dyn ElementTrait,
+    key: NodeKey,
+    dx: f32,
+    dy: f32,
+    arena: &mut NodeArena,
+    count: &mut usize,
+) {
+    node.translate_in_place(dx, dy);
+    *count += 1;
+    if node.translate_owned_descendants(arena) {
+        return;
     }
     for child in arena.children_of(key) {
         translate_subtree_walk(child, dx, dy, arena, count);
     }
+}
+
+/// Recursive worker for the translation fast-path: shift `key`'s already
+/// resolved absolute geometry by `(dx, dy)` and recurse. `count`
+/// accumulates the nodes shifted (for profiling).
+fn translate_subtree_walk(
+    key: NodeKey,
+    dx: f32,
+    dy: f32,
+    arena: &mut NodeArena,
+    count: &mut usize,
+) {
+    arena.with_element_taken(key, |node, arena| {
+        translate_node_and_descendants(node.as_mut(), key, dx, dy, arena, count);
+    });
 }
 
 /// Place absolute-positioned children of an axis-layout container.

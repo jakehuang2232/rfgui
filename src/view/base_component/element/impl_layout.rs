@@ -1546,13 +1546,11 @@ impl Element {
             contains_absolute_descendant: self.is_absolute_positioned_for_hit_test()
                 || self.has_absolute_descendant_for_hit_test,
             contains_runtime_layout_state: self.active_layout_transition_runtime_state(),
-            // Element implements `translate_in_place`, so it is translatable
-            // on its own behalf — except as an inline-formatting-context
-            // host, whose descendant glyph boxes are installed at absolute
-            // coordinates that `translate_placed_geometry` does not reach.
-            // Exclude any inline container so such a subtree falls back to a
-            // full re-place.
-            contains_non_translatable_host: self.computed_style.layout == Layout::Inline,
+            // Element implements `translate_in_place`. An inline formatting
+            // context root installs its descendants' geometry again at the
+            // moved origin (`translate_owned_descendants`), when
+            // `translation_ready` accepts its install.
+            contains_non_translatable_host: false,
         }
     }
 

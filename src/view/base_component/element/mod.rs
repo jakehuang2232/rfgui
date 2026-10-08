@@ -3496,6 +3496,27 @@ pub trait ElementTrait:
     /// is never invoked on the fast path in practice.
     fn translate_in_place(&mut self, _dx: f32, _dy: f32) {}
 
+    /// Whether this node can follow a pure ancestor move through
+    /// `translate_in_place` and `translate_owned_descendants` right now. The
+    /// translation fast path checks every node of a subtree before shifting
+    /// any of them, so a node that would need a full re-place keeps the
+    /// whole subtree on the full-place path.
+    fn translation_ready(&self, _arena: &crate::view::node_arena::NodeArena) -> bool {
+        true
+    }
+
+    /// Called right after `translate_in_place`. A host that installs its
+    /// descendants' geometry itself (an inline formatting context root)
+    /// installs it again at its new origin and returns true; the translation
+    /// walk then skips its children. Default false: the walk shifts each
+    /// child in turn.
+    fn translate_owned_descendants(
+        &mut self,
+        _arena: &mut crate::view::node_arena::NodeArena,
+    ) -> bool {
+        false
+    }
+
     /// The `LayoutPlacement` this node was last placed with, if any.
     /// Powers the translation fast-path's "differs only by a uniform
     /// translation?" check. Default `None` (host opted out / never placed).
@@ -6773,7 +6794,7 @@ impl Element {
                     pending.inner_width,
                     pending.plan,
                 )
-            } else if let Some(mut install) = self.inline_ifc_layout_call_site.current.take() {
+            } else if let Some(install) = self.inline_ifc_layout_call_site.current.take() {
                 let viewport_unchanged = install.viewport_width == placement.viewport_width
                     && install.viewport_height == placement.viewport_height;
                 let applied_width_unchanged =
@@ -6793,33 +6814,7 @@ impl Element {
                     with_layout_place_profile(|profile| {
                         profile.inline_ifc_root_install_reuse_calls += 1;
                     });
-                    // Same plan, so re-applying it can only change the
-                    // origin baked into each absolute coordinate. Identical
-                    // origins mean every installed value is already correct;
-                    // a move re-installs span/text geometry at the new origin
-                    // without reshaping. Atomic boxes still go through
-                    // child.place so their own placement gate decides whether
-                    // to skip.
-                    let origins = self.inline_ifc_apply_origins();
-                    let has_atomic = install
-                        .plan
-                        .iter()
-                        .any(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }));
-                    if origins == install.applied_origins && !has_atomic {
-                        self.inline_ifc_layout_call_site.current = Some(install);
-                        return;
-                    }
-                    self.reposition_inline_ifc_install_plan(
-                        arena,
-                        &install.plan,
-                        origins.0 != install.applied_origins.0
-                            || origins.1 != install.applied_origins.1,
-                        install.content_top_offset,
-                        placement,
-                        has_atomic,
-                    );
-                    install.applied_origins = origins;
-                    self.inline_ifc_layout_call_site.current = Some(install);
+                    self.reapply_inline_ifc_install(arena, install, placement);
                     return;
                 }
                 // A paint-only wake-up must rebuild packages against the
@@ -6914,6 +6909,74 @@ impl Element {
         // place_children is stale.
         let absolute_mask = self.compute_children_absolute_mask(arena);
         self.update_content_size_from_children(arena, &absolute_mask);
+    }
+
+    /// Applies a reusable install at this root's current origins. Same plan,
+    /// so re-applying it can only change the origin baked into each absolute
+    /// coordinate. Identical origins mean every installed value is already
+    /// correct; a move re-installs span/text geometry at the new origin
+    /// without reshaping. Atomic boxes still go through child.place so their
+    /// own placement gate decides whether to skip.
+    fn reapply_inline_ifc_install(
+        &mut self,
+        arena: &mut NodeArena,
+        mut install: ElementInlineIfcRootInstall,
+        placement: LayoutPlacement,
+    ) {
+        let origins = self.inline_ifc_apply_origins();
+        let has_atomic = install
+            .plan
+            .iter()
+            .any(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }));
+        if origins != install.applied_origins || has_atomic {
+            self.reposition_inline_ifc_install_plan(
+                arena,
+                &install.plan,
+                origins.0 != install.applied_origins.0 || origins.1 != install.applied_origins.1,
+                install.content_top_offset,
+                placement,
+                has_atomic,
+            );
+            install.applied_origins = origins;
+        }
+        self.inline_ifc_layout_call_site.current = Some(install);
+    }
+
+    /// Whether a pure move can reuse this root's install, by the reuse
+    /// conditions `place` applies. A translation keeps the children, the
+    /// viewport and the inner width; only pending reshapes and paint damage
+    /// can still require a rebuild.
+    fn inline_ifc_install_movable(&self, arena: &NodeArena) -> bool {
+        self.last_layout_placement.is_some()
+            && self.inline_ifc_layout_call_site.pending.is_none()
+            && self
+                .inline_ifc_layout_call_site
+                .current
+                .as_ref()
+                .is_some_and(|install| install.children_snapshot == self.children)
+            && !self.dirty_flags.intersects(DirtyPassMask::PAINT)
+            && self
+                .children
+                .iter()
+                .all(|&child| !arena.subtree_dirty_intersects(child, DirtyPassMask::PAINT))
+    }
+
+    /// Follows `translate_placed_geometry` on an owning IFC root: installs the
+    /// span and text geometry again at the moved origin and places atomic
+    /// boxes, exactly as `place` does for a moved root.
+    /// `inline_ifc_install_movable` has accepted the install.
+    fn reinstall_inline_ifc_at_moved_origin(&mut self, arena: &mut NodeArena) {
+        let (Some(install), Some(placement)) = (
+            self.inline_ifc_layout_call_site.current.take(),
+            self.last_layout_placement,
+        ) else {
+            unreachable!("a movable inline root keeps its install and placement");
+        };
+        with_layout_place_profile(|profile| {
+            profile.inline_ifc_root_install_calls += 1;
+            profile.inline_ifc_root_install_reuse_calls += 1;
+        });
+        self.reapply_inline_ifc_install(arena, install, placement);
     }
 
     /// Shape the IFC and build an origin-independent install plan from
@@ -8230,6 +8293,18 @@ impl ElementTrait for Element {
 
     fn translate_in_place(&mut self, dx: f32, dy: f32) {
         self.translate_placed_geometry(dx, dy);
+    }
+
+    fn translation_ready(&self, arena: &NodeArena) -> bool {
+        !self.is_owning_inline_ifc_root_role() || self.inline_ifc_install_movable(arena)
+    }
+
+    fn translate_owned_descendants(&mut self, arena: &mut NodeArena) -> bool {
+        if !self.is_owning_inline_ifc_root_role() {
+            return false;
+        }
+        self.reinstall_inline_ifc_at_moved_origin(arena);
+        true
     }
 
     fn box_model_snapshot(&self) -> BoxModelSnapshot {
