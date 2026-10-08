@@ -349,6 +349,9 @@ struct FrameRuntime {
     rect_instances: rect_instances::RectInstanceFrame,
     frame_stats: FrameStats,
     frame_presented: bool,
+    /// Layout moved content under the pointer after this frame's style
+    /// transitions ran; hover is hit-tested again after the frame.
+    pointer_hover_resync_pending: bool,
     /// A viewport change or failed frame still needs a successful submission.
     render_required: bool,
     #[cfg(any(test, feature = "renderer-test-support"))]
@@ -398,6 +401,7 @@ impl FrameRuntime {
             rect_instances: rect_instances::RectInstanceFrame::default(),
             frame_stats: FrameStats::new(trace_fps),
             frame_presented: false,
+            pointer_hover_resync_pending: false,
             render_required: true,
             #[cfg(any(test, feature = "renderer-test-support"))]
             completion_counts: FrameCompletionCounts::default(),

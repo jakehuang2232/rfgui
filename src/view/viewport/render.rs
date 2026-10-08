@@ -2285,10 +2285,13 @@ impl Viewport {
 
         timings.layout_total_ms = phase_clock.checkpoint_ms();
         // Layout-affecting transitions (scroll, layout) can move elements
-        // under a stationary pointer — re-run hover hit-test so
-        // PointerEnter/PointerLeave fire without requiring a real PointerMove.
+        // under a stationary pointer. Hover is hit-tested again once this
+        // frame is painted, so PointerEnter/PointerLeave fire without a real
+        // PointerMove. This frame's style transitions have already run: a
+        // hover style applied now would paint its end value for one frame
+        // before its transition restarts from the old value.
         if post_layout_transition.relayout_required {
-            self.resync_pointer_hover();
+            self.frame.pointer_hover_resync_pending = true;
         }
 
         // Scrollbar visibility depends on final scroll geometry. Resolve it
@@ -3183,8 +3186,11 @@ impl Viewport {
                     || hover_changed_before_render,
             );
         }
+        let hover_resynced = std::mem::take(&mut self.frame.pointer_hover_resync_pending)
+            && self.resync_pointer_hover();
         let hover_changed = self.frame.frame_presented && self.sync_pointer_hover_visual(false);
         if self.frame.render_required
+            || hover_resynced
             || hover_changed
             || (animation_changed && !self.frame.frame_presented)
             || transition_changed_before_render

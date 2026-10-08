@@ -1,9 +1,13 @@
 //! Real pointer dispatch, dirty consumption and pixel output in both renderers.
-use rfgui::style::{Color, Length, Position};
+use rfgui::style::{
+    Color, Layout, Length, Position, ScrollDirection, Transition, TransitionProperty,
+};
 use rfgui::time::Instant;
-use rfgui::ui::{RsxNode, rsx};
+use rfgui::ui::{PointerEnterHandlerProp, RsxNode, rsx};
 use rfgui::view::viewport::ViewportPaintRendererMode;
 use rfgui::view::{Element, Viewport};
+use std::cell::Cell;
+use std::rc::Rc;
 
 #[path = "../../lib/rfgui-components/tests/retained_controls/gpu.rs"]
 mod gpu;
@@ -129,6 +133,89 @@ fn fragment_root_hover_crossing_and_leave_restore_pixels() -> Result<(), String>
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Wheel scrolling moves a box with a hover background transition under a
+/// stationary pointer. The hover must not paint the transition's end value
+/// for a frame before the transition starts from the old value.
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn hover_transition_from_scrolling_under_a_still_pointer_does_not_flash() -> Result<(), String> {
+    let gpu = gpu::Gpu::new()?;
+    let size = [200, 200];
+    let pointer = (60_u32, 190_u32);
+    for mode in [
+        ViewportPaintRendererMode::Legacy,
+        ViewportPaintRendererMode::RetainedAuto,
+    ] {
+        let entered = Rc::new(Cell::new(0));
+        let tree = {
+            let entered = entered.clone();
+            rsx! {
+                <Element style={{width:Length::px(200.), height:Length::px(200.), layout:Layout::flow().column(), scroll_direction:ScrollDirection::Vertical}}>
+                    <Element style={{width:Length::px(200.), height:Length::px(300.)}} />
+                    <Element
+                        style={{
+                            width: Length::px(120.),
+                            height: Length::px(120.),
+                            background_color: Color::hex("#ff0000"),
+                            hover: { background_color: Color::hex("#0000ff") },
+                            transition: [Transition::new(TransitionProperty::BackgroundColor, 150)],
+                        }}
+                        on_pointer_enter={PointerEnterHandlerProp::new(move |_| entered.set(entered.get() + 1))}
+                    />
+                    <Element style={{width:Length::px(200.), height:Length::px(600.)}} />
+                </Element>
+            }
+        };
+        let mut viewport = Viewport::new();
+        viewport.set_paint_renderer_mode(mode);
+        let start = Instant::now();
+        let mut painted = Vec::new();
+        for frame in 0..60_u64 {
+            if frame == 1 {
+                viewport.set_pointer_position_viewport(pointer.0 as f32, pointer.1 as f32);
+                viewport.dispatch_pointer_move_event();
+            }
+            if (2..40).contains(&frame) && frame % 3 == 0 {
+                viewport.dispatch_pointer_wheel_event(0.0, 40.0);
+            }
+            let output = viewport.render_rsx_offscreen_for_test(
+                &tree,
+                gpu.device.clone(),
+                gpu.queue.clone(),
+                size,
+                1.0,
+                start + std::time::Duration::from_millis(frame * 16),
+            )?;
+            let pixels = gpu.read(&output.texture, size)?;
+            let offset = ((pointer.1 * size[0] + pointer.0) * 4) as usize;
+            let [red, _, blue, _] = [0, 1, 2, 3].map(|channel| pixels[offset + channel]);
+            if red != 0 || blue != 0 {
+                painted.push((frame, red, blue));
+            }
+        }
+        assert!(
+            painted
+                .first()
+                .is_some_and(|&(_, red, blue)| (red, blue) == (255, 0)),
+            "{mode:?}: the box enters under the pointer unhovered: {painted:?}"
+        );
+        assert!(
+            painted
+                .last()
+                .is_some_and(|&(_, red, blue)| (red, blue) == (0, 255)),
+            "{mode:?}: the hover transition completes: {painted:?}"
+        );
+        assert!(
+            painted
+                .windows(2)
+                .all(|pair| pair[1].1 <= pair[0].1 && pair[1].2 >= pair[0].2),
+            "{mode:?}: the box color moves only toward the hover color: {painted:?}"
+        );
+        assert_eq!(entered.get(), 1, "{mode:?}");
     }
     Ok(())
 }
