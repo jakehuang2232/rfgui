@@ -48,6 +48,7 @@ fn placed_text(content: &str, owned: bool) -> Text {
                 width: 130.0,
                 height: 50.0,
             },
+            crate::view::node_arena::NodeChange::Mutation,
         );
     }
     text

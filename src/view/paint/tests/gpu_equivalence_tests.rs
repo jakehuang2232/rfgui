@@ -1728,6 +1728,7 @@ pub(crate) fn nested_scroll_unready_text_fixture_for_test(
                         width: bounds.width,
                         height: bounds.height,
                     },
+                    crate::view::node_arena::NodeChange::Mutation,
                 );
         }
     }

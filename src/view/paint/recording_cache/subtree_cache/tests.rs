@@ -46,12 +46,15 @@ fn replay_checks_transitive_property_endpoints_outside_arena_ancestry() {
             Arc::new(Snapshot {
                 owner,
                 key: key.clone(),
+                viewport_translation: None,
                 completed: Default::default(),
                 items: Arc::from([]),
                 states: vec![],
                 scopes: vec![],
                 metadata: vec![],
-                properties: property_closure(&trees, &members).into_iter().collect(),
+                properties: property_closure(&trees, &members, &[])
+                    .into_iter()
+                    .collect(),
                 generations: FxHashMap::default(),
             }),
             false,
@@ -59,21 +62,29 @@ fn replay_checks_transitive_property_endpoints_outside_arena_ancestry() {
             generations.generation_store_stamp(),
         ),
     );
-    assert!(cache.replay(owner, &key, &trees, &generations).is_some());
+    assert!(
+        cache
+            .replay(&arena, owner, &key, &trees, &generations)
+            .is_some()
+    );
     // Neither arena access nor any revision counter announces this change.
     trees
         .effects
         .get_mut(&EffectNodeId(external))
         .unwrap()
         .opacity = 0.25;
-    assert!(cache.replay(owner, &key, &trees, &generations).is_none());
+    assert!(
+        cache
+            .replay(&arena, owner, &key, &trees, &generations)
+            .is_none()
+    );
     // Malformed cycles terminate; missing/new endpoints remain observations.
     trees
         .effects
         .get_mut(&EffectNodeId(external))
         .unwrap()
         .parent = Some(EffectNodeId(owner));
-    assert_eq!(property_closure(&trees, &[owner]).len(), 2);
+    assert_eq!(property_closure(&trees, &[owner], &[]).len(), 2);
 }
 
 #[test]
@@ -104,6 +115,7 @@ fn completed_commands_reject_intervening_native_ancestor_or_lookup_mutation() {
         let snapshot = Snapshot {
             owner,
             key,
+            viewport_translation: None,
             completed: Default::default(),
             items: Arc::from([]),
             states: vec![],
@@ -172,4 +184,75 @@ fn repeated_native_validation_rechecks_topology_and_external_id_aliases() {
     assert!(cache.tracked_local(&arena, parent));
     cache.finish(false);
     assert!(cache.local_validations.is_empty());
+}
+
+/// Layout-frame chunks are relative, so a translated subtree replays its
+/// recording; a recording that kept a viewport-frame chunk does not.
+#[test]
+fn replay_survives_translation_unless_a_chunk_stayed_in_viewport_space() {
+    for viewport_chunk in [false, true] {
+        let mut arena = NodeArena::new();
+        let owner = commit_element(&mut arena, Box::new(Element::new(0., 0., 10., 10.)));
+        let trees = PropertyTrees::default();
+        let mut cache = SubtreeCache::default();
+        cache.bind(&arena, &[owner]);
+        let (key, _) = cache
+            .key(
+                &arena,
+                owner,
+                &PaintRecordingContext::default(),
+                0,
+                &[],
+                false,
+                &FxHashMap::default(),
+            )
+            .unwrap();
+        let generations = crate::view::compositor::PaintGenerationTracker::default();
+        cache.entries.insert(
+            owner,
+            (
+                key.clone(),
+                Arc::new(Snapshot {
+                    owner,
+                    key: key.clone(),
+                    viewport_translation: viewport_chunk
+                        .then(|| arena.subtree_translation_revision(owner).unwrap()),
+                    completed: Default::default(),
+                    items: Arc::from([]),
+                    states: vec![],
+                    scopes: vec![],
+                    metadata: vec![],
+                    properties: FxHashMap::default(),
+                    generations: FxHashMap::default(),
+                }),
+                false,
+                trees.property_store_stamp(),
+                generations.generation_store_stamp(),
+            ),
+        );
+        assert!(
+            cache
+                .replay(&arena, owner, &key, &trees, &generations)
+                .is_some()
+        );
+        arena.with_element_translated(owner, |_, _| ());
+        let (moved_key, _) = cache
+            .key(
+                &arena,
+                owner,
+                &PaintRecordingContext::default(),
+                0,
+                &[],
+                false,
+                &FxHashMap::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            cache
+                .replay(&arena, owner, &moved_key, &trees, &generations)
+                .is_some(),
+            !viewport_chunk,
+            "viewport chunk: {viewport_chunk}"
+        );
+    }
 }

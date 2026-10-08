@@ -88,6 +88,12 @@ impl PartialEq for AncestorInput {
 
 #[derive(Clone, PartialEq)]
 struct Properties {
+    /// Whether the owner's layout-position and visual-offset edges are part
+    /// of this observation. They are for subtree members. Paint outside the
+    /// subtree is recorded relative to layout frames, so moving an ancestor
+    /// or another dependency changes no recorded input; only viewport-frame
+    /// chunks see it, and those also depend on the subtree's translation.
+    spatial: bool,
     state: Option<NodePropertyState>,
     transform: Option<TransformNodeSnapshot>,
     position: Option<LayoutPositionNodeSnapshot>,
@@ -97,12 +103,17 @@ struct Properties {
     clips: [Option<ClipNodeSnapshot>; 2],
 }
 impl Properties {
-    fn observe(trees: &PropertyTrees, key: NodeKey) -> Self {
+    fn observe(trees: &PropertyTrees, key: NodeKey, spatial: bool) -> Self {
         Self {
+            spatial,
             state: trees.node_state_for(key),
             transform: trees.transform_snapshot_for(TransformNodeId(key)),
-            position: trees.layout_position_snapshot_for(LayoutPositionNodeId(key)),
-            visual: trees.visual_offset_snapshot_for(VisualOffsetNodeId(key)),
+            position: spatial
+                .then(|| trees.layout_position_snapshot_for(LayoutPositionNodeId(key)))
+                .flatten(),
+            visual: spatial
+                .then(|| trees.visual_offset_snapshot_for(VisualOffsetNodeId(key)))
+                .flatten(),
             effect: trees.effect_node_snapshot_for(EffectNodeId(key)),
             scroll: trees.scroll_snapshot_for(ScrollNodeId(key)),
             clips: [ClipNodeRole::SelfClip, ClipNodeRole::ContentsClip]
@@ -149,15 +160,29 @@ impl Properties {
     }
 }
 
-fn property_closure(trees: &PropertyTrees, members: &[NodeKey]) -> Vec<(NodeKey, Properties)> {
-    let mut pending = members.to_vec();
+/// Property inputs of a subtree: its members with their spatial edges, then
+/// every other owner they depend on (ancestors first) without them.
+fn property_closure(
+    trees: &PropertyTrees,
+    members: &[NodeKey],
+    dependencies: &[NodeKey],
+) -> Vec<(NodeKey, Properties)> {
     let mut seen = rustc_hash::FxHashSet::default();
     let mut snapshots = Vec::new();
+    let mut pending = Vec::new();
+    for &member in members {
+        if seen.insert(member) {
+            let properties = Properties::observe(trees, member, true);
+            pending.extend(properties.dependencies());
+            snapshots.push((member, properties));
+        }
+    }
+    pending.extend(dependencies.iter().rev().copied());
     while let Some(owner) = pending.pop() {
         if !seen.insert(owner) {
             continue;
         }
-        let properties = Properties::observe(trees, owner);
+        let properties = Properties::observe(trees, owner, false);
         pending.extend(
             properties
                 .dependencies()
@@ -170,6 +195,10 @@ fn property_closure(trees: &PropertyTrees, members: &[NodeKey]) -> Vec<(NodeKey,
 pub(crate) struct Snapshot {
     owner: NodeKey,
     key: Key,
+    /// The subtree translation revision at capture when any recorded chunk
+    /// stayed in viewport coordinates. Every other recorded input is relative
+    /// to a layout frame and survives a translation of the subtree.
+    viewport_translation: Option<u64>,
     completed: std::sync::OnceLock<Arc<[PaintCoverageItem]>>,
     pub(crate) items: Arc<[PaintCoverageItem]>,
     pub(crate) states: Vec<(NodeKey, super::super::PaintOwnerPropertyStateSnapshot)>,
@@ -372,6 +401,7 @@ impl SubtreeCache {
     }
     pub(crate) fn replay(
         &mut self,
+        arena: &NodeArena,
         owner: NodeKey,
         key: &Key,
         trees: &PropertyTrees,
@@ -382,7 +412,11 @@ impl SubtreeCache {
         if old.revision == key.revision && old.ancestors != key.ancestors {
             super::super::work_profile::count("subtree_replay_ancestor_input_changes", 1);
         }
-        if old != key {
+        if old != key
+            || snapshot
+                .viewport_translation
+                .is_some_and(|old| arena.subtree_translation_revision(owner) != Some(old))
+        {
             self.split.insert(owner, key.clone());
             return None;
         }
@@ -393,12 +427,12 @@ impl SubtreeCache {
                     snapshot
                         .properties
                         .get(owner)
-                        .is_none_or(|old| *old == Properties::observe(trees, *owner))
+                        .is_none_or(|old| *old == Properties::observe(trees, *owner, old.spatial))
                 })
             }
             _ => snapshot.properties.iter().all(|(owner, old)| {
                 written.as_ref().is_some_and(|keys| !keys.contains(owner))
-                    || *old == Properties::observe(trees, *owner)
+                    || *old == Properties::observe(trees, *owner, old.spatial)
             }),
         };
         let generation_writes = generations.generation_writes_since(generation_stamp);
@@ -547,16 +581,36 @@ impl RecordingCache {
         }
         // Keep the shared membership block on hits. Ancestral generation
         // dependencies are collected only when minting a new snapshot.
-        let mut dependencies = members.to_vec();
+        let mut ancestors = Vec::new();
         let mut parent = arena.parent_of(owner);
         for _ in 0..128 {
             let Some(key) = parent else { break };
-            dependencies.push(key);
+            ancestors.push(key);
             parent = arena.parent_of(key);
         }
+        let dependencies = members
+            .iter()
+            .chain(&ancestors)
+            .copied()
+            .collect::<Vec<_>>();
+        let has_viewport_chunk = items.iter().any(|item| {
+            matches!(
+                item,
+                PaintCoverageItem::ArtifactChunk { chunk, .. }
+                    if chunk.frame == super::super::PaintChunkFrame::Viewport
+            )
+        });
+        let viewport_translation = match has_viewport_chunk {
+            true => match arena.subtree_translation_revision(owner) {
+                Some(revision) => Some(revision),
+                None => return,
+            },
+            false => None,
+        };
         let snapshot = Snapshot {
             owner,
             key: key.clone(),
+            viewport_translation,
             completed: Default::default(),
             items: items.into(),
             states: members
@@ -578,7 +632,9 @@ impl RecordingCache {
                         .map(|(stable, plan)| (*key, *stable, plan.clone()))
                 })
                 .collect(),
-            properties: property_closure(trees, &dependencies).into_iter().collect(),
+            properties: property_closure(trees, members, &ancestors)
+                .into_iter()
+                .collect(),
             generations: dependencies
                 .iter()
                 .map(|key| (*key, generations.local_generations_for(*key)))

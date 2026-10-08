@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 pub(super) struct NativeInlineWitnessInputs {
     arena: Arc<()>,
-    owners: Vec<(NodeKey, u64, VolatileInput)>,
+    /// Each owner's mutation and translation revisions: a translated install
+    /// holds new absolute geometry, so it is validated again.
+    owners: Vec<(NodeKey, u64, u64, VolatileInput)>,
 }
 
 #[derive(PartialEq)]
@@ -65,7 +67,12 @@ impl NativeInlineWitnessInputs {
             } else {
                 return None;
             };
-            owners.push((key, arena.mutation_revision(key)?, volatile));
+            owners.push((
+                key,
+                arena.mutation_revision(key)?,
+                arena.translation_revision(key)?,
+                volatile,
+            ));
             pending.extend_from_slice(node.children());
         }
         // A ColorLike implementation can call back into the arena. A mutation

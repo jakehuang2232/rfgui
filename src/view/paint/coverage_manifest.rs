@@ -948,7 +948,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 let snapshot = self.recording_cache.as_deref_mut().and_then(|cache| {
                     cache
                         .subtrees
-                        .replay(key, input, self.properties, self.generations)
+                        .replay(self.arena, key, input, self.properties, self.generations)
                 });
                 if let Some(snapshot) = snapshot {
                     self.recording_cache

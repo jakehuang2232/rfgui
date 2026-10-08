@@ -45,7 +45,7 @@ use crate::view::inline_formatting_context::{
 };
 #[cfg(test)]
 use crate::view::inline_text_pass_adapter::inline_ifc_paint_input_to_text_pass_staging_input;
-use crate::view::node_arena::{NodeArena, NodeKey};
+use crate::view::node_arena::{NodeArena, NodeChange, NodeKey};
 use crate::view::render_pass::draw_rect_pass::DrawRectInput;
 use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
@@ -4954,10 +4954,25 @@ fn inline_ifc_atomic_subtree_layout_placement_clean(arena: &NodeArena, root: Nod
     true
 }
 
-/// Union of absolute rects; zero rect when empty.
+/// Takes an inline-IFC-owned node for an install. Installing the same plan
+/// at a moved origin only translates the node.
+fn with_inline_ifc_owned_node(
+    arena: &mut NodeArena,
+    node_key: NodeKey,
+    change: NodeChange,
+    f: impl FnOnce(&mut Box<dyn ElementTrait>, &mut NodeArena),
+) {
+    match change {
+        NodeChange::Mutation => arena.with_element_taken(node_key, f),
+        NodeChange::Translation => arena.with_element_translated(node_key, f),
+    };
+}
+
 /// Install one span op of an origin-independent plan at the root's content
 /// origin. Full installs and moved roots share this arithmetic, so the paint
-/// witness re-derives bit-identical geometry on either path.
+/// witness re-derives bit-identical geometry on either path. `change` is
+/// `Translation` when the same plan is installed again at a moved origin.
+#[allow(clippy::too_many_arguments)]
 fn install_inline_ifc_span_op(
     arena: &mut NodeArena,
     node_key: NodeKey,
@@ -4966,6 +4981,7 @@ fn install_inline_ifc_span_op(
     origin_x: f32,
     origin_y: f32,
     top_offset: f32,
+    change: NodeChange,
 ) {
     // Every rect is the content origin plus its plan-relative offset, in
     // that order, exactly as the paint witness re-derives it; folding the
@@ -4996,7 +5012,7 @@ fn install_inline_ifc_span_op(
         width: rect.width,
         height: rect.height,
     }));
-    arena.with_element_taken(node_key, |child, _arena| {
+    with_inline_ifc_owned_node(arena, node_key, change, |child, _arena| {
         if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
             element.install_inline_ifc_rollout_packages_from_candidate(package.as_ref());
             element.inline_ifc_owned_by_root = true;
@@ -5018,6 +5034,7 @@ fn install_inline_ifc_text_op(
     origin_x: f32,
     origin_y: f32,
     top_offset: f32,
+    change: NodeChange,
 ) {
     // The same content origin as span installs and the paint witness.
     let origin_y = origin_y - top_offset;
@@ -5032,7 +5049,7 @@ fn install_inline_ifc_text_op(
         width: paint_bounds.width,
         height: paint_bounds.height,
     };
-    arena.with_element_taken(node_key, |child, _arena| {
+    with_inline_ifc_owned_node(arena, node_key, change, |child, _arena| {
         if let Some(text) = child.as_any_mut().downcast_mut::<Text>() {
             let mut bounds = bounding_rect_iter(absolute.iter().map(|line| line.rect));
             if (bounds.width <= 0.0 || bounds.height <= 0.0)
@@ -5046,6 +5063,7 @@ fn install_inline_ifc_text_op(
                 absolute,
                 Arc::clone(paint_input),
                 absolute_paint_bounds,
+                change,
             );
         }
     });
@@ -7093,6 +7111,7 @@ impl Element {
                             origin_x,
                             origin_y,
                             top_offset,
+                            NodeChange::Translation,
                         );
                     }
                 }
@@ -7112,6 +7131,7 @@ impl Element {
                             origin_x,
                             origin_y,
                             top_offset,
+                            NodeChange::Translation,
                         );
                     }
                 }
@@ -7213,6 +7233,7 @@ impl Element {
                     origin_x,
                     origin_y,
                     top_offset,
+                    NodeChange::Mutation,
                 ),
                 InlineIfcNodeInstallOp::Text {
                     node_key,
@@ -7228,6 +7249,7 @@ impl Element {
                     origin_x,
                     origin_y,
                     top_offset,
+                    NodeChange::Mutation,
                 ),
                 InlineIfcNodeInstallOp::Atomic { witness } => {
                     let (child_placement, offset) = inline_ifc_atomic_layout_placement(
@@ -8361,11 +8383,12 @@ impl ElementTrait for Element {
     }
 
     fn retained_paint_signature(&self) -> u64 {
+        // Paint is recorded relative to the owner's layout frame, and the
+        // property tree carries where that frame is. Moving the owner is not
+        // a paint change: hash relative geometry only.
         let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.layout_state.should_render.hash(&mut hasher);
         self.core.should_paint.hash(&mut hasher);
-        hash_f32(&mut hasher, self.layout_state.layout_position.x);
-        hash_f32(&mut hasher, self.layout_state.layout_position.y);
         hash_f32(&mut hasher, self.layout_state.layout_size.width.max(0.0));
         hash_f32(&mut hasher, self.layout_state.layout_size.height.max(0.0));
         hash_f32(
@@ -8392,9 +8415,10 @@ impl ElementTrait for Element {
         hash_f32(&mut hasher, self.layout_state.content_size.width.max(0.0));
         hash_f32(&mut hasher, self.layout_state.content_size.height.max(0.0));
         self.inline_paint_fragments.len().hash(&mut hasher);
+        let origin = self.layout_state.layout_position;
         for fragment in &self.inline_paint_fragments {
-            hash_f32(&mut hasher, fragment.x);
-            hash_f32(&mut hasher, fragment.y);
+            hash_f32(&mut hasher, fragment.x - origin.x);
+            hash_f32(&mut hasher, fragment.y - origin.y);
             hash_f32(&mut hasher, fragment.width.max(0.0));
             hash_f32(&mut hasher, fragment.height.max(0.0));
         }

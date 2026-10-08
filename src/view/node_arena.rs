@@ -106,6 +106,11 @@ pub struct Node {
     element: RefCell<Box<dyn ElementTrait>>,
     mutation_revision: Cell<u64>,
     subtree_mutation_revision: Cell<u64>,
+    /// Last rigid move of this node's placed geometry with an ancestor
+    /// (`NodeArena::note_translation`). Not a mutation: relative observations
+    /// survive it.
+    translation_revision: Cell<u64>,
+    subtree_translation_revision: Cell<u64>,
     /// Revision certified by a complete observation of tracked hosts and
     /// coherent child/parent links. None also covers unknown/external hosts.
     dirty_observation_revision: Cell<Option<u64>>,
@@ -151,6 +156,8 @@ impl Node {
             element: RefCell::new(element),
             mutation_revision: Cell::new(0),
             subtree_mutation_revision: Cell::new(0),
+            translation_revision: Cell::new(0),
+            subtree_translation_revision: Cell::new(0),
             dirty_observation_revision: Cell::new(None),
             hover_observation: Cell::new(None),
             native_dirty_clear_subtree: Cell::new(false),
@@ -169,6 +176,8 @@ impl Node {
             element: RefCell::new(element),
             mutation_revision: Cell::new(0),
             subtree_mutation_revision: Cell::new(0),
+            translation_revision: Cell::new(0),
+            subtree_translation_revision: Cell::new(0),
             dirty_observation_revision: Cell::new(None),
             hover_observation: Cell::new(None),
             native_dirty_clear_subtree: Cell::new(false),
@@ -236,6 +245,15 @@ impl Deref for NodeMutGuard<'_> {
     fn deref(&self) -> &Self::Target {
         self.node
     }
+}
+
+/// How exclusive access changed a node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NodeChange {
+    Mutation,
+    /// The node's placed geometry moved rigidly with an ancestor and nothing
+    /// else changed.
+    Translation,
 }
 
 /// Cached subtree metadata for future placement replay eligibility checks.
@@ -372,6 +390,7 @@ impl std::fmt::Debug for Node {
 pub struct NodeArena {
     slots: SlotMap<NodeKey, Node>,
     mutation_clock: Cell<u64>,
+    translation_clock: Cell<u64>,
     mutation_history: RefCell<mutation_history::MutationHistory>,
     render_change_observation: RefCell<Option<render_changes::RenderChangeObservation>>,
     mutation_identity: Arc<()>,
@@ -1319,6 +1338,42 @@ impl NodeArena {
         f: impl FnOnce(&mut Box<dyn ElementTrait>, &mut NodeArena) -> R,
     ) -> Option<R> {
         self.note_mutation(key);
+        self.take_element(key, f)
+    }
+
+    /// [`Self::with_element_taken`] for a callback that only moves the
+    /// node's placed geometry rigidly with an ancestor. Records a translation
+    /// instead of a mutation, so relative observations of the node survive.
+    pub(crate) fn with_element_translated<R>(
+        &mut self,
+        key: NodeKey,
+        f: impl FnOnce(&mut Box<dyn ElementTrait>, &mut NodeArena) -> R,
+    ) -> Option<R> {
+        let result = self.take_element(key, f)?;
+        self.note_translation(key);
+        Some(result)
+    }
+
+    /// [`Self::with_element_taken`] for a callback that reports afterwards
+    /// whether it mutated the node or only translated it.
+    pub(crate) fn with_element_taken_classified<R>(
+        &mut self,
+        key: NodeKey,
+        f: impl FnOnce(&mut Box<dyn ElementTrait>, &mut NodeArena) -> (R, NodeChange),
+    ) -> Option<R> {
+        let (result, change) = self.take_element(key, f)?;
+        match change {
+            NodeChange::Mutation => self.note_mutation(key),
+            NodeChange::Translation => self.note_translation(key),
+        }
+        Some(result)
+    }
+
+    fn take_element<R>(
+        &mut self,
+        key: NodeKey,
+        f: impl FnOnce(&mut Box<dyn ElementTrait>, &mut NodeArena) -> R,
+    ) -> Option<R> {
         // Phase 1: swap the real element out for a placeholder. Mutable arena
         // access reaches the element RefCell through `get_mut()` without a
         // runtime borrow check.

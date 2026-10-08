@@ -12,7 +12,7 @@ use crate::view::base_component::{
     main_axis_start_and_gap, profile_layout_place_time, with_layout_place_profile,
 };
 use crate::view::layout::types::FlexLayoutInfo;
-use crate::view::node_arena::{NodeArena, NodeKey};
+use crate::view::node_arena::{NodeArena, NodeChange, NodeKey};
 
 /// Inputs to `place_axis_children`.
 ///
@@ -162,7 +162,7 @@ pub(crate) fn place_axis_children(inputs: PlaceAxisChildrenInputs<'_>, arena: &m
                         });
                     }
                     FlexAxisChildReplay::Place => {
-                        arena.with_element_taken(child_key, |child, arena| {
+                        arena.with_element_taken_classified(child_key, |child, arena| {
                             let (target_width, target_height) = child.layout_target_size();
                             let item_target_main = if matches!(layout, Layout::Flow { .. }) {
                                 if is_row {
@@ -234,9 +234,11 @@ pub(crate) fn place_axis_children(inputs: PlaceAxisChildrenInputs<'_>, arena: &m
                                     profile.translated_subtree_roots += 1;
                                     profile.translated_subtree_nodes += count;
                                 });
+                                ((), NodeChange::Translation)
                             } else {
                                 with_layout_place_profile(|profile| profile.child_place_calls += 1);
                                 child.place(placement, arena);
+                                ((), NodeChange::Mutation)
                             }
                         });
                     }
@@ -537,7 +539,7 @@ fn translate_subtree_walk(
     arena: &mut NodeArena,
     count: &mut usize,
 ) {
-    arena.with_element_taken(key, |node, arena| {
+    arena.with_element_translated(key, |node, arena| {
         translate_node_and_descendants(node.as_mut(), key, dx, dy, arena, count);
     });
 }

@@ -326,18 +326,21 @@ impl Text {
     /// Install per-line geometry from the inline IFC root that owns this
     /// Text node's glyphs. While owned, the Text renders the root-shaped,
     /// source-filtered payload and answers geometry from the installed lines.
+    /// `change` is `Translation` when the root installs the same plan again
+    /// at a moved origin: the relative paint is unchanged, so no paint damage.
     pub(crate) fn install_inline_ifc_owned_geometry(
         &mut self,
         lines: Vec<TextIfcOwnedLine>,
         paint_input: Arc<InlineIfcTextPassPaintInput>,
         paint_bounds: crate::ui::Rect,
+        change: crate::view::node_arena::NodeChange,
     ) {
         let changed = self.inline_ifc_owned.as_deref().is_none_or(|owned| {
             owned.lines.as_ref() != lines.as_slice()
                 || !Arc::ptr_eq(&owned.paint_input, &paint_input)
                 || owned.paint_bounds != paint_bounds
         });
-        if changed {
+        if changed && change == crate::view::node_arena::NodeChange::Mutation {
             self.dirty_flags = self.dirty_flags.union(super::DirtyPassMask::PAINT);
         }
         self.line_install_memo.get_mut().take();
@@ -1174,18 +1177,10 @@ impl ElementTrait for Text {
     }
 
     fn retained_paint_signature(&self) -> u64 {
+        // Relative geometry only, as for Element: the property tree carries
+        // the layout frame's position.
         let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.layout_state.should_render.hash(&mut hasher);
-        self.layout_state
-            .layout_position
-            .x
-            .to_bits()
-            .hash(&mut hasher);
-        self.layout_state
-            .layout_position
-            .y
-            .to_bits()
-            .hash(&mut hasher);
         self.content_hash.hash(&mut hasher);
         self.color.to_rgba_u8().hash(&mut hasher);
         self.font_families.hash(&mut hasher);
@@ -1212,18 +1207,19 @@ impl ElementTrait for Text {
             .max(0.0)
             .to_bits()
             .hash(&mut hasher);
+        let origin = self.layout_state.layout_position;
         let owned_lines = self.inline_ifc_owned_lines().unwrap_or(&[]);
         for line in owned_lines {
-            line.rect.x.to_bits().hash(&mut hasher);
-            line.rect.y.to_bits().hash(&mut hasher);
+            (line.rect.x - origin.x).to_bits().hash(&mut hasher);
+            (line.rect.y - origin.y).to_bits().hash(&mut hasher);
             line.rect.width.to_bits().hash(&mut hasher);
             line.rect.height.to_bits().hash(&mut hasher);
             line.char_range.start.hash(&mut hasher);
             line.char_range.end.hash(&mut hasher);
         }
         if let Some(bounds) = self.inline_ifc_owned_paint_bounds() {
-            bounds.x.to_bits().hash(&mut hasher);
-            bounds.y.to_bits().hash(&mut hasher);
+            (bounds.x - origin.x).to_bits().hash(&mut hasher);
+            (bounds.y - origin.y).to_bits().hash(&mut hasher);
             bounds.width.to_bits().hash(&mut hasher);
             bounds.height.to_bits().hash(&mut hasher);
         }

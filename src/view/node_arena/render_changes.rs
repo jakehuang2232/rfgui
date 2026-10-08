@@ -57,6 +57,41 @@ impl NodeArena {
         }
     }
 
+    /// A rigid move of `key`'s placed geometry with an ancestor. Relative
+    /// observations stay valid, so mutation revisions and render causes are
+    /// left alone; consumers of absolute geometry compare translation
+    /// revisions as well.
+    pub(super) fn note_translation(&self, key: NodeKey) {
+        if let Some(node) = self.slots.get(key) {
+            let revision = self.translation_clock.get().saturating_add(1);
+            self.translation_clock.set(revision);
+            node.translation_revision.set(revision);
+            let mut cursor = Some(key);
+            for _ in 0..self.slots.len() {
+                let Some(node) = cursor.and_then(|key| self.slots.get(key)) else {
+                    break;
+                };
+                if node.subtree_translation_revision.get() == revision {
+                    break;
+                }
+                node.subtree_translation_revision.set(revision);
+                cursor = node.parent;
+            }
+        }
+    }
+
+    pub(crate) fn translation_revision(&self, key: NodeKey) -> Option<u64> {
+        self.slots
+            .get(key)
+            .map(|node| node.translation_revision.get())
+    }
+
+    pub(crate) fn subtree_translation_revision(&self, key: NodeKey) -> Option<u64> {
+        self.slots
+            .get(key)
+            .map(|node| node.subtree_translation_revision.get())
+    }
+
     pub(super) fn note_topology_change(&self, key: NodeKey) {
         self.note_mutation(key);
         if let Some(node) = self.slots.get(key) {

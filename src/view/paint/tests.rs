@@ -2496,6 +2496,7 @@ fn prepared_inline_owned_text_tree(
                 width: 92.0,
                 height: 72.0,
             },
+            crate::view::node_arena::NodeChange::Mutation,
         );
     (arena, roots, text_key)
 }

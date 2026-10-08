@@ -274,6 +274,20 @@ fn moved_column_translates_inline_roots_without_placing_them() {
             .clear_local_dirty_flags(DirtyFlags::ALL);
     }
     arena.clear_arena_dirty_subtree(column, DirtyFlags::ALL);
+    let moved = nodes[1..].to_vec();
+    let observe = |arena: &NodeArena| {
+        moved
+            .iter()
+            .map(|&key| {
+                (
+                    arena.mutation_revision(key).unwrap(),
+                    arena.translation_revision(key).unwrap(),
+                    arena.get(key).unwrap().element.retained_paint_signature(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = observe(&arena);
     crate::view::base_component::reset_layout_place_profile();
     crate::view::base_component::set_layout_place_profile_enabled(true);
     place_at(&mut arena, column, 37.25);
@@ -288,6 +302,17 @@ fn moved_column_translates_inline_roots_without_placing_them() {
         (2, 0, 2),
         "both inline roots follow the move by translation"
     );
+    // A translation is not a mutation: relative observations and paint
+    // signatures of the moved roots and their text stay valid.
+    for (
+        (mutation, translation, signature),
+        (moved_mutation, moved_translation, moved_signature),
+    ) in before.iter().zip(observe(&arena))
+    {
+        assert_eq!(*mutation, moved_mutation);
+        assert_ne!(*translation, moved_translation);
+        assert_eq!(*signature, moved_signature);
+    }
 
     let (mut fresh, fresh_column, _, _, fresh_texts) = build();
     place_at(&mut fresh, fresh_column, 37.25);
