@@ -15,9 +15,22 @@ fn snap_text_local_pos_snaps_absolute_pixel_position() {
 }
 
 #[test]
-fn text_render_trunc_moves_toward_zero() {
-    assert_eq!(text_render_trunc(4.9), 4.0);
-    assert_eq!(text_render_trunc(-4.9), -4.0);
+fn text_render_snap_floors_and_absorbs_rounding_noise_below_a_pixel() {
+    assert_eq!(text_render_snap(4.9), 4.0);
+    assert_eq!(text_render_snap(-4.1), -5.0);
+    let boundary = 13.0_f32;
+    for noisy in [
+        f32::from_bits(boundary.to_bits() - 1),
+        boundary - 1e-3,
+        boundary,
+        f32::from_bits(boundary.to_bits() + 1),
+    ] {
+        assert_eq!(text_render_snap(noisy), boundary, "{noisy}");
+    }
+    // Whole-pixel moves keep glyphs rigid, across zero too.
+    for value in [-0.6_f32, 0.4, 3.75] {
+        assert_eq!(text_render_snap(value - 8.0), text_render_snap(value) - 8.0);
+    }
 }
 
 #[test]

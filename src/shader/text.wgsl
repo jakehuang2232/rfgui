@@ -10,6 +10,12 @@ struct FragmentUniform {
     _pad: vec2<f32>,
 }
 
+// Glyph positions often land on a pixel boundary, and the same position
+// computed along another path (a moved subtree, a surface raster) can come
+// out a few ulps below it. Snapping that far below a boundary up to it keeps
+// such glyphs on one pixel. Wide enough for f32 noise up to about 2^16 px.
+const TEXT_SNAP_TOLERANCE: f32 = 1.0 / 64.0;
+
 @group(0) @binding(0)
 var<uniform> screen: ScreenUniform;
 
@@ -55,10 +61,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, glyph: GlyphInstance) -> Vs
 
     let corner = corners[vertex_index];
     let fragment = fragments[glyph.fragment_index];
-    // Snap the glyph base to the pixel grid (toward zero, matching the
-    // CPU-side text_render_trunc semantics) so glyphs stay crisp while
-    // instance data remains independent of the fragment origin.
-    let base = trunc(fragment.origin + glyph.local_pos);
+    // Snap the glyph base down to the pixel grid (matching the CPU-side
+    // text_render_snap) so glyphs stay crisp while instance data remains
+    // independent of the fragment origin.
+    let base = floor(fragment.origin + glyph.local_pos + TEXT_SNAP_TOLERANCE);
     let pixel = base + corner * glyph.size;
     let ndc_x = (pixel.x / screen.screen_size.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (pixel.y / screen.screen_size.y) * 2.0;

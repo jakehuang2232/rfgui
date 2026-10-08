@@ -947,7 +947,7 @@ fn collect_prepared_staging_glyphs(
             SwashRasterContent::Color => AtlasKind::Color,
             SwashRasterContent::Mask | SwashRasterContent::SubpixelMask => AtlasKind::Mask,
         };
-        // Pixel snapping happens in the vertex shader (trunc of origin +
+        // Pixel snapping happens in the vertex shader (floor of origin +
         // local_pos), keeping instance data origin-independent so the
         // cross-frame draw cache hits on scrolls and moves.
         let local_pos = [
@@ -1036,18 +1036,20 @@ pub(crate) fn build_text_pass_prepared_staging_probe(
 #[cfg(test)]
 fn snap_text_local_pos(fragment_origin: [f32; 2], local_pos: [f32; 2]) -> [f32; 2] {
     [
-        text_render_trunc(fragment_origin[0] + local_pos[0]) - fragment_origin[0],
-        text_render_trunc(fragment_origin[1] + local_pos[1]) - fragment_origin[1],
+        text_render_snap(fragment_origin[0] + local_pos[0]) - fragment_origin[0],
+        text_render_snap(fragment_origin[1] + local_pos[1]) - fragment_origin[1],
     ]
 }
 
+/// Mirrors `TEXT_SNAP_TOLERANCE` in text.wgsl.
 #[cfg(test)]
-fn text_render_trunc(value: f32) -> f32 {
-    if value.is_sign_negative() {
-        value.ceil()
-    } else {
-        value.floor()
-    }
+const TEXT_SNAP_TOLERANCE: f32 = 1.0 / 64.0;
+
+/// The vertex shader's glyph snap: down to the pixel grid, with values just
+/// below a boundary snapped up to it.
+#[cfg(test)]
+fn text_render_snap(value: f32) -> f32 {
+    (value + TEXT_SNAP_TOLERANCE).floor()
 }
 
 pub(crate) fn rasterize_text_pass_glyph_input(
