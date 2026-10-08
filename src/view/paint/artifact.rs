@@ -1836,7 +1836,7 @@ impl RetainedChildMaskPlan {
         in_scope_children: Vec<NodeKey>,
         overflow_children: Vec<NodeKey>,
     ) -> Option<Self> {
-        if crate::view::base_component::exact_logical_scissor_for_rect(bounds)
+        if crate::view::base_component::logical_scissor_for_clip_rect(bounds)
             != Some(logical_scissor)
             || op.mode != crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly
             || op.params.position != [bounds.x, bounds.y]

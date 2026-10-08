@@ -334,7 +334,9 @@ impl Element {
         );
         let inner_radii = self.inner_clip_radii(outer_radii);
         let bounds = self.inner_clip_rect();
-        let logical_scissor = exact_logical_scissor_for_rect(bounds)?;
+        // A mask wholly above or left of the viewport keeps an empty scissor:
+        // it writes no stencil, so its in-scope children paint nothing.
+        let logical_scissor = logical_scissor_for_clip_rect(bounds)?;
         let mut params = RectPassParams {
             position: [bounds.x, bounds.y],
             size: [bounds.width, bounds.height],

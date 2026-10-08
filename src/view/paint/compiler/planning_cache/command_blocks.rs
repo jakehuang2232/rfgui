@@ -203,7 +203,7 @@ fn validate_local(
                 return None;
             };
             let Some(logical_scissor) =
-                crate::view::base_component::exact_logical_scissor_for_rect(chunk.bounds)
+                crate::view::base_component::logical_scissor_for_clip_rect(chunk.bounds)
             else {
                 return None;
             };

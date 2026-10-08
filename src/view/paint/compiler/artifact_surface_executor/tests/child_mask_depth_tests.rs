@@ -38,7 +38,7 @@ fn child_mask_action_is_derived_only_from_reserved_slot_and_phase() {
             PaintNodePhase::BeforeChildren,
             RETAINED_CHILD_MASK_SLOT,
         )),
-        ArtifactSurfaceChildMaskAction::Push(GraphicsPassScissor::Logical([0, 0, 1, 1])),
+        ArtifactSurfaceChildMaskAction::Push(Some(GraphicsPassScissor::Logical([0, 0, 1, 1]))),
     ));
     assert_eq!(
         ArtifactSurfaceChildMaskAction::from_chunk_id(chunk_id(

@@ -85,7 +85,7 @@ fn execution_seal_keeps_the_frame_and_one_child_mask_program_together() {
     assert!(
         root_push_scissors
             .iter()
-            .all(|scissor| matches!(scissor, GraphicsPassScissor::Logical(_))),
+            .all(|scissor| matches!(scissor, Some(GraphicsPassScissor::Logical(_)))),
         "scene-root child masks remain in logical space",
     );
     let mask_chunk = execution
@@ -111,7 +111,9 @@ fn execution_seal_keeps_the_frame_and_one_child_mask_program_together() {
         .expect("projected child-mask bounds");
     assert_eq!(
         ArtifactSurfaceChildMaskAction::from_chunk(&projected_mask_chunk, Some(projection)),
-        ArtifactSurfaceChildMaskAction::Push(GraphicsPassScissor::TargetPhysical([0, 0, 120, 90,])),
+        ArtifactSurfaceChildMaskAction::Push(Some(GraphicsPassScissor::TargetPhysical([
+            0, 0, 120, 90,
+        ]))),
         "a detached target seals the same child mask in target-physical space",
     );
     let contract_projection = ArtifactSurfaceRasterOriginProjection::new(

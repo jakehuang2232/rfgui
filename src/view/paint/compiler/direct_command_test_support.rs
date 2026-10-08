@@ -242,10 +242,11 @@ fn compile_validated_artifact_segment(
                     let child_clip_id = ctx
                         .push_clip_id()
                         .expect("validated retained child-mask depth");
+                    // An empty scissor would read as unclipped; a mask outside
+                    // the target keeps the incoming one and clips by stencil.
                     let logical_scissor =
-                        crate::view::base_component::exact_logical_scissor_for_rect(chunk.bounds)
-                            .expect("validated retained child-mask scissor");
-                    let previous_scissor = ctx.push_scissor_rect(Some(logical_scissor));
+                        crate::view::base_component::exact_logical_scissor_for_rect(chunk.bounds);
+                    let previous_scissor = ctx.push_scissor_rect(logical_scissor);
                     let mut pass = DrawRectPass::new(
                         mask.params.clone(),
                         DrawRectInput::default(),

@@ -43,7 +43,11 @@ pub(crate) fn take_last_production_actions_for_test() -> Vec<RetainedSurfaceComp
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArtifactSurfaceChildMaskAction {
     Unchanged,
-    Push(GraphicsPassScissor),
+    /// `None` when the mask lies outside the target. It still opens a stencil
+    /// scope, but its geometry writes no stencil pixels, so descendants fail
+    /// the incremented reference until Pop restores the owner. The incoming
+    /// scissor stays as it is.
+    Push(Option<GraphicsPassScissor>),
     Pop,
 }
 
@@ -55,7 +59,7 @@ impl ArtifactSurfaceChildMaskAction {
         }
         match id.phase {
             PaintNodePhase::BeforeChildren => {
-                Self::Push(GraphicsPassScissor::Logical([0, 0, 1, 1]))
+                Self::Push(Some(GraphicsPassScissor::Logical([0, 0, 1, 1])))
             }
             PaintNodePhase::AfterChildren => Self::Pop,
         }
@@ -72,32 +76,21 @@ impl ArtifactSurfaceChildMaskAction {
         match id.phase {
             PaintNodePhase::BeforeChildren => {
                 let scissor = match raster_origin {
-                    // A mask outside a finite raster window still opens a stencil
-                    // scope. Its geometry writes no stencil pixels, so descendants
-                    // fail the incremented reference until Pop restores the owner.
-                    // A full-target scissor is safe here; it does not enlarge the mask.
-                    Some(projection) => projection
-                        .target_physical_scissor_for_projected_bounds(chunk.localized_bounds_bits())
-                        .unwrap_or(GraphicsPassScissor::TargetPhysical([
-                            0,
-                            0,
-                            projection.target_size[0],
-                            projection.target_size[1],
-                        ])),
+                    Some(projection) => projection.target_physical_scissor_for_projected_bounds(
+                        chunk.localized_bounds_bits(),
+                    ),
                     None => {
                         let [x, y, width, height] =
                             chunk.localized_bounds_bits().map(f32::from_bits);
-                        GraphicsPassScissor::Logical(
-                            crate::view::base_component::exact_logical_scissor_for_rect(
-                                crate::view::base_component::Rect {
-                                    x,
-                                    y,
-                                    width,
-                                    height,
-                                },
-                            )
-                            .expect("prepared child mask has a non-empty logical scissor"),
+                        crate::view::base_component::exact_logical_scissor_for_rect(
+                            crate::view::base_component::Rect {
+                                x,
+                                y,
+                                width,
+                                height,
+                            },
                         )
+                        .map(GraphicsPassScissor::Logical)
                     }
                 };
                 Self::Push(scissor)
@@ -370,7 +363,7 @@ fn emit_child_mask_chunk(
             let child_clip_id = ctx
                 .push_clip_id()
                 .expect("preflighted artifact target child-mask depth");
-            let previous_scissor = ctx.push_graphics_pass_scissor(Some(scissor));
+            let previous_scissor = ctx.push_graphics_pass_scissor(scissor);
             let mut pass = DrawRectPass::new(
                 mask.params.clone(),
                 DrawRectInput::default(),
