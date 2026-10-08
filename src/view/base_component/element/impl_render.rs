@@ -497,18 +497,11 @@ impl Element {
                 let viewport = ctx.viewport();
                 let taken_state = ctx.state_clone();
                 let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
+                // Children build exactly as roots do, scrollbars included.
                 let next_ctx = arena.with_element_taken(child_key, |child, arena| {
-                    let ctx_local = ctx_in;
-                    if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                        let vp = ctx_local.viewport();
-                        let next_state =
-                            element.build_base_descendants_only(graph, arena, ctx_local, false);
-                        UiBuildContext::from_parts(vp, next_state)
-                    } else {
-                        let vp = ctx_local.viewport();
-                        let next_state = child.build(graph, arena, ctx_local);
-                        UiBuildContext::from_parts(vp, next_state)
-                    }
+                    let vp = ctx_in.viewport();
+                    let next_state = child.build(graph, arena, ctx_in);
+                    UiBuildContext::from_parts(vp, next_state)
                 });
                 if let Some(c) = next_ctx {
                     ctx = c;
@@ -540,16 +533,9 @@ impl Element {
                         ctx_local.register_deferred(child_key, child.stable_id());
                         return ctx_local;
                     }
-                    if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
-                        let vp = ctx_local.viewport();
-                        let next_state =
-                            element.build_base_descendants_only(graph, arena, ctx_local, false);
-                        UiBuildContext::from_parts(vp, next_state)
-                    } else {
-                        let vp = ctx_local.viewport();
-                        let next_state = child.build(graph, arena, ctx_local);
-                        UiBuildContext::from_parts(vp, next_state)
-                    }
+                    let vp = ctx_local.viewport();
+                    let next_state = child.build(graph, arena, ctx_local);
+                    UiBuildContext::from_parts(vp, next_state)
                 });
                 if let Some(c) = next_ctx {
                     ctx = c;

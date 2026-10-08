@@ -219,3 +219,68 @@ fn hover_transition_from_scrolling_under_a_still_pointer_does_not_flash() -> Res
     }
     Ok(())
 }
+
+/// A hovered scroll container shows its scrollbar. Legacy must paint it for
+/// a scroll container nested in another element, as it does for a root and
+/// as the retained renderer does.
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn hovered_nested_scroll_container_paints_its_scrollbar_in_both_renderers() -> Result<(), String> {
+    let gpu = gpu::Gpu::new()?;
+    let tree = rsx! {
+        <Element style={{width:Length::px(240.), height:Length::px(240.), background_color:Color::hex("#1e1e1e")}}>
+            <Element style={{width:Length::px(200.), height:Length::px(200.), layout:Layout::flow().column(), scroll_direction:ScrollDirection::Vertical, background_color:Color::hex("#0a0a0a")}}>
+                <Element style={{width:Length::px(150.), height:Length::px(600.), background_color:Color::hex("#14283c")}} />
+            </Element>
+        </Element>
+    };
+    for dpr in [1_u32, 2] {
+        let size = [240 * dpr, 240 * dpr];
+        // The scrollbar sits at the scroll container's right edge, beside
+        // the content column.
+        let scrollbar_pixels = |pixels: &[u8]| {
+            (0..200 * dpr)
+                .flat_map(|y| (180 * dpr..200 * dpr).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let offset = ((y * size[0] + x) * 4) as usize;
+                    pixels[offset..offset + 3].iter().any(|&c| c > 60)
+                })
+                .count()
+        };
+        let mut reference = Vec::new();
+        for mode in [
+            ViewportPaintRendererMode::Legacy,
+            ViewportPaintRendererMode::RetainedAuto,
+        ] {
+            let mut viewport = Viewport::new();
+            viewport.set_paint_renderer_mode(mode);
+            let now = Instant::now();
+            for frame in 0..2 {
+                if frame == 1 {
+                    viewport.set_pointer_position_viewport(80., 80.);
+                    viewport.dispatch_pointer_move_event();
+                }
+                let output = viewport.render_rsx_offscreen_for_test(
+                    &tree,
+                    gpu.device.clone(),
+                    gpu.queue.clone(),
+                    size,
+                    dpr as f32,
+                    now,
+                )?;
+                let pixels = gpu.read(&output.texture, size)?;
+                assert_eq!(
+                    scrollbar_pixels(&pixels) > 0,
+                    frame == 1,
+                    "{mode:?} DPR {dpr} frame {frame}: the scrollbar shows only while hovered"
+                );
+                if mode == ViewportPaintRendererMode::Legacy {
+                    reference.push(pixels);
+                } else {
+                    assert_eq!(pixels, reference[frame], "parity DPR {dpr} frame {frame}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
