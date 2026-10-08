@@ -4946,6 +4946,10 @@ fn install_inline_ifc_span_op(
     origin_y: f32,
     top_offset: f32,
 ) {
+    // Every rect is the content origin plus its plan-relative offset, in
+    // that order, exactly as the paint witness re-derives it; folding the
+    // top offset in after the rect drifts by an ulp at some origins.
+    let origin_y = origin_y - top_offset;
     let mut package = package.cloned();
     if let Some(package) = package
         .as_mut()
@@ -4953,14 +4957,14 @@ fn install_inline_ifc_span_op(
     {
         for fragment in &mut package.fragments {
             fragment.metadata.position[0] += origin_x;
-            fragment.metadata.position[1] += origin_y - top_offset;
+            fragment.metadata.position[1] += origin_y;
         }
     }
     let absolute = paint_fragments
         .iter()
         .map(|rect| Rect {
             x: origin_x + rect.x,
-            y: origin_y + rect.y - top_offset,
+            y: origin_y + rect.y,
             width: rect.width,
             height: rect.height,
         })
@@ -4994,11 +4998,19 @@ fn install_inline_ifc_text_op(
     origin_y: f32,
     top_offset: f32,
 ) {
+    // The same content origin as span installs and the paint witness.
+    let origin_y = origin_y - top_offset;
     let absolute = lines
         .iter()
         .cloned()
-        .map(|line| line.shifted(origin_x, origin_y - top_offset))
+        .map(|line| line.shifted(origin_x, origin_y))
         .collect::<Vec<_>>();
+    let absolute_paint_bounds = crate::ui::Rect {
+        x: origin_x + paint_bounds.x,
+        y: origin_y + paint_bounds.y,
+        width: paint_bounds.width,
+        height: paint_bounds.height,
+    };
     arena.with_element_taken(node_key, |child, _arena| {
         if let Some(text) = child.as_any_mut().downcast_mut::<Text>() {
             let mut bounds = bounding_rect_iter(absolute.iter().map(|line| line.rect));
@@ -5006,23 +5018,13 @@ fn install_inline_ifc_text_op(
                 && paint_bounds.width > 0.0
                 && paint_bounds.height > 0.0
             {
-                bounds = crate::ui::Rect {
-                    x: origin_x + paint_bounds.x,
-                    y: origin_y + paint_bounds.y - top_offset,
-                    width: paint_bounds.width,
-                    height: paint_bounds.height,
-                };
+                bounds = absolute_paint_bounds;
             }
             text.place_as_inline_ifc_owned_box(bounds);
             text.install_inline_ifc_owned_geometry(
                 absolute,
                 Arc::clone(paint_input),
-                crate::ui::Rect {
-                    x: origin_x + paint_bounds.x,
-                    y: origin_y + paint_bounds.y - top_offset,
-                    width: paint_bounds.width,
-                    height: paint_bounds.height,
-                },
+                absolute_paint_bounds,
             );
         }
     });

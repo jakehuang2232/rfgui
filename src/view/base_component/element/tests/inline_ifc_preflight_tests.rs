@@ -91,6 +91,98 @@ fn owning_inline_atomic_preflight_does_not_rebuild_text_geometry() {
     assert_preflight_does_not_rebuild_geometry(true);
 }
 
+/// A moved inline root installs its text and span geometry again at the new
+/// content origin. The paint witness re-derives the same geometry, so it must
+/// accept every origin, including when the first line sits above the content
+/// top. A mismatch fails a retained frame back to the legacy renderer.
+#[test]
+fn moved_inline_root_witness_accepts_every_fractional_origin() {
+    let mut arena = new_test_arena();
+    let mut root = Element::new_with_id(0x7e20, 0.0, 0.0, 160.0, 0.0);
+    let mut style = Style::new();
+    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
+    style.insert(PropertyId::Height, ParsedValue::Auto);
+    root.apply_style(style);
+    let root = commit_element(&mut arena, Box::new(root));
+    // A line height below the font's own height puts the first line above
+    // the content top.
+    let tight_text = |content: &str| {
+        let mut text = Text::from_content(content);
+        text.set_font_size(14.0);
+        text.set_line_height(0.8);
+        Box::new(text)
+    };
+    let text = commit_child(&mut arena, root, tight_text("Third Party Licenses "));
+    let mut span = Element::new_with_id(0x7e21, 0.0, 0.0, 0.0, 0.0);
+    let mut span_style = Style::new();
+    span_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
+    span_style.insert(PropertyId::Width, ParsedValue::Auto);
+    span_style.insert(PropertyId::Height, ParsedValue::Auto);
+    span.apply_style(span_style);
+    let span = commit_child(&mut arena, root, Box::new(span));
+    let span_text = commit_child(
+        &mut arena,
+        span,
+        tight_text("Apache License 2.0 moxcms pxfm"),
+    );
+    let constraints = LayoutConstraints {
+        max_width: 160.0,
+        max_height: 400.0,
+        viewport_width: 800.0,
+        viewport_height: 800.0,
+        percent_base_width: Some(160.0),
+        percent_base_height: Some(400.0),
+    };
+    // Origins across 512, where content and text rects fall in different
+    // f32 binades and differently ordered sums round apart.
+    for step in 0..400_u16 {
+        let parent_y = 500.0 + f32::from(step) * 0.0731;
+        measure_and_place(
+            &mut arena,
+            root,
+            constraints,
+            LayoutPlacement {
+                available_width: 160.0,
+                available_height: 400.0,
+                viewport_width: 800.0,
+                viewport_height: 800.0,
+                parent_x: 37.0,
+                parent_y,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                percent_base_width: Some(160.0),
+                percent_base_height: Some(400.0),
+            },
+        );
+        for owner in [root, text, span, span_text] {
+            arena
+                .get_mut(owner)
+                .unwrap()
+                .element
+                .clear_local_dirty_flags(DirtyFlags::ALL);
+        }
+        arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
+        let node = arena.get(root).unwrap();
+        let element = node.element.as_any().downcast_ref::<Element>().unwrap();
+        let top_offset = element
+            .inline_ifc_layout_call_site
+            .current
+            .as_ref()
+            .expect("the root installed its inline formatting context")
+            .content_top_offset;
+        assert!(
+            top_offset < 0.0,
+            "the fixture's first line must sit above the content top"
+        );
+        assert_eq!(
+            element.owning_inline_ifc_root_paint_witness(&arena),
+            Ok(()),
+            "root origin y {parent_y}"
+        );
+    }
+}
+
 pub(crate) fn note_witness_check() {
     WITNESS_CHECKS.with(|n| n.set(n.get() + 1));
 }
