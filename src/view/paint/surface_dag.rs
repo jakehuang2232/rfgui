@@ -491,6 +491,17 @@ impl SurfaceDagClipClosureProjection {
     pub(crate) fn local_clips(&self) -> &[ClipNodeSnapshot] {
         &self.local_clips
     }
+
+    /// This closure with every local clip placed again by `place`.
+    pub(crate) fn placed_local_clips(
+        &self,
+        place: impl FnMut(&ClipNodeSnapshot) -> Option<ClipNodeSnapshot>,
+    ) -> Option<Self> {
+        Some(Self {
+            receiver_clip: self.receiver_clip,
+            local_clips: self.local_clips.iter().map(place).collect::<Option<_>>()?,
+        })
+    }
 }
 
 /// One direct painter-order run. Every chunk occurs in exactly one span at

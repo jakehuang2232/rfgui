@@ -544,9 +544,10 @@ fn empty_surface_chunk_stays_in_identity_but_not_opaque_emission_order() {
             .artifact_surface_program_resolved_clips_for_test()
             .expect("artifact program")
             .contains(&ArtifactSurfaceResolvedClip::Scissor(
-                GraphicsPassScissor::TargetPhysical([0, 0, 154, 130]),
+                GraphicsPassScissor::TargetPhysical([8, 12, 160, 140]),
             )),
-        "the local clip must share the surface's target-physical raster-origin projection",
+        "the local clip must move into content space with the content, then share the \
+         surface's target-physical raster-origin projection",
     );
     assert!(
         empty_stamp

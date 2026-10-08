@@ -498,6 +498,47 @@ struct ValidatedArtifactSurfaceDagProgram {
     host_placement: std::sync::Arc<ArtifactSurfaceHostPlacementProjection>,
 }
 
+impl ValidatedArtifactSurfaceDagProgram {
+    /// `clip` in a raster `translation` away from viewport space, such as
+    /// scroll content. Owner-local clips are placed again from their
+    /// unclamped rects; a scissor clamped to the viewport edge would change
+    /// with every scroll offset. Viewport clips move their scissor.
+    fn raster_clip(
+        &self,
+        clip: &ClipNodeSnapshot,
+        translation: [f32; 2],
+    ) -> Option<ClipNodeSnapshot> {
+        let rect = match self.owner_local_clips.get(&clip.id) {
+            Some(rect) => {
+                let origin = self.spatial.frame_origin(clip.owner)?;
+                Rect {
+                    x: origin[0] + rect.x,
+                    y: origin[1] + rect.y,
+                    ..*rect
+                }
+            }
+            None => {
+                let [x, y, width, height] = clip.geometry.viewport_scissor()?;
+                Rect {
+                    x: x as f32,
+                    y: y as f32,
+                    width: width as f32,
+                    height: height as f32,
+                }
+            }
+        };
+        let scissor = logical_scissor_for_clip_rect(Rect {
+            x: rect.x + translation[0],
+            y: rect.y + translation[1],
+            ..rect
+        })?;
+        Some(ClipNodeSnapshot {
+            geometry: ClipGeometry::Viewport(scissor),
+            ..*clip
+        })
+    }
+}
+
 /// Sealed per-chunk scissor program for the future artifact executor.
 ///
 /// A child-mask chunk remains a stencil program and is deliberately not
@@ -578,8 +619,9 @@ pub(crate) struct PreparedArtifactSurfaceRasterSpan {
     op_range: Range<usize>,
     owner_topology: Vec<PaintOwnerSnapshot>,
     opaque_order_count: u32,
-    /// The single-construction closure emitted by the shared Surface DAG walk;
-    /// preparation may resolve through it but never recomputes or merges it.
+    /// The single-construction closure emitted by the shared Surface DAG walk,
+    /// placed in the raster's space; preparation may resolve through it but
+    /// never recomputes or merges it.
     local_clips: Vec<ClipNodeSnapshot>,
     chunks: std::sync::Arc<[PreparedArtifactSurfaceRasterChunk]>,
 }
@@ -2136,10 +2178,12 @@ enum ArtifactSurfaceSpanPlacement<'a> {
         boundary_root: NodeKey,
         base_delta: [f32; 2],
         raster_origin: ArtifactSurfaceRasterOriginProjection,
+        /// The span's local clips placed in the surface's raster space.
+        local_clips: &'a [ClipNodeSnapshot],
     },
 }
 
-impl ArtifactSurfaceSpanPlacement<'_> {
+impl<'a> ArtifactSurfaceSpanPlacement<'a> {
     fn boundary_root(self) -> Option<NodeKey> {
         match self {
             Self::SceneRoot(_) => None,
@@ -2160,6 +2204,7 @@ impl ArtifactSurfaceSpanPlacement<'_> {
                 boundary_root,
                 base_delta,
                 raster_origin,
+                ..
             } => raster_origin
                 .combined_translation(artifact_surface_chunk_base_translation(
                     Some(boundary_root),
@@ -2181,6 +2226,15 @@ impl ArtifactSurfaceSpanPlacement<'_> {
         match self {
             Self::SceneRoot(_) => None,
             Self::Surface { raster_origin, .. } => Some(raster_origin),
+        }
+    }
+
+    /// Only a scroll content surface rebases clips below its scrollport, so
+    /// scene-root spans have no local clips.
+    fn local_clips(self) -> &'a [ClipNodeSnapshot] {
+        match self {
+            Self::SceneRoot(_) => &[],
+            Self::Surface { local_clips, .. } => local_clips,
         }
     }
 }
@@ -2224,7 +2278,7 @@ fn prepare_artifact_surface_span(
         .copied()
         .map(|snapshot| (snapshot.id, snapshot))
         .collect::<FxHashMap<_, _>>();
-    for snapshot in span.local_clips() {
+    for snapshot in placement.local_clips() {
         clip_map.insert(snapshot.id, *snapshot);
     }
     let mut prepared = Vec::with_capacity(chunks.len());
@@ -2355,7 +2409,7 @@ fn prepare_artifact_surface_span(
         op_range,
         owner_topology,
         opaque_order_count,
-        local_clips: span.local_clips().to_vec(),
+        local_clips: placement.local_clips().to_vec(),
         chunks: prepared.into(),
     };
     if let Some(cache) = cache {
@@ -2988,10 +3042,21 @@ fn prepare_artifact_surface_raster_plan_from_program(
             context.scale_factor_bits,
         )
         .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(source))?;
+        // Local clips lie below a scrollport and clip only its descendants'
+        // content, which rasters `base_delta` away from viewport space.
+        let raster_local_clip = |clip: &ClipNodeSnapshot| program.raster_clip(clip, base_delta);
         let mut steps = Vec::with_capacity(coverage.steps().len());
         for step in coverage.steps() {
             match step {
                 ArtifactSurfaceCoverageStep::ArtifactSpan(span) => {
+                    let local_clips = span
+                        .local_clips()
+                        .iter()
+                        .map(raster_local_clip)
+                        .collect::<Option<Vec<_>>>()
+                        .ok_or(ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(
+                            target_id,
+                        ))?;
                     steps.push(PreparedArtifactSurfaceRasterStep::ArtifactSpan(
                         prepare_artifact_surface_span(
                             &program.artifact,
@@ -3001,6 +3066,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                                 boundary_root: node.target(),
                                 base_delta,
                                 raster_origin,
+                                local_clips: &local_clips,
                             },
                             match node.kind() {
                                 SurfaceDagNodeKind::Effect(effect) => effects.get(&effect).copied(),
@@ -3064,42 +3130,18 @@ fn prepare_artifact_surface_raster_plan_from_program(
                         .pending()
                         .and_then(ArtifactSurfaceCompositeGeometryStamp::receiver_clip),
                 };
-                // Owner-local clips are placed again in raster space, from
-                // their unclamped rects; a scissor clamped to the viewport
-                // edge would change with every scroll offset.
-                let raster_scissor = |snapshot: &ClipNodeSnapshot| {
-                    let rect = match program.owner_local_clips.get(&snapshot.id) {
-                        Some(rect) => {
-                            let origin = program.spatial.frame_origin(snapshot.owner)?;
-                            Rect {
-                                x: origin[0] + rect.x,
-                                y: origin[1] + rect.y,
-                                ..*rect
-                            }
-                        }
-                        None => {
-                            let [x, y, width, height] = snapshot.geometry.viewport_scissor()?;
-                            Rect {
-                                x: x as f32,
-                                y: y as f32,
-                                width: width as f32,
-                                height: height as f32,
-                            }
-                        }
-                    };
-                    logical_scissor_for_clip_rect(Rect {
-                        x: rect.x + base_delta[0],
-                        y: rect.y + base_delta[1],
-                        ..rect
-                    })
-                };
                 child
                     .geometry
                     .localize_receiver_clip(
                         composite_clip,
                         &raster_boundary_clips,
                         &clips,
-                        raster_scissor,
+                        |snapshot| {
+                            program
+                                .raster_clip(snapshot, base_delta)?
+                                .geometry
+                                .viewport_scissor()
+                        },
                     )
                     .ok_or(ArtifactSurfaceRasterPlanError::InvalidReceiverClip(
                         child.source,
@@ -3199,7 +3241,12 @@ fn prepare_artifact_surface_raster_plan_from_program(
             target,
             raster_origin,
             geometry: ArtifactSurfaceCompositeGeometryState::Pending(geometry),
-            clip_closure: coverage.clip_closure().cloned(),
+            clip_closure: match coverage.clip_closure() {
+                Some(closure) => Some(closure.placed_local_clips(raster_local_clip).ok_or(
+                    ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(target_id),
+                )?),
+                None => None,
+            },
             steps,
         });
     }

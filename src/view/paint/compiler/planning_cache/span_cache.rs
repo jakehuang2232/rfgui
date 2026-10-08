@@ -173,6 +173,7 @@ impl PlanningCache {
                 && !entry.matches_environment(environment))
             || entry.target != target
             || entry.coverage != *span
+            || entry.prepared.local_clips != placement.local_clips()
             || entry.boundary != placement.boundary_root()
             || entry.origin != placement.raster_origin()
             || entry.effect != effect
