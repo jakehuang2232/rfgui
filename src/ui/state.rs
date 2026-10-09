@@ -1161,8 +1161,17 @@ pub fn use_state_with_dirty_state<T: Clone + PartialEq + 'static>(
         (frame.key.clone(), index)
     });
 
-    let mut init_opt = Some(init);
     let owner_key = key.clone();
+    // Run the initializer without holding the store borrow: initial state
+    // may hold RSX, and a `GlobalKey` in it registers itself in the store.
+    let needs_init = STORE.with(|store| {
+        store
+            .borrow()
+            .slots
+            .get(&key)
+            .is_none_or(|slots| slots.len() <= slot_index)
+    });
+    let initial = needs_init.then(init);
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         let alive = store
@@ -1171,10 +1180,12 @@ pub fn use_state_with_dirty_state<T: Clone + PartialEq + 'static>(
             .or_insert_with(|| Rc::new(Cell::new(true)))
             .clone();
         let slots = store.slots.entry(key).or_default();
-        if slots.len() <= slot_index {
-            let value = (init_opt
-                .take()
-                .expect("use_state initializer should only run once"))();
+        if let Some(value) = initial {
+            assert_eq!(
+                slots.len(),
+                slot_index,
+                "use_state initializer must not call hooks"
+            );
             let payload = Rc::new(BindingPropPayload::new(
                 value,
                 dirty_state,

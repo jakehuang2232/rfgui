@@ -388,3 +388,25 @@ fn memoized_component_reruns_when_its_own_state_changes() {
     let _ = run();
     assert_eq!(renders.get(), 2);
 }
+
+#[test]
+fn use_state_initializer_may_register_global_key() {
+    // RSX built inside an initializer registers its GlobalKeys in the store,
+    // so the initializer must not run under the store's mutable borrow.
+    let calls = Rc::new(Cell::new(0));
+    let render = || {
+        build_scope(|| {
+            crate::ui::render_component::<u16, _>(|| {
+                use_state(|| {
+                    calls.set(calls.get() + 1);
+                    super::register_global_key(GlobalKey::from("use-state-initializer"));
+                    calls.get()
+                })
+                .get()
+            })
+        })
+    };
+    assert_eq!(render(), 1);
+    assert_eq!(render(), 1);
+    assert_eq!(calls.get(), 1);
+}
