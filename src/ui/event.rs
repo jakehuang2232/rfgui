@@ -1852,6 +1852,9 @@ where
     TextChangeHandlerProp::new(handler)
 }
 
+/// Wraps a TextArea `on_render` handler. It runs during layout, outside any
+/// root render, so its projections may hold host tags only; see
+/// `TextAreaRenderString::range`.
 pub fn on_text_area_render<F>(handler: F) -> TextAreaRenderHandlerProp
 where
     F: FnMut(&mut TextAreaRenderString) + 'static,

@@ -55,7 +55,7 @@ fn native_complete_demo_warm_frames() -> Result<(), String> {
     for dpr in [1, 2] {
         let mut viewport = Viewport::new();
         viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
-        let root = rfgui::ui::render_pass(|| rsx! { <MainScene /> });
+        let root = rfgui::ui::render_root(|| rsx! { <MainScene /> });
         let now = Instant::now();
         let mut warm_build = Vec::new();
         let mut warm_total = Vec::new();
@@ -163,7 +163,7 @@ fn native_complete_demo_viewport_transitions() -> Result<(), String> {
     assert!(limit.is_none_or(|v| v.is_finite() && v > 0.0));
     let mut viewport = Viewport::new();
     viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
-    let root = rfgui::ui::render_pass(|| rsx! { <MainScene /> });
+    let root = rfgui::ui::render_root(|| rsx! { <MainScene /> });
     let now = Instant::now();
     let mut over_budget = Vec::new();
     // Order is intentional: logical resize, same logical size at DPR 2, then

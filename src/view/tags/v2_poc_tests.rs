@@ -170,7 +170,7 @@ pub fn V2ContainerOnly(children: Vec<RsxNode>) -> RsxNode {
 
 #[test]
 fn rsx_user_component_with_required_prop() {
-    let node = crate::ui::render_pass(|| {
+    let node = crate::ui::render_root(|| {
         rsx! {
             <V2PanelLabel text={"hello".to_string()} />
         }
@@ -183,7 +183,7 @@ fn rsx_user_component_with_required_prop() {
 
 #[test]
 fn rsx_user_component_optional_prop() {
-    let node = crate::ui::render_pass(|| {
+    let node = crate::ui::render_root(|| {
         rsx! {
             <V2PanelLabel
                 text={"greet".to_string()}
@@ -207,7 +207,7 @@ fn rsx_user_component_missing_required_panics() {
 
 #[test]
 fn rsx_user_component_with_children() {
-    let node = crate::ui::render_pass(|| {
+    let node = crate::ui::render_root(|| {
         rsx! {
             <V2ContainerOnly>
                 <Element />

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn accordion_default_expanded_renders_children() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Accordion
                 title="Section A"
@@ -21,7 +21,7 @@ fn accordion_default_expanded_renders_children() {
 
 #[test]
 fn accordion_collapsed_keeps_children_in_tree() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Accordion title="Section B">
                 <Text>"Content B"</Text>
@@ -39,7 +39,7 @@ fn accordion_collapsed_keeps_children_in_tree() {
 fn accordion_click_updates_expanded_binding() {
     let expanded = global_state(|| false);
 
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Accordion
                 title="Section C"
@@ -60,7 +60,7 @@ fn accordion_click_updates_expanded_binding() {
 
 #[test]
 fn accordion_header_title_grows_and_icon_stays_intrinsic() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Accordion title="Button">
                 <Text>"Content"</Text>
@@ -116,7 +116,7 @@ fn accordion_header_title_grows_and_icon_stays_intrinsic() {
 
 #[test]
 fn window_accordion_button_label_hit_tests_inside_button_branch() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Window
                 title="Component Test"

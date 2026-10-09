@@ -329,6 +329,22 @@ fn first_text_descendant(arena: &NodeArena, root: NodeKey) -> NodeKey {
     panic!("expected Text descendant");
 }
 
+#[crate::ui::component]
+fn ProjectionBadge() -> RsxNode {
+    RsxNode::text("badge")
+}
+
+#[test]
+#[should_panic(expected = "TextArea `on_render` projections support host tags only")]
+fn projection_rejects_user_component() {
+    let mut text_area = TextArea::new();
+    text_area.content = "abc".to_string();
+    text_area.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
+        render.range(0..1, |_| crate::ui::rsx! { <ProjectionBadge /> });
+    }));
+    let _ = text_area.collect_normalized_projections();
+}
+
 mod atomic_placement_tests;
 mod preedit_tests;
 mod reconciliation_tests;

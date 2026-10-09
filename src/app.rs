@@ -11,7 +11,7 @@
 //! Flow per frame / event batch:
 //!   1. Host drains its platform events, wraps each in an `AppEvent`, and
 //!      calls `App::on_event(...)`.
-//!   2. Host calls `App::build(...)` inside a render pass to get a fresh,
+//!   2. Host calls `App::build(...)` inside a root render to get a fresh,
 //!      resolved `RsxNode` tree.
 //!   3. Host hands the tree to `Viewport::render(...)`.
 //!   4. Host drains `Viewport::drain_platform_requests()` and applies the

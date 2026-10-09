@@ -613,7 +613,7 @@ impl<T: 'static> PartialEq for GlobalState<T> {
 }
 
 /// Current `build_depth` — the number of active `build_scope` frames.
-/// Zero means no render pass is running.
+/// Zero means no root render is running.
 pub fn current_build_depth() -> usize {
     STORE.with(|store| store.borrow().build_depth)
 }
@@ -634,7 +634,7 @@ fn shrink_set_if_sparse<T: Eq + Hash>(set: &mut FxHashSet<T>) {
     }
 }
 
-/// The outermost scope is a render pass: it resets live-key tracking on
+/// The outermost scope is a root render: it resets live-key tracking on
 /// entry and, if any component rendered, retires the state of every
 /// component that did not. Nested scopes only add depth.
 pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
@@ -806,8 +806,8 @@ pub fn classify_component_key<T: Hash + Any>(value: &T) -> RsxKey {
     RsxKey::Local(component_key_token(value))
 }
 
-/// Rejects a `GlobalKey` reused within one render pass. A description built
-/// outside a pass (event handler, timer) belongs to no build yet.
+/// Rejects a `GlobalKey` reused within one root render. A description built
+/// outside one (event handler, timer) belongs to no build yet.
 pub fn register_global_key(global_key: GlobalKey) {
     STORE.with(|store| {
         let mut store = store.borrow_mut();

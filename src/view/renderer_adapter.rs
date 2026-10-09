@@ -1031,7 +1031,7 @@ fn convert_node_desc(
 ) -> Result<ElementDescriptor, String> {
     match node {
         RsxNode::Component(_) => {
-            Err("Component node must be resolved by `render_pass` before conversion".to_string())
+            Err("Component node must be resolved by `render_root` before conversion".to_string())
         }
         RsxNode::Provider(_) => {
             Err("Provider node must be unwrapped before conversion".to_string())

@@ -6,7 +6,7 @@ use rfgui::view::{Element, Viewport};
 mod gpu;
 mod resource_scope_tests;
 fn tree() -> RsxNode {
-    rfgui::ui::render_pass(|| {
+    rfgui::ui::render_root(|| {
         rfgui::ui::rsx! {
             <Element style={{width:Length::px(160.),height:Length::px(96.),layout:Layout::Grid}}>
                 <Element style={{width:Length::px(80.),height:Length::px(64.),layout:Layout::Grid,position:Position::absolute().left(Length::px(0.)).top(Length::px(0.))}}>

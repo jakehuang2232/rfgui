@@ -1335,7 +1335,7 @@ pub fn rendered_node_id(
         RsxNode::Fragment(_) => None,
         RsxNode::Component(_) => {
             unreachable!(
-                "Component node should be resolved by `render_pass` before identity hashing"
+                "Component node should be resolved by `render_root` before identity hashing"
             )
         }
         RsxNode::Provider(_) => {

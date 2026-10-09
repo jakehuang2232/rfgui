@@ -1,6 +1,6 @@
 use crate::{Theme, use_theme};
 use rfgui::style::FontSize;
-use rfgui::ui::{RsxNode, component, profile_ui_work, render_pass, rsx};
+use rfgui::ui::{RsxNode, component, profile_ui_work, render_root, rsx};
 use rfgui::view::Element;
 
 #[test]
@@ -42,8 +42,8 @@ fn ThemedPage(tick: i64) -> RsxNode {
 
 #[test]
 fn unchanged_theme_prop_skips_child_render() {
-    let _ = render_pass(|| rsx! { <ThemedPage tick={0} /> });
-    let (_, work) = profile_ui_work(|| render_pass(|| rsx! { <ThemedPage tick={1} /> }));
+    let _ = render_root(|| rsx! { <ThemedPage tick={0} /> });
+    let (_, work) = profile_ui_work(|| render_root(|| rsx! { <ThemedPage tick={1} /> }));
     assert_eq!(
         work.component_renders, 1,
         "only the page re-renders; its themed child is reused"
@@ -52,7 +52,7 @@ fn unchanged_theme_prop_skips_child_render() {
 
     let (_, set_theme) = use_theme();
     set_theme(Theme::light());
-    let (_, work) = profile_ui_work(|| render_pass(|| rsx! { <ThemedPage tick={1} /> }));
+    let (_, work) = profile_ui_work(|| render_root(|| rsx! { <ThemedPage tick={1} /> }));
     assert_eq!(
         work.component_renders, 2,
         "a new theme re-renders the page and its themed child"

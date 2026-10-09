@@ -647,17 +647,17 @@ impl ComponentNodeInner {
 #[cfg(test)]
 mod p2a_walker_tests;
 
-/// Runs one render pass (React `root.render`): builds the root description,
+/// Runs one root render (React `root.render`): builds the root description,
 /// renders its deferred user components top-down, and on exit retires the
 /// state of every component that did not render. Call it only at the root,
-/// outside any other pass.
+/// outside any other root render.
 ///
 /// `rsx!` only describes trees, so this is the sole place component render
 /// bodies run from the root. The viewport wraps `App::build` in it; code
 /// that drives a viewport directly calls it before `render_rsx`. A
 /// description built anywhere else, such as in an event handler, stays
-/// deferred until a later pass places it in the tree.
-pub fn render_pass(build: impl FnOnce() -> RsxNode) -> RsxNode {
+/// deferred until a later root render places it in the tree.
+pub fn render_root(build: impl FnOnce() -> RsxNode) -> RsxNode {
     build_scope(|| unwrap_components(build()))
 }
 
@@ -666,7 +666,7 @@ pub fn render_pass(build: impl FnOnce() -> RsxNode) -> RsxNode {
 /// Element/Text/Fragment nodes.
 ///
 /// Each component render runs inside a `render_component` frame, so the
-/// walk must happen inside a [`build_scope`] (normally [`render_pass`])
+/// walk must happen inside a [`build_scope`] (normally [`render_root`])
 /// that owns `live_keys` and pruning.
 pub fn unwrap_components(node: RsxNode) -> RsxNode {
     let _profile = crate::ui::work_profile::scope(crate::ui::work_profile::Phase::Unwrap);
@@ -817,7 +817,7 @@ pub fn __rsx_create_element<T: RsxTag, F: FnOnce(&mut T::Props)>(
 ///
 /// 2. **User component**: box `T::StrictProps` and wrap in
 ///    `RsxNode::Component`. Defer — the `unwrap_components` walker
-///    (driven by [`render_pass`]) pushes `render_component` and calls
+///    (driven by [`render_root`]) pushes `render_component` and calls
 ///    `vtable.render` top-down, giving React-style parent-before-child
 ///    evaluation. Creating the description never renders the component.
 ///

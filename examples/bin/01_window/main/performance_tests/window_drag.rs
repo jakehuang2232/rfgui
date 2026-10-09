@@ -92,7 +92,7 @@ fn native_demo_window_drag() -> Result<(), String> {
             }
             let input_done = Instant::now();
             // Production render_frame rebuilds App only when state is dirty.
-            let root = rfgui::ui::render_pass(|| rsx! { <MainScene /> });
+            let root = rfgui::ui::render_root(|| rsx! { <MainScene /> });
             let build_done = Instant::now();
             // The harness rejects whole-frame fallback after the frame has
             // submitted; record it instead so the drag can be characterized.

@@ -22,7 +22,7 @@ mod window_manager;
 use scene::MainScene;
 
 fn scene(case: u32) -> RsxNode {
-    rfgui::ui::render_pass(|| rsx! { <MainScene key={case} /> })
+    rfgui::ui::render_root(|| rsx! { <MainScene key={case} /> })
 }
 
 fn text_bounds(viewport: &Viewport, label: &str) -> Option<BoxModelSnapshot> {

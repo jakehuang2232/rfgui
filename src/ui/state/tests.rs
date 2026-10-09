@@ -109,12 +109,12 @@ fn rendered_text(node: &RsxNode) -> String {
 }
 
 // An event handler or timer may describe a user component with `rsx!`
-// outside any render pass. Describing must neither render the component
+// outside any root render. Describing must neither render the component
 // nor retire the state of the tree that the last pass rendered.
 #[test]
-fn rsx_outside_render_pass_defers_component_and_keeps_tree_state() {
+fn rsx_outside_root_render_defers_component_and_keeps_tree_state() {
     let render = |children: Vec<RsxNode>| {
-        crate::ui::render_pass(|| crate::ui::rsx! { <PassRoot>{children}</PassRoot> })
+        crate::ui::render_root(|| crate::ui::rsx! { <PassRoot>{children}</PassRoot> })
     };
     assert_eq!(rendered_text(&render(Vec::new())), "0");
     let count = PASS_ROOT_COUNT.with(|slot| slot.borrow().clone().expect("root rendered"));
@@ -127,7 +127,7 @@ fn rsx_outside_render_pass_defers_component_and_keeps_tree_state() {
     assert_eq!(DETACHED_LEAF_RENDERS.with(Cell::get), 0);
 
     assert_eq!(rendered_text(&render(Vec::new())), "5");
-    // The deferred description renders once a pass places it in the tree.
+    // The deferred description renders once a root render places it in the tree.
     assert_eq!(rendered_text(&render(vec![detached])), "5leaf");
     assert_eq!(DETACHED_LEAF_RENDERS.with(Cell::get), 1);
 }

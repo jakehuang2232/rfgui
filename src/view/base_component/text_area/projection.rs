@@ -536,6 +536,9 @@ impl TextArea {
         };
         let mut render_string = TextAreaRenderString::new(self.content.clone());
         handler.call(&mut render_string);
+        for projection in render_string.projections() {
+            reject_user_components(&projection.node);
+        }
         normalize_projections(self.content.as_str(), render_string.projections())
     }
 
@@ -1083,6 +1086,24 @@ fn expand_plain_paragraphs(
             is_preedit: false,
             preedit_cursor: None,
         });
+    }
+}
+
+/// `on_render` runs during layout, outside any root render, so a user
+/// component in a projection would never render. Fail loudly instead of
+/// dropping the projection.
+fn reject_user_components(node: &RsxNode) {
+    match node {
+        RsxNode::Text(_) => {}
+        RsxNode::Element(element) => element.children.iter().for_each(reject_user_components),
+        RsxNode::Fragment(fragment) => fragment.children.iter().for_each(reject_user_components),
+        RsxNode::Provider(provider) => reject_user_components(&provider.child),
+        RsxNode::Component(component) => panic!(
+            "TextArea `on_render` projections support host tags only, but `{}` is a user \
+             component; the handler runs during layout, outside any root render, so the \
+             component would never render",
+            component.vtable.type_name
+        ),
     }
 }
 

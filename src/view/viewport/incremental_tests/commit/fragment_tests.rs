@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::ui::{State, component, render_pass, use_mount, use_state};
+use crate::ui::{State, component, render_root, use_mount, use_state};
 
 thread_local! {
     static CONDITIONAL_UNMOUNT_MOUNTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -40,7 +40,7 @@ fn ConditionalUnmountLifecycleBoundary(show: bool) -> RsxNode {
 }
 
 fn conditional_unmount_lifecycle_tree(show: bool) -> RsxNode {
-    render_pass(|| {
+    render_root(|| {
         rsx! {
             <HostElement>
                 <HostElement />

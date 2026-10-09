@@ -247,6 +247,8 @@ pub struct TextAreaPropSchema {
     pub binding: Option<crate::ui::Binding<String>>,
     pub style: Option<ElementStylePropSchema>,
     pub on_focus: Option<TextAreaFocusHandlerProp>,
+    /// Projects content ranges as RSX built from host tags only; see
+    /// `TextAreaRenderString::range`.
     pub on_render: Option<TextAreaRenderHandlerProp>,
     pub on_blur: Option<BlurHandlerProp>,
     pub on_change: Option<TextChangeHandlerProp>,

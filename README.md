@@ -160,12 +160,25 @@ impl RsxChildrenPolicy for Card {
 }
 ```
 
+## Rendering
+
+`rsx!` only describes a tree, like React's `createElement`: a `#[component]` in it stays a deferred description until a root render resolves it. The viewport runs `App::build` through `rfgui::ui::render_root`, so an app needs nothing more. A tree built anywhere else, such as in an event handler, renders once a later `App::build` places it in the tree.
+
+Code that drives a `Viewport` directly resolves the tree itself; `render_rsx` rejects a tree that still holds user components:
+
+```rust
+use rfgui::ui::{render_root, rsx};
+
+let tree = render_root(|| rsx! { <Card /> });
+viewport.render_rsx(&tree)?;
+```
+
 ## Key Semantics
 
 RSX currently supports two kinds of `key`:
 
 - local key: only affects sibling identity within the same parent
-- global key: must be globally unique within the same build pass and can preserve component state when moving across parents
+- global key: must be globally unique within one root render and can preserve component state when moving across parents
 
 ```rust
 use rfgui::ui::{GlobalKey, rsx};
@@ -183,7 +196,7 @@ Notes:
 
 - String and numeric `key` values are treated as local keys, for example `key="item-1"`.
 - `GlobalKey` must be written as a Rust expression, so use `key={GlobalKey::from("dialog-root")}`.
-- Reusing the same `GlobalKey` in a single build pass is an error.
+- Reusing the same `GlobalKey` in a single root render is an error. Trees built outside a root render are not checked.
 - Reconciliation identity is based on `type + key`; `<Button key={...} />` and `<Element key={...} />` are not treated as the same node.
 
 ## Development

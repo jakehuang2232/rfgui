@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn material_symbol_icon_renders_as_typed_element_with_symbol_font() {
-    let tree = render_pass(|| rsx! { <CloseIcon /> });
+    let tree = render_root(|| rsx! { <CloseIcon /> });
 
     let RsxNode::Element(root) = tree else {
         panic!("icon should render element root");
@@ -33,7 +33,7 @@ fn material_symbol_icon_renders_as_typed_element_with_symbol_font() {
 
 #[test]
 fn button_label_preserves_whitespace() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Button variant={Some(ButtonVariant::Contained)}>
                 "Click Me"
@@ -46,7 +46,7 @@ fn button_label_preserves_whitespace() {
 
 #[test]
 fn window_supports_children_with_optional_size_props() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Window
                 title="Panel"
@@ -121,7 +121,7 @@ fn conditional_branch_does_not_render_unselected_component() {
     HEAVY_RENDER_CALLS.with(|c| c.set(0));
 
     // Branch not taken — Heavy::render must not fire.
-    let _ = render_pass(|| rsx! { <ConditionalParent show_heavy={false} /> });
+    let _ = render_root(|| rsx! { <ConditionalParent show_heavy={false} /> });
     let calls_when_false = HEAVY_RENDER_CALLS.with(|c| c.get());
     assert_eq!(
         calls_when_false, 0,
@@ -129,7 +129,7 @@ fn conditional_branch_does_not_render_unselected_component() {
     );
 
     // Branch taken — Heavy::render must fire exactly once.
-    let _ = render_pass(|| rsx! { <ConditionalParent show_heavy={true} /> });
+    let _ = render_root(|| rsx! { <ConditionalParent show_heavy={true} /> });
     let calls_when_true = HEAVY_RENDER_CALLS.with(|c| c.get());
     assert_eq!(
         calls_when_true, 1,
@@ -159,7 +159,7 @@ fn context_crosses_lazy_component_boundary() {
         }
     }
 
-    let tree = render_pass(|| rsx! { <CtxProvider /> });
+    let tree = render_root(|| rsx! { <CtxProvider /> });
     let mut texts = Vec::new();
     collect_text_nodes(&tree, &mut texts);
     assert!(
@@ -170,7 +170,7 @@ fn context_crosses_lazy_component_boundary() {
 
 #[test]
 fn window_supports_nested_optional_object_props() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Window
                 title="Panel"

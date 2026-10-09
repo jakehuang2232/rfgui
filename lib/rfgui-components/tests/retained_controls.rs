@@ -64,7 +64,7 @@ fn label(s: &String, _: usize) -> String {
     s.clone()
 }
 fn scene(case: &str, m: &Model) -> RsxNode {
-    rfgui::ui::render_pass(|| {
+    rfgui::ui::render_root(|| {
         rfgui::ui::render_component::<Model, _>(|| {
             let tooltip = use_tooltip_ref();
             m.tooltip.replace(Some(tooltip.clone()));

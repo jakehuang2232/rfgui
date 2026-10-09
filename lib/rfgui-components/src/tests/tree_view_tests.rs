@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn tree_view_renders_element_root() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <TreeView nodes={sample_tree_nodes()} />
         }
@@ -18,7 +18,7 @@ fn tree_view_renders_element_root() {
 
 #[test]
 fn tree_view_collapsed_hides_child_labels() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <TreeView nodes={sample_tree_nodes()} />
         }
@@ -37,7 +37,7 @@ fn tree_view_collapsed_hides_child_labels() {
 
 #[test]
 fn tree_view_default_expanded_shows_child_labels() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <TreeView
                 nodes={sample_tree_nodes()}
@@ -59,7 +59,7 @@ fn tree_view_click_toggles_expanded_and_selects() {
     let expanded = global_state(|| Vec::<String>::new());
     let selected = global_state(|| Option::<String>::None);
 
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <TreeView
                 nodes={sample_tree_nodes()}
@@ -107,7 +107,7 @@ fn tree_view_reorder_keeps_labels_aligned_with_rows() {
     ]);
 
     let make_tree = |nodes: Vec<TreeNode>| {
-        render_pass(|| {
+        render_root(|| {
             rsx! {
                 <TreeView
                     nodes={nodes}

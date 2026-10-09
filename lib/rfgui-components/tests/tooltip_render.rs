@@ -31,7 +31,7 @@ const PLACEMENTS: [TooltipPlacement; 12] = [
 struct TooltipScene;
 
 fn scene(placement: TooltipPlacement, rich: bool) -> RsxNode {
-    rfgui::ui::render_pass(|| {
+    rfgui::ui::render_root(|| {
         rfgui::ui::render_component::<TooltipScene, _>(|| {
             let handle = use_tooltip_ref();
             let enter = handle.clone();

@@ -4,7 +4,7 @@ use super::*;
 fn checkbox_click_updates_binding() {
     let checked = global_state(|| false);
 
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Checkbox
                 label="Enable"
@@ -69,7 +69,7 @@ fn checkbox_click_updates_binding() {
 
 #[test]
 fn checkbox_renders_label_text_node() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Checkbox
                 label="Enable"
@@ -86,7 +86,7 @@ fn checkbox_renders_label_text_node() {
 
 #[test]
 fn switch_renders_label_text_node() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Switch
                 label="Switch state"
@@ -103,7 +103,7 @@ fn switch_renders_label_text_node() {
 
 #[test]
 fn checkbox_label_has_non_zero_text_layout() {
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Checkbox
                 label="Enable"
@@ -150,7 +150,7 @@ fn checkbox_label_has_non_zero_text_layout() {
 #[test]
 fn number_field_textarea_on_change_updates_numeric_binding() {
     let value = global_state(|| 1.0);
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <NumberField binding={value.binding()} />
         }
@@ -179,7 +179,7 @@ fn checkbox_distinct_clicks_before_redraw_toggle_committed_value() {
     let log = changes.clone();
     let on_change: std::rc::Rc<dyn Fn(bool)> =
         std::rc::Rc::new(move |value| log.borrow_mut().push(value));
-    let tree = render_pass(
+    let tree = render_root(
         || rsx! { <Checkbox label="toggle" binding={checked.clone()} on_change={on_change}/> },
     );
     let mut arena = NodeArena::new();
@@ -197,7 +197,7 @@ fn checkbox_distinct_clicks_before_redraw_toggle_committed_value() {
 fn number_field_blur_reads_latest_draft_without_an_intervening_render() {
     use rfgui::ui::{Binding, BlurEvent, FocusReason, FromPropValue, batch_state_updates};
     let value = Binding::new(1.0);
-    let tree = render_pass(|| rsx! { <NumberField binding={value.clone()} /> });
+    let tree = render_root(|| rsx! { <NumberField binding={value.clone()} /> });
     let textarea = find_first_element_by_tag(&tree, "TextArea").unwrap();
     let draft = Binding::<String>::from_prop_value(
         textarea

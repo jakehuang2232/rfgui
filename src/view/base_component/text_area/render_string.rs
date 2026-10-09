@@ -46,6 +46,11 @@ impl TextAreaRenderString {
     /// Record a projection for `range` (char indices). The closure receives
     /// the slice text wrapped as `RsxNode::text` and returns the RSX subtree
     /// that should replace the slice in the TextArea's inline flow.
+    ///
+    /// The subtree may hold host tags only (`Element`, `Text`, ...). The
+    /// handler runs during layout, outside any root render, so a user
+    /// component (`#[component]`) would never render; the TextArea panics
+    /// when it finds one.
     pub fn range<R, F>(&mut self, range: R, render: F)
     where
         R: RangeBounds<usize>,

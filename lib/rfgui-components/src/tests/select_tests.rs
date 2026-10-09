@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn select_trigger_click_does_not_change_binding_value() {
     let selected = global_state(|| String::from("Option A"));
-    let tree = render_pass(|| {
+    let tree = render_root(|| {
         rsx! {
             <Select::<String, String>
                 data={vec![
@@ -30,7 +30,7 @@ fn select_open_state_persists_across_rerender() {
     let selected = global_state(|| String::from("Option A"));
 
     let build_tree = || {
-        render_pass(|| {
+        render_root(|| {
             rsx! {
                 <Select::<String, String>
                     data={vec![
@@ -68,7 +68,7 @@ fn select_menu_option_row_keeps_content_height() {
     let selected = global_state(|| String::from("Option A"));
 
     let build_tree = || {
-        render_pass(|| {
+        render_root(|| {
             rsx! {
                 <Select::<String, String>
                     data={vec![

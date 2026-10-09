@@ -6,7 +6,7 @@ use crate::{
 use rfgui::ui::{
     EventMeta, NodeId, PointerButton as UiPointerButton, PointerEventData, PropValue,
     RsxElementNode, RsxNode, RsxTagDescriptor, TextChangeEvent, UiDirtyState, global_state,
-    render_pass, rsx, take_state_dirty,
+    render_root, rsx, take_state_dirty,
 };
 use rfgui::view::base_component::{LayoutConstraints, LayoutPlacement};
 use rfgui::view::{
