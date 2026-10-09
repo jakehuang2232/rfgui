@@ -12,7 +12,7 @@ fn material_symbol_icon_renders_as_typed_element_with_symbol_font() {
     let style = shared_element_style(&root).expect("missing icon root style");
     assert_eq!(
         style.font.as_ref().expect("missing icon font").as_slice(),
-        &[String::from("Material Symbols Outlined")]
+        &[String::from("Material Symbols Outlined E5CD")]
     );
     assert_eq!(
         style.font_size, None,
@@ -26,8 +26,8 @@ fn material_symbol_icon_renders_as_typed_element_with_symbol_font() {
     assert!(is_host_tag::<Text>(text_node));
     assert_eq!(text_node.children.len(), 1);
     match &text_node.children[0] {
-        RsxNode::Text(content) => assert_eq!(content.content, "close"),
-        other => panic!("expected ligature text child, got {other:?}"),
+        RsxNode::Text(content) => assert_eq!(content.content, "\u{e5cd}"),
+        other => panic!("expected symbol text child, got {other:?}"),
     }
 }
 

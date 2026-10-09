@@ -13,6 +13,8 @@ mod gpu;
 
 const SIZE: [u32; 2] = [640, 480];
 const LABEL: &str = "Tooltip text";
+/// `<FavoriteIcon />` renders its Material Symbols code point.
+const FAVORITE: &str = "\u{e87e}";
 const PLACEMENTS: [TooltipPlacement; 12] = [
     TooltipPlacement::Top,
     TooltipPlacement::TopStart,
@@ -198,7 +200,7 @@ fn tooltip_glyphs_survive_nested_clips_and_hover_remounts() -> Result<(), String
                         if rich {
                             assert_glyph_pixels(
                                 &pixels,
-                                text_bounds(&viewport, "favorite").expect("tooltip icon exists"),
+                                text_bounds(&viewport, FAVORITE).expect("tooltip icon exists"),
                                 dpr,
                                 8,
                                 &context,

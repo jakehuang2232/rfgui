@@ -49,7 +49,7 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use crate::material_symbol::{ChevronRightIcon, MaterialSymbolIcon};
+use crate::material_symbol::ChevronRightIcon;
 use crate::use_theme;
 use rfgui::style::flex;
 use rfgui::style::{
@@ -82,16 +82,17 @@ pub enum TreeNode<V = String> {
 
 /// A row that owns children and can expand / collapse.
 ///
-/// `icon` / `expanded_icon` are Material Symbols ligatures (e.g. `"folder"`,
-/// `"folder_open"`). When both are set, `expanded_icon` shows while the row
+/// `icon` / `expanded_icon` are icon nodes (e.g. `rsx! { <FolderIcon /> }`).
+/// They inherit the row's icon size and color. When both are set,
+/// `expanded_icon` shows while the row
 /// is expanded — handy for folder open/closed pairs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BranchNode<V = String> {
     pub value: V,
     pub label: String,
     pub disabled: bool,
-    pub icon: Option<String>,
-    pub expanded_icon: Option<String>,
+    pub icon: Option<RsxNode>,
+    pub expanded_icon: Option<RsxNode>,
     pub children: Vec<TreeNode<V>>,
 }
 
@@ -101,7 +102,7 @@ pub struct LeafNode<V = String> {
     pub value: V,
     pub label: String,
     pub disabled: bool,
-    pub icon: Option<String>,
+    pub icon: Option<RsxNode>,
 }
 
 impl<V> BranchNode<V> {
@@ -126,16 +127,16 @@ impl<V> BranchNode<V> {
         self
     }
 
-    /// Material Symbols ligature for the collapsed / resting state.
-    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
-        self.icon = Some(icon.into());
+    /// Icon for the collapsed / resting state.
+    pub fn with_icon(mut self, icon: RsxNode) -> Self {
+        self.icon = Some(icon);
         self
     }
 
-    /// Material Symbols ligature shown while the row is expanded. Falls back
-    /// to [`Self::with_icon`] when unset.
-    pub fn with_expanded_icon(mut self, icon: impl Into<String>) -> Self {
-        self.expanded_icon = Some(icon.into());
+    /// Icon shown while the row is expanded. Falls back to
+    /// [`Self::with_icon`] when unset.
+    pub fn with_expanded_icon(mut self, icon: RsxNode) -> Self {
+        self.expanded_icon = Some(icon);
         self
     }
 }
@@ -155,9 +156,9 @@ impl<V> LeafNode<V> {
         self
     }
 
-    /// Material Symbols ligature shown beside the label.
-    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
-        self.icon = Some(icon.into());
+    /// Icon shown beside the label.
+    pub fn with_icon(mut self, icon: RsxNode) -> Self {
+        self.icon = Some(icon);
         self
     }
 }
@@ -206,17 +207,17 @@ impl<V> TreeNode<V> {
         }
     }
 
-    pub fn icon(&self) -> Option<&str> {
+    pub fn icon(&self) -> Option<&RsxNode> {
         match self {
-            TreeNode::Branch(b) => b.icon.as_deref(),
-            TreeNode::Leaf(l) => l.icon.as_deref(),
+            TreeNode::Branch(b) => b.icon.as_ref(),
+            TreeNode::Leaf(l) => l.icon.as_ref(),
         }
     }
 
     /// Branch-only. `None` for leaves.
-    pub fn expanded_icon(&self) -> Option<&str> {
+    pub fn expanded_icon(&self) -> Option<&RsxNode> {
         match self {
-            TreeNode::Branch(b) => b.expanded_icon.as_deref(),
+            TreeNode::Branch(b) => b.expanded_icon.as_ref(),
             TreeNode::Leaf(_) => None,
         }
     }
@@ -253,8 +254,7 @@ impl<V> TreeNode<V> {
         self
     }
 
-    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
-        let icon = icon.into();
+    pub fn with_icon(mut self, icon: RsxNode) -> Self {
         match &mut self {
             TreeNode::Branch(b) => b.icon = Some(icon),
             TreeNode::Leaf(l) => l.icon = Some(icon),
@@ -598,14 +598,12 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
         }
     };
 
-    // Resolve which Material Symbols ligature to render. `expanded_icon`
-    // wins when expanded; otherwise fall back to `icon`.
-    let active_icon_ligature: Option<String> = if is_expanded {
-        node.expanded_icon()
-            .or_else(|| node.icon())
-            .map(str::to_string)
+    // Resolve which icon to render. `expanded_icon` wins when expanded;
+    // otherwise fall back to `icon`.
+    let active_icon: Option<RsxNode> = if is_expanded {
+        node.expanded_icon().or_else(|| node.icon()).cloned()
     } else {
-        node.icon().map(str::to_string)
+        node.icon().cloned()
     };
 
     let icon_color: Box<dyn ColorLike> = if disabled {
@@ -614,19 +612,16 @@ fn render_row<V: Clone + PartialEq + std::hash::Hash + 'static>(
         theme.color.text.secondary.clone()
     };
 
-    let icon_slot = match active_icon_ligature {
-        Some(ligature) => rsx! {
+    let icon_slot = match active_icon {
+        Some(icon) => rsx! {
             <Element style={{
                 width: Length::px(TREE_ITEM_ICON_SLOT_PX),
                 height: Length::px(TREE_ITEM_ICON_SLOT_PX),
                 layout: Layout::flex().align(Align::Center),
+                font_size: theme.typography.size.md,
+                color: icon_color.clone(),
             }}>
-                <MaterialSymbolIcon style={{
-                    font_size: theme.typography.size.md,
-                    color: icon_color.clone(),
-                }}>
-                    {ligature}
-                </MaterialSymbolIcon>
+                {icon}
             </Element>
         },
         None => RsxNode::fragment(vec![]),

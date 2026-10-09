@@ -3,6 +3,9 @@ use std::rc::Rc;
 use crate::rfgui::style::{Layout, Length, Padding};
 use crate::rfgui::ui::{RsxNode, component, rsx, use_state};
 use crate::rfgui::view::{Element, Text};
+use crate::rfgui_components::material_symbol::{
+    CodeIcon, DescriptionIcon, FolderIcon, FolderOpenIcon, PaletteIcon,
+};
 use crate::rfgui_components::{
     BranchNode, Button, ButtonSize, ButtonVariant, DropPosition, LeafNode, Switch, Theme,
     TreeMoveEvent, TreeNode, TreeView,
@@ -12,12 +15,12 @@ use rfgui_components::Accordion;
 fn default_tree_nodes() -> Vec<TreeNode> {
     let folder = |id: &str, label: &str, children: Vec<TreeNode>| -> TreeNode {
         BranchNode::new(id, label)
-            .with_icon("folder")
-            .with_expanded_icon("folder_open")
+            .with_icon(rsx! { <FolderIcon /> })
+            .with_expanded_icon(rsx! { <FolderOpenIcon /> })
             .with_children(children)
             .into()
     };
-    let file = |id: &str, label: &str, icon: &str| -> TreeNode {
+    let file = |id: &str, label: &str, icon: RsxNode| -> TreeNode {
         LeafNode::new(id, label).with_icon(icon).into()
     };
     vec![
@@ -29,28 +32,28 @@ fn default_tree_nodes() -> Vec<TreeNode> {
                     "inputs",
                     "inputs/",
                     vec![
-                        file("button.rs", "button.rs", "code"),
-                        file("checkbox.rs", "checkbox.rs", "code"),
-                        file("select.rs", "select.rs", "code"),
+                        file("button.rs", "button.rs", rsx! { <CodeIcon /> }),
+                        file("checkbox.rs", "checkbox.rs", rsx! { <CodeIcon /> }),
+                        file("select.rs", "select.rs", rsx! { <CodeIcon /> }),
                     ],
                 ),
                 folder(
                     "layout",
                     "layout/",
                     vec![
-                        file("accordion.rs", "accordion.rs", "code"),
-                        file("tree_view.rs", "tree_view.rs", "code"),
-                        file("window.rs", "window.rs", "code"),
+                        file("accordion.rs", "accordion.rs", rsx! { <CodeIcon /> }),
+                        file("tree_view.rs", "tree_view.rs", rsx! { <CodeIcon /> }),
+                        file("window.rs", "window.rs", rsx! { <CodeIcon /> }),
                     ],
                 ),
-                file("lib.rs", "lib.rs", "code"),
-                file("theme.rs", "theme.rs", "palette"),
+                file("lib.rs", "lib.rs", rsx! { <CodeIcon /> }),
+                file("theme.rs", "theme.rs", rsx! { <PaletteIcon /> }),
             ],
         ),
         folder(
             "examples",
             "examples/",
-            vec![file("readme", "README.md", "description").with_disabled(true)],
+            vec![file("readme", "README.md", rsx! { <DescriptionIcon /> }).with_disabled(true)],
         ),
     ]
 }

@@ -151,13 +151,14 @@ fn click(v: &mut Viewport, p: [f32; 2]) {
 
 fn interact(case: &str, m: &Model, v: &mut Viewport, reverse: bool) {
     let target = match case {
-        "IconButton" | "Alert" => "close",
+        // Material Symbols render their code point: close, remove, add.
+        "IconButton" | "Alert" => "\u{e5cd}",
         "ToggleButtonGroup" => "Choice A",
         "NumberField" => {
             if reverse {
-                "remove"
+                "\u{e15b}"
             } else {
-                "add"
+                "\u{e145}"
             }
         }
         "Select" => {

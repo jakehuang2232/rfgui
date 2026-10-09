@@ -9,9 +9,9 @@ description: Authoring rules for `lib/rfgui-components` (Button/IconButton/Toggl
 
 - `inputs/` — form controls (Button, Checkbox, Select, Slider, Switch, NumberField, IconButton, ToggleButton, ToggleButtonGroup, …)
 - `layout/` — containers (Window, Accordion, TreeView, …)
-- `icons/` — Material Symbols glyphs via `MaterialSymbolIcon`
+- `material_symbol.rs` — Material Symbols: one generated `<XxxIcon />` component per symbol (`build.rs`). Each symbol is its own single-glyph variable font, so the linker drops every icon an app never renders.
 - `theme.rs` — Theme struct, `use_theme()` hook
-- `lib.rs` — `pub use inputs::*; pub use layout::*; pub use icons::*; pub use theme::*;`
+- `lib.rs` — `pub use inputs::*; pub use layout::*; pub use theme::*; pub use utils::*;` plus `pub mod material_symbol;`
 
 One component per file. mod.rs just wires `mod X; pub use X::*;`.
 
@@ -219,9 +219,10 @@ rsx! {
 
 For components whose data rows carry an icon:
 
-- Store `icon: Option<String>` — a Material Symbols ligature (`"folder"`, `"code"`, `"description"`). Storing component types (`FolderIcon`) in data is awkward and locks the caller into a specific icon set.
-- Optional `expanded_icon: Option<String>` for stateful pairs (folder / folder_open). Fall back to `icon` when the state-specific one is unset.
-- Render with `<MaterialSymbolIcon>{ligature}</MaterialSymbolIcon>` in a fixed-size slot Element; `None` → `RsxNode::fragment(vec![])` so the row collapses instead of reserving blank space.
+- Store `icon: Option<RsxNode>`; callers pass `rsx! { <FolderIcon /> }` (or any node, not only Material Symbols).
+- Optional `expanded_icon: Option<RsxNode>` for stateful pairs (folder / folder_open). Fall back to `icon` when the state-specific one is unset.
+- Render the node inside a fixed-size slot Element that sets `font_size` / `color`; icons inherit both. `None` → `RsxNode::fragment(vec![])` so the row collapses instead of reserving blank space.
+- Never key icons by ligature string. There is no name-based icon component: a runtime name lookup would link every symbol's font into the binary.
 
 Hard-coded icons inside a component (e.g. `<ChevronRightIcon/>` for the expand affordance) are fine — those are part of the visual contract, not caller data.
 
@@ -241,5 +242,5 @@ Hard-coded icons inside a component (e.g. `<ChevronRightIcon/>` for the expand a
 - Use `options: Vec<...>` prop to avoid context when compound API makes sense — prefer children + context (but see §Data-driven vs composition first)
 - Use `children: Vec<RsxNode>` if component has no children — set `ACCEPTS_CHILDREN: false`
 - Rely on `<Provider>` to reach nested Component children of caller-supplied `children` — snapshot wipe breaks it (see §Walker-ancestry)
-- Store component types (`FolderIcon`, `CodeIcon`) in data-shape structs — use ligature strings + `MaterialSymbolIcon`
+- Look up Material Symbols by name at runtime — use the typed `<XxxIcon />` components
 - Emit a `Vec<RsxNode>` of rows without `key=` when rows are tied to mutable source data — reorder loses hook state

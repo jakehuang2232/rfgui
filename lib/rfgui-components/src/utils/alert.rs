@@ -1,7 +1,7 @@
-use crate::material_symbol::MaterialSymbolIcon;
+use crate::material_symbol::{CheckCircleIcon, CloseIcon, ErrorIcon, InfoIcon, WarningIcon};
 use crate::{Theme, use_theme};
 use rfgui::style::{
-    Align, Border, Color, ColorLike, Cursor, JustifyContent, Layout, Length, Padding,
+    Align, Border, Color, ColorLike, Cursor, FontSize, JustifyContent, Layout, Length, Padding,
 };
 use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx};
 use rfgui::view::{Element, Text};
@@ -140,12 +140,24 @@ impl rfgui::ui::RsxTag for Alert {
     }
 }
 
-fn severity_ligature(severity: AlertSeverity) -> &'static str {
+fn severity_icon(
+    severity: AlertSeverity,
+    font_size: FontSize,
+    color: Box<dyn ColorLike>,
+) -> RsxNode {
     match severity {
-        AlertSeverity::Info => "info",
-        AlertSeverity::Success => "check_circle",
-        AlertSeverity::Warning => "warning",
-        AlertSeverity::Error => "error",
+        AlertSeverity::Info => rsx! {
+            <InfoIcon style={{ font_size: font_size, color: color }} />
+        },
+        AlertSeverity::Success => rsx! {
+            <CheckCircleIcon style={{ font_size: font_size, color: color }} />
+        },
+        AlertSeverity::Warning => rsx! {
+            <WarningIcon style={{ font_size: font_size, color: color }} />
+        },
+        AlertSeverity::Error => rsx! {
+            <ErrorIcon style={{ font_size: font_size, color: color }} />
+        },
     }
 }
 
@@ -203,16 +215,8 @@ fn AlertView(
         ),
     };
 
-    let icon_node = icon.unwrap_or_else(|| {
-        rsx! {
-            <MaterialSymbolIcon style={{
-                font_size: theme.typography.size.md,
-                color: foreground.clone(),
-            }}>
-                {severity_ligature(severity)}
-            </MaterialSymbolIcon>
-        }
-    });
+    let icon_node = icon
+        .unwrap_or_else(|| severity_icon(severity, theme.typography.size.md, foreground.clone()));
 
     let action_node = action.unwrap_or_else(|| RsxNode::fragment(vec![]));
 
@@ -236,12 +240,10 @@ fn AlertView(
                 }}
                 on_click={click_handler}
             >
-                <MaterialSymbolIcon style={{
+                <CloseIcon style={{
                     font_size: close_size,
                     color: close_color,
-                }}>
-                    {"close"}
-                </MaterialSymbolIcon>
+                }} />
             </Element>
         }
     } else {

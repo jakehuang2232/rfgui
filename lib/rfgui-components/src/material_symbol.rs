@@ -1,15 +1,8 @@
 use rfgui::style::{FontFamily, TextWrap};
-use rfgui::ui::{RsxComponent, RsxNode, props, rsx};
+use rfgui::ui::{RsxNode, props, rsx};
 use rfgui::view::register_font_bytes;
 use rfgui::view::{Element, ElementStylePropSchema, Text};
 use std::sync::Once;
-
-const MATERIAL_SYMBOLS_OUTLINED_FONT_BYTES: &[u8] =
-    include_bytes!("../assets/MaterialSymbolsOutlined.ttf");
-
-pub const MATERIAL_SYMBOLS_OUTLINED_FONT_FAMILY: &str = "Material Symbols Outlined";
-
-static MATERIAL_SYMBOLS_OUTLINED_INIT: Once = Once::new();
 
 #[derive(Clone)]
 #[props]
@@ -18,65 +11,58 @@ pub struct MaterialSymbolIconProps {
     pub line_height: Option<f64>,
 }
 
-pub struct MaterialSymbolIcon;
-
-impl RsxComponent<MaterialSymbolIconProps> for MaterialSymbolIcon {
-    fn render(props: MaterialSymbolIconProps, children: Vec<RsxNode>) -> RsxNode {
-        let ligature = children
-            .into_iter()
-            .find_map(|child| match child {
-                RsxNode::Text(text) => Some(text.content.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        render_material_symbol_icon(ligature.as_str(), props)
-    }
+/// One Material Symbol, embedded as its own single-glyph variable font.
+///
+/// `build.rs` cuts every symbol out of the bundled font, keeping all
+/// variation axes, and emits one static per symbol. Each generated icon
+/// component references only its own static, so the linker drops the font
+/// data of every icon an application never renders.
+pub(crate) struct MaterialSymbolGlyph {
+    family: &'static str,
+    text: &'static str,
+    font: &'static [u8],
+    registered: Once,
 }
 
-#[rfgui::ui::component]
-impl rfgui::ui::RsxTag for MaterialSymbolIcon {
-    type Props = __MaterialSymbolIconPropsInit;
-    type StrictProps = MaterialSymbolIconProps;
-    const ACCEPTS_CHILDREN: bool = true;
-
-    fn into_strict(props: Self::Props) -> Self::StrictProps {
-        props.into()
+impl MaterialSymbolGlyph {
+    pub(crate) const fn new(family: &'static str, text: &'static str, font: &'static [u8]) -> Self {
+        Self {
+            family,
+            text,
+            font,
+            registered: Once::new(),
+        }
     }
 
-    fn create_node(
-        props: Self::StrictProps,
-        children: Vec<RsxNode>,
-        _key: Option<rfgui::ui::RsxKey>,
-    ) -> RsxNode {
-        <Self as RsxComponent<MaterialSymbolIconProps>>::render(props, children)
+    fn ensure_registered(&self) {
+        self.registered.call_once(|| {
+            let _ = register_font_bytes(self.font);
+        });
     }
-}
-
-pub fn ensure_material_symbols_outlined_registered() {
-    MATERIAL_SYMBOLS_OUTLINED_INIT.call_once(|| {
-        let _ = register_font_bytes(MATERIAL_SYMBOLS_OUTLINED_FONT_BYTES);
-    });
 }
 
 pub(crate) fn render_material_symbol_icon(
-    ligature: &str,
+    glyph: &'static MaterialSymbolGlyph,
     props: MaterialSymbolIconProps,
 ) -> RsxNode {
-    ensure_material_symbols_outlined_registered();
-    let style = material_symbol_icon_style(props.style);
+    glyph.ensure_registered();
+    let style = material_symbol_icon_style(glyph.family, props.style);
     let line_height = props.line_height.unwrap_or(1.0);
 
     rsx! {
         <Element style={style}>
-            <Text line_height={line_height}>{ligature}</Text>
+            <Text line_height={line_height}>{glyph.text}</Text>
         </Element>
     }
 }
 
-fn material_symbol_icon_style(style: Option<ElementStylePropSchema>) -> ElementStylePropSchema {
+fn material_symbol_icon_style(
+    family: &'static str,
+    style: Option<ElementStylePropSchema>,
+) -> ElementStylePropSchema {
     let mut style = style.unwrap_or_default();
     if style.font.is_none() {
-        style.font = Some(FontFamily::new([MATERIAL_SYMBOLS_OUTLINED_FONT_FAMILY]));
+        style.font = Some(FontFamily::new([family]));
     }
     if style.text_wrap.is_none() {
         style.text_wrap = Some(TextWrap::NoWrap);
