@@ -4,6 +4,7 @@ use super::{
 };
 use crate::time::{Duration, Instant};
 use crate::ui::{GlobalKey, RsxKey, RsxNode};
+use crate::view::Element;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -45,8 +46,7 @@ fn non_component_scope_does_not_reset_use_state_slots() {
 
 // 軌 1 #13 regression: host tag `create_element` must not flip
 // `components_rendered_in_build`, so a `build_scope` that only builds
-// host tags (e.g. a TextArea `on_render` handler invoking `rsx!`
-// during layout) exits without pruning the main render's state slots.
+// host tags exits without pruning the main render's state slots.
 #[test]
 fn host_tag_only_build_scope_does_not_prune_user_state() {
     let state = build_scope(|| {
@@ -77,6 +77,59 @@ fn host_tag_only_build_scope_does_not_prune_user_state() {
         })
     });
     assert_eq!(after, 99);
+}
+
+thread_local! {
+    static PASS_ROOT_COUNT: std::cell::RefCell<Option<super::State<i32>>> =
+        const { std::cell::RefCell::new(None) };
+    static DETACHED_LEAF_RENDERS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[crate::ui::component]
+fn PassRoot(children: Vec<RsxNode>) -> RsxNode {
+    let count = use_state(|| 0_i32);
+    PASS_ROOT_COUNT.with(|slot| *slot.borrow_mut() = Some(count.clone()));
+    crate::ui::rsx! { <Element>{count.get().to_string()}{children}</Element> }
+}
+
+#[crate::ui::component]
+fn DetachedLeaf() -> RsxNode {
+    DETACHED_LEAF_RENDERS.with(|renders| renders.set(renders.get() + 1));
+    let label = use_state(|| String::from("leaf"));
+    RsxNode::text(label.get())
+}
+
+fn rendered_text(node: &RsxNode) -> String {
+    match node {
+        RsxNode::Text(text) => text.content.clone(),
+        RsxNode::Element(element) => element.children.iter().map(rendered_text).collect(),
+        RsxNode::Fragment(fragment) => fragment.children.iter().map(rendered_text).collect(),
+        RsxNode::Component(_) | RsxNode::Provider(_) => panic!("unresolved node"),
+    }
+}
+
+// An event handler or timer may describe a user component with `rsx!`
+// outside any render pass. Describing must neither render the component
+// nor retire the state of the tree that the last pass rendered.
+#[test]
+fn rsx_outside_render_pass_defers_component_and_keeps_tree_state() {
+    let render = |children: Vec<RsxNode>| {
+        crate::ui::render_pass(|| crate::ui::rsx! { <PassRoot>{children}</PassRoot> })
+    };
+    assert_eq!(rendered_text(&render(Vec::new())), "0");
+    let count = PASS_ROOT_COUNT.with(|slot| slot.borrow().clone().expect("root rendered"));
+
+    let detached = crate::ui::batch_state_updates(|| {
+        count.set(5);
+        crate::ui::rsx! { <DetachedLeaf /> }
+    });
+    assert!(matches!(detached, RsxNode::Component(_)));
+    assert_eq!(DETACHED_LEAF_RENDERS.with(Cell::get), 0);
+
+    assert_eq!(rendered_text(&render(Vec::new())), "5");
+    // The deferred description renders once a pass places it in the tree.
+    assert_eq!(rendered_text(&render(vec![detached])), "5leaf");
+    assert_eq!(DETACHED_LEAF_RENDERS.with(Cell::get), 1);
 }
 
 #[test]

@@ -2864,6 +2864,8 @@ impl Viewport {
         }
     }
 
+    /// Commits and renders a resolved tree. Trees holding user components
+    /// must come from [`crate::ui::render_pass`]; `rsx!` alone defers them.
     pub fn render_rsx(&mut self, root: &RsxNode) -> Result<(), String> {
         // The sole semantic engine-time sample for this viewport frame. Every
         // retained animation tick and paint-resource freeze observes this
@@ -3238,8 +3240,8 @@ impl Viewport {
     /// Build RSX (if dirty) and render a frame in one call.
     ///
     /// Requires a live `App` set via `set_app`. Checks global dirty
-    /// state, calls `App::build` when a rebuild is needed, then
-    /// delegates to `render_rsx` for the GPU work.
+    /// state, runs `App::build` inside a [`crate::ui::render_pass`] when a
+    /// rebuild is needed, then delegates to `render_rsx` for the GPU work.
     pub fn render_frame(
         &mut self,
         services: crate::platform::PlatformServices<'_>,
@@ -3267,7 +3269,9 @@ impl Viewport {
 
         let mut scene_start = build_start;
         if self.needs_rebuild || self.cached_rsx.is_none() {
-            let rsx = self.with_app(services, |app, ctx| app.build(ctx));
+            let rsx = self.with_app(services, |app, ctx| {
+                crate::ui::render_pass(|| app.build(ctx))
+            });
             self.cached_rsx = Some(rsx);
             self.needs_rebuild = false;
             scene_start = Instant::now();

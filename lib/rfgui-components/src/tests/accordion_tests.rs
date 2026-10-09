@@ -2,14 +2,16 @@ use super::*;
 
 #[test]
 fn accordion_default_expanded_renders_children() {
-    let tree = rsx! {
-        <Accordion
-            title="Section A"
-            default_expanded={Some(true)}
-        >
-            <Text>"Content A"</Text>
-        </Accordion>
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <Accordion
+                title="Section A"
+                default_expanded={Some(true)}
+            >
+                <Text>"Content A"</Text>
+            </Accordion>
+        }
+    });
 
     let mut texts = Vec::new();
     collect_text_nodes(&tree, &mut texts);
@@ -19,11 +21,13 @@ fn accordion_default_expanded_renders_children() {
 
 #[test]
 fn accordion_collapsed_keeps_children_in_tree() {
-    let tree = rsx! {
-        <Accordion title="Section B">
-            <Text>"Content B"</Text>
-        </Accordion>
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <Accordion title="Section B">
+                <Text>"Content B"</Text>
+            </Accordion>
+        }
+    });
 
     let mut texts = Vec::new();
     collect_text_nodes(&tree, &mut texts);
@@ -35,14 +39,16 @@ fn accordion_collapsed_keeps_children_in_tree() {
 fn accordion_click_updates_expanded_binding() {
     let expanded = global_state(|| false);
 
-    let tree = rsx! {
-        <Accordion
-            title="Section C"
-            expanded_binding={Some(expanded.binding())}
-        >
-            <Text>"Content C"</Text>
-        </Accordion>
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <Accordion
+                title="Section C"
+                expanded_binding={Some(expanded.binding())}
+            >
+                <Text>"Content C"</Text>
+            </Accordion>
+        }
+    });
 
     let mut arena = NodeArena::new();
     let roots = commit_rsx_tree_into(&mut arena, &tree);
@@ -54,11 +60,13 @@ fn accordion_click_updates_expanded_binding() {
 
 #[test]
 fn accordion_header_title_grows_and_icon_stays_intrinsic() {
-    let tree = rsx! {
-        <Accordion title="Button">
-            <Text>"Content"</Text>
-        </Accordion>
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <Accordion title="Button">
+                <Text>"Content"</Text>
+            </Accordion>
+        }
+    });
 
     let mut arena = NodeArena::new();
     let roots = commit_rsx_tree_into(&mut arena, &tree);
@@ -108,23 +116,25 @@ fn accordion_header_title_grows_and_icon_stays_intrinsic() {
 
 #[test]
 fn window_accordion_button_label_hit_tests_inside_button_branch() {
-    let tree = rsx! {
-        <Window
-            title="Component Test"
-            width={Some(460.0)}
-            height={Some(380.0)}
-            position={Some((96.0, 96.0))}
-        >
-            <Accordion
-                title="Button"
-                default_expanded={Some(true)}
+    let tree = render_pass(|| {
+        rsx! {
+            <Window
+                title="Component Test"
+                width={Some(460.0)}
+                height={Some(380.0)}
+                position={Some((96.0, 96.0))}
             >
-                <Button variant={Some(ButtonVariant::Contained)}>
-                    Contained
-                </Button>
-            </Accordion>
-        </Window>
-    };
+                <Accordion
+                    title="Button"
+                    default_expanded={Some(true)}
+                >
+                    <Button variant={Some(ButtonVariant::Contained)}>
+                        Contained
+                    </Button>
+                </Accordion>
+            </Window>
+        }
+    });
 
     let mut arena = NodeArena::new();
     let roots = commit_rsx_tree_into(&mut arena, &tree);

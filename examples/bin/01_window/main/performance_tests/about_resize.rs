@@ -63,7 +63,7 @@ fn native_about_window_resize() -> Result<(), String> {
                 viewport.dispatch_pointer_move_event();
                 assert_eq!(resized.get(), (expected_width, 280.0));
             }
-            let root = rfgui::ui::rsx_scope(|| {
+            let root = rfgui::ui::render_pass(|| {
                 rsx! {
                     <Window title="About" width=360.0 height=280.0 position={(80.0,40.0)} on_resize={on_resize.clone()}>
                         <AboutPanel theme={Theme::dark()} />

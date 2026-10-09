@@ -9,7 +9,11 @@ fn Row(value: usize) -> RsxNode {
 
 #[test]
 fn real_components_skip_255_of_256_unchanged_rows() {
-    let build = |value| rsx! { <Element>{(0..256).map(|i| rsx! { <Row key={i} value={if i == 128 { value } else { i }} /> }).collect::<Vec<_>>()}</Element> };
+    let build = |value| {
+        render_pass(
+            || rsx! { <Element>{(0..256).map(|i| rsx! { <Row key={i} value={if i == 128 { value } else { i }} /> }).collect::<Vec<_>>()}</Element> },
+        )
+    };
     let (_, first) = profile_ui_work(|| build(0));
     assert_eq!(first.component_renders, 256);
     let (_, second) = profile_ui_work(|| build(1));
@@ -26,7 +30,7 @@ fn comparison_falls_back_without_adding_a_partial_eq_bound() {
 }
 
 use crate::ui::{
-    Binding, State, batch_state_updates, provide_context_node, rsx_scope, use_context, use_mount,
+    Binding, State, batch_state_updates, provide_context_node, render_pass, use_context, use_mount,
     use_state, with_pushed_context_raw,
 };
 use std::any::{Any, TypeId};
@@ -48,7 +52,7 @@ fn Children(children: Vec<RsxNode>) -> RsxNode {
 
 #[test]
 fn children_are_inputs_and_shared_resolved_output_is_reused() {
-    let build = |child: RsxNode| rsx! { <Children>{child}</Children> };
+    let build = |child: RsxNode| render_pass(|| rsx! { <Children>{child}</Children> });
     let child = rsx! { <Element>"same"</Element> };
     let a = build(child.clone());
     let (b, work) = profile_ui_work(|| build(child));
@@ -77,7 +81,11 @@ fn Generic<T: Clone + PartialEq + ToString + 'static>(value: T) -> RsxNode {
 
 #[test]
 fn callback_and_opaque_props_never_reuse_stale_output() {
-    let build = |v| rsx! { <Element><Callback callback={Rc::new(move || v) as Rc<dyn Fn()->usize>}/><Unknown value={Opaque(v)}/></Element> };
+    let build = |v| {
+        render_pass(
+            || rsx! { <Element><Callback callback={Rc::new(move || v) as Rc<dyn Fn()->usize>}/><Unknown value={Opaque(v)}/></Element> },
+        )
+    };
     assert_eq!(text(&build(1)), "11");
     let (node, work) = profile_ui_work(|| build(2));
     assert_eq!(work.component_renders, 2);
@@ -88,7 +96,7 @@ fn callback_and_opaque_props_never_reuse_stale_output() {
 
 #[test]
 fn generic_partial_eq_bounds_enable_comparison() {
-    let build = || rsx! { <Generic::<usize> value={7usize}/> };
+    let build = || render_pass(|| rsx! { <Generic::<usize> value={7usize}/> });
     build();
     let (node, work) = profile_ui_work(build);
     assert_eq!(text(&node), "7");
@@ -118,7 +126,7 @@ fn Parent() -> RsxNode {
 
 #[test]
 fn state_invalidates_cached_ancestors_preserves_siblings_and_hook_lifetimes() {
-    let build = || rsx! { <Parent/> };
+    let build = || render_pass(|| rsx! { <Parent/> });
     build();
     let old = CAPTURED.with(|slot| slot.borrow().as_ref().unwrap().clone());
     let (_, work) = profile_ui_work(build);
@@ -132,7 +140,7 @@ fn state_invalidates_cached_ancestors_preserves_siblings_and_hook_lifetimes() {
     assert_eq!(old.get(), 0);
     assert_eq!(MOUNTS.get(), 1);
     assert_eq!(CLEANUPS.get(), 0);
-    let _ = rsx! { <Row value={1}/> };
+    let _ = render_pass(|| rsx! { <Row value={1}/> });
     assert_eq!(CLEANUPS.get(), 1);
     build();
     batch_state_updates(|| old.set(9));
@@ -151,7 +159,7 @@ fn ExternalParent() -> RsxNode {
 
 #[test]
 fn explicit_opt_out_also_prevents_ancestor_bailout() {
-    let build = || rsx! { <ExternalParent/> };
+    let build = || render_pass(|| rsx! { <ExternalParent/> });
     assert_eq!(text(&build()), "0");
     EXTERNAL.set(1);
     let (node, work) = profile_ui_work(build);
@@ -174,7 +182,7 @@ fn ContextParent(version: usize) -> RsxNode {
 #[test]
 fn context_publication_changes_invalidate_equal_props_and_missing_reads() {
     let build = |value: Option<Rc<dyn Any>>| {
-        let render = || rsx! { <ContextParent version={0}/> };
+        let render = || render_pass(|| rsx! { <ContextParent version={0}/> });
         match value {
             Some(v) => with_pushed_context_raw(TypeId::of::<Theme>(), v, render),
             None => render(),
@@ -193,11 +201,9 @@ fn context_publication_changes_invalidate_equal_props_and_missing_reads() {
 fn cached_child_context_reads_are_replayed_when_parent_props_change() {
     let dark: Rc<dyn Any> = Rc::new(Theme("dark"));
     let build = |version, value| {
-        with_pushed_context_raw(
-            TypeId::of::<Theme>(),
-            value,
-            || rsx! { <ContextParent version={version}/> },
-        )
+        with_pushed_context_raw(TypeId::of::<Theme>(), value, || {
+            render_pass(|| rsx! { <ContextParent version={version}/> })
+        })
     };
     build(0, dark.clone());
     let (_, work) = profile_ui_work(|| build(1, dark));
@@ -216,7 +222,7 @@ fn InternalProvider() -> RsxNode {
 #[test]
 fn internal_provider_shadowing_does_not_become_an_external_dependency() {
     let build =
-        |outer| rsx_scope(|| provide_context_node(Theme(outer), rsx! { <InternalProvider/> }));
+        |outer| render_pass(|| provide_context_node(Theme(outer), rsx! { <InternalProvider/> }));
     assert_eq!(text(&build("outer1")), "inner");
     let (node, work) = profile_ui_work(|| build("outer2"));
     assert_eq!(text(&node), "inner");
@@ -235,11 +241,9 @@ fn a_binding_inside_an_unchanged_context_publication_still_tracks_its_target() {
     let binding = Binding::new(0usize);
     let publication: Rc<dyn Any> = Rc::new(binding.clone());
     let build = || {
-        with_pushed_context_raw(
-            TypeId::of::<Binding<usize>>(),
-            publication.clone(),
-            || rsx! { <ContextBinding/> },
-        )
+        with_pushed_context_raw(TypeId::of::<Binding<usize>>(), publication.clone(), || {
+            render_pass(|| rsx! { <ContextBinding/> })
+        })
     };
     build();
     batch_state_updates(|| binding.set(2));
@@ -260,7 +264,11 @@ fn OwnedProps(value: Tracked, fail: bool) -> RsxNode {
 #[test]
 fn erased_props_are_released_on_hit_replacement_unmount_and_panic() {
     let lifetime = Rc::new(());
-    let build = |value, fail| rsx! { <OwnedProps value={Tracked { value, lifetime: lifetime.clone() }} fail={fail}/> };
+    let build = |value, fail| {
+        render_pass(
+            || rsx! { <OwnedProps value={Tracked { value, lifetime: lifetime.clone() }} fail={fail}/> },
+        )
+    };
     build(0, false);
     assert_eq!(Rc::strong_count(&lifetime), 2);
     build(0, false);
@@ -278,7 +286,7 @@ fn erased_props_are_released_on_hit_replacement_unmount_and_panic() {
     let (node, work) = profile_ui_work(|| build(1, false));
     assert_eq!(work.component_renders, 1);
     assert_eq!(text(&node), "1");
-    let _ = rsx! { <Row value={3}/> };
+    let _ = render_pass(|| rsx! { <Row value={3}/> });
     assert_eq!(Rc::strong_count(&lifetime), 1);
 }
 
@@ -294,11 +302,9 @@ fn ConditionalContext(read: bool) -> RsxNode {
 #[test]
 fn context_dependencies_disappear_when_no_longer_read() {
     let build = |read, name| {
-        with_pushed_context_raw(
-            TypeId::of::<Theme>(),
-            Rc::new(Theme(name)),
-            || rsx! { <ConditionalContext read={read}/> },
-        )
+        with_pushed_context_raw(TypeId::of::<Theme>(), Rc::new(Theme(name)), || {
+            render_pass(|| rsx! { <ConditionalContext read={read}/> })
+        })
     };
     build(true, "one");
     build(false, "two");
@@ -335,7 +341,7 @@ impl crate::ui::RsxTag for Handwritten {
 #[test]
 fn impl_form_uses_declared_props_equality() {
     let build = || {
-        rsx_scope(|| crate::ui::create_element::<Handwritten>(HandwrittenProps(7), vec![], None))
+        render_pass(|| crate::ui::create_element::<Handwritten>(HandwrittenProps(7), vec![], None))
     };
     build();
     let (node, work) = profile_ui_work(build);

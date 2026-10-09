@@ -3,7 +3,7 @@ use rfgui::style::BoxShadow;
 use rfgui::view::Text;
 
 fn static_tree() -> RsxNode {
-    rfgui::ui::rsx_scope(|| {
+    rfgui::ui::render_pass(|| {
         rfgui::ui::rsx! {
             <Element style={{width:Length::px(160.),height:Length::px(96.),layout:Layout::Grid,background:Color::rgb(6,9,12)}}>
                 <Text style={{color:Color::rgb(255,255,255)}}>GPU scope</Text>

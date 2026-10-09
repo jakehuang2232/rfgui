@@ -4,12 +4,14 @@ use super::*;
 fn checkbox_click_updates_binding() {
     let checked = global_state(|| false);
 
-    let tree = rsx! {
-        <Checkbox
-            label="Enable"
-            binding={checked.binding()}
-        />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <Checkbox
+                label="Enable"
+                binding={checked.binding()}
+            />
+        }
+    });
 
     let mut arena = NodeArena::new();
     let roots = commit_rsx_tree_into(&mut arena, &tree);
@@ -67,11 +69,13 @@ fn checkbox_click_updates_binding() {
 
 #[test]
 fn checkbox_renders_label_text_node() {
-    let tree = rsx! {
-        <Checkbox
-            label="Enable"
-        />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <Checkbox
+                label="Enable"
+            />
+        }
+    });
     let mut texts = Vec::new();
     collect_text_nodes(&tree, &mut texts);
     assert!(
@@ -82,11 +86,13 @@ fn checkbox_renders_label_text_node() {
 
 #[test]
 fn switch_renders_label_text_node() {
-    let tree = rsx! {
-        <Switch
-            label="Switch state"
-        />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <Switch
+                label="Switch state"
+            />
+        }
+    });
     let mut texts = Vec::new();
     collect_text_nodes(&tree, &mut texts);
     assert!(
@@ -97,11 +103,13 @@ fn switch_renders_label_text_node() {
 
 #[test]
 fn checkbox_label_has_non_zero_text_layout() {
-    let tree = rsx! {
-        <Checkbox
-            label="Enable"
-        />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <Checkbox
+                label="Enable"
+            />
+        }
+    });
     let mut arena = NodeArena::new();
     let roots = commit_rsx_tree_into(&mut arena, &tree);
     let root_key = *roots.first().expect("has root");
@@ -142,9 +150,11 @@ fn checkbox_label_has_non_zero_text_layout() {
 #[test]
 fn number_field_textarea_on_change_updates_numeric_binding() {
     let value = global_state(|| 1.0);
-    let tree = rsx! {
-        <NumberField binding={value.binding()} />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <NumberField binding={value.binding()} />
+        }
+    });
 
     let textarea = find_first_element_by_tag(&tree, "TextArea").expect("textarea node");
     let Some((_, PropValue::OnChange(handler))) =
@@ -169,7 +179,9 @@ fn checkbox_distinct_clicks_before_redraw_toggle_committed_value() {
     let log = changes.clone();
     let on_change: std::rc::Rc<dyn Fn(bool)> =
         std::rc::Rc::new(move |value| log.borrow_mut().push(value));
-    let tree = rsx! { <Checkbox label="toggle" binding={checked.clone()} on_change={on_change}/> };
+    let tree = render_pass(
+        || rsx! { <Checkbox label="toggle" binding={checked.clone()} on_change={on_change}/> },
+    );
     let mut arena = NodeArena::new();
     let roots = commit_rsx_tree_into(&mut arena, &tree);
     let mut viewport = rfgui::view::Viewport::new();
@@ -185,7 +197,7 @@ fn checkbox_distinct_clicks_before_redraw_toggle_committed_value() {
 fn number_field_blur_reads_latest_draft_without_an_intervening_render() {
     use rfgui::ui::{Binding, BlurEvent, FocusReason, FromPropValue, batch_state_updates};
     let value = Binding::new(1.0);
-    let tree = rsx! { <NumberField binding={value.clone()} /> };
+    let tree = render_pass(|| rsx! { <NumberField binding={value.clone()} /> });
     let textarea = find_first_element_by_tag(&tree, "TextArea").unwrap();
     let draft = Binding::<String>::from_prop_value(
         textarea

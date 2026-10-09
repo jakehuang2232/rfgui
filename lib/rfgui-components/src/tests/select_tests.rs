@@ -3,17 +3,19 @@ use super::*;
 #[test]
 fn select_trigger_click_does_not_change_binding_value() {
     let selected = global_state(|| String::from("Option A"));
-    let tree = rsx! {
-        <Select::<String, String>
-            data={vec![
-                String::from("Option A"),
-                String::from("Option B"),
-                String::from("Option C"),
-            ]}
-            to_label={select_label as fn(&String, usize) -> String}
-            value={selected.binding()}
-        />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <Select::<String, String>
+                data={vec![
+                    String::from("Option A"),
+                    String::from("Option B"),
+                    String::from("Option C"),
+                ]}
+                to_label={select_label as fn(&String, usize) -> String}
+                value={selected.binding()}
+            />
+        }
+    });
 
     let mut arena = NodeArena::new();
     let roots = commit_rsx_tree_into(&mut arena, &tree);
@@ -28,17 +30,19 @@ fn select_open_state_persists_across_rerender() {
     let selected = global_state(|| String::from("Option A"));
 
     let build_tree = || {
-        rsx! {
-            <Select::<String, String>
-                data={vec![
-                    String::from("Option A"),
-                    String::from("Option B"),
-                    String::from("Option C"),
-                ]}
-                to_label={select_label as fn(&String, usize) -> String}
-                value={selected.binding()}
-            />
-        }
+        render_pass(|| {
+            rsx! {
+                <Select::<String, String>
+                    data={vec![
+                        String::from("Option A"),
+                        String::from("Option B"),
+                        String::from("Option C"),
+                    ]}
+                    to_label={select_label as fn(&String, usize) -> String}
+                    value={selected.binding()}
+                />
+            }
+        })
     };
 
     let first_tree = build_tree();
@@ -64,17 +68,19 @@ fn select_menu_option_row_keeps_content_height() {
     let selected = global_state(|| String::from("Option A"));
 
     let build_tree = || {
-        rsx! {
-            <Select::<String, String>
-                data={vec![
-                    String::from("Option A"),
-                    String::from("Option B"),
-                    String::from("Option C"),
-                ]}
-                to_label={select_label as fn(&String, usize) -> String}
-                value={selected.binding()}
-            />
-        }
+        render_pass(|| {
+            rsx! {
+                <Select::<String, String>
+                    data={vec![
+                        String::from("Option A"),
+                        String::from("Option B"),
+                        String::from("Option C"),
+                    ]}
+                    to_label={select_label as fn(&String, usize) -> String}
+                    value={selected.binding()}
+                />
+            }
+        })
     };
 
     let first_tree = build_tree();

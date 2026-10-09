@@ -1334,7 +1334,9 @@ pub fn rendered_node_id(
         RsxNode::Text(_) => Some(stable_node_id_from_parts("TextNode", path, global_path)),
         RsxNode::Fragment(_) => None,
         RsxNode::Component(_) => {
-            unreachable!("Component node should be unwrapped before identity hashing")
+            unreachable!(
+                "Component node should be resolved by `render_pass` before identity hashing"
+            )
         }
         RsxNode::Provider(_) => {
             unreachable!("Provider node should be unwrapped before identity hashing")

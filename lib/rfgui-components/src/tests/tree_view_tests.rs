@@ -2,9 +2,11 @@ use super::*;
 
 #[test]
 fn tree_view_renders_element_root() {
-    let tree = rsx! {
-        <TreeView nodes={sample_tree_nodes()} />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <TreeView nodes={sample_tree_nodes()} />
+        }
+    });
     let RsxNode::Element(root) = tree else {
         panic!("TreeView should render element root");
     };
@@ -16,9 +18,11 @@ fn tree_view_renders_element_root() {
 
 #[test]
 fn tree_view_collapsed_hides_child_labels() {
-    let tree = rsx! {
-        <TreeView nodes={sample_tree_nodes()} />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <TreeView nodes={sample_tree_nodes()} />
+        }
+    });
     let mut texts = Vec::new();
     collect_text_nodes(&tree, &mut texts);
     assert!(
@@ -33,12 +37,14 @@ fn tree_view_collapsed_hides_child_labels() {
 
 #[test]
 fn tree_view_default_expanded_shows_child_labels() {
-    let tree = rsx! {
-        <TreeView
-            nodes={sample_tree_nodes()}
-            default_expanded_items={vec![String::from("root")]}
-        />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <TreeView
+                nodes={sample_tree_nodes()}
+                default_expanded_items={vec![String::from("root")]}
+            />
+        }
+    });
     let mut texts = Vec::new();
     collect_text_nodes(&tree, &mut texts);
     assert!(texts.iter().any(|t| t == "Root"));
@@ -53,13 +59,15 @@ fn tree_view_click_toggles_expanded_and_selects() {
     let expanded = global_state(|| Vec::<String>::new());
     let selected = global_state(|| Option::<String>::None);
 
-    let tree = rsx! {
-        <TreeView
-            nodes={sample_tree_nodes()}
-            expanded_binding={expanded.binding()}
-            selected_binding={selected.binding()}
-        />
-    };
+    let tree = render_pass(|| {
+        rsx! {
+            <TreeView
+                nodes={sample_tree_nodes()}
+                expanded_binding={expanded.binding()}
+                selected_binding={selected.binding()}
+            />
+        }
+    });
     let mut arena = NodeArena::new();
     let roots = commit_rsx_tree_into(&mut arena, &tree);
     let mut viewport = rfgui::view::Viewport::new();
@@ -99,15 +107,17 @@ fn tree_view_reorder_keeps_labels_aligned_with_rows() {
     ]);
 
     let make_tree = |nodes: Vec<TreeNode>| {
-        rsx! {
-            <TreeView
-                nodes={nodes}
-                default_expanded_items={vec![
-                    String::from("src"),
-                    String::from("layout"),
-                ]}
-            />
-        }
+        render_pass(|| {
+            rsx! {
+                <TreeView
+                    nodes={nodes}
+                    default_expanded_items={vec![
+                        String::from("src"),
+                        String::from("layout"),
+                    ]}
+                />
+            }
+        })
     };
 
     let mut viewport = rfgui::view::Viewport::new();

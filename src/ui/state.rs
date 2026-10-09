@@ -613,8 +613,7 @@ impl<T: 'static> PartialEq for GlobalState<T> {
 }
 
 /// Current `build_depth` — the number of active `build_scope` frames.
-/// Exposed for the React parity walker (`rsx_scope`) to detect the
-/// outermost scope.
+/// Zero means no render pass is running.
 pub fn current_build_depth() -> usize {
     STORE.with(|store| store.borrow().build_depth)
 }
@@ -635,6 +634,9 @@ fn shrink_set_if_sparse<T: Eq + Hash>(set: &mut FxHashSet<T>) {
     }
 }
 
+/// The outermost scope is a render pass: it resets live-key tracking on
+/// entry and, if any component rendered, retires the state of every
+/// component that did not. Nested scopes only add depth.
 pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
     let _frame = begin_state_frame();
     struct UnwindGuard {
@@ -804,9 +806,14 @@ pub fn classify_component_key<T: Hash + Any>(value: &T) -> RsxKey {
     RsxKey::Local(component_key_token(value))
 }
 
+/// Rejects a `GlobalKey` reused within one render pass. A description built
+/// outside a pass (event handler, timer) belongs to no build yet.
 pub fn register_global_key(global_key: GlobalKey) {
     STORE.with(|store| {
         let mut store = store.borrow_mut();
+        if store.build_depth == 0 {
+            return;
+        }
         if !store.active_build_global_keys.insert(global_key) {
             panic!("duplicate GlobalKey detected in the same build");
         }

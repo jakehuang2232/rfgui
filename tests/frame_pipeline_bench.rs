@@ -4,7 +4,7 @@
 use rfgui::style::{Color, Layout, Length, ScrollDirection};
 use rfgui::time::Instant;
 use rfgui::ui::{
-    Binding, RsxNode, component, flush_state_updates, profile_ui_work, rsx, rsx_scope,
+    Binding, RsxNode, component, flush_state_updates, profile_ui_work, render_pass, rsx,
 };
 use rfgui::view::viewport::{ViewportPaintRendererMode, set_scroll_offset_by_id};
 use rfgui::view::{Element, Text, Viewport};
@@ -28,7 +28,7 @@ fn scene(case: &str, value: bool, rows: usize) -> RsxNode {
     } else {
         Layout::flow().column().into()
     };
-    rsx_scope(|| {
+    render_pass(|| {
         rsx! {
             <Element style={{width:Length::px(400.0),height:Length::px(400.0),layout:layout,scroll_direction:ScrollDirection::Both}}>
                 {(0..rows).map(|i| rsx! {

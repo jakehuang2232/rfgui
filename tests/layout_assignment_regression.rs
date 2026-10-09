@@ -2,7 +2,7 @@
 #![cfg(feature = "renderer-test-support")]
 use rfgui::style::{Color, CrossSize, Layout, Length, ScrollDirection};
 use rfgui::time::Instant;
-use rfgui::ui::{RsxNode, rsx, rsx_scope};
+use rfgui::ui::{RsxNode, render_pass, rsx};
 use rfgui::view::viewport::ViewportPaintRendererMode;
 use rfgui::view::{Element, Text, Viewport};
 #[path = "frame_pipeline_bench/gpu.rs"]
@@ -22,7 +22,7 @@ fn scene(axis: usize, case: &str, step: usize) -> RsxNode {
         2 => Layout::flex().column().cross_size(cross).into(),
         _ => Layout::flex().row().cross_size(cross).into(),
     };
-    rsx_scope(|| {
+    render_pass(|| {
         rsx! {
             <Element style={{layout:layout, width:Length::px(if case=="parent" && changed {340.} else {400.}),
                 height:Length::px(400.), gap:Length::px(if changed {7.} else {3.}),scroll_direction:ScrollDirection::Both}}>

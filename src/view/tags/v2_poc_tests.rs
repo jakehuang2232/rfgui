@@ -170,9 +170,11 @@ pub fn V2ContainerOnly(children: Vec<RsxNode>) -> RsxNode {
 
 #[test]
 fn rsx_user_component_with_required_prop() {
-    let node = rsx! {
-        <V2PanelLabel text={"hello".to_string()} />
-    };
+    let node = crate::ui::render_pass(|| {
+        rsx! {
+            <V2PanelLabel text={"hello".to_string()} />
+        }
+    });
     match node {
         RsxNode::Element(_) => {}
         _ => panic!("expected element"),
@@ -181,11 +183,13 @@ fn rsx_user_component_with_required_prop() {
 
 #[test]
 fn rsx_user_component_optional_prop() {
-    let node = rsx! {
-        <V2PanelLabel
-            text={"greet".to_string()}
-            color={crate::style::Color::hex("#aabbcc")} />
-    };
+    let node = crate::ui::render_pass(|| {
+        rsx! {
+            <V2PanelLabel
+                text={"greet".to_string()}
+                color={crate::style::Color::hex("#aabbcc")} />
+        }
+    });
     match node {
         RsxNode::Element(_) => {}
         _ => panic!("expected element"),
@@ -203,13 +207,15 @@ fn rsx_user_component_missing_required_panics() {
 
 #[test]
 fn rsx_user_component_with_children() {
-    let node = rsx! {
-        <V2ContainerOnly>
-            <Element />
-            <Element />
-            <Element />
-        </V2ContainerOnly>
-    };
+    let node = crate::ui::render_pass(|| {
+        rsx! {
+            <V2ContainerOnly>
+                <Element />
+                <Element />
+                <Element />
+            </V2ContainerOnly>
+        }
+    });
     // V2ContainerOnly's body `rsx! { <Element>{children}</Element> }` flattens
     // the Vec<RsxNode> into the outer Element's children via IntoRsxChildren,
     // so the returned element has 3 children.

@@ -30,7 +30,7 @@ fn native_incremental_demo_frames() -> Result<(), String> {
     for dpr in [1, 2] {
         let mut viewport = Viewport::new();
         viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
-        let root = rfgui::ui::rsx_scope(|| rsx! { <MainScene /> });
+        let root = rfgui::ui::render_pass(|| rsx! { <MainScene /> });
         let now = Instant::now();
         let mut samples = Vec::new();
         for frame in 0..frames {

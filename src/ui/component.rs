@@ -7,7 +7,7 @@ use std::ptr::NonNull;
 
 use crate::ui::{
     GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, build_scope,
-    current_build_depth, register_global_key, with_component_key,
+    register_global_key, with_component_key,
 };
 
 pub trait RsxChildrenPolicy {
@@ -644,44 +644,30 @@ impl ComponentNodeInner {
     }
 }
 
-/// Top-down walker: invoke `vtable.render` for every `RsxNode::Component`
-/// subtree, producing a flat tree of Element/Text/Fragment/Component...
-/// wait — output never contains `Component`. Post-walker output is
-/// Element/Text/Fragment only.
-///
-/// Pushes a `render_component` frame before each component render and
-/// pops it after, replicating the lifecycle that today's eager path
-/// runs from inside `create_element`. The `unwrap_components` traversal
-/// is intended to run inside the outermost `build_scope` so
-/// `live_keys` / prune behaviour is preserved.
-///
-/// React parity P2a: skeleton only. No producer currently constructs
-/// `RsxNode::Component` — this walker is covered by a unit test that
-/// hand-builds a component node. Wired end-to-end in P2b.
 #[cfg(test)]
 mod p2a_walker_tests;
 
-/// React parity P2: rsx! entry point. Wraps [`build_scope`] and, at the
-/// outermost invocation (depth 0 → 1), runs [`unwrap_components`] on the
-/// produced tree so user-component render bodies fire top-down.
+/// Runs one render pass (React `root.render`): builds the root description,
+/// renders its deferred user components top-down, and on exit retires the
+/// state of every component that did not render. Call it only at the root,
+/// outside any other pass.
 ///
-/// Nested `rsx_scope` calls (depth > 1) are pass-through — the outer
-/// walker handles their `RsxNode::Component` children when it recurses.
-///
-/// Called from the `rsx!` macro expansion instead of `build_scope`.
-pub fn rsx_scope(f: impl FnOnce() -> RsxNode) -> RsxNode {
-    build_scope(|| {
-        let tree = f();
-        // After `build_scope` entered, `build_depth` is 1 for the outermost
-        // invocation; nested rsx! calls see depth > 1.
-        if current_build_depth() == 1 {
-            unwrap_components(tree)
-        } else {
-            tree
-        }
-    })
+/// `rsx!` only describes trees, so this is the sole place component render
+/// bodies run from the root. The viewport wraps `App::build` in it; code
+/// that drives a viewport directly calls it before `render_rsx`. A
+/// description built anywhere else, such as in an event handler, stays
+/// deferred until a later pass places it in the tree.
+pub fn render_pass(build: impl FnOnce() -> RsxNode) -> RsxNode {
+    build_scope(|| unwrap_components(build()))
 }
 
+/// Top-down walker: invokes `vtable.render` for every `RsxNode::Component`
+/// and dissolves every `RsxNode::Provider`, so the output holds only
+/// Element/Text/Fragment nodes.
+///
+/// Each component render runs inside a `render_component` frame, so the
+/// walk must happen inside a [`build_scope`] (normally [`render_pass`])
+/// that owns `live_keys` and pruning.
 pub fn unwrap_components(node: RsxNode) -> RsxNode {
     let _profile = crate::ui::work_profile::scope(crate::ui::work_profile::Phase::Unwrap);
     crate::ui::work_profile::count(|p| p.unwrap_nodes += 1);
@@ -829,12 +815,11 @@ pub fn __rsx_create_element<T: RsxTag, F: FnOnce(&mut T::Props)>(
 ///    `RsxNode::Element`/`Text`/... description inline. No hook frame,
 ///    no live-keys, no prune flag — host tags have no render body.
 ///
-/// 2. **User component**: box `T::StrictProps`, snapshot the provider
-///    stack, and wrap in `RsxNode::Component`. Defer — the
-///    `unwrap_components` walker (invoked at the outermost `rsx_scope`)
-///    pushes `render_component` / restores context and calls
+/// 2. **User component**: box `T::StrictProps` and wrap in
+///    `RsxNode::Component`. Defer — the `unwrap_components` walker
+///    (driven by [`render_pass`]) pushes `render_component` and calls
 ///    `vtable.render` top-down, giving React-style parent-before-child
-///    evaluation.
+///    evaluation. Creating the description never renders the component.
 ///
 /// User components must declare their vtable via `#[component]` (either
 /// the fn-style authoring form or the `impl RsxTag` block form). A

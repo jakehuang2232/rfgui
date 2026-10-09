@@ -29,10 +29,13 @@ pub fn rsx(input: TokenStream) -> TokenStream {
         }
     };
 
+    // `rsx!` only describes a tree (React `createElement`): user components
+    // stay deferred until a render pass resolves them, so building a tree
+    // never touches component state.
     quote! {
-        #rfgui::ui::rsx_scope(|| {
+        {
             #body
-        })
+        }
     }
     .into()
 }
