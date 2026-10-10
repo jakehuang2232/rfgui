@@ -2126,13 +2126,17 @@ fn artifact_surface_span_chunks<'a>(
 /// placement space; only descendant content consumes the surface-kind base
 /// translation. Raster-origin projection is then applied to both through the
 /// same second-stage projection.
+/// A surface's own raster translation moves only its boundary root's
+/// descendants; a folded boundary's moves every chunk, the root's included,
+/// since the root sits inside the folded boundary's content.
 fn artifact_surface_chunk_base_translation(
     boundary_root: Option<NodeKey>,
     chunk_owner: NodeKey,
     base_delta: [f32; 2],
+    root_delta: [f32; 2],
 ) -> [f32; 2] {
     if boundary_root == Some(chunk_owner) {
-        [0.0, 0.0]
+        root_delta
     } else {
         base_delta
     }
@@ -2144,6 +2148,7 @@ fn artifact_surface_span_raw_bounds(
     boundary_root: Option<NodeKey>,
     span: &ArtifactSurfaceCoverageSpan,
     base_delta: [f32; 2],
+    root_delta: [f32; 2],
 ) -> Result<Option<[u32; 4]>, ArtifactSurfaceRasterPlanError> {
     artifact_surface_chunk_range_raw_bounds(
         artifact,
@@ -2151,6 +2156,7 @@ fn artifact_surface_span_raw_bounds(
         boundary_root,
         span.chunk_range(),
         base_delta,
+        root_delta,
     )
 }
 
@@ -2160,6 +2166,7 @@ fn artifact_surface_chunk_range_raw_bounds(
     boundary_root: Option<NodeKey>,
     chunk_range: Range<usize>,
     base_delta: [f32; 2],
+    root_delta: [f32; 2],
 ) -> Result<Option<[u32; 4]>, ArtifactSurfaceRasterPlanError> {
     let chunks = artifact
         .chunks
@@ -2168,7 +2175,12 @@ fn artifact_surface_chunk_range_raw_bounds(
     let mut bounds = None;
     for (local_index, chunk) in chunks.iter().enumerate() {
         let chunk_index = chunk_range.start + local_index;
-        let delta = artifact_surface_chunk_base_translation(boundary_root, chunk.owner, base_delta);
+        let delta = artifact_surface_chunk_base_translation(
+            boundary_root,
+            chunk.owner,
+            base_delta,
+            root_delta,
+        );
         let translated = translated_chunk_bounds_bits(chunk.bounds, delta).ok_or(
             ArtifactSurfaceRasterPlanError::InvalidChunkBounds {
                 target,
@@ -2193,6 +2205,7 @@ enum ArtifactSurfaceSpanPlacement<'a> {
     Surface {
         boundary_root: NodeKey,
         base_delta: [f32; 2],
+        root_delta: [f32; 2],
         raster_origin: ArtifactSurfaceRasterOriginProjection,
         /// The span's local clips placed in the surface's raster space.
         local_clips: &'a [ClipNodeSnapshot],
@@ -2219,6 +2232,7 @@ impl<'a> ArtifactSurfaceSpanPlacement<'a> {
             Self::Surface {
                 boundary_root,
                 base_delta,
+                root_delta,
                 raster_origin,
                 ..
             } => raster_origin
@@ -2226,6 +2240,7 @@ impl<'a> ArtifactSurfaceSpanPlacement<'a> {
                     Some(boundary_root),
                     owner,
                     base_delta,
+                    root_delta,
                 ))
                 .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(
                     match target {
@@ -2472,7 +2487,21 @@ fn materialized_surface_raster_translation(
             folded_boundaries[1],
         ));
     }
-    let mut translation = surface_raster_translation(source, kind, scrolls)?;
+    let own = surface_raster_translation(source, kind, scrolls)?;
+    let folded = folded_surface_raster_translation(folded_boundaries, surface_dag)?;
+    let translation = [own[0] + folded[0], own[1] + folded[1]];
+    if translation.into_iter().any(|value| !value.is_finite()) {
+        return Err(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source));
+    }
+    Ok(translation)
+}
+
+/// The raster translation the boundaries folded into a surface carry.
+fn folded_surface_raster_translation(
+    folded_boundaries: &[SurfaceDagNodeId],
+    surface_dag: &SurfaceDag,
+) -> Result<[f32; 2], ArtifactSurfaceRasterPlanError> {
+    let mut translation = [0.0, 0.0];
     for boundary in folded_boundaries {
         let node = surface_dag
             .nodes()
@@ -2618,6 +2647,7 @@ fn surface_composite_geometry(
     clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     closure: Option<&SurfaceDagClipClosureProjection>,
     spatial: &super::ArtifactSpatialProjection,
+    folded_raster_translation: [f32; 2],
 ) -> Result<ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterPlanError> {
     // Consumption transitions may borrow the deepest descendant witness's
     // non-consumed dimensions. That descendant's self clip is raster-local
@@ -2682,8 +2712,15 @@ fn surface_composite_geometry(
                     node.id(),
                 ));
             }
+            // A folded scroll rasters this content in scrolled-content space;
+            // the matrix maps the layout positions the content scrolled to.
+            let [dx, dy] = folded_raster_translation;
+            let layout_source_bounds_bits =
+                translated_bounds_bits(receiver_source_bounds_bits, [-dx, -dy]).ok_or(
+                    ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(node.id()),
+                )?;
             let (destination_bounds_bits, quad_offset_bits) = transform_destination_projection(
-                receiver_source_bounds_bits,
+                layout_source_bounds_bits,
                 receiver_transform,
                 receiver_paint_offset,
             )
@@ -2865,6 +2902,8 @@ fn surface_receiver_visible_rects(
                 scrolls,
             )
             .ok()?;
+            let folded =
+                folded_surface_raster_translation(folded_boundaries, &program.surface_dag).ok()?;
             let receiver_paint_offset =
                 host_placement.receiver_paint_offset(node.target(), execution.receiver())?;
             let geometry = surface_composite_geometry(
@@ -2881,6 +2920,7 @@ fn surface_receiver_visible_rects(
                 clips,
                 coverage.clip_closure(),
                 &program.spatial,
+                folded,
             )
             .ok()?;
             let geometry = fold_materialized_composite_boundaries(
@@ -2917,6 +2957,7 @@ fn surface_receiver_visible_rects(
                 geometry,
                 receiver_rect,
                 receiver_paint_offset,
+                folded,
             ))
         })();
         own_visible[index] = visible.filter(|rect| rect.iter().all(|n| n.is_finite()));
@@ -3041,6 +3082,8 @@ fn prepare_artifact_surface_raster_plan_from_program(
             &program.surface_dag,
             &scrolls,
         )?;
+        let root_delta =
+            folded_surface_raster_translation(folded_boundaries, &program.surface_dag)?;
         let target_id = ArtifactSurfaceRasterTargetId::Surface(source);
         let mut raw_bounds = None;
         let mut nested_children = Vec::new();
@@ -3051,6 +3094,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 Some(node.target()),
                 chunk_range.clone(),
                 base_delta,
+                root_delta,
             )? {
                 append_bounds(&mut raw_bounds, mask_bounds)
                     .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source))?;
@@ -3065,6 +3109,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                         Some(node.target()),
                         span,
                         base_delta,
+                        root_delta,
                     )? {
                         append_bounds(&mut raw_bounds, span_bounds)
                             .ok_or(ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(source))?;
@@ -3139,6 +3184,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 &clips,
                 coverage.clip_closure(),
                 &program.spatial,
+                root_delta,
             )?;
             fold_materialized_composite_boundaries(
                 geometry,
@@ -3180,6 +3226,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 geometry,
                 receiver_visible[execution.id().index()],
                 receiver_paint_offset,
+                root_delta,
                 context,
             )
         } else {
@@ -3215,6 +3262,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                             ArtifactSurfaceSpanPlacement::Surface {
                                 boundary_root: node.target(),
                                 base_delta,
+                                root_delta,
                                 raster_origin,
                                 local_clips: &local_clips,
                             },

@@ -46,6 +46,7 @@ pub(super) fn select(
     geometry: ArtifactSurfaceCompositeGeometryStamp,
     receiver_visible: Option<[f32; 4]>,
     receiver_paint_offset: [f32; 2],
+    folded_raster_translation: [f32; 2],
     context: ArtifactSurfaceRasterContext,
 ) -> Option<RasterWindow> {
     let full = content_bounds_bits.map(f32::from_bits);
@@ -59,7 +60,13 @@ pub(super) fn select(
         ArtifactSurfaceResolvedClip::Empty => [dest[0], dest[1], 0., 0.],
         _ => receiver_visible?,
     };
-    let read = receiver_read(full, geometry, clip, receiver_paint_offset);
+    let read = receiver_read(
+        full,
+        geometry,
+        clip,
+        receiver_paint_offset,
+        folded_raster_translation,
+    );
     let scale = context.scale_factor();
     let mut region = [0.; 4];
     for axis in 0..2 {
@@ -99,11 +106,14 @@ pub(super) fn select(
 /// The source rectangle, in the space of `full`, that `geometry` composites
 /// into `receiver_rect`, before snapping. `full` is the source envelope the
 /// geometry was built from; its destination must be finite and non-empty.
+/// A transform's matrix maps layout positions; a folded scroll moves the
+/// raster `folded_raster_translation` away from them.
 pub(super) fn receiver_read(
     full: [f32; 4],
     geometry: ArtifactSurfaceCompositeGeometryStamp,
     receiver_rect: [f32; 4],
     receiver_paint_offset: [f32; 2],
+    folded_raster_translation: [f32; 2],
 ) -> [f32; 4] {
     let dest = geometry.destination_bounds_bits().map(f32::from_bits);
     match geometry {
@@ -118,7 +128,13 @@ pub(super) fn receiver_read(
             let matrix = glam::Mat4::from_cols_array(&receiver_transform_bits.map(f32::from_bits));
             // A clip corner seen from behind the eye has no finite preimage:
             // every source pixel may then be visible.
-            transformed_preimage(matrix, receiver_paint_offset, receiver_rect).unwrap_or(full)
+            transformed_preimage(matrix, receiver_paint_offset, receiver_rect).map_or(
+                full,
+                |[x, y, w, h]| {
+                    let [dx, dy] = folded_raster_translation;
+                    [x + dx, y + dy, w, h]
+                },
+            )
         }
         _ => {
             let mut read = [0.; 4];

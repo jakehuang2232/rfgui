@@ -308,6 +308,11 @@ fn boundary_transfer(
                     return Err(RetainedNonTranslation);
                 }
                 transfer.raster_translation_bits = offset.to_array().map(f32::to_bits);
+                // The raster keeps content in scrolled-content space, so the
+                // receiver places it back by the offset. `+ 0.0` keeps an
+                // unscrolled transfer at positive zero.
+                transfer.composite_translation_bits =
+                    offset.to_array().map(|value| (-value + 0.0).to_bits());
                 transfer.clip = Some(clip.ok_or(RetainedClipTransfer)?);
             }
         }
@@ -947,11 +952,15 @@ impl SurfaceDag {
             } else {
                 let child = self.surface_node(nested[0])?;
                 let transfer = node.transfer.expect("checked transfer");
-                let moves_composite = transfer
-                    .composite_translation_bits
-                    .map(f32::from_bits)
-                    .into_iter()
-                    .any(|delta| delta != 0.0);
+                // A scroll's composite move only undoes its raster translation,
+                // and its scrollport has a validated transfer of its own.
+                let moves_composite =
+                    !matches!(node.kind, SurfaceDagNodeKind::ScrollContent { .. })
+                        && transfer
+                            .composite_translation_bits
+                            .map(f32::from_bits)
+                            .into_iter()
+                            .any(|delta| delta != 0.0);
                 // Moving a clipped child requires proving clip-space transport,
                 // including its consumed scrollport. Keep it until then.
                 if moves_composite

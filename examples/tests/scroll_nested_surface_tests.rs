@@ -1,7 +1,10 @@
 //! Retained surfaces and clipped content nested in scrolled content stay in
 //! place: scrolled by an offset, they paint what the same content moved up by
-//! that offset paints in a fresh viewport.
-use rfgui::style::{ClipMode, Color, Layout, Length, Opacity, Position, ScrollDirection};
+//! that offset paints in a fresh viewport. That includes a surface that is
+//! the scroll content's only child and so takes over the scroll boundary.
+use rfgui::style::{
+    ClipMode, Color, Layout, Length, Opacity, Position, Scale, ScrollDirection, Transform,
+};
 use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, rsx};
 use rfgui::view::viewport::{ViewportPaintRendererMode, set_scroll_offset_by_id};
@@ -79,6 +82,49 @@ fn clipped_chunks() -> Vec<RsxNode> {
     ]
 }
 
+fn bands() -> Vec<RsxNode> {
+    [[255, 0, 0], [0, 255, 0], [0, 0, 255]]
+        .map(|[r, g, b]| {
+            rsx! {
+                <Element style={{
+                    width: Length::px(300.),
+                    height: Length::px(1500.),
+                    background: Color::rgb(r, g, b),
+                }} />
+            }
+        })
+        .to_vec()
+}
+
+/// Three 1500px tall colored bands in one opacity group, the scroll
+/// content's only child, so the group's surface takes over the scroll
+/// boundary. Scrolling past the first band shows whether its raster follows.
+fn sole_opacity_group() -> Vec<RsxNode> {
+    vec![rsx! {
+        <Element style={{
+            width: Length::px(300.),
+            layout: Layout::flow().column(),
+            opacity: Opacity::new(0.5),
+        }}>
+            {bands()}
+        </Element>
+    }]
+}
+
+/// The bands in a scaled group instead. A 2% scale keeps the group's right
+/// edge between pixel centers.
+fn sole_scaled_group() -> Vec<RsxNode> {
+    vec![rsx! {
+        <Element style={{
+            width: Length::px(300.),
+            layout: Layout::flow().column(),
+            transform: Transform::new([Scale::uniform(1.02)]),
+        }}>
+            {bands()}
+        </Element>
+    }]
+}
+
 /// `content` in the outer scroll container.
 fn scrolled(content: Vec<RsxNode>) -> RsxNode {
     rsx! {
@@ -104,17 +150,22 @@ fn moved_up(content: Vec<RsxNode>, offset: f32) -> RsxNode {
     }
 }
 
+const BOTH_RENDERERS: &[ViewportPaintRendererMode] = &[
+    ViewportPaintRendererMode::Legacy,
+    ViewportPaintRendererMode::RetainedAuto,
+];
+
 /// Scrolls `content` through offsets in one viewport and requires each frame
 /// to equal `content` moved up by the offset in a fresh viewport.
-fn assert_scrolled_in_place(content: fn() -> Vec<RsxNode>) -> Result<(), String> {
+fn assert_scrolled_in_place(
+    content: fn() -> Vec<RsxNode>,
+    offsets: &[f32],
+    modes: &[ViewportPaintRendererMode],
+) -> Result<(), String> {
     let gpu = gpu::Gpu::new()?;
-    let offsets = [0., 300., 500., 640.];
     for dpr in [1, 2] {
         let size = [400 * dpr, 400 * dpr];
-        for mode in [
-            ViewportPaintRendererMode::Legacy,
-            ViewportPaintRendererMode::RetainedAuto,
-        ] {
+        for &mode in modes {
             let render = |viewport: &mut Viewport, tree: &RsxNode| -> Result<Vec<u8>, String> {
                 let output = viewport.render_rsx_offscreen_for_test(
                     tree,
@@ -157,11 +208,35 @@ fn assert_scrolled_in_place(content: fn() -> Vec<RsxNode>) -> Result<(), String>
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn surfaces_nested_in_scrolled_content_stay_in_place() -> Result<(), String> {
-    assert_scrolled_in_place(nested_surfaces)
+    assert_scrolled_in_place(nested_surfaces, &[0., 300., 500., 640.], BOTH_RENDERERS)
 }
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn clipped_chunks_in_scrolled_content_stay_in_place() -> Result<(), String> {
-    assert_scrolled_in_place(clipped_chunks)
+    assert_scrolled_in_place(clipped_chunks, &[0., 300., 500., 640.], BOTH_RENDERERS)
+}
+
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn sole_opacity_group_in_scrolled_content_stays_in_place() -> Result<(), String> {
+    assert_scrolled_in_place(
+        sole_opacity_group,
+        &[0., 400., 1900., 3100., 1910.],
+        // Legacy rasters the whole 9000px tall group at DPR 2, beyond the
+        // texture limit.
+        &[ViewportPaintRendererMode::RetainedAuto],
+    )
+}
+
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn sole_scaled_group_in_scrolled_content_stays_in_place() -> Result<(), String> {
+    assert_scrolled_in_place(
+        sole_scaled_group,
+        &[0., 400., 1900., 3100., 1910.],
+        // Legacy rasters the whole 9000px tall group at DPR 2, beyond the
+        // texture limit.
+        &[ViewportPaintRendererMode::RetainedAuto],
+    )
 }
