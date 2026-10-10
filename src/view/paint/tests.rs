@@ -1953,54 +1953,6 @@ fn compiled_whole_frame_graph_with_config(
     graph
 }
 
-fn legacy_roots_graph(arena: NodeArena, roots: &[NodeKey]) -> FrameGraph {
-    legacy_roots_graph_with_config(arena, roots, PaintParityConfig::default())
-}
-
-fn legacy_roots_graph_with_config(
-    mut arena: NodeArena,
-    roots: &[NodeKey],
-    config: PaintParityConfig,
-) -> FrameGraph {
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(
-        config.width,
-        config.height,
-        config.format,
-        config.scale_factor,
-    );
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target.clone());
-    let clear = crate::view::frame_graph::ClearPass::new(
-        crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-        crate::view::render_pass::clear_pass::ClearInput {
-            pass_context: ctx.graphics_pass_context(),
-            clear_depth_stencil: true,
-        },
-        crate::view::render_pass::clear_pass::ClearOutput {
-            render_target: target.clone(),
-        },
-    );
-    if let Some(handle) = target.handle() {
-        ctx.set_color_target(Some(handle));
-    }
-    graph.add_graphics_pass(clear);
-    ctx.set_current_target(target);
-    if let Some(scissor) = config.initial_scissor {
-        ctx.replace_scissor_rect(Some(scissor));
-    }
-    for &root in roots {
-        let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next = arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut graph, arena, child_ctx)
-            })
-            .expect("legacy root should build");
-        ctx.set_state(next);
-    }
-    graph
-}
-
 /// Records the fixture as a whole-frame artifact, requires it to be eligible,
 /// and returns the rect passes of its direct compilation.
 fn eligible_whole_frame_rects<F>(fixture: F, config: PaintParityConfig) -> Vec<RectPassTestSnapshot>
