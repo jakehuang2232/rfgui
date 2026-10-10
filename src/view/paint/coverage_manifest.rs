@@ -1553,11 +1553,23 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     };
                     self.items.extend(before_children);
                     let children = node.element.children();
+                    // A child mask carries its own normal/overflow partition.
+                    let escaping_children = if retained_child_mask.is_none() {
+                        escaping_child_phases(self.arena, node.element.as_ref(), children)
+                    } else {
+                        None
+                    };
                     let in_scope_children = retained_child_mask
                         .as_ref()
                         .map_or(children, |mask| mask.in_scope_children());
                     let mut next_in_scope_index = 0;
                     for (schedule_index, &child) in in_scope_children.iter().enumerate() {
+                        if escaping_children
+                            .as_ref()
+                            .is_some_and(|escaping| escaping[schedule_index])
+                        {
+                            continue;
+                        }
                         let Some(index) = (if retained_child_mask.is_none() {
                             Some(schedule_index)
                         } else {
@@ -1571,6 +1583,25 @@ fn record_coverage_manifest_with_property_authorities_impl(
                             );
                             return;
                         };
+                        let child_recording_context =
+                            node.element.shadow_paint_recording_context_for_child(
+                                child,
+                                self.arena,
+                                &recording_context,
+                            );
+                        path.push(index);
+                        self.walk(child, root_index, path, false, &child_recording_context);
+                        path.pop();
+                    }
+                    // Escaping children paint after every normal sibling and
+                    // before the parent's after-children paint (scrollbars).
+                    for (index, &child) in children.iter().enumerate() {
+                        if !escaping_children
+                            .as_ref()
+                            .is_some_and(|escaping| escaping[index])
+                        {
+                            continue;
+                        }
                         let child_recording_context =
                             node.element.shadow_paint_recording_context_for_child(
                                 child,
@@ -2091,6 +2122,32 @@ fn record_coverage_manifest_with_property_authorities_impl(
         }
     }
     manifest
+}
+
+/// For a parent that paints in phases, which children escape its inner clip:
+/// they paint after every normal sibling, in arena order, as Legacy Element
+/// parents do. Deferred Viewport children are included but skip themselves in
+/// the walk; the late phase records them. `None` when no child escapes, so the
+/// walk keeps plain arena order without allocating.
+fn escaping_child_phases(
+    arena: &NodeArena,
+    parent: &dyn crate::view::base_component::ElementTrait,
+    children: &[NodeKey],
+) -> Option<Vec<bool>> {
+    if !parent.retains_absolute_clip_child_phase_order() {
+        return None;
+    }
+    let escapes = |child: NodeKey| {
+        arena.get(child).is_some_and(|node| {
+            node.element
+                .retained_absolute_clip_mode_witness(child, arena)
+                != crate::view::base_component::RetainedAbsoluteClipModeWitness::Normal
+        })
+    };
+    if !children.iter().copied().any(escapes) {
+        return None;
+    }
+    Some(children.iter().copied().map(escapes).collect())
 }
 
 /// Each canonical mask partition preserves original sibling order. Continue

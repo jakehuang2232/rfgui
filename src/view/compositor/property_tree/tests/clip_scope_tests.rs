@@ -46,7 +46,7 @@ fn anchor_parent_self_clip_is_stable_replace_and_generation_is_monotonic() {
 }
 
 #[test]
-fn nested_anchor_parent_leaf_is_exact_only_after_normal_siblings() {
+fn nested_anchor_parent_leaf_is_exact_in_any_sibling_order() {
     let (arena, root, normal, anchor) = nested_anchor_parent_fixture(false);
     let id = ClipNodeId {
         owner: anchor,
@@ -70,25 +70,29 @@ fn nested_anchor_parent_leaf_is_exact_only_after_normal_siblings() {
     trees.sync(&arena, &[root]);
     assert_eq!(trees.clips[&id].generation, clip.generation);
 
+    // The coverage walk paints escaping children after their normal
+    // siblings, so neither arena order nor a deferred Viewport sibling
+    // withholds the clip.
     let (arena, root, _, anchor) = nested_anchor_parent_fixture(true);
     let mut trees = PropertyTrees::default();
     trees.sync(&arena, &[root]);
-    assert!(!trees.clips.contains_key(&ClipNodeId {
+    let id = ClipNodeId {
         owner: anchor,
         role: ClipNodeRole::SelfClip,
-    }));
-    assert_eq!(trees.states[&anchor].paint.clip, None);
+    };
+    assert_eq!(trees.clips[&id].behavior, ClipBehavior::Replace);
+    assert_eq!(trees.states[&anchor].paint.clip, Some(id));
 
     let (arena, root, normal, anchor) = nested_anchor_parent_fixture(false);
     set_clip_mode(&arena, normal, ClipMode::Viewport);
     let mut trees = PropertyTrees::default();
     trees.sync(&arena, &[root]);
-    assert!(
-        !trees.clips.contains_key(&ClipNodeId {
+    assert_eq!(
+        trees.states[&anchor].paint.clip,
+        Some(ClipNodeId {
             owner: anchor,
             role: ClipNodeRole::SelfClip,
-        }),
-        "a deferred Viewport sibling invalidates the normal frame ordering witness"
+        })
     );
 }
 

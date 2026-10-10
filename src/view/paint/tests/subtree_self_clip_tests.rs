@@ -19,7 +19,7 @@ fn scene(anchor_first: bool) -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey) {
 }
 
 #[test]
-fn generic_subtree_self_clip_records_descendants_only_with_matching_phase_order() {
+fn generic_subtree_self_clip_records_in_phase_order_for_either_arena_order() {
     for anchor_first in [false, true] {
         let (arena, roots, owner, child) = scene(anchor_first);
         let (trees, generations) = sync_identity(&arena, &roots);
@@ -31,7 +31,7 @@ fn generic_subtree_self_clip_records_descendants_only_with_matching_phase_order(
             None
         );
         let witness = PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false);
-        assert_eq!(witness.is_some(), !anchor_first);
+        assert!(witness.is_some());
         assert!(
             matches!(
                 record_clip_enabled_frame_artifact(
@@ -54,19 +54,12 @@ fn generic_subtree_self_clip_records_descendants_only_with_matching_phase_order(
             RendererMode::Auto,
         )
         .unwrap();
-        if anchor_first {
-            assert!(matches!(
-                result,
-                FrameArtifactRecordOutcome::WholeFrameLegacyFallback { .. }
-            ));
-            continue;
-        }
         let FrameArtifactRecordOutcome::Artifact {
             artifact,
             eligibility,
         } = result
         else {
-            panic!("ordered subtree must record without fallback");
+            panic!("subtree must record without fallback, anchor_first={anchor_first}");
         };
         assert!(eligibility.eligible);
         let clip = ClipNodeId {
@@ -93,7 +86,12 @@ fn generic_subtree_self_clip_records_descendants_only_with_matching_phase_order(
                     })
             })
             .collect();
-        let normal = arena.children_of(roots[0])[0];
+        let normal = arena
+            .children_of(roots[0])
+            .iter()
+            .copied()
+            .find(|&sibling| sibling != owner)
+            .unwrap();
         assert_eq!(
             owners,
             vec![normal, owner, child],

@@ -12,13 +12,12 @@
 // Acceptance contract (applies equally to Artifact and Legacy):
 // - Preserve the paint-order obligation exercised by
 //   paint/tests/anchor_parent_clip_tests.rs: normal blue siblings paint before
-//   overflow AnchorParent children, which occupy the late phase. Extending the
-//   current leaf proof to subtrees must keep exact owner/arena mirrors and the
-//   parent's normal-before-overflow partition, plus explicit self/descendant
-//   clip scopes. Until a phase-aware traversal is proved, reject misordered
-//   parents; do not silently record a different order or duplicate a subtree.
-//   This fixture has one overflow child, so it does not replace that mixed-
-//   sibling ordering test or prove a general phase-aware traversal.
+//   overflow AnchorParent children, which occupy the late phase. The coverage
+//   walk visits a phase-ordered parent's escaping children after its normal
+//   ones whatever the arena order; subtrees still need exact owner/arena
+//   mirrors plus explicit self/descendant clip scopes, and must never record a
+//   subtree twice. This fixture has one overflow child, so it does not replace
+//   that mixed-sibling ordering test.
 // - Group opacity applies once after overlapping children are composed.
 //   For two opaque rectangles in ONE opacity-0.5 group, both overlap and
 //   non-overlap probes must have alpha 0.5. Applying 0.5 to each rectangle

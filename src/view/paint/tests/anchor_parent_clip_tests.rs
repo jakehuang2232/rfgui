@@ -94,98 +94,31 @@ fn exact_single_owner_self_clip_keeps_outer_shadow_outside_owner_clip() {
 }
 
 #[test]
-fn nested_anchor_parent_requires_legacy_order_and_matches_strictly_when_partitioned() {
+fn nested_anchor_parent_paints_after_its_normal_sibling_in_either_arena_order() {
     for anchor_first in [true, false] {
         let (arena, roots, anchor) = nested_anchor_parent_mixed_siblings(anchor_first);
-        let (properties, generations) = sync_identity(&arena, &roots);
-        let clip = properties
-            .paint_state_for(anchor)
-            .and_then(|state| state.clip);
-
-        if !anchor_first {
-            assert_eq!(
-                clip,
-                Some(ClipNodeId {
-                    owner: anchor,
-                    role: ClipNodeRole::SelfClip,
-                })
-            );
-            let snapshots = eligible_whole_frame_rects(
-                || {
-                    let (arena, roots, _) = nested_anchor_parent_mixed_siblings(false);
-                    (arena, roots)
-                },
-                PaintParityConfig {
-                    initial_scissor: Some([4, 6, 24, 18]),
-                    ..PaintParityConfig::default()
-                },
-            );
-            let visible = snapshots
-                .iter()
-                .filter(|snapshot| f32::from_bits(snapshot.fill_color_bits[3]) > 0.0)
-                .collect::<Vec<_>>();
-            assert_eq!(visible.len(), 2);
-            assert_eq!(visible[0].opaque_depth_order, Some(0));
-            assert_eq!(visible[1].opaque_depth_order, Some(1));
-            assert_eq!(visible[1].effective_scissor_rect, Some([0, 0, 320, 240]));
-
-            let (production_arena, production_roots, _) =
-                nested_anchor_parent_mixed_siblings(false);
-            let (production_properties, production_generations) =
-                sync_identity(&production_arena, &production_roots);
-            take_full_artifact_record_count();
-            take_artifact_compile_count();
-            let FrameArtifactRecordOutcome::Artifact {
-                artifact,
-                eligibility,
-            } = record_clip_enabled_frame_artifact(
-                &production_arena,
-                &production_roots,
-                &production_properties,
-                &production_generations,
-                RendererMode::Auto,
-            )
-            .unwrap()
-            else {
-                panic!("ordered nested AnchorParent must enter production clip authority")
-            };
-            assert!(eligibility.eligible);
-            assert_eq!(take_full_artifact_record_count(), 3);
-            let _ = compiled_whole_frame_graph(&artifact);
-            assert_eq!(take_artifact_compile_count(), 1);
-            continue;
-        }
-
-        assert_eq!(clip, None);
-
-        take_full_artifact_record_count();
-        let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) =
-            record_frame_artifact(
-                &arena,
-                &roots,
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .expect("misordered nested AnchorParent must fail closed to legacy")
-        else {
-            panic!("nested AnchorParent must not produce an artifact")
-        };
-        assert!(
-            eligibility
-                .reasons
-                .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                    LegacyPaintReason::SelfClip
-                ))
-        );
+        let (properties, _) = sync_identity(&arena, &roots);
         assert_eq!(
-            take_full_artifact_record_count(),
-            0,
-            "metadata rejection must happen before any full artifact hook"
+            properties
+                .paint_state_for(anchor)
+                .and_then(|state| state.clip),
+            Some(ClipNodeId {
+                owner: anchor,
+                role: ClipNodeRole::SelfClip,
+            }),
+            "anchor_first={anchor_first}"
         );
-
-        let legacy = legacy_roots_graph(arena, &roots).test_rect_pass_snapshots();
-        let visible = legacy
+        let snapshots = eligible_whole_frame_rects(
+            || {
+                let (arena, roots, _) = nested_anchor_parent_mixed_siblings(anchor_first);
+                (arena, roots)
+            },
+            PaintParityConfig {
+                initial_scissor: Some([4, 6, 24, 18]),
+                ..PaintParityConfig::default()
+            },
+        );
+        let visible = snapshots
             .iter()
             .filter(|snapshot| f32::from_bits(snapshot.fill_color_bits[3]) > 0.0)
             .collect::<Vec<_>>();
@@ -193,15 +126,43 @@ fn nested_anchor_parent_requires_legacy_order_and_matches_strictly_when_partitio
         assert!(
             f32::from_bits(visible[0].fill_color_bits[2])
                 > f32::from_bits(visible[0].fill_color_bits[0]),
-            "normal blue sibling paints before the overflow AnchorParent child"
+            "the normal blue sibling paints first, anchor_first={anchor_first}"
         );
         assert!(
             f32::from_bits(visible[1].fill_color_bits[0])
                 > f32::from_bits(visible[1].fill_color_bits[2]),
-            "overflow AnchorParent child paints in the legacy late phase"
+            "the AnchorParent child paints in the overflow phase, anchor_first={anchor_first}"
         );
         assert_eq!(visible[0].opaque_depth_order, Some(0));
         assert_eq!(visible[1].opaque_depth_order, Some(1));
+        assert_eq!(visible[1].effective_scissor_rect, Some([0, 0, 320, 240]));
+
+        let (production_arena, production_roots, _) =
+            nested_anchor_parent_mixed_siblings(anchor_first);
+        let (production_properties, production_generations) =
+            sync_identity(&production_arena, &production_roots);
+        take_full_artifact_record_count();
+        take_artifact_compile_count();
+        let FrameArtifactRecordOutcome::Artifact {
+            artifact,
+            eligibility,
+        } = record_clip_enabled_frame_artifact(
+            &production_arena,
+            &production_roots,
+            &production_properties,
+            &production_generations,
+            RendererMode::Auto,
+        )
+        .unwrap()
+        else {
+            panic!(
+                "nested AnchorParent must enter production clip authority, anchor_first={anchor_first}"
+            )
+        };
+        assert!(eligibility.eligible);
+        assert_eq!(take_full_artifact_record_count(), 3);
+        let _ = compiled_whole_frame_graph(&artifact);
+        assert_eq!(take_artifact_compile_count(), 1);
     }
 }
 
@@ -294,32 +255,22 @@ fn nested_and_multiple_deferred_viewport_roots_record_once_in_late_dfs_order() {
 }
 
 #[test]
-fn anchor_parent_ordering_classifies_mixed_element_image_and_svg_via_trait_witness() {
-    let (arena, roots, anchors) = mixed_native_anchor_parent_siblings(false);
-    let (properties, _) = sync_identity(&arena, &roots);
-    for anchor in &anchors {
-        assert_eq!(
-            properties
-                .paint_state_for(*anchor)
-                .and_then(|state| state.clip),
-            Some(ClipNodeId {
-                owner: *anchor,
-                role: ClipNodeRole::SelfClip,
-            }),
-            "normal mixed-native siblings precede the overflow phase"
-        );
-    }
-
-    let (arena, roots, anchors) = mixed_native_anchor_parent_siblings(true);
-    let (properties, _) = sync_identity(&arena, &roots);
-    for anchor in anchors {
-        assert_eq!(
-            properties
-                .paint_state_for(anchor)
-                .and_then(|state| state.clip),
-            None,
-            "a normal native sibling after overflow must invalidate every exact witness"
-        );
+fn anchor_parent_clips_classify_mixed_element_image_and_svg_in_any_sibling_order() {
+    for normal_last in [false, true] {
+        let (arena, roots, anchors) = mixed_native_anchor_parent_siblings(normal_last);
+        let (properties, _) = sync_identity(&arena, &roots);
+        for anchor in anchors {
+            assert_eq!(
+                properties
+                    .paint_state_for(anchor)
+                    .and_then(|state| state.clip),
+                Some(ClipNodeId {
+                    owner: anchor,
+                    role: ClipNodeRole::SelfClip,
+                }),
+                "every native anchor escapes through the trait witness, normal_last={normal_last}"
+            );
+        }
     }
 }
 
@@ -466,7 +417,11 @@ fn nested_self_clip_metadata_and_full_hooks_require_owner_bound_witness() {
 }
 
 #[test]
-fn nested_anchor_parent_with_viewport_sibling_fails_before_full_recording() {
+fn nested_anchor_parent_with_deferred_siblings_keeps_its_exact_clip() {
+    let self_clip = |anchor| ClipNodeId {
+        owner: anchor,
+        role: ClipNodeRole::SelfClip,
+    };
     let (arena, roots, anchor) = nested_anchor_parent_mixed_siblings(false);
     let normal = arena
         .children_of(roots[0])
@@ -497,22 +452,34 @@ fn nested_anchor_parent_with_viewport_sibling_fails_before_full_recording() {
         properties
             .paint_state_for(anchor)
             .and_then(|state| state.clip),
-        None
+        Some(self_clip(anchor))
     );
-    take_full_artifact_record_count();
-    let outcome = record_clip_enabled_frame_artifact(
+    let FrameArtifactRecordOutcome::Artifact {
+        artifact,
+        eligibility,
+    } = record_clip_enabled_frame_artifact(
         &arena,
         &roots,
         &properties,
         &generations,
         RendererMode::Auto,
     )
-    .unwrap();
-    assert!(matches!(
-        outcome,
-        FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-    ));
-    assert_eq!(take_full_artifact_record_count(), 0);
+    .unwrap()
+    else {
+        panic!("a deferred Viewport sibling must not reject the escaping anchor")
+    };
+    assert!(eligibility.eligible);
+    let position = |owner| {
+        artifact
+            .chunks
+            .iter()
+            .position(|chunk| chunk.owner == owner)
+            .unwrap()
+    };
+    assert!(
+        position(anchor) < position(normal),
+        "the deferred Viewport sibling paints in the late phase after the anchor"
+    );
 
     let (mut arena, roots, anchor) = nested_anchor_parent_mixed_siblings(false);
     let normal = arena
@@ -530,21 +497,29 @@ fn nested_anchor_parent_with_viewport_sibling_fails_before_full_recording() {
         properties
             .paint_state_for(anchor)
             .and_then(|state| state.clip),
-        None,
-        "a non-Element deferred sibling must invalidate the exact ordering witness"
+        Some(self_clip(anchor)),
+        "a non-Element deferred sibling must not withhold the anchor clip"
     );
     take_full_artifact_record_count();
-    let outcome = record_clip_enabled_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .unwrap();
-    assert!(matches!(
-        outcome,
-        FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-    ));
+    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) =
+        record_clip_enabled_frame_artifact(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            RendererMode::Auto,
+        )
+        .unwrap()
+    else {
+        panic!("a deferred custom leaf still has no retained recording")
+    };
+    assert!(
+        !eligibility
+            .reasons
+            .contains(&FrameArtifactFallbackReason::LegacyBoundary(
+                LegacyPaintReason::SelfClip
+            )),
+        "only the deferred custom leaf rejects: {eligibility:?}"
+    );
     assert_eq!(take_full_artifact_record_count(), 0);
 }

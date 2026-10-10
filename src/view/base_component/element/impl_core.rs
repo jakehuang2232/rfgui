@@ -189,11 +189,10 @@ impl Element {
 
     /// Exact `AnchorParent` self clip that the artifact walk may own.
     ///
-    /// Nested `AnchorParent` children are painted by legacy Element parents in
-    /// a second, overflow-only phase. The artifact walk keeps arena order, so a
-    /// nested leaf is admissible only when the parent's children are already
-    /// partitioned normal-before-overflow. Checking the complete parent order
-    /// here prevents one admitted child from hiding a later ordering mismatch.
+    /// Nested `AnchorParent` children paint in a second, overflow-only phase
+    /// after their normal siblings. The coverage walk visits a phase-ordered
+    /// parent's children in that order, so the clip is admissible whatever the
+    /// arena order is.
     pub(crate) fn exact_anchor_parent_leaf_self_clip_geometry(
         &self,
         owner: crate::view::node_arena::NodeKey,
@@ -204,11 +203,16 @@ impl Element {
         if !arena.children_of(owner).is_empty() {
             return None;
         }
-        self.anchor_parent_self_clip_with_parent_order(geometry, owner, arena, is_frame_root)
+        self.anchor_parent_self_clip_with_phase_ordered_parent(
+            geometry,
+            owner,
+            arena,
+            is_frame_root,
+        )
     }
 
-    /// The generic recorder can retain a nonempty scope when both child mirrors
-    /// and the parent's normal-before-overflow phase agree with arena order.
+    /// The generic recorder can retain a nonempty scope when the child mirrors
+    /// agree with the arena and the parent paints its children in phases.
     /// Descendants are still visited and validated individually by coverage;
     /// this proof does not authorize unsupported paint inside the subtree.
     pub(crate) fn exact_anchor_parent_subtree_self_clip_geometry(
@@ -235,7 +239,7 @@ impl Element {
                 return None;
             }
         }
-        self.anchor_parent_self_clip_with_parent_order(
+        self.anchor_parent_self_clip_with_phase_ordered_parent(
             self.self_clip_geometry()?,
             owner,
             arena,
@@ -243,7 +247,7 @@ impl Element {
         )
     }
 
-    fn anchor_parent_self_clip_with_parent_order(
+    fn anchor_parent_self_clip_with_phase_ordered_parent(
         &self,
         geometry: crate::view::compositor::property_tree::ClipGeometry,
         owner: crate::view::node_arena::NodeKey,
@@ -256,44 +260,17 @@ impl Element {
 
         let parent_key = arena.parent_of(owner)?;
         let parent_node = arena.get(parent_key)?;
-        if parent_node.children() != parent_node.element.children() {
-            return None;
-        }
-        if !parent_node
-            .element
-            .retains_absolute_clip_child_phase_order()
+        if parent_node.children() != parent_node.element.children()
+            || !parent_node.children().contains(&owner)
         {
             return None;
         }
-
-        let mut owner_seen = false;
-        let mut overflow_seen = false;
-        for child in parent_node.children().iter().copied() {
-            let is_overflow = if child == owner {
-                true
-            } else {
-                let child_node = arena.get(child)?;
-                match child_node
-                    .element
-                    .retained_absolute_clip_mode_witness(child, arena)
-                {
-                    RetainedAbsoluteClipModeWitness::Normal => false,
-                    RetainedAbsoluteClipModeWitness::AnchorParentEscape => true,
-                    // Viewport children leave the normal frame walk and are
-                    // therefore not covered by this ordering proof.
-                    RetainedAbsoluteClipModeWitness::ViewportDeferred => return None,
-                }
-            };
-            if child == owner {
-                owner_seen = true;
-            }
-            if is_overflow {
-                overflow_seen = true;
-            } else if overflow_seen {
-                return None;
-            }
-        }
-        owner_seen.then_some(geometry)
+        // Only a phase-ordered parent has its escaping children walked after
+        // their normal siblings; any other host keeps arena order.
+        parent_node
+            .element
+            .retains_absolute_clip_child_phase_order()
+            .then_some(geometry)
     }
 
     /// Apply this element's own clip scissor on top of `ctx`. For most
