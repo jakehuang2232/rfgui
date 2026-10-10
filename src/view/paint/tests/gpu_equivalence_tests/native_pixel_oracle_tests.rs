@@ -1,82 +1,101 @@
 use super::*;
 
+/// Each corner texel of the 2x2 pattern is sampled alone near its image
+/// corner, so even linear filtering reads it unblended there, and owner
+/// opacity scales its alpha. The pattern's color channels are 0 or 255, so no
+/// color-space conversion applies. Compares in the premultiplied domain the
+/// RGBA8 targets quantize in, where low alpha cannot amplify rounding.
+fn validate_opacity_corner_anchors(
+    pixels: &[u8],
+    anchors: [[u32; 2]; 4],
+    opacity: f32,
+    case: &str,
+    adapter: &str,
+) -> Result<(), String> {
+    let texels = [
+        [255_u8, 0, 0, 255],
+        [0, 255, 0, 128],
+        [0, 0, 255, 255],
+        [255, 255, 0, 64],
+    ];
+    let premultiply = |[r, g, b, a]: [u8; 4]| {
+        [r, g, b].map(|channel| (f32::from(channel) * f32::from(a) / 255.0).round() as u8)
+    };
+    for ([x, y], texel) in anchors.into_iter().zip(texels) {
+        let alpha = (f32::from(texel[3]) * opacity).round() as u8;
+        let expected = [texel[0], texel[1], texel[2], alpha];
+        let actual = pixel_at(pixels, x, y)?;
+        let near = actual[3].abs_diff(alpha) <= 1
+            && premultiply(actual)
+                .iter()
+                .zip(premultiply(expected))
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 1);
+        if !near {
+            return Err(format!(
+                "{case} corner ({x},{y}) is wrong on {adapter}: actual={actual:?}, expected={expected:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires native GPU adapter"]
-fn native_prepared_image_2x2_fit_sampling_alpha_and_arena_drop_match() -> Result<(), String> {
+fn native_prepared_image_2x2_fit_sampling_alpha_and_arena_drop_match_oracles() -> Result<(), String>
+{
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();
     let pixels: Arc<[u8]> = Arc::from([
         255_u8, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 255, 255, 0, 64,
     ]);
-    for (fit, sampling, opacity, validate_anchors) in [
-        (
+    let fill = render(
+        artifact_image_graph(
+            pixels.clone(),
             crate::view::ImageFit::Fill,
             crate::view::ImageSampling::Nearest,
             1.0,
-            true,
-        ),
+            false,
+        )?,
+        &gpu,
+    )?;
+    validate_nearest_fill_image_anchors(&fill, "artifact", &adapter)?;
+    // Contain centers a 31-pixel square in the 47x31 box, leaving letterbox
+    // bars; Cover scales to 47 pixels and crops eight rows top and bottom.
+    for (fit, sampling, opacity, anchors, letterbox) in [
         (
             crate::view::ImageFit::Contain,
             crate::view::ImageSampling::Linear,
             0.65,
-            false,
+            [[12, 5], [35, 5], [12, 25], [35, 25]],
+            Some([2, 15]),
         ),
         (
             crate::view::ImageFit::Cover,
             crate::view::ImageSampling::Nearest,
             0.4,
-            false,
+            [[5, 4], [40, 4], [5, 27], [40, 27]],
+            None,
         ),
     ] {
-        let legacy = render(
-            legacy_image_graph(pixels.clone(), fit, sampling, opacity, false)?,
-            &gpu,
-        )?;
+        let case = format!("prepared-image-{fit:?}-{sampling:?}-{opacity}");
         let artifact = render(
             artifact_image_graph(pixels.clone(), fit, sampling, opacity, false)?,
             &gpu,
         )?;
-        if validate_anchors {
-            validate_nearest_fill_image_anchors(&legacy, "legacy", &adapter)?;
-            validate_nearest_fill_image_anchors(&artifact, "artifact", &adapter)?;
+        validate_opacity_corner_anchors(&artifact, anchors, opacity, &case, &adapter)?;
+        if let Some([x, y]) = letterbox {
+            assert_pixel_near(
+                &artifact,
+                x,
+                y,
+                [0, 0, 0, 0],
+                0,
+                &format!("{case} letterbox"),
+            )?;
         }
-        compare_pixels(
-            &legacy,
-            &artifact,
-            [0, 0, 47, 31],
-            &adapter,
-            &format!("prepared-image-{fit:?}-{sampling:?}-{opacity}"),
-        )?;
     }
 
-    let legacy = render(
-        legacy_image_graph(
-            pixels.clone(),
-            crate::view::ImageFit::Fill,
-            crate::view::ImageSampling::Linear,
-            0.65,
-            true,
-        )?,
-        &gpu,
-    )?;
-    let artifact = render(
-        artifact_image_graph(
-            pixels,
-            crate::view::ImageFit::Fill,
-            crate::view::ImageSampling::Linear,
-            0.65,
-            true,
-        )?,
-        &gpu,
-    )?;
-    compare_pixels(
-        &legacy,
-        &artifact,
-        [14, 17, 40, 24],
-        &adapter,
-        "prepared-image-decorated-fill-linear-0.65",
-    )?;
     // Independent of either renderer: opaque blue replaces the background
     // inside the group's content box, then owner opacity 0.65 gives alpha166.
     // Per-op opacity would leave background color and alpha above166 here.
@@ -106,7 +125,7 @@ fn native_prepared_image_2x2_fit_sampling_alpha_and_arena_drop_match() -> Result
         assert_pixel_near(&output, 30, 28, [0, 0, 255, 166], 1, path)?;
         assert_pixel_near(&output, 0, 0, [0; 4], 0, path)?;
     }
-    eprintln!("native PreparedImage parity passed on {adapter}");
+    eprintln!("native PreparedImage oracles passed on {adapter}");
     Ok(())
 }
 

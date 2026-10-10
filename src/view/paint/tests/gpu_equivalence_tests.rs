@@ -269,22 +269,6 @@ fn zero_surface_v2_graph(with_border: bool) -> Result<FrameGraph, String> {
     Ok(graph)
 }
 
-fn legacy_graph(with_border: bool) -> Result<FrameGraph, String> {
-    let (mut arena, roots) = fixture(with_border);
-    let (mut graph, mut ctx, target) = graph_prelude();
-    for root in roots {
-        let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next = arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut graph, arena, child_ctx)
-            })
-            .ok_or_else(|| "legacy pixel fixture root disappeared".to_string())?;
-        ctx.set_state(next);
-    }
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GpuScrollbarCase {
     Hidden,
@@ -359,50 +343,6 @@ fn transformed_graph_prelude_with_size(
     ctx.push_scissor_rect(outer_scissor);
     ctx.set_current_target(target);
     (graph, ctx, target)
-}
-
-fn legacy_transformed_rect_graph(
-    scale_factor: f32,
-    outer_scissor: Option<[u32; 4]>,
-) -> Result<FrameGraph, String> {
-    legacy_transformed_rect_graph_with_paint_offset(scale_factor, outer_scissor, [0.0, 0.0])
-}
-
-fn legacy_transformed_rect_graph_with_paint_offset(
-    scale_factor: f32,
-    outer_scissor: Option<[u32; 4]>,
-    paint_offset: [f32; 2],
-) -> Result<FrameGraph, String> {
-    let (mut arena, root) = transformed_rect_fixture();
-    let (mut graph, mut ctx, target) = transformed_graph_prelude(scale_factor, outer_scissor);
-    ctx.set_paint_offset(paint_offset);
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .ok_or_else(|| "legacy transformed rect root disappeared".to_string())?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn translated_pixels(source: &[u8], delta: [i32; 2]) -> Vec<u8> {
-    let mut translated = vec![0; source.len()];
-    for y in 0..HEIGHT as i32 {
-        for x in 0..WIDTH as i32 {
-            let destination = [x + delta[0], y + delta[1]];
-            if destination[0] < 0
-                || destination[1] < 0
-                || destination[0] >= WIDTH as i32
-                || destination[1] >= HEIGHT as i32
-            {
-                continue;
-            }
-            let source_offset = ((y as u32 * WIDTH + x as u32) * BYTES_PER_PIXEL) as usize;
-            let destination_offset = ((destination[1] as u32 * WIDTH + destination[0] as u32)
-                * BYTES_PER_PIXEL) as usize;
-            translated[destination_offset..destination_offset + BYTES_PER_PIXEL as usize]
-                .copy_from_slice(&source[source_offset..source_offset + BYTES_PER_PIXEL as usize]);
-        }
-    }
-    translated
 }
 
 fn set_nested_scroll_gpu_position(element: &mut Element, x: f32, y: f32) {
@@ -1067,22 +1007,6 @@ fn zero_surface_v2_self_clip_graph() -> Result<FrameGraph, String> {
     Ok(graph)
 }
 
-fn legacy_self_clip_graph() -> Result<FrameGraph, String> {
-    let (mut arena, roots) = self_clip_fixture();
-    let (mut graph, mut ctx, target) = self_clip_graph_prelude();
-    for root in roots {
-        let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next = arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut graph, arena, child_ctx)
-            })
-            .ok_or_else(|| "legacy self-clip pixel fixture root disappeared".to_string())?;
-        ctx.set_state(next);
-    }
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
 fn padded_bytes_per_row(width: u32) -> u32 {
     let unpadded = width.saturating_mul(BYTES_PER_PIXEL);
     unpadded.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT
@@ -1331,6 +1255,80 @@ fn validate_nearest_fill_image_anchors(
     Ok(())
 }
 
+/// Geometry oracle for an axis-aligned rect on whole pixels: pixels at least
+/// one pixel inside `rect` read `inside(x, y)` exactly (`None` skips one), and
+/// pixels at least one pixel outside it read transparent. The pixel on each
+/// side of an edge is left to coverage and filtering.
+fn assert_rect_geometry(
+    pixels: &[u8],
+    rect: [u32; 4],
+    inside: impl Fn(u32, u32) -> Option<[u8; 4]>,
+    adapter: &str,
+    case: &str,
+) -> Result<(), String> {
+    let [left, top, width, height] = rect.map(i64::from);
+    let (right, bottom) = (left + width, top + height);
+    let mut mismatches = Vec::new();
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let (px, py) = (i64::from(x), i64::from(y));
+            let expected = if px > left && px + 1 < right && py > top && py + 1 < bottom {
+                inside(x, y)
+            } else if px + 1 < left || px > right || py + 1 < top || py > bottom {
+                Some([0, 0, 0, 0])
+            } else {
+                None
+            };
+            let Some(expected) = expected else {
+                continue;
+            };
+            let actual = pixel_at(pixels, x, y)?;
+            if actual != expected {
+                mismatches.push(([x, y], actual, expected));
+            }
+        }
+    }
+    match mismatches.first() {
+        None => Ok(()),
+        Some((at, actual, expected)) => Err(format!(
+            "{case}: {} pixels break the {rect:?} geometry on {adapter}, first at {at:?}: actual={actual:?}, expected={expected:?}",
+            mismatches.len()
+        )),
+    }
+}
+
+/// The `fixture` rect at [8, 8, 32, 24]: its fill and, when bordered, a
+/// four-pixel border; the pixel either side of the border's inner edge is
+/// skipped.
+fn assert_fixture_geometry(
+    pixels: &[u8],
+    with_border: bool,
+    adapter: &str,
+    case: &str,
+) -> Result<(), String> {
+    let fill = rgba8_unorm(Color::rgb(40, 80, 160));
+    let border = rgba8_unorm(Color::rgb(220, 60, 20));
+    assert_rect_geometry(
+        pixels,
+        [8, 8, 32, 24],
+        |x, y| {
+            if !with_border {
+                return Some(fill);
+            }
+            let inner = |value: u32, start: u32, end: u32| value >= start && value < end;
+            if inner(x, 13, 35) && inner(y, 13, 27) {
+                Some(fill)
+            } else if !inner(x, 11, 37) || !inner(y, 11, 29) {
+                Some(border)
+            } else {
+                None
+            }
+        },
+        adapter,
+        case,
+    )
+}
+
 fn validate_color_anchors(
     pixels: &[u8],
     with_border: bool,
@@ -1522,18 +1520,6 @@ fn direct_scroll_transform_gpu_fixture(
     (arena, root, properties, generations)
 }
 
-fn legacy_direct_scroll_transform_graph(
-    case: DirectScrollTransformGpuCase,
-) -> Result<FrameGraph, String> {
-    let (mut arena, root, _, _) = direct_scroll_transform_gpu_fixture(case);
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, None);
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .ok_or_else(|| format!("legacy direct S->T {} root disappeared", case.label))?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
 #[derive(Clone, Copy, Debug)]
 struct DirectScrollTransformGradientCoverage {
     red: usize,
@@ -1596,7 +1582,6 @@ mod oracle_tests;
 mod rect_instancing_tests;
 mod text_buffer_tests;
 
-mod artifact_intermediate_coverage_tests;
 mod artifact_scroll_content_contract_tests;
 mod native_artifact_scroll_content_tests;
 mod native_artifact_surface_materialization_tests;
@@ -1837,50 +1822,4 @@ fn scroll_scene_gpu_fixture(
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
     (arena, root, properties, generations)
-}
-
-pub(super) fn compare_nested_segment_pixels_within_one_lsb(
-    legacy: &[u8],
-    direct: &[u8],
-    adapter: &str,
-    case: &str,
-) -> Result<(), String> {
-    if legacy.len() != direct.len() {
-        return Err(format!(
-            "{case}: pixel buffer lengths differ on {adapter}: legacy={}, direct={}",
-            legacy.len(),
-            direct.len()
-        ));
-    }
-    let mut diff = PixelDiff::default();
-    for pixel_index in 0..(WIDTH * HEIGHT) as usize {
-        let x = pixel_index as u32 % WIDTH;
-        let y = pixel_index as u32 / WIDTH;
-        let offset = pixel_index * BYTES_PER_PIXEL as usize;
-        let mut pixel_failed = false;
-        for channel in 0..BYTES_PER_PIXEL as usize {
-            let delta = legacy[offset + channel].abs_diff(direct[offset + channel]);
-            diff.max_channel_delta = diff.max_channel_delta.max(delta);
-            if delta > 1 {
-                pixel_failed = true;
-            }
-        }
-        if !pixel_failed {
-            continue;
-        }
-        diff.mismatched_pixels += 1;
-        diff.bounds = Some(match diff.bounds {
-            None => [x, y, x, y],
-            Some([left, top, right, bottom]) => {
-                [left.min(x), top.min(y), right.max(x), bottom.max(y)]
-            }
-        });
-    }
-    if diff.mismatched_pixels == 0 {
-        return Ok(());
-    }
-    Err(format!(
-        "{case}: legacy/direct nested-segment pixel mismatch on {adapter}: mismatched_pixels={}, max_channel_delta={}, bounds={:?}, rule=whole-frame every-channel delta<=1 LSB",
-        diff.mismatched_pixels, diff.max_channel_delta, diff.bounds
-    ))
 }

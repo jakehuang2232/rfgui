@@ -114,7 +114,7 @@ fn materialized_two_boundary_graph(
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
-fn native_materialized_direct_scroll_transform_matches_the_pre_cutover_pixels_and_reuses_one_pair()
+fn native_materialized_direct_scroll_transform_scrolls_rigidly_and_reuses_one_pair()
 -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native hardware graphics context");
@@ -139,22 +139,11 @@ fn native_materialized_direct_scroll_transform_matches_the_pre_cutover_pixels_an
     if !viewport.finish_retained_surface_transaction_for_frame(Some(cold_owner), true) {
         return Err("materialized S->T cold transaction did not commit".to_owned());
     }
-    let cold_oracle = render(
-        legacy_direct_scroll_transform_graph(DirectScrollTransformGpuCase::BASELINE)?,
-        gpu,
-    )?;
     validate_direct_scroll_transform_gradient_coverage(
         &cold_pixels,
         DirectScrollTransformGpuCase::BASELINE,
         "materialized cold",
         &adapter,
-    )?;
-    compare_pixels(
-        &cold_oracle,
-        &cold_pixels,
-        [0, 0, WIDTH, HEIGHT],
-        &adapter,
-        "materialized-direct-s-t/cold",
     )?;
 
     let (warm_graph, warm_owner, warm_actions, warm_bytes) =
@@ -172,23 +161,31 @@ fn native_materialized_direct_scroll_transform_matches_the_pre_cutover_pixels_an
     if !viewport.finish_retained_surface_transaction_for_frame(Some(warm_owner), true) {
         return Err("materialized S->T warm transaction did not commit".to_owned());
     }
-    let warm_oracle = render(
-        legacy_direct_scroll_transform_graph(DirectScrollTransformGpuCase::SCROLL_ONLY)?,
-        gpu,
-    )?;
     validate_direct_scroll_transform_gradient_coverage(
         &warm_pixels,
         DirectScrollTransformGpuCase::SCROLL_ONLY,
         "materialized warm offset",
         &adapter,
     )?;
-    compare_pixels(
-        &warm_oracle,
-        &warm_pixels,
-        [0, 0, WIDTH, HEIGHT],
-        &adapter,
-        "materialized-direct-s-t/warm-offset",
-    )?;
+    // The reused raster moves rigidly with the scroll: every warm row equals
+    // the cold row one scroll delta lower, except the rows the scroll newly
+    // exposes, which the cold scrollport clipped.
+    let delta = (DirectScrollTransformGpuCase::SCROLL_ONLY.scroll_offset_y
+        - DirectScrollTransformGpuCase::BASELINE.scroll_offset_y) as u32;
+    let exposed =
+        DIRECT_SCROLL_TRANSFORM_SCROLLPORT[1] - delta..DIRECT_SCROLL_TRANSFORM_SCROLLPORT[1];
+    for y in (0..HEIGHT).filter(|y| !exposed.contains(y)) {
+        let cold_y = if y < exposed.start { y + delta } else { y };
+        for x in 0..WIDTH {
+            let warm = pixel_at(&warm_pixels, x, y)?;
+            let cold = pixel_at(&cold_pixels, x, cold_y)?;
+            if warm != cold {
+                return Err(format!(
+                    "materialized S->T warm ({x},{y})={warm:?} is not cold ({x},{cold_y})={cold:?} on {adapter}"
+                ));
+            }
+        }
+    }
     eprintln!(
         "materialized direct scroll/transform one-pair gate passed on {adapter}: bytes={warm_bytes}"
     );

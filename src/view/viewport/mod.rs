@@ -21,8 +21,7 @@ mod rect_instances;
 mod render;
 #[cfg(test)]
 pub(crate) use render::{
-    ArtifactSurfaceIntermediateReadbackForTest, AutoArtifactSurfaceEmissionForTest,
-    emit_retained_auto_artifact_surface_for_test,
+    AutoArtifactSurfaceEmissionForTest, emit_retained_auto_artifact_surface_for_test,
 };
 #[cfg(test)]
 mod retained_auto_census_tests;

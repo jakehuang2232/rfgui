@@ -151,28 +151,6 @@ impl Viewport {
     }
 
     #[cfg(test)]
-    pub(crate) fn encode_persistent_render_target_readback_for_test(
-        &self,
-        stable_key: crate::view::frame_graph::PersistentTextureKey,
-        encoder: &mut wgpu::CommandEncoder,
-        buffer: &wgpu::Buffer,
-        padded_bytes_per_row: u32,
-        width: u32,
-        height: u32,
-    ) -> Result<(), String> {
-        self.frame
-            .offscreen_render_target_pool
-            .encode_persistent_readback(
-                stable_key,
-                encoder,
-                buffer,
-                padded_bytes_per_row,
-                width,
-                height,
-            )
-    }
-
-    #[cfg(test)]
     pub(crate) fn retained_surface_release_log_for_test(
         &self,
     ) -> &[crate::view::frame_graph::PersistentTextureKey] {

@@ -53,67 +53,6 @@ pub(super) fn nested_effect_fixture() -> (NodeArena, NodeKey) {
     (arena, root)
 }
 
-fn legacy_nested_effect_graph(paint_offset: [f32; 2]) -> Result<FrameGraph, String> {
-    let (mut arena, root) = nested_effect_fixture();
-    let (mut graph, mut ctx, target) = transformed_graph_prelude(1.0, None);
-    ctx.set_paint_offset(paint_offset);
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .unwrap();
-    // Legacy now applies subtree group opacity correctly. Its live owner scope,
-    // not a retired retained planner, provides this supplementary comparison.
-    assert_legacy_effect_fixture_is_overlap_sensitive(&graph)?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn assert_legacy_effect_fixture_is_overlap_sensitive(graph: &FrameGraph) -> Result<(), String> {
-    let effect_opacity_bits = 0.625_f32.to_bits();
-    let layers = graph.test_graphics_passes::<crate::view::render_pass::TextureCompositePass>();
-    let [effect_layer] = layers.as_slice() else {
-        return Err(format!(
-            "Legacy comparison must composite exactly one Effect layer, got {}",
-            layers.len()
-        ));
-    };
-    let opacity_bits = effect_layer.test_snapshot().opacity_bits;
-    if opacity_bits != effect_opacity_bits || opacity_bits == 1.0_f32.to_bits() {
-        return Err("Legacy comparison must composite one non-neutral Effect layer".to_owned());
-    }
-
-    let rects = graph
-        .test_rect_pass_snapshots()
-        .into_iter()
-        .filter(|rect| {
-            rect.color_write_enabled
-                && rect.opacity_bits == 1.0_f32.to_bits()
-                && f32::from_bits(rect.fill_color_bits[3]) > 0.0
-        })
-        .collect::<Vec<_>>();
-    let has_overlapping_effect_ops = rects.iter().enumerate().any(|(left_index, left)| {
-        rects.iter().skip(left_index + 1).any(|right| {
-            if left.output_target != right.output_target {
-                return false;
-            }
-            let [left_x, left_y] = left.position_bits.map(f32::from_bits);
-            let [left_width, left_height] = left.size_bits.map(f32::from_bits);
-            let [right_x, right_y] = right.position_bits.map(f32::from_bits);
-            let [right_width, right_height] = right.size_bits.map(f32::from_bits);
-            let overlap_width =
-                (left_x + left_width).min(right_x + right_width) - left_x.max(right_x);
-            let overlap_height =
-                (left_y + left_height).min(right_y + right_height) - left_y.max(right_y);
-            overlap_width > 0.0 && overlap_height > 0.0
-        })
-    });
-    has_overlapping_effect_ops
-        .then_some(())
-        .ok_or_else(|| {
-            "Legacy comparison must raster at least two non-transparent overlapping Effect ops into one target"
-                .to_owned()
-        })
-}
-
 pub(super) fn production_artifact_graph(
     viewport: &mut Viewport,
     fixture: fn() -> (NodeArena, NodeKey),
@@ -143,14 +82,8 @@ fn verify_cold_warm_artifact_surface(
     case: &str,
     fixture: fn() -> (NodeArena, NodeKey),
     paint_offset: [f32; 2],
-    oracle: FrameGraph,
-    oracle_pixel_translation: Option<[i32; 2]>,
-    absolute_probes: &[([u32; 2], [u8; 4])],
+    geometry: &dyn Fn(&[u8], &str) -> Result<(), String>,
 ) -> Result<(usize, u64), String> {
-    let oracle_pixels = render(oracle, gpu)?;
-    let legacy_pixels = oracle_pixel_translation
-        .map(|delta| translated_pixels(&oracle_pixels, delta))
-        .unwrap_or(oracle_pixels);
     let mut viewport = Viewport::new();
 
     let (cold_graph, cold) = production_artifact_graph(&mut viewport, fixture, paint_offset)?;
@@ -192,31 +125,8 @@ fn verify_cold_warm_artifact_surface(
         ));
     }
 
-    // The rectangular group must not paint a halo outside its authored box.
-    // These expected background colors are independent of either renderer.
-    for &(at, expected) in absolute_probes {
-        for (name, pixels) in [
-            ("legacy", &legacy_pixels),
-            ("cold", &cold_pixels),
-            ("warm", &warm_pixels),
-        ] {
-            assert_pixel_near(
-                pixels,
-                at[0],
-                at[1],
-                expected,
-                1,
-                &format!("{case}/{name}/absolute outside group"),
-            )?;
-        }
-    }
-    compare_pixels(
-        &legacy_pixels,
-        &cold_pixels,
-        [0, 0, WIDTH, HEIGHT],
-        adapter,
-        &format!("{case}/cold-vs-legacy"),
-    )?;
+    geometry(&cold_pixels, &format!("{case}/cold"))?;
+    geometry(&warm_pixels, &format!("{case}/warm"))?;
     compare_pixels(
         &cold_pixels,
         &warm_pixels,
@@ -227,30 +137,57 @@ fn verify_cold_warm_artifact_surface(
     Ok((cold.surface_count, cold.aggregate_texture_bytes))
 }
 
+/// sRGB bytes in linear premultiplied form, before any target quantizes them.
+fn linear_opaque(rgb: [u8; 3]) -> [f32; 4] {
+    let [r, g, b] = rgb.map(|byte| {
+        let encoded = f32::from(byte) / 255.0;
+        if encoded <= 0.04045 {
+            encoded / 12.92
+        } else {
+            ((encoded + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    [r, g, b, 1.0]
+}
+
 #[test]
 #[ignore = "requires native GPU adapter"]
 // Run explicitly with:
-// cargo test -q native_production_artifact_transform_matches_legacy_and_reuses_real_pool -- --ignored --nocapture
-fn native_production_artifact_transform_matches_legacy_and_reuses_real_pool() -> Result<(), String>
+// cargo test -q native_production_artifact_transform_matches_geometry_and_reuses_real_pool -- --ignored --nocapture
+fn native_production_artifact_transform_matches_geometry_and_reuses_real_pool() -> Result<(), String>
 {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();
+    // The fixture box [10, 8, 28, 20] moves 6 pixels right by its transform
+    // and by the host placement [3.5, -2.25], which snaps to [4, -2] at DPR 1.
+    let fill = rgba8_unorm(Color::rgb(210, 55, 25));
+    let geometry = |pixels: &[u8], case: &str| {
+        assert_rect_geometry(
+            pixels,
+            [20, 6, 28, 20],
+            |x, y| (x >= 23 && x < 45 && y >= 9 && y < 23).then_some(fill),
+            &adapter,
+            case,
+        )?;
+        // No pixel of the 2-pixel border is clear of both its edges, so only
+        // check that it reads as the green border, not the red fill or empty.
+        let [r, g, _, a] = pixel_at(pixels, 21, 15)?;
+        if g < 100 || r > 40 || a < 128 {
+            return Err(format!(
+                "{case}: border band (21,15) is not the green border on {adapter}: {:?}",
+                pixel_at(pixels, 21, 15)?
+            ));
+        }
+        Ok(())
+    };
     let (surface_count, bytes) = verify_cold_warm_artifact_surface(
         gpu,
         &adapter,
         "production-artifact-transform",
         transformed_rect_fixture,
         ARTIFACT_HOST_PLACEMENT_OFFSET,
-        // This proves that non-zero Artifact placement equals the independently
-        // rendered zero-offset legacy result translated by the fixture's known
-        // DPR-1 snap: [3.5, -2.25] -> [4, -2]. The dedicated three-way gate
-        // also proves that the repaired same-placement legacy Transform path
-        // agrees with this independent translation and with Artifact. Keep the
-        // independent oracle here until a later batch deliberately retires it.
-        legacy_transformed_rect_graph(1.0, None)?,
-        Some([4, -2]),
-        &[],
+        &geometry,
     )?;
     if surface_count == 0 || bytes == 0 {
         return Err(format!(
@@ -258,7 +195,7 @@ fn native_production_artifact_transform_matches_legacy_and_reuses_real_pool() ->
         ));
     }
     eprintln!(
-        "production artifact transform parity/reuse passed on {adapter}: aggregate_color_depth_bytes={bytes}"
+        "production artifact transform geometry/reuse passed on {adapter}: aggregate_color_depth_bytes={bytes}"
     );
     Ok(())
 }
@@ -266,29 +203,56 @@ fn native_production_artifact_transform_matches_legacy_and_reuses_real_pool() ->
 #[test]
 #[ignore = "requires native GPU adapter"]
 // Run explicitly with:
-// cargo test -q native_production_artifact_effect_matches_legacy_group_and_reuses_real_pool -- --ignored --nocapture
-fn native_production_artifact_effect_matches_legacy_group_and_reuses_real_pool()
+// cargo test -q native_production_artifact_effect_matches_group_oracle_and_reuses_real_pool -- --ignored --nocapture
+fn native_production_artifact_effect_matches_group_oracle_and_reuses_real_pool()
 -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();
+    // After owner snapping the root is [9, 3] + [54, 48], the 0.625 group is
+    // [21, 13] + [32, 26], and its green child is [29, 19] + [20, 16]. The
+    // group rasters into an RGBA8 layer, then composites over the quantized
+    // root background; quantize at both writes as the targets do.
+    let background = quantize_premultiplied_rgba8(linear_opaque([24, 64, 116]));
+    let group = |content: [u8; 3]| {
+        let layer = quantize_premultiplied_rgba8(linear_opaque(content));
+        premultiplied_to_readback_rgba8(quantize_premultiplied_rgba8(source_over(
+            scale_premultiplied(layer, 0.625),
+            background,
+        )))
+    };
+    let root = premultiplied_to_readback_rgba8(background);
+    let red = group([224, 72, 36]);
+    let green = group([36, 184, 92]);
+    let geometry = |pixels: &[u8], case: &str| {
+        for (at, expected, region) in [
+            // Immediately outside the group: no halo past its authored box.
+            ([20, 20], root, "outside group left"),
+            ([30, 12], root, "outside group top"),
+            ([53, 20], root, "outside group right"),
+            ([30, 39], root, "outside group bottom"),
+            ([23, 15], red, "group without overlap"),
+            ([51, 37], red, "group without overlap, far corner"),
+            ([39, 27], green, "overlap, composed once"),
+        ] {
+            assert_pixel_near(
+                pixels,
+                at[0],
+                at[1],
+                expected,
+                1,
+                &format!("{case}/{region}"),
+            )?;
+        }
+        Ok(())
+    };
     let (surface_count, bytes) = verify_cold_warm_artifact_surface(
         gpu,
         &adapter,
         "production-artifact-effect",
         nested_effect_fixture,
         ARTIFACT_HOST_PLACEMENT_OFFSET,
-        legacy_nested_effect_graph(ARTIFACT_HOST_PLACEMENT_OFFSET)?,
-        None,
-        // The group is [21,13] + [32,26] after owner snapping. All four
-        // probes are inside the root but immediately outside the group.
-        // sRGB [24,64,116] converts to RGBA8 linear [2,13,45,255].
-        &[
-            ([20, 20], [2, 13, 45, 255]),
-            ([30, 12], [2, 13, 45, 255]),
-            ([53, 20], [2, 13, 45, 255]),
-            ([30, 39], [2, 13, 45, 255]),
-        ],
+        &geometry,
     )?;
     if surface_count == 0 || bytes == 0 {
         return Err(format!(
@@ -296,7 +260,7 @@ fn native_production_artifact_effect_matches_legacy_group_and_reuses_real_pool()
         ));
     }
     eprintln!(
-        "production artifact effect parity/reuse passed on {adapter}: aggregate_color_depth_bytes={bytes}"
+        "production artifact effect oracle/reuse passed on {adapter}: aggregate_color_depth_bytes={bytes}"
     );
     Ok(())
 }

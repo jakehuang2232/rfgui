@@ -1,12 +1,7 @@
 use super::*;
 
-use super::artifact_intermediate_coverage_tests::{
-    IntermediateSurfaceCoverage, validate_artifact_roundtrip_differences_are_partial_coverage_only,
-    validate_artifact_roundtrip_differences_use_intermediate_partial_coverage,
-};
 use crate::view::viewport::{
-    ArtifactSurfaceIntermediateReadbackForTest, AutoArtifactSurfaceEmissionForTest,
-    emit_retained_auto_artifact_surface_for_test,
+    AutoArtifactSurfaceEmissionForTest, emit_retained_auto_artifact_surface_for_test,
 };
 
 type ArtifactScrollFixture = fn() -> (NodeArena, NodeKey, PropertyTrees, PaintGenerationTracker);
@@ -94,20 +89,6 @@ fn nested_inline_ifc_text_fixture() -> (NodeArena, NodeKey, PropertyTrees, Paint
     );
     drop(text_node);
     (arena, outer, properties, generations)
-}
-
-fn legacy_artifact_scroll_fixture_graph(
-    fixture: ArtifactScrollFixture,
-    paint_offset: [f32; 2],
-) -> Result<FrameGraph, String> {
-    let (mut arena, root, _, _) = fixture();
-    let (mut graph, mut ctx, target) = transformed_graph_prelude(1.0, None);
-    ctx.set_paint_offset(paint_offset);
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .ok_or_else(|| "legacy Artifact scroll root disappeared".to_owned())?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
 }
 
 pub(super) fn production_artifact_scroll_fixture_graph(
@@ -199,81 +180,13 @@ fn relayout_and_sync_single_scroll_fixture(
     (properties, generations)
 }
 
-fn legacy_immediate_scroll_oracle_pixels(
-    gpu: &NativeGpu,
-    arena: &mut NodeArena,
-    root: NodeKey,
-) -> Result<Vec<u8>, String> {
-    let (mut graph, ctx, target) = transformed_graph_prelude(1.0, None);
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .ok_or_else(|| "legacy immediate scroll root disappeared".to_owned())?;
-    add_present(&mut graph, &target)?;
-    render(graph, gpu)
-}
-
-fn read_artifact_intermediate_surface(
-    gpu: &NativeGpu,
-    viewport: &Viewport,
-    observation: ArtifactSurfaceIntermediateReadbackForTest,
-) -> Result<Vec<u8>, String> {
-    let padded_bytes_per_row = padded_bytes_per_row(observation.width);
-    let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("rfgui Artifact intermediate surface readback"),
-        size: u64::from(padded_bytes_per_row) * u64::from(observation.height),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = gpu
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("rfgui Artifact intermediate surface readback"),
-        });
-    viewport.encode_persistent_render_target_readback_for_test(
-        observation.color_key,
-        &mut encoder,
-        &readback,
-        padded_bytes_per_row,
-        observation.width,
-        observation.height,
-    )?;
-    let _submission = gpu.queue.submit(Some(encoder.finish()));
-
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    readback.map_async(wgpu::MapMode::Read, .., move |result| {
-        let _ = sender.send(result);
-    });
-    gpu.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(|error| format!("intermediate readback wait failed: {error:?}"))?;
-    receiver
-        .recv()
-        .map_err(|error| format!("intermediate readback callback was lost: {error}"))?
-        .map_err(|error| format!("intermediate readback map failed: {error:?}"))?;
-    let mapped = readback
-        .slice(..)
-        .get_mapped_range()
-        .map_err(|error| format!("failed to access intermediate readback: {error:?}"))?;
-    let pixels = remove_row_padding(
-        &mapped,
-        observation.width,
-        observation.height,
-        padded_bytes_per_row,
-    )?;
-    drop(mapped);
-    readback.unmap();
-    Ok(pixels)
-}
-
 fn verify_artifact_scroll_fixture(
     gpu: &NativeGpu,
     adapter: &str,
     case: &str,
     fixture: ArtifactScrollFixture,
+    expected: &dyn Fn(&[u8], &str) -> Result<(), String>,
 ) -> Result<(usize, u64), String> {
-    let legacy_graph =
-        legacy_artifact_scroll_fixture_graph(fixture, ARTIFACT_HOST_PLACEMENT_OFFSET)?;
-    let legacy_pixels = render(legacy_graph, gpu)?;
     let mut viewport = Viewport::new();
 
     let (cold_graph, cold) = production_artifact_scroll_fixture_graph_with_paint_offset(
@@ -326,18 +239,7 @@ fn verify_artifact_scroll_fixture(
         ));
     }
 
-    compare_nested_segment_pixels_within_one_lsb(
-        &legacy_pixels,
-        &cold_pixels,
-        adapter,
-        &format!("{case}/cold-vs-legacy"),
-    )?;
-    validate_artifact_roundtrip_differences_are_partial_coverage_only(
-        &legacy_pixels,
-        &cold_pixels,
-        adapter,
-        &format!("{case}/cold-vs-legacy"),
-    )?;
+    expected(&cold_pixels, &format!("{case}/cold"))?;
     compare_pixels(
         &cold_pixels,
         &warm_pixels,
@@ -351,20 +253,57 @@ fn verify_artifact_scroll_fixture(
 #[test]
 #[ignore = "requires native GPU adapter"]
 // Run explicitly with:
-// cargo test -q native_production_artifact_nested_scroll_multi_leaf_matches_legacy_within_one_lsb_and_reuses_real_pool -- --ignored --nocapture
-fn native_production_artifact_nested_scroll_multi_leaf_matches_legacy_within_one_lsb_and_reuses_real_pool()
+// cargo test -q native_production_artifact_nested_scroll_multi_leaf_matches_geometry_and_reuses_real_pool -- --ignored --nocapture
+fn native_production_artifact_nested_scroll_multi_leaf_matches_geometry_and_reuses_real_pool()
 -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();
+    // The host placement [3.5, -2.25] snaps to [4, -2], so the outer
+    // scrollport [14, 18] + [100, 80] meets the 67x64 target in
+    // [14, 67) x [18, 64), painted in the hosts' background. The extra green
+    // leaf moves to [66, 10] + [28, 24]: inside the target only its first
+    // column shows, clipped to the scrollport's top, all of it in the edge's
+    // coverage band. The pixel either side of every edge is skipped.
+    let background = rgba8_unorm(Color::rgb(24, 48, 72));
+    let expected = |pixels: &[u8], case: &str| {
+        let near = |value: u32, edge: u32| value + 1 >= edge && value <= edge;
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                if near(x, 14) || near(y, 18) || near(x, 66) && y <= 34 || near(y, 34) && x >= 65 {
+                    continue;
+                }
+                let want = if x < 14 || y < 18 {
+                    [0, 0, 0, 0]
+                } else {
+                    background
+                };
+                let actual = pixel_at(pixels, x, y)?;
+                if actual != want {
+                    return Err(format!(
+                        "{case}: ({x},{y}) is {actual:?}, expected {want:?} on {adapter}"
+                    ));
+                }
+            }
+        }
+        let [r, g, b, _] = pixel_at(pixels, 66, 25)?;
+        if g <= r.max(b) {
+            return Err(format!(
+                "{case}: the green leaf's visible column (66,25) is not green on {adapter}: {:?}",
+                pixel_at(pixels, 66, 25)?
+            ));
+        }
+        Ok(())
+    };
     let (surface_count, bytes) = verify_artifact_scroll_fixture(
         gpu,
         &adapter,
         "production-artifact-nested-scroll-multi-leaf",
         nested_multi_leaf_fixture,
+        &expected,
     )?;
     eprintln!(
-        "production Artifact nested multi-leaf scroll parity/reuse passed on {adapter}: surfaces={surface_count}, aggregate_color_depth_bytes={bytes}"
+        "production Artifact nested multi-leaf scroll geometry/reuse passed on {adapter}: surfaces={surface_count}, aggregate_color_depth_bytes={bytes}"
     );
     Ok(())
 }
@@ -372,22 +311,78 @@ fn native_production_artifact_nested_scroll_multi_leaf_matches_legacy_within_one
 #[test]
 #[ignore = "requires native GPU adapter"]
 // Run explicitly with:
-// cargo test -q native_production_artifact_nested_scroll_inline_ifc_text_matches_legacy_within_one_lsb_and_reuses_real_pool -- --ignored --nocapture
-fn native_production_artifact_nested_scroll_inline_ifc_text_matches_legacy_within_one_lsb_and_reuses_real_pool()
+// cargo test -q native_production_artifact_nested_scroll_inline_ifc_text_paints_inside_its_scrollport_and_reuses_real_pool -- --ignored --nocapture
+fn native_production_artifact_nested_scroll_inline_ifc_text_paints_inside_its_scrollport_and_reuses_real_pool()
 -> Result<(), String> {
     let _thread_cache_cleanup = NativeArtifactTextThreadCacheCleanup;
     crate::view::render_pass::text_pass::clear_text_resources_cache();
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU initialized");
     let adapter = gpu.label();
+    // Glyph coverage has no geometric oracle. The snapped outer scrollport
+    // [14, 18] + [100, 80] must clip everything; inside it each pixel is the
+    // hosts' background, or that background blended toward the glyph color by
+    // one coverage value, which the green and blue channels must agree on.
+    // The fixture builds its IFC-owned geometry from the standalone Text's
+    // shaped context, which Text shapes with a constant black brush (the
+    // standalone bridge applies its color), so these glyphs paint black.
+    let background = rgba8_unorm(Color::rgb(24, 48, 72));
+    let glyph = [0, 0, 0, 255];
+    let expected = |pixels: &[u8], case: &str| {
+        let near = |value: u32, edge: u32| value + 1 >= edge && value <= edge;
+        let mut inked = 0;
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                if near(x, 14) || near(y, 18) {
+                    continue;
+                }
+                let actual = pixel_at(pixels, x, y)?;
+                if x < 14 || y < 18 {
+                    if actual != [0, 0, 0, 0] {
+                        return Err(format!(
+                            "{case}: ({x},{y}) outside the scrollport is {actual:?} on {adapter}"
+                        ));
+                    }
+                    continue;
+                }
+                if actual == background {
+                    continue;
+                }
+                let coverage = |channel: usize| {
+                    (f32::from(actual[channel]) - f32::from(background[channel]))
+                        / (f32::from(glyph[channel]) - f32::from(background[channel]))
+                };
+                let (green, blue) = (coverage(1), coverage(2));
+                let red_bounded = actual[0] + 1 >= background[0].min(glyph[0])
+                    && actual[0] <= background[0].max(glyph[0]) + 1;
+                if actual[3] != 255
+                    || !red_bounded
+                    || !(-0.15..=1.15).contains(&green)
+                    || !(-0.15..=1.15).contains(&blue)
+                    // One code of the background's green 8 is 0.125 coverage.
+                    || (green - blue).abs() > 0.2
+                {
+                    return Err(format!(
+                        "{case}: ({x},{y}) is {actual:?}, not a blend of {background:?} toward {glyph:?} on {adapter}"
+                    ));
+                }
+                inked += 1;
+            }
+        }
+        if inked < 32 {
+            return Err(format!("{case}: only {inked} glyph pixels on {adapter}"));
+        }
+        Ok(())
+    };
     let (surface_count, bytes) = verify_artifact_scroll_fixture(
         gpu,
         &adapter,
         "production-artifact-nested-scroll-inline-ifc-text",
         nested_inline_ifc_text_fixture,
+        &expected,
     )?;
     eprintln!(
-        "production Artifact nested IFC-owned Text parity/reuse passed on {adapter}: surfaces={surface_count}, aggregate_color_depth_bytes={bytes}"
+        "production Artifact nested IFC-owned Text clip/coverage/reuse passed on {adapter}: surfaces={surface_count}, aggregate_color_depth_bytes={bytes}"
     );
     Ok(())
 }
@@ -395,8 +390,8 @@ fn native_production_artifact_nested_scroll_inline_ifc_text_matches_legacy_withi
 #[test]
 #[ignore = "requires native GPU adapter"]
 // Run explicitly with:
-// cargo test -q native_production_artifact_scroll_offset_only_reuses_real_pool_and_matches_legacy_immediate -- --ignored --nocapture
-fn native_production_artifact_scroll_offset_only_reuses_real_pool_and_matches_legacy_immediate()
+// cargo test -q native_production_artifact_scroll_offset_only_reuses_real_pool_and_scrolls_rigidly -- --ignored --nocapture
+fn native_production_artifact_scroll_offset_only_reuses_real_pool_and_scrolls_rigidly()
 -> Result<(), String> {
     const MOVED_OFFSET_Y: f32 = 13.0;
 
@@ -471,14 +466,12 @@ fn native_production_artifact_scroll_offset_only_reuses_real_pool_and_matches_le
         ));
     }
     let warm_pixels = render_on_viewport(warm_graph, gpu, &mut viewport, 1.0, FORMAT)?;
-    let [intermediate_observation] = warm.intermediate_surfaces.as_slice() else {
+    if warm.intermediate_surfaces.len() != 1 {
         return Err(format!(
-            "offset-only gate requires exactly one readable Artifact intermediate surface on {adapter}: observations={:?}",
+            "offset-only gate requires exactly one Artifact intermediate surface on {adapter}: observations={:?}",
             warm.intermediate_surfaces
         ));
-    };
-    let intermediate_pixels =
-        read_artifact_intermediate_surface(gpu, &viewport, *intermediate_observation)?;
+    }
     if !viewport.finish_retained_surface_transaction_for_frame(Some(warm.frame_owner), true) {
         return Err("offset-only warm Artifact transaction did not commit".to_owned());
     }
@@ -488,35 +481,43 @@ fn native_production_artifact_scroll_offset_only_reuses_real_pool_and_matches_le
         ));
     }
 
-    // Before Artifact admission moved ahead of the scroll cascade, this exact
-    // naturally re-laid-out shape exhausted the retained scroll candidates and
-    // ended at the selector's immediate legacy painter. Build that named oracle
-    // from an independent arena so the expected pixels do not reuse Artifact
-    // preparation or the cold frame's retained resources.
-    let (mut oracle_arena, oracle_root, _, _) = zero_offset_single_scroll_content_fixture();
-    let _ = relayout_and_sync_single_scroll_fixture(&mut oracle_arena, oracle_root);
-    crate::view::test_support::get_element_mut::<Element>(&oracle_arena, oracle_root)
-        .set_scroll_offset((0.0, MOVED_OFFSET_Y));
-    let _ = relayout_and_sync_single_scroll_fixture(&mut oracle_arena, oracle_root);
-    let oracle_pixels = legacy_immediate_scroll_oracle_pixels(gpu, &mut oracle_arena, oracle_root)?;
-    compare_nested_segment_pixels_within_one_lsb(
-        &oracle_pixels,
-        &warm_pixels,
-        &adapter,
-        "production-artifact-scroll-offset-only/legacy-immediate-oracle",
-    )?;
-    validate_artifact_roundtrip_differences_use_intermediate_partial_coverage(
-        &oracle_pixels,
-        &warm_pixels,
-        IntermediateSurfaceCoverage {
-            pixels: &intermediate_pixels,
-            width: intermediate_observation.width,
-            height: intermediate_observation.height,
-            source_physical_origin: intermediate_observation.source_physical_origin,
-        },
-        &adapter,
-        "production-artifact-scroll-offset-only/legacy-immediate-oracle",
-    )?;
+    // The reused content moves rigidly with the scroll offset: inside the
+    // scrollport every warm row equals the cold row MOVED_OFFSET_Y lower,
+    // except the rows the scroll newly exposes, which the cold scrollport
+    // clipped. Everything outside the scrollport is unchanged. The pixel
+    // either side of a scrollport edge mixes edge coverage with whatever
+    // content lies there, so it is skipped.
+    let scrollport = arena.get(root).unwrap().element.box_model_snapshot();
+    let [left, top, right, bottom] = [
+        scrollport.x,
+        scrollport.y,
+        scrollport.x + scrollport.width,
+        scrollport.y + scrollport.height,
+    ]
+    .map(|edge| edge as u32);
+    let delta = MOVED_OFFSET_Y as u32;
+    let near = |value: u32, edge: u32| value + 1 >= edge && value <= edge;
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            if near(x, left) || near(x, right) || near(y, top) || near(y, bottom) {
+                continue;
+            }
+            let inside = x >= left && x < right && y >= top && y < bottom;
+            // Newly exposed rows, and rows whose cold source lies in the
+            // bottom edge's band.
+            if inside && y + delta + 1 >= bottom {
+                continue;
+            }
+            let cold_y = if inside { y + delta } else { y };
+            let warm_pixel = pixel_at(&warm_pixels, x, y)?;
+            let cold_pixel = pixel_at(&cold_pixels, x, cold_y)?;
+            if warm_pixel != cold_pixel {
+                return Err(format!(
+                    "offset-only warm ({x},{y})={warm_pixel:?} is not cold ({x},{cold_y})={cold_pixel:?} on {adapter}"
+                ));
+            }
+        }
+    }
     eprintln!(
         "production Artifact scroll-offset-only reuse passed on {adapter}: offset={MOVED_OFFSET_Y}, surfaces={}, aggregate_color_depth_bytes={}",
         warm.surface_count, warm.aggregate_texture_bytes
