@@ -1,5 +1,5 @@
 //! Real production scroll culling, raster residency and independent pixels.
-use rfgui::style::{Color, Layout, Length, Padding, ScrollDirection};
+use rfgui::style::{Color, Layout, Length, ScrollDirection};
 use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, rsx};
 use rfgui::view::viewport::{ViewportPaintRendererMode, set_scroll_offset_by_id};
@@ -12,15 +12,50 @@ fn scene(changed: bool, rows: usize) -> RsxNode {
     rsx! {
         <Element style={{width:Length::px(400.), height:Length::px(400.), layout:Layout::flow().column(), scroll_direction:ScrollDirection::Both}}>
             {(0..rows).map(|i| rsx! {
-                // Keep glyphs away from the left receiver edge: the two renderers
-                // have a separately reproduced negative-glyph clipping discrepancy.
-                // Rects still cross both edges; text crosses vertical edges.
-                <Element style={{width:Length::px(600.), height:Length::px(24.), padding:Padding::uniform(Length::px(0.)).x(Length::px(128.)), background:if changed && i==0 {Color::rgb(210,30,80)} else {Color::rgb(20+(i%7)as u8*25,50,90)}}}>
+                <Element style={{width:Length::px(600.), height:Length::px(24.), background:if changed && i==0 {Color::rgb(210,30,80)} else {Color::rgb(20+(i%7)as u8*25,50,90)}}}>
                     <Text>{format!("Row {i}: immutable text")}</Text>
                 </Element>
             }).collect::<Vec<_>>()}
         </Element>
     }
+}
+
+/// `tree` scrolled to `offset` in a fresh viewport, rasterized with every
+/// render cache released, so nothing from an earlier frame can be reused.
+fn cold_pixels(
+    gpu: &gpu::Gpu,
+    mode: ViewportPaintRendererMode,
+    tree: &RsxNode,
+    offset: (f32, f32),
+    size: [u32; 2],
+    dpr: f32,
+    now: Instant,
+) -> Result<Vec<u8>, String> {
+    let mut viewport = Viewport::new();
+    viewport.set_paint_renderer_mode(mode);
+    let render = |viewport: &mut Viewport| {
+        viewport.render_rsx_offscreen_for_test(
+            tree,
+            gpu.device.clone(),
+            gpu.queue.clone(),
+            size,
+            dpr,
+            now,
+        )
+    };
+    // Scrolling needs the laid-out container. Content that does not
+    // overflow clamps the offset away, as it does for the warm viewport.
+    render(&mut viewport)?;
+    let arena = viewport.node_arena();
+    let root = arena.roots()[0];
+    let id = arena.get(root).unwrap().element.stable_id();
+    set_scroll_offset_by_id(arena, root, id, offset);
+    viewport.release_render_resource_caches();
+    let cold = render(&mut viewport)?;
+    if mode == ViewportPaintRendererMode::RetainedAuto {
+        assert!(cold.rerasterizations > 0);
+    }
+    gpu.read(&cold.texture, size)
 }
 
 #[test]
@@ -48,7 +83,6 @@ fn scroll_interest_reuses_rasters_and_refreshes_exposed_or_changed_content() -> 
     ];
     for dpr in [1, 2] {
         let size = [440 * dpr, 440 * dpr];
-        let mut reference = Vec::new();
         for mode in [
             ViewportPaintRendererMode::Legacy,
             ViewportPaintRendererMode::RetainedAuto,
@@ -57,6 +91,7 @@ fn scroll_interest_reuses_rasters_and_refreshes_exposed_or_changed_content() -> 
             viewport.set_paint_renderer_mode(mode);
             let now = Instant::now();
             let mut first_targets = None;
+            let mut frames = Vec::new();
             for (frame, &(offset, changed, rows)) in cases.iter().enumerate() {
                 if frame > 0 {
                     let arena = viewport.node_arena();
@@ -93,38 +128,13 @@ fn scroll_interest_reuses_rasters_and_refreshes_exposed_or_changed_content() -> 
                         }
                     }
                 }
-                if mode == ViewportPaintRendererMode::Legacy {
-                    reference.push(pixels);
-                } else {
-                    let diff = pixels
-                        .iter()
-                        .zip(&reference[frame])
-                        .filter(|(a, b)| a != b)
-                        .count();
-                    if offset.0.fract() == 0. && offset.1.fract() == 0. {
-                        assert_eq!(diff, 0, "pixel parity DPR {dpr} frame {frame}");
-                    } else {
-                        // Fractional composite sampling differs from
-                        // immediate rendering. Compare the warmed cache against
-                        // an actual cache-cleared raster for this fractional case.
-                        viewport.release_render_resource_caches();
-                        let cold = viewport.render_rsx_offscreen_for_test(
-                            &tree,
-                            gpu.device.clone(),
-                            gpu.queue.clone(),
-                            size,
-                            dpr as f32,
-                            now,
-                        )?;
-                        assert!(cold.rerasterizations > 0);
-                        let cold_pixels = gpu.read(&cold.texture, size)?;
-                        let cold_diff = pixels
-                            .iter()
-                            .zip(&cold_pixels)
-                            .filter(|(a, b)| a != b)
-                            .count();
-                        assert_eq!(cold_diff, 0, "fractional warm/cold pixels DPR {dpr}");
-                    }
+                // Whatever this frame reused must paint what a cold raster of
+                // the same state paints.
+                let cold = cold_pixels(&gpu, mode, &tree, offset, size, dpr as f32, now)?;
+                let diff = pixels.iter().zip(&cold).filter(|(a, b)| a != b).count();
+                assert_eq!(diff, 0, "warm/cold pixels {mode:?} DPR {dpr} frame {frame}");
+                frames.push(pixels);
+                if mode == ViewportPaintRendererMode::RetainedAuto {
                     if frame == 0 {
                         first_targets = Some(output.persistent_targets.clone());
                     }
@@ -142,8 +152,8 @@ fn scroll_interest_reuses_rasters_and_refreshes_exposed_or_changed_content() -> 
                     }
                 }
             }
-            assert_ne!(reference[0], reference[1], "scroll must change pixels");
-            assert_ne!(reference[10], reference[11], "edit must change pixels");
+            assert_ne!(frames[0], frames[1], "scroll must change pixels: {mode:?}");
+            assert_ne!(frames[10], frames[11], "edit must change pixels: {mode:?}");
         }
     }
     Ok(())

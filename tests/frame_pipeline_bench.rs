@@ -59,7 +59,6 @@ fn state_to_completed_offscreen_frame() -> Result<(), String> {
     }
     for rows in [128, 512] {
         for &case in &cases {
-            let mut reference_pixels: Vec<Vec<u8>> = Vec::new();
             for mode in [
                 ViewportPaintRendererMode::Legacy,
                 ViewportPaintRendererMode::RetainedAuto,
@@ -74,6 +73,7 @@ fn state_to_completed_offscreen_frame() -> Result<(), String> {
                 let mut completed = Vec::new();
                 let mut phases: [Vec<f64>; 10] = Default::default();
                 let mut counts = [0usize; 9];
+                let mut sampled_pixels: Vec<Vec<u8>> = Vec::new();
                 for frame in 0..20 + samples {
                     let start = Instant::now();
                     let (result, p) = profile_ui_work(|| {
@@ -119,16 +119,7 @@ fn state_to_completed_offscreen_frame() -> Result<(), String> {
                             .map_err(|e| e.to_string())?;
                         }
                         assert!(pixels.chunks_exact(4).any(|p| p[3] > 0), "empty output");
-                        if mode == ViewportPaintRendererMode::Legacy {
-                            reference_pixels.push(pixels);
-                        } else {
-                            let differences = pixels
-                                .iter()
-                                .zip(&reference_pixels[frame - 18])
-                                .filter(|(a, b)| a != b)
-                                .count();
-                            assert_eq!(differences, 0, "renderer pixel mismatch: {case}");
-                        }
+                        sampled_pixels.push(pixels);
                     }
                     assert_eq!(out.diagnostics.is_some(), diagnostics_enabled);
                     if frame >= 20 {
@@ -159,8 +150,8 @@ fn state_to_completed_offscreen_frame() -> Result<(), String> {
                     }
                 }
                 assert!(
-                    (reference_pixels[0] != reference_pixels[1]) == (case != "idle"),
-                    "update didn't change pixels: {case}"
+                    (sampled_pixels[0] != sampled_pixels[1]) == (case != "idle"),
+                    "update didn't change pixels: {case} {mode:?}"
                 );
                 diagnostics.print(&format!("{mode:?}"), case, rows);
                 println!(

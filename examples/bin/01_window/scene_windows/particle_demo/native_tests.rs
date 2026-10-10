@@ -112,10 +112,9 @@ fn native_particle_canvas_changes_pixels_while_native_raster_reuses() -> Result<
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
-fn particle_animation_survives_demand_redraws_with_renderer_parity() -> Result<(), String> {
+fn particle_animation_survives_demand_redraws() -> Result<(), String> {
     let gpu = gpu::Gpu::new()?;
     for dpr in [1, 2] {
-        let mut reference = Vec::new();
         for mode in [
             ViewportPaintRendererMode::Legacy,
             ViewportPaintRendererMode::RetainedAuto,
@@ -129,6 +128,7 @@ fn particle_animation_survives_demand_redraws_with_renderer_parity() -> Result<(
             let root = tree();
             let mut viewport = Viewport::new();
             viewport.set_paint_renderer_mode(mode);
+            viewport.set_clear_color(Box::new(Color::rgba(0, 0, 0, 0)));
             let mut frames = Vec::new();
             for frame in 0..6 {
                 let texture = viewport
@@ -141,18 +141,25 @@ fn particle_animation_survives_demand_redraws_with_renderer_parity() -> Result<(
                         now + std::time::Duration::from_millis((frame + 1) * 32),
                     )?
                     .expect("visible animating particle canvas must admit the next redraw");
-                frames.push(gpu.read(&texture, [160 * dpr, 96 * dpr])?);
+                let pixels = gpu.read(&texture, [160 * dpr, 96 * dpr])?;
+                for ([x, y], expected) in [([104, 12], [0, 0, 255, 128]), ([84, 84], [0, 0, 0, 0])]
+                {
+                    let at = ((y * dpr * 160 * dpr + x * dpr) * 4) as usize;
+                    assert!(
+                        pixels[at..at + 4]
+                            .iter()
+                            .zip(expected)
+                            .all(|(a, b)| a.abs_diff(b) <= 1),
+                        "native/clear probe {mode:?} DPR={dpr} frame={frame}"
+                    );
+                }
+                frames.push(pixels);
             }
             assert!(
                 frames.windows(2).all(|pair| pair[0] != pair[1]),
                 "every consecutive particle frame must change pixels: {mode:?}, DPR {dpr}"
             );
             assert_eq!(viewport.frame_acquisition_count_for_test(), 6);
-            if mode == ViewportPaintRendererMode::Legacy {
-                reference = frames;
-            } else {
-                assert!(frames == reference, "particle renderer parity DPR {dpr}");
-            }
         }
     }
     Ok(())

@@ -46,16 +46,6 @@ fn scene(axis: usize, case: &str, step: usize) -> RsxNode {
 #[test]
 #[ignore = "native Metal pixel regression; run alone"]
 fn incremental_assignment_matches_cold_geometry_and_pixels() -> Result<(), String> {
-    run_assignment_regression(false)
-}
-
-#[test]
-#[ignore = "native GPU diagnostic: intrinsic-width renderer parity"]
-fn intrinsic_assignment_renderer_parity() -> Result<(), String> {
-    run_assignment_regression(true)
-}
-
-fn run_assignment_regression(check_renderer_parity: bool) -> Result<(), String> {
     let gpu = gpu::Gpu::new()?;
     let now = Instant::now();
     let mut frames = 0;
@@ -70,7 +60,6 @@ fn run_assignment_regression(check_renderer_parity: bool) -> Result<(), String> 
                 "structure",
                 "stretch",
             ] {
-                let mut reference = Vec::new();
                 for mode in [
                     ViewportPaintRendererMode::Legacy,
                     ViewportPaintRendererMode::RetainedAuto,
@@ -105,27 +94,12 @@ fn run_assignment_regression(check_renderer_parity: bool) -> Result<(), String> 
                             0,
                             "incremental/cold {mode:?} axis={axis} case={case} step={step} dpr={dpr}"
                         );
-                        if mode == ViewportPaintRendererMode::Legacy {
-                            reference.push(pixels);
-                        } else if check_renderer_parity {
-                            assert_eq!(
-                                pixels
-                                    .iter()
-                                    .zip(&reference[step])
-                                    .filter(|(a, b)| a != b)
-                                    .count(),
-                                0,
-                                "renderer parity axis={axis} case={case} step={step} dpr={dpr}"
-                            );
-                        }
                         frames += 2;
                     }
                 }
             }
         }
     }
-    println!(
-        "assignment regression: {frames} GPU frames; incremental/cold byte-exact; cross-renderer parity checked={check_renderer_parity}"
-    );
+    println!("assignment regression: {frames} GPU frames; incremental/cold byte-exact");
     Ok(())
 }

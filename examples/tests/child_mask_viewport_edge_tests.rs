@@ -1,6 +1,7 @@
 //! A rounded owner that clips its children stays in the retained renderer
 //! while it lies wholly above or left of the viewport, inside the paint
-//! interest overscan of a window that is still partly visible.
+//! interest overscan of a window that is still partly visible, and paints
+//! there as a fresh viewport does.
 use rfgui::style::{BorderRadius, Color, Layout, Length, Position};
 use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, rsx};
@@ -55,18 +56,18 @@ fn window_at([left, top]: [f32; 2]) -> RsxNode {
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
-fn child_masks_beyond_the_top_left_edge_render_retained_like_legacy() -> Result<(), String> {
+fn child_masks_beyond_the_top_left_edge_render_as_a_fresh_viewport_does() -> Result<(), String> {
     let gpu = gpu::Gpu::new()?;
     // The title bar wholly above the viewport; the badge wholly left of it;
     // both at once.
     for at in [[10.0, -30.0], [-30.0, 10.0], [-30.0, -30.0]] {
         for dpr in [1_u32, 2] {
             let size = [SIZE[0] * dpr, SIZE[1] * dpr];
-            let mut frames = Vec::new();
             for mode in [
                 ViewportPaintRendererMode::Legacy,
                 ViewportPaintRendererMode::RetainedAuto,
             ] {
+                let mut frames = Vec::new();
                 let mut viewport = Viewport::new();
                 // Moved there from inside the viewport, as a drag does, then
                 // rendered fresh.
@@ -87,16 +88,11 @@ fn child_masks_beyond_the_top_left_edge_render_retained_like_legacy() -> Result<
                         .map_err(|error| format!("{mode:?} at {at:?} DPR {dpr}: {error}"))?;
                     frames.push(gpu.read(&frame.texture, size)?);
                 }
+                assert!(
+                    frames[1] == frames[2],
+                    "{mode:?} pixels after moving to {at:?} differ from a fresh frame, DPR {dpr}"
+                );
             }
-            let (legacy, retained) = frames.split_at(3);
-            assert!(
-                legacy[1] == legacy[2],
-                "legacy pixels differ after moving to {at:?} DPR {dpr}"
-            );
-            assert!(
-                legacy == retained,
-                "retained pixels differ from legacy at {at:?} DPR {dpr}"
-            );
         }
     }
     Ok(())

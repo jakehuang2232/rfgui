@@ -301,6 +301,8 @@ cargo test -p rfgui --test layout_assignment_regression --features renderer-test
   intrinsic_assignment_renderer_parity -- --ignored --nocapture --test-threads=1
 ```
 
+後續（2026-10-11）：上述兩項 renderer parity 差異都不再重現。`intrinsic_assignment_renderer_parity` 896 幀逐位元組一致；密集 Flex 的 color、text、size 也逐位元組一致，剩下的失敗只是列被壓到捲動或改字都不改變像素。準備 Legacy 退場時刪除了這個診斷，上面第二個指令已無法執行。
+
 下一步維持 F2 的 box models、dirty clear、journal／property 局部化，但應依 F1 後剩餘成本選第一個窄範圍；兩項 renderer parity 問題另案修正，不把它們當成已驗收。F1 不延伸為這些後續更動。
 
 本機證據：`/tmp/rfgui-f1-comparison.json`、`/tmp/rfgui-f1-{before,after}-round-{0..4}.log`、`/tmp/rfgui-f1-{before,after}-pixels/`、`/tmp/rfgui-f1-diagnostics.log`、`/tmp/rfgui-f1-cold-regression.log`、`/tmp/rfgui-f1-gpu-{controls,textarea,ime}.log`、`/tmp/rfgui-f1-{reference,intrinsic}-parity.log`、`/tmp/rfgui-f1-reference-unique-build.{jsonl,log}`、`/tmp/rfgui-f1-{before,after}-flex.log`、`/tmp/rfgui-f1-workspace-final.log`、`/tmp/rfgui-f1-{native,wasm}-check-final.log`。

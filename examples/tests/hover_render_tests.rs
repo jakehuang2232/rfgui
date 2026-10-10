@@ -65,7 +65,6 @@ fn pointer_hover_pixels_restore_after_dirty_consumption_in_both_renderers() -> R
 fn fragment_root_hover_crossing_and_leave_restore_pixels() -> Result<(), String> {
     let gpu = gpu::Gpu::new()?;
     for dpr in [1_u32, 2] {
-        let mut reference = Vec::new();
         for mode in [
             ViewportPaintRendererMode::Legacy,
             ViewportPaintRendererMode::RetainedAuto,
@@ -122,14 +121,6 @@ fn fragment_root_hover_crossing_and_leave_restore_pixels() -> Result<(), String>
                 }
                 if frame == 4 {
                     assert_eq!(Some(&pixels), idle.as_ref());
-                }
-                if mode == ViewportPaintRendererMode::Legacy {
-                    reference.push(pixels);
-                } else {
-                    assert_eq!(
-                        pixels, reference[frame],
-                        "fragment parity DPR {dpr} frame {frame}"
-                    );
                 }
             }
         }
@@ -220,9 +211,8 @@ fn hover_transition_from_scrolling_under_a_still_pointer_does_not_flash() -> Res
     Ok(())
 }
 
-/// A hovered scroll container shows its scrollbar. Legacy must paint it for
-/// a scroll container nested in another element, as it does for a root and
-/// as the retained renderer does.
+/// A hovered scroll container shows its scrollbar, also when it is nested in
+/// another element.
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn hovered_nested_scroll_container_paints_its_scrollbar_in_both_renderers() -> Result<(), String> {
@@ -247,7 +237,6 @@ fn hovered_nested_scroll_container_paints_its_scrollbar_in_both_renderers() -> R
                 })
                 .count()
         };
-        let mut reference = Vec::new();
         for mode in [
             ViewportPaintRendererMode::Legacy,
             ViewportPaintRendererMode::RetainedAuto,
@@ -274,11 +263,6 @@ fn hovered_nested_scroll_container_paints_its_scrollbar_in_both_renderers() -> R
                     frame == 1,
                     "{mode:?} DPR {dpr} frame {frame}: the scrollbar shows only while hovered"
                 );
-                if mode == ViewportPaintRendererMode::Legacy {
-                    reference.push(pixels);
-                } else {
-                    assert_eq!(pixels, reference[frame], "parity DPR {dpr} frame {frame}");
-                }
             }
         }
     }

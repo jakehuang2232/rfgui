@@ -44,7 +44,6 @@ fn input_to_submitted_frame() -> Result<(), String> {
     assert!(samples > 0);
     let diagnostics = std::env::var_os("RFGUI_BENCH_DIAGNOSTICS").is_some();
     for case in ["idle", "hover", "scroll", "text-input"] {
-        let mut reference = Vec::new();
         for mode in [
             ViewportPaintRendererMode::Legacy,
             ViewportPaintRendererMode::RetainedAuto,
@@ -59,6 +58,7 @@ fn input_to_submitted_frame() -> Result<(), String> {
             let mut input = Vec::new();
             let mut phases: [Vec<f64>; 10] = Default::default();
             let mut work = [0_u64; 3];
+            let mut sampled = Vec::new();
             for frame in 0..30 + samples {
                 let start = Instant::now();
                 if frame > 0 {
@@ -159,8 +159,6 @@ fn input_to_submitted_frame() -> Result<(), String> {
                         .map_err(|e| e.to_string())?;
                     }
                     // Compare the same renderer before/after an optimization.
-                    // Cross-renderer differences are reported separately below;
-                    // they must not be mistaken for optimization regressions.
                     if let Some(dir) = std::env::var_os("RFGUI_BENCH_REFERENCE_PIXELS") {
                         let expected = std::fs::read(
                             std::path::PathBuf::from(dir)
@@ -175,19 +173,7 @@ fn input_to_submitted_frame() -> Result<(), String> {
                             "before/after pixel mismatch: {case} {mode:?}"
                         );
                     }
-                    if mode == ViewportPaintRendererMode::Legacy {
-                        reference.push(pixels);
-                    } else {
-                        let differences = pixels
-                            .iter()
-                            .zip(&reference[frame - 28])
-                            .filter(|(a, b)| a != b)
-                            .count();
-                        println!(
-                            "interaction-parity case={case} sample={} differing_channels={differences}",
-                            frame - 28
-                        );
-                    }
+                    sampled.push(pixels);
                 }
                 if frame >= 30 {
                     work[0] += output.rerasterizations as u64;
@@ -201,9 +187,9 @@ fn input_to_submitted_frame() -> Result<(), String> {
                 }
             }
             assert_eq!(
-                reference[0] == reference[1],
+                sampled[0] == sampled[1],
                 case == "idle",
-                "input must change pixels: {case}"
+                "input must change pixels: {case} {mode:?}"
             );
             println!(
                 "interaction mode={mode:?} case={case} nodes={} n={samples} cpu_p50_ms={:.6} cpu_p95_ms={:.6} input_p50_ms={:.6} phases_p50_ms={:?} work_sum_reraster_reuse_alloc={work:?}",
