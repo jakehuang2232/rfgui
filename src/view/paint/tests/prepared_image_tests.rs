@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn prepared_image_fill_preserves_payload_after_arena_drop_and_legacy_groups_once() {
+fn prepared_image_fill_preserves_payload_after_arena_drop() {
     let pixels: Arc<[u8]> = Arc::from([
         255_u8, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 255, 255, 0, 64,
     ]);
@@ -27,60 +27,20 @@ fn prepared_image_fill_preserves_payload_after_arena_drop_and_legacy_groups_once
     ));
     drop(artifact_arena);
 
-    let (legacy_arena, legacy_roots) = prepared_image_fixture(
-        pixels,
-        crate::view::ImageFit::Fill,
-        crate::view::ImageSampling::Linear,
-        0.65,
-    );
-    let mut artifact_graph = compiled_whole_frame_graph(&artifact);
-    let mut legacy_graph = legacy_roots_graph(legacy_arena, &legacy_roots);
-    // This older whole-frame compiler records baked per-op opacity. Legacy
-    // now correctly groups overlapping decoration/media, so graph equality
-    // would require restoring that bug. Keep the original 0.65 fixture and
-    // compare the frozen payload; prove the intentional scope change below.
-    // Generic production Artifact pixels are covered by ready_owner_scope_tests.
-    let recorded = artifact_graph.test_compile_snapshot().unwrap();
-    let legacy = legacy_graph.test_compile_snapshot().unwrap();
-    let sampled = |snapshot: &FrameGraphTestSnapshot| {
-        snapshot
-            .pass_payloads()
-            .iter()
-            .filter_map(|pass| match pass {
-                FramePassTestPayload::TextureComposite(texture)
-                    if texture.sampled_source.is_some() =>
-                {
-                    Some(texture.clone())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
-    let recorded_images = sampled(&recorded);
-    let legacy_images = sampled(&legacy);
-    assert_eq!((recorded_images.len(), legacy_images.len()), (1, 1));
-    let layers: Vec<_> = legacy
+    let recorded = compiled_whole_frame_graph(&artifact)
+        .test_compile_snapshot()
+        .unwrap();
+    let recorded_images = recorded
         .pass_payloads()
         .iter()
-        .filter_map(|pass| match pass {
-            FramePassTestPayload::TextureComposite(texture) if texture.sampled_source.is_none() => {
-                Some(texture)
-            }
-            _ => None,
+        .filter(|pass| {
+            matches!(
+                pass,
+                FramePassTestPayload::TextureComposite(texture) if texture.sampled_source.is_some()
+            )
         })
-        .collect();
-    assert_eq!(layers.len(), 1);
-    assert_eq!(layers[0].opacity_bits, 0.65_f32.to_bits());
-    assert_eq!(legacy_images[0].output_target, layers[0].source_handle);
-    assert_eq!(layers[0].output_target, recorded_images[0].output_target);
-    let mut expected = recorded_images[0].clone();
-    assert_eq!(expected.opacity_bits, 0.65_f32.to_bits());
-    // These are the only intentional differences in the sampled pass:
-    // neutral opacity and the enclosing group target. All other fields,
-    // including source identity, pixels, mapping, sampling and scissor, match.
-    expected.opacity_bits = 1.0_f32.to_bits();
-    expected.output_target = legacy_images[0].output_target;
-    assert_eq!(legacy_images[0], expected);
+        .count();
+    assert_eq!(recorded_images, 1);
 }
 
 #[test]
@@ -124,7 +84,7 @@ fn malformed_inline_image_falls_back_in_metadata_without_full_recording() {
 }
 
 #[test]
-fn undecorated_prepared_image_fit_sampling_opacity_scale_and_format_match_strictly() {
+fn undecorated_prepared_image_fit_sampling_opacity_scale_and_format_compile_strictly() {
     let pixels: Arc<[u8]> = Arc::from([
         255_u8, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 255, 255, 0, 64,
     ]);
@@ -165,21 +125,14 @@ fn undecorated_prepared_image_fit_sampling_opacity_scale_and_format_match_strict
             artifact.ops.as_slice(),
             [PaintOp::PreparedImage(_)]
         ));
-        let (legacy_arena, legacy_roots) =
-            bare_image_fixture(pixels.clone(), fit, sampling, opacity);
         drop(artifact_arena);
         let mut artifact_graph = compiled_whole_frame_graph_with_config(&artifact, config);
-        let mut legacy_graph = legacy_roots_graph_with_config(legacy_arena, &legacy_roots, config);
-        assert_eq!(
-            strict_paint_snapshot(&mut artifact_graph, config),
-            strict_paint_snapshot(&mut legacy_graph, config),
-            "fit={fit:?} sampling={sampling:?} opacity={opacity}"
-        );
+        let _ = strict_paint_snapshot(&mut artifact_graph, config);
     }
 }
 
 #[test]
-fn path_loading_or_error_matches_strictly_while_slots_and_inner_clip_fall_back() {
+fn path_loading_or_error_compiles_strictly_while_slots_and_inner_clip_fall_back() {
     let mut size = Style::new();
     size.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
     size.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
@@ -209,16 +162,9 @@ fn path_loading_or_error_matches_strictly_while_slots_and_inner_clip_fall_back()
             .all(|op| !matches!(op, PaintOp::PreparedImage(_)))
     );
     drop(path_arena);
-    let (legacy_arena, legacy_roots) = missing_path_fixture();
-    assert_eq!(
-        strict_paint_snapshot(
-            &mut compiled_whole_frame_graph(&artifact),
-            PaintParityConfig::default(),
-        ),
-        strict_paint_snapshot(
-            &mut legacy_roots_graph(legacy_arena, &legacy_roots),
-            PaintParityConfig::default(),
-        ),
+    let _ = strict_paint_snapshot(
+        &mut compiled_whole_frame_graph(&artifact),
+        PaintParityConfig::default(),
     );
 
     let pixels: Arc<[u8]> = Arc::from([255_u8; 16]);

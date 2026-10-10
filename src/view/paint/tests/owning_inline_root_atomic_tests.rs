@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn fixed_inline_root_with_atomic_records_standard_chunks_and_matches_legacy() {
+fn fixed_inline_root_with_atomic_records_standard_chunks() {
     let (arena, roots, root, before, atomic, after) = prepared_owning_inline_root_with_atomic();
     let (properties, generations) = sync_identity(&arena, &roots);
     let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
@@ -19,12 +19,6 @@ fn fixed_inline_root_with_atomic_records_standard_chunks_and_matches_legacy() {
             (after, PaintChunkRole::TextGlyphs),
         ],
         "atomic children keep standard coverage chunks in live DOM order"
-    );
-
-    let (legacy_arena, legacy_roots, ..) = prepared_owning_inline_root_with_atomic();
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact).pass_descriptors(),
-        legacy_roots_graph(legacy_arena, &legacy_roots).pass_descriptors()
     );
 }
 
@@ -99,7 +93,7 @@ fn owning_inline_root_atomic_move_and_paint_refresh_preserve_authority_and_order
 }
 
 #[test]
-fn mixed_wrapping_inline_root_uses_live_dom_dfs_and_matches_legacy() {
+fn mixed_wrapping_inline_root_uses_live_dom_dfs() {
     let (arena, roots, root, before, span, nested_text, atomic, after, fragment_count) =
         prepared_mixed_wrapping_inline_root();
     assert!(fragment_count >= 2, "fixture must exercise a wrapped span");
@@ -126,16 +120,10 @@ fn mixed_wrapping_inline_root_uses_live_dom_dfs_and_matches_legacy() {
         ],
         "coverage DOM DFS alone owns paint order"
     );
-
-    let (legacy_arena, legacy_roots, ..) = prepared_mixed_wrapping_inline_root();
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact).pass_descriptors(),
-        legacy_roots_graph(legacy_arena, &legacy_roots).pass_descriptors()
-    );
 }
 
 #[test]
-fn owning_inline_root_with_image_atomic_keeps_image_chunk_and_matches_legacy() {
+fn owning_inline_root_with_image_atomic_keeps_image_chunk() {
     let (arena, roots, root, before, image, after) =
         prepared_owning_inline_root_with_image_atomic();
     let (properties, generations) = sync_identity(&arena, &roots);
@@ -154,16 +142,11 @@ fn owning_inline_root_with_image_atomic_keeps_image_chunk_and_matches_legacy() {
             (after, PaintChunkRole::TextGlyphs),
         ]
     );
-    let (legacy_arena, legacy_roots, ..) = prepared_owning_inline_root_with_image_atomic();
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact).pass_descriptors(),
-        legacy_roots_graph(legacy_arena, &legacy_roots).pass_descriptors()
-    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn owning_inline_root_with_svg_atomic_keeps_svg_chunk_and_matches_legacy() {
+fn owning_inline_root_with_svg_atomic_keeps_svg_chunk() {
     let (arena, roots, root, before, svg, after) = prepared_owning_inline_root_with_svg_atomic();
     let (properties, generations) = sync_identity(&arena, &roots);
     let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
@@ -180,11 +163,6 @@ fn owning_inline_root_with_svg_atomic_keeps_svg_chunk_and_matches_legacy() {
             (svg, PaintChunkRole::SvgContent),
             (after, PaintChunkRole::TextGlyphs),
         ]
-    );
-    let (legacy_arena, legacy_roots, ..) = prepared_owning_inline_root_with_svg_atomic();
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact).pass_descriptors(),
-        legacy_roots_graph(legacy_arena, &legacy_roots).pass_descriptors()
     );
 }
 

@@ -13,7 +13,7 @@ fn anchor_parent_leaf_self_clip_replaces_then_restores_ancestor_scissor_strictly
                 initial_scissor: Some([4, 6, 24, 18]),
                 ..PaintParityConfig::default()
             };
-            let snapshots = assert_whole_frame_structural_parity(
+            let snapshots = eligible_whole_frame_rects(
                 || anchor_parent_self_clip_roots(opacity, border),
                 config,
             );
@@ -110,7 +110,7 @@ fn nested_anchor_parent_requires_legacy_order_and_matches_strictly_when_partitio
                     role: ClipNodeRole::SelfClip,
                 })
             );
-            let snapshots = assert_whole_frame_structural_parity(
+            let snapshots = eligible_whole_frame_rects(
                 || {
                     let (arena, roots, _) = nested_anchor_parent_mixed_siblings(false);
                     (arena, roots)

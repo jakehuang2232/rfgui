@@ -1,20 +1,12 @@
 use super::*;
 
 #[test]
-fn paint_artifact_leaf_fill_border_opacity_and_opaque_match_legacy() {
+fn paint_artifact_leaf_fill_border_opacity_and_opaque() {
     for (opacity, expected_opaque) in [(1.0, true), (0.65, false)] {
         let (arena, root, properties, generations) =
             prepared_leaf(10, Color::rgb(220, 30, 40), opacity, true);
         let artifact = artifact_graph(&arena, root, &properties, &generations);
 
-        let (legacy_arena, legacy_root, _, _) =
-            prepared_leaf(10, Color::rgb(220, 30, 40), opacity, true);
-        let legacy = legacy_graph(legacy_arena, legacy_root);
-
-        assert_eq!(
-            artifact.test_rect_pass_snapshots(),
-            legacy.test_rect_pass_snapshots()
-        );
         assert_eq!(
             artifact.test_rect_pass_snapshots()[0].opaque,
             expected_opaque

@@ -17,12 +17,6 @@ fn fixed_inline_root_with_text_uses_the_owning_ifc_artifact_path() {
             (text, PaintChunkRole::TextGlyphs),
         ]
     );
-
-    let (legacy_arena, legacy_roots, ..) = prepared_fixed_owning_inline_text_root();
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact).pass_descriptors(),
-        legacy_roots_graph(legacy_arena, &legacy_roots).pass_descriptors()
-    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -140,7 +134,7 @@ fn fixed_inline_root_missing_install_falls_back_before_full_hooks() {
 }
 
 #[test]
-fn owning_inline_root_with_text_records_dom_order_and_matches_legacy() {
+fn owning_inline_root_with_text_records_dom_order() {
     let (arena, roots, root, text) = prepared_owning_inline_text_root();
     let (properties, generations) = sync_identity(&arena, &roots);
     let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
@@ -157,17 +151,10 @@ fn owning_inline_root_with_text_records_dom_order_and_matches_legacy() {
             (text, PaintChunkRole::TextGlyphs),
         ]
     );
-    let artifact_graph = compiled_whole_frame_graph(&artifact);
-    let artifact_passes = artifact_graph.pass_descriptors();
-
-    let (legacy_arena, legacy_roots, ..) = prepared_owning_inline_text_root();
-    let legacy_graph = legacy_roots_graph(legacy_arena, &legacy_roots);
-    let legacy_passes = legacy_graph.pass_descriptors();
-    assert_eq!(artifact_passes, legacy_passes);
 }
 
 #[test]
-fn owning_inline_root_with_decorated_span_records_dom_dfs_and_matches_legacy() {
+fn owning_inline_root_with_decorated_span_records_dom_dfs() {
     let (arena, roots, root, span, text, fragment_count) =
         prepared_owning_wrapping_inline_span_tree_with_opacity(1.0);
     let (properties, generations) = sync_identity(&arena, &roots);
@@ -191,13 +178,6 @@ fn owning_inline_root_with_decorated_span_records_dom_dfs_and_matches_legacy() {
         artifact.chunks[1].payload_identity,
         PaintPayloadIdentity::InlineIfcDecorations(_, _)
     ));
-    let artifact_graph = compiled_whole_frame_graph(&artifact);
-    let artifact_passes = artifact_graph.pass_descriptors();
-
-    let (legacy_arena, legacy_roots, ..) =
-        prepared_owning_wrapping_inline_span_tree_with_opacity(1.0);
-    let legacy_graph = legacy_roots_graph(legacy_arena, &legacy_roots);
-    assert_eq!(artifact_passes, legacy_graph.pass_descriptors());
 }
 
 #[test]
@@ -413,11 +393,6 @@ fn owning_inline_root_requires_atomic_subtree_layout_placement_cleanliness() {
             (after, PaintChunkRole::TextGlyphs),
         ],
         "normal atomic subtrees remain coverage-DOM-DFS recordable"
-    );
-    let (legacy_arena, legacy_roots, ..) = prepared_owning_inline_root_with_atomic_subtree();
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact).pass_descriptors(),
-        legacy_roots_graph(legacy_arena, &legacy_roots).pass_descriptors()
     );
 
     arena

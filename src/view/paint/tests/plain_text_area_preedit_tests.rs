@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn plain_text_area_preedit_variants_emit_exact_decoration_and_match_legacy() {
+fn plain_text_area_preedit_variants_emit_exact_decoration() {
     for (content, width, cursor_char, preedit, preedit_cursor) in [
         ("abcdef", 108.0, 3, "中🙂", None),
         ("abcdef", 108.0, 2, "中🙂", Some((0, "中".len()))),
@@ -16,7 +16,7 @@ fn plain_text_area_preedit_variants_emit_exact_decoration_and_match_legacy() {
             Some((0, 6)),
         ),
     ] {
-        assert_whole_frame_structural_parity(
+        eligible_whole_frame_rects(
             || {
                 let (arena, roots, _) = prepared_plain_text_area_preedit_tree(
                     content,
@@ -194,7 +194,7 @@ fn plain_text_area_preedit_selection_glyph_underline_caret_order_and_clip_are_ex
 }
 
 #[test]
-fn plain_text_area_bounded_baked_scroll_is_canonical_and_matches_legacy() {
+fn plain_text_area_bounded_baked_scroll_is_canonical() {
     let fixture = || {
         let (mut arena, roots, root) = prepared_plain_text_area_preedit_tree(
             "selection composition stays aligned while the viewport scrolls",
@@ -217,7 +217,7 @@ fn plain_text_area_bounded_baked_scroll_is_canonical_and_matches_legacy() {
         (arena, roots)
     };
 
-    assert_whole_frame_structural_parity(fixture, PaintParityConfig::default());
+    eligible_whole_frame_rects(fixture, PaintParityConfig::default());
 
     let (arena, roots) = fixture();
     let root = roots[0];

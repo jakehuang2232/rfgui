@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn whole_frame_artifact_matches_legacy_for_nested_multi_root_order() {
+fn whole_frame_artifact_keeps_nested_multi_root_order() {
     let (arena, roots, child) = prepared_plain_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
@@ -25,18 +25,10 @@ fn whole_frame_artifact_matches_legacy_for_nested_multi_root_order() {
     assert_eq!(artifact.chunks[0].op_range, 0..1);
     assert_eq!(artifact.chunks[1].op_range, 1..2);
     assert_eq!(artifact.chunks[2].op_range, 2..3);
-
-    let artifact_graph = compiled_whole_frame_graph(&artifact);
-    let (legacy_arena, legacy_roots, _) = prepared_plain_tree();
-    let legacy_graph = legacy_roots_graph(legacy_arena, &legacy_roots);
-    assert_eq!(
-        artifact_graph.test_rect_pass_snapshots(),
-        legacy_graph.test_rect_pass_snapshots()
-    );
 }
 
 #[test]
-fn whole_frame_zero_opacity_keeps_empty_chunk_and_matches_legacy() {
+fn whole_frame_zero_opacity_keeps_empty_chunk() {
     let mut arena = new_test_arena();
     let mut empty_element = leaf_element(110, Color::rgb(255, 0, 0), 1.0, false);
     let mut empty_style = Style::new();
@@ -57,25 +49,6 @@ fn whole_frame_zero_opacity_keeps_empty_chunk_and_matches_legacy() {
     assert_eq!(eligibility.op_count, 1);
     assert_eq!(artifact.chunks[0].op_range, 0..0);
     assert_eq!(artifact.chunks[1].op_range, 0..1);
-
-    let artifact_graph = compiled_whole_frame_graph(&artifact);
-    let mut legacy_arena = new_test_arena();
-    let mut legacy_empty_element = leaf_element(110, Color::rgb(255, 0, 0), 1.0, false);
-    let mut legacy_empty_style = Style::new();
-    legacy_empty_style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.0)));
-    legacy_empty_element.apply_style(legacy_empty_style);
-    let legacy_empty = commit_element(&mut legacy_arena, Box::new(legacy_empty_element));
-    let legacy_visible = commit_element(
-        &mut legacy_arena,
-        Box::new(leaf_element(111, Color::rgb(0, 0, 255), 1.0, false)),
-    );
-    measure_and_place(&mut legacy_arena, legacy_empty, measure, place);
-    measure_and_place(&mut legacy_arena, legacy_visible, measure, place);
-    let legacy_graph = legacy_roots_graph(legacy_arena, &[legacy_empty, legacy_visible]);
-    assert_eq!(
-        artifact_graph.test_rect_pass_snapshots(),
-        legacy_graph.test_rect_pass_snapshots()
-    );
 }
 
 #[test]

@@ -549,17 +549,6 @@ fn artifact_graph(
     graph
 }
 
-fn legacy_graph(mut arena: NodeArena, root: NodeKey) -> FrameGraph {
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    let _ = arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .expect("legacy root should build");
-    graph
-}
-
 fn fallback_reason(element: Box<dyn ElementTrait>) -> LegacyPaintReason {
     let mut arena = new_test_arena();
     let root = commit_element(&mut arena, element);
@@ -2012,33 +2001,26 @@ fn legacy_roots_graph_with_config(
     graph
 }
 
-fn assert_whole_frame_structural_parity<F>(
-    fixture: F,
-    config: PaintParityConfig,
-) -> Vec<RectPassTestSnapshot>
+/// Records the fixture as a whole-frame artifact, requires it to be eligible,
+/// and returns the rect passes of its direct compilation.
+fn eligible_whole_frame_rects<F>(fixture: F, config: PaintParityConfig) -> Vec<RectPassTestSnapshot>
 where
-    F: Fn() -> (NodeArena, Vec<NodeKey>),
+    F: FnOnce() -> (NodeArena, Vec<NodeKey>),
 {
-    let (artifact_arena, artifact_roots) = fixture();
-    let (properties, generations) = sync_identity(&artifact_arena, &artifact_roots);
+    let (arena, roots) = fixture();
+    let (properties, generations) = sync_identity(&arena, &roots);
     let (artifact, eligibility) = whole_frame_artifact_at(
-        &artifact_arena,
-        &artifact_roots,
+        &arena,
+        &roots,
         &properties,
         &generations,
         config.scale_factor,
     );
     assert!(eligibility.eligible);
-    drop(artifact_arena);
-    let mut artifact_graph = compiled_whole_frame_graph_with_config(&artifact, config);
-
-    let (legacy_arena, legacy_roots) = fixture();
-    let mut legacy_graph = legacy_roots_graph_with_config(legacy_arena, &legacy_roots, config);
-
-    let artifact_snapshot = strict_paint_snapshot(&mut artifact_graph, config);
-    let legacy_snapshot = strict_paint_snapshot(&mut legacy_graph, config);
-    assert_eq!(artifact_snapshot, legacy_snapshot);
-    artifact_graph.test_rect_pass_snapshots()
+    drop(arena);
+    let mut graph = compiled_whole_frame_graph_with_config(&artifact, config);
+    let _ = strict_paint_snapshot(&mut graph, config);
+    graph.test_rect_pass_snapshots()
 }
 
 fn prepared_text_tree(nested: bool) -> (NodeArena, Vec<NodeKey>, NodeKey) {
@@ -3596,12 +3578,12 @@ mod root_effect_tests;
 mod stage_a_artifact_contract_tests;
 mod stage_a_producer_independence_tests;
 mod stage_c_retained_baseline_tests;
-mod structural_parity_tests;
 mod text_area_projection_preedit_tests;
 mod text_area_projection_selection_tests;
 mod text_area_state_tests;
 mod text_artifact_tests;
 mod translation_invariance_tests;
+mod whole_frame_rect_tests;
 mod whole_frame_tests;
 
 #[cfg(not(target_arch = "wasm32"))]

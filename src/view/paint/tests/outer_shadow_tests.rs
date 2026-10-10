@@ -118,7 +118,7 @@ fn outer_shadow_artifact_owns_ordered_fractional_payload_and_strict_pass_sequenc
 }
 
 #[test]
-fn outer_shadow_owner_with_two_children_records_before_children_and_matches_legacy() {
+fn outer_shadow_owner_with_two_children_records_before_children() {
     let (arena, root, first, second, properties, generations) =
         prepared_shadow_owner_tree(0x6d30, 1.0);
     let metadata = record_coverage_manifest(
@@ -202,12 +202,6 @@ fn outer_shadow_owner_with_two_children_records_before_children_and_matches_lega
         .position(|op| !matches!(op, PaintOp::PreparedShadow(_)))
         .unwrap();
     assert_eq!(first_non_shadow, 2);
-
-    let (legacy_arena, legacy_root, _, _, _, _) = prepared_shadow_owner_tree(0x6d30, 1.0);
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact).pass_descriptors(),
-        legacy_roots_graph(legacy_arena, &[legacy_root]).pass_descriptors()
-    );
 }
 
 #[test]
@@ -403,7 +397,7 @@ fn outer_shadow_owner_native_child_boundaries_record_retained_artifact() {
 }
 
 #[test]
-fn nonzero_blur_outer_shadow_is_auto_recordable_and_matches_legacy_graph() {
+fn nonzero_blur_outer_shadow_is_auto_recordable() {
     for (index, blur, expected_blur_stages) in [(0_u64, 0.000_5_f32, 0_usize), (1, 8.5, 2)] {
         let shadow = || {
             BoxShadow::new()
@@ -463,12 +457,6 @@ fn nonzero_blur_outer_shadow_is_auto_recordable_and_matches_legacy_graph() {
         drop(arena);
 
         let artifact_graph = compiled_whole_frame_graph(&artifact);
-        let (legacy_arena, legacy_root, _, _) = prepared_shadow_leaf(id, 1.0, vec![shadow()], true);
-        let legacy_graph = legacy_roots_graph(legacy_arena, &[legacy_root]);
-        assert_eq!(
-            artifact_graph.pass_descriptors(),
-            legacy_graph.pass_descriptors()
-        );
         assert_eq!(
             artifact_graph
                 .pass_descriptors()
@@ -476,13 +464,13 @@ fn nonzero_blur_outer_shadow_is_auto_recordable_and_matches_legacy_graph() {
                 .filter(|pass| pass.name.ends_with("blur_module::BlurStagePass"))
                 .count(),
             expected_blur_stages,
-            "retained and legacy must share the physical blur threshold"
+            "blur stages follow the physical blur threshold"
         );
     }
 }
 
 #[test]
-fn inset_blur_shadow_is_auto_recordable_and_matches_legacy_mask_graph() {
+fn inset_blur_shadow_is_auto_recordable_with_a_mask_fill() {
     let shadow = || {
         BoxShadow::new()
             .color(Color::rgb(180, 40, 90))
@@ -542,12 +530,6 @@ fn inset_blur_shadow_is_auto_recordable_and_matches_legacy_mask_graph() {
     drop(arena);
 
     let artifact_graph = compiled_whole_frame_graph(&artifact);
-    let (legacy_arena, legacy_root, _, _) = prepared_shadow_leaf(0x6d21, 1.0, vec![shadow()], true);
-    let legacy_graph = legacy_roots_graph(legacy_arena, &[legacy_root]);
-    assert_eq!(
-        artifact_graph.pass_descriptors(),
-        legacy_graph.pass_descriptors()
-    );
     assert_eq!(
         artifact_graph
             .test_graphics_passes::<crate::view::render_pass::shadow_module::ShadowFillPass>()

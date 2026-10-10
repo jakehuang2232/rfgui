@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn strict_structural_parity_covers_opaque_alpha_and_uniform_border() {
+fn whole_frame_rects_covers_opaque_alpha_and_uniform_border() {
     for (opacity, expected_opaque) in [(1.0, true), (0.5, false)] {
-        let snapshots = assert_whole_frame_structural_parity(
+        let snapshots = eligible_whole_frame_rects(
             || {
                 let (arena, root, _, _) =
                     prepared_leaf(105, Color::rgb(220, 30, 40), opacity, true);
@@ -17,8 +17,8 @@ fn strict_structural_parity_covers_opaque_alpha_and_uniform_border() {
 }
 
 #[test]
-fn strict_structural_parity_covers_asymmetric_border_radius_and_colors() {
-    let snapshots = assert_whole_frame_structural_parity(
+fn whole_frame_rects_covers_asymmetric_border_radius_and_colors() {
+    let snapshots = eligible_whole_frame_rects(
         prepared_asymmetric_border_tree,
         PaintParityConfig::default(),
     );
@@ -36,17 +36,17 @@ fn strict_structural_parity_covers_asymmetric_border_radius_and_colors() {
 }
 
 #[test]
-fn strict_structural_parity_covers_background_and_border_gradients() {
+fn whole_frame_rects_covers_background_and_border_gradients() {
     let snapshots =
-        assert_whole_frame_structural_parity(prepared_gradient_tree, PaintParityConfig::default());
+        eligible_whole_frame_rects(prepared_gradient_tree, PaintParityConfig::default());
     assert_eq!(snapshots.len(), 2);
     assert!(snapshots[0].gradient.is_some());
     assert!(snapshots[1].border_gradient.is_some());
 }
 
 #[test]
-fn strict_structural_parity_covers_nested_multi_root_order() {
-    let snapshots = assert_whole_frame_structural_parity(
+fn whole_frame_rects_covers_nested_multi_root_order() {
+    let snapshots = eligible_whole_frame_rects(
         || {
             let (arena, roots, _) = prepared_plain_tree();
             (arena, roots)
@@ -69,7 +69,7 @@ fn strict_structural_parity_covers_nested_multi_root_order() {
 }
 
 #[test]
-fn strict_structural_parity_covers_target_size_format_and_scale() {
+fn whole_frame_rects_covers_target_size_format_and_scale() {
     for config in [
         PaintParityConfig::default(),
         PaintParityConfig {
@@ -80,7 +80,7 @@ fn strict_structural_parity_covers_target_size_format_and_scale() {
             initial_scissor: None,
         },
     ] {
-        let snapshots = assert_whole_frame_structural_parity(
+        let snapshots = eligible_whole_frame_rects(
             || {
                 let (arena, root, _, _) = prepared_leaf(106, Color::rgb(20, 40, 60), 1.0, false);
                 (arena, vec![root])
@@ -116,15 +116,15 @@ fn strict_snapshot_is_sensitive_to_scale_factor_alone() {
 }
 
 #[test]
-fn strict_structural_parity_tracks_opacity_classification_transition() {
-    let before = assert_whole_frame_structural_parity(
+fn whole_frame_rects_tracks_opacity_classification_transition() {
+    let before = eligible_whole_frame_rects(
         || {
             let (arena, root, _, _) = prepared_leaf(107, Color::rgb(50, 70, 90), 1.0, false);
             (arena, vec![root])
         },
         PaintParityConfig::default(),
     );
-    let after = assert_whole_frame_structural_parity(
+    let after = eligible_whole_frame_rects(
         || {
             let (arena, root, _, _) = prepared_leaf(107, Color::rgb(50, 70, 90), 0.5, false);
             (arena, vec![root])
@@ -136,11 +136,9 @@ fn strict_structural_parity_tracks_opacity_classification_transition() {
 }
 
 #[test]
-fn strict_structural_parity_covers_zero_opacity_without_partial_output() {
-    let snapshots = assert_whole_frame_structural_parity(
-        prepared_zero_opacity_tree,
-        PaintParityConfig::default(),
-    );
+fn whole_frame_rects_covers_zero_opacity_without_partial_output() {
+    let snapshots =
+        eligible_whole_frame_rects(prepared_zero_opacity_tree, PaintParityConfig::default());
     assert_eq!(snapshots.len(), 1);
     assert!(f32::from_bits(snapshots[0].fill_color_bits[2]) > 0.9);
 }

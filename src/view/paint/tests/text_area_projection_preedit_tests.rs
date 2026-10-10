@@ -8,7 +8,7 @@ fn text_area_projection_baked_scroll_translates_root_and_absolute_child_once() {
         (arena, roots, root, projected_text)
     }
 
-    assert_whole_frame_structural_parity(
+    eligible_whole_frame_rects(
         || {
             let (arena, roots, ..) = fixture(4.0);
             (arena, roots)
@@ -46,8 +46,8 @@ fn text_area_projection_baked_scroll_translates_root_and_absolute_child_once() {
 }
 
 #[test]
-fn text_area_projection_preedit_direct_text_is_path_scoped_ordered_and_matches_legacy() {
-    assert_whole_frame_structural_parity(
+fn text_area_projection_preedit_direct_text_is_path_scoped_and_ordered() {
+    eligible_whole_frame_rects(
         || {
             let (arena, roots, ..) =
                 prepared_projection_text_area_preedit_tree(8, "中🙂", Some((0, 7)));

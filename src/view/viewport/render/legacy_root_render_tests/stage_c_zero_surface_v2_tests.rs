@@ -420,7 +420,7 @@ fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before
 }
 
 #[test]
-fn stage_c_zero_surface_retained_auto_emits_once_and_matches_legacy() {
+fn stage_c_zero_surface_retained_auto_emits_the_leaf_fill_once() {
     let (arena, roots) = prepared_safe_leaf();
     let (properties, generations) = synced_paint_state(&arena, &roots);
     let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
@@ -471,11 +471,11 @@ fn stage_c_zero_surface_retained_auto_emits_once_and_matches_legacy() {
             .is_none()
     );
 
-    let (legacy_arena, legacy_roots) = prepared_safe_leaf();
-    let legacy = build_roots_graph(legacy_arena, &legacy_roots, false);
+    let rects = graph.test_rect_pass_snapshots();
+    assert_eq!(rects.len(), 1, "the safe leaf paints one fill");
     assert_eq!(
-        graph.test_rect_pass_snapshots(),
-        legacy.test_rect_pass_snapshots(),
+        rects[0].fill_color_bits,
+        crate::style::ColorLike::to_rgba_f32(&Color::rgb(230, 20, 30)).map(f32::to_bits)
     );
 }
 

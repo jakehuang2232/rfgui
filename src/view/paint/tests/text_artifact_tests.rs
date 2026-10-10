@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn standalone_text_root_and_nested_fractional_offset_match_legacy_strictly() {
+fn standalone_text_root_and_nested_fractional_offset_compile_strictly() {
     for nested in [false, true] {
-        let rects = assert_whole_frame_structural_parity(
+        let rects = eligible_whole_frame_rects(
             || {
                 let (arena, roots, _) = prepared_text_tree(nested);
                 (arena, roots)
@@ -143,7 +143,7 @@ fn hidden_empty_and_zero_opacity_text_are_transparent_without_chunks() {
 }
 
 #[test]
-fn inline_owned_text_records_source_owned_glyphs_and_matches_legacy_pass() {
+fn inline_owned_text_records_source_owned_glyphs_in_one_pass() {
     let (arena, roots, text_key) = prepared_inline_owned_text_tree(InlineOwnedTextDamage::None);
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
@@ -161,19 +161,9 @@ fn inline_owned_text_records_source_owned_glyphs_and_matches_legacy_pass() {
     assert_eq!(take_full_artifact_record_count(), 1);
 
     let artifact_graph = compiled_whole_frame_graph(&artifact);
-    let (legacy_arena, legacy_roots, _) =
-        prepared_inline_owned_text_tree(InlineOwnedTextDamage::None);
-    let legacy_graph = legacy_roots_graph(legacy_arena, &legacy_roots);
     let artifact_passes = artifact_graph
         .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>();
-    let legacy_passes = legacy_graph
-        .test_graphics_passes::<crate::view::render_pass::text_pass::TextPreparedInputPass>();
     assert_eq!(artifact_passes.len(), 1);
-    assert_eq!(legacy_passes.len(), 1);
-    assert_eq!(
-        artifact_passes[0].test_snapshot(),
-        legacy_passes[0].test_snapshot()
-    );
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn plain_text_area_placeholder_newline_fractional_and_empty_cases_match_legacy() {
+fn plain_text_area_placeholder_newline_fractional_and_empty_cases_are_recordable() {
     for (content, placeholder, width, origin) in [
         ("", "placeholder text", 108.0, [7.25, 11.75]),
         ("first\nsecond", "", 108.0, [7.25, 11.75]),
@@ -13,7 +13,7 @@ fn plain_text_area_placeholder_newline_fractional_and_empty_cases_match_legacy()
         ),
     ] {
         let config = PaintParityConfig::default();
-        assert_whole_frame_structural_parity(
+        eligible_whole_frame_rects(
             || {
                 let (arena, roots, _) =
                     prepared_plain_text_area_tree_with(content, placeholder, width, origin);

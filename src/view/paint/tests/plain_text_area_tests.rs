@@ -97,7 +97,7 @@ fn plain_text_area_selection_orders_underlay_before_slot_one_glyphs() {
 }
 
 #[test]
-fn focused_plain_text_area_records_contents_caret_after_children_and_matches_legacy() {
+fn focused_plain_text_area_records_contents_caret_after_children() {
     let focused_fixture = |content: &str, selection: Option<(usize, usize)>| {
         let (arena, roots, root) = prepared_plain_text_area_tree(content);
         {
@@ -184,7 +184,7 @@ fn focused_plain_text_area_records_contents_caret_after_children_and_matches_leg
         }
     }
 
-    assert_whole_frame_structural_parity(
+    eligible_whole_frame_rects(
         || {
             let (arena, roots, _) = focused_fixture("focused caret parity", Some((1, 7)));
             (arena, roots)
@@ -352,7 +352,7 @@ fn retained_caret_metadata_full_visibility_drift_is_not_canonical() {
 }
 
 #[test]
-fn plain_caret_artifact_honours_soft_wrap_affinity_and_matches_legacy() {
+fn plain_caret_artifact_honours_soft_wrap_affinity() {
     fn fixture(upstream: bool) -> (NodeArena, Vec<NodeKey>, NodeKey) {
         let content = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥";
         let (arena, roots, root) =
@@ -417,7 +417,7 @@ fn plain_caret_artifact_honours_soft_wrap_affinity_and_matches_legacy() {
     );
 
     for upstream in [true, false] {
-        assert_whole_frame_structural_parity(
+        eligible_whole_frame_rects(
             || {
                 let (arena, roots, _) = fixture(upstream);
                 (arena, roots)
@@ -428,7 +428,7 @@ fn plain_caret_artifact_honours_soft_wrap_affinity_and_matches_legacy() {
 }
 
 #[test]
-fn plain_text_area_selection_multiline_wrapped_and_clamped_cases_match_legacy() {
+fn plain_text_area_selection_multiline_wrapped_and_clamped_cases_are_recordable() {
     for (content, width, anchor, focus) in [
         ("first line\nsecond line", 108.0, 2, 19),
         (
@@ -440,7 +440,7 @@ fn plain_text_area_selection_multiline_wrapped_and_clamped_cases_match_legacy() 
         ("clamp this selection", 108.0, 0, usize::MAX),
         ("aé中🙂z", 108.0, 1, 4),
     ] {
-        assert_whole_frame_structural_parity(
+        eligible_whole_frame_rects(
             || {
                 let (arena, roots, _) =
                     prepared_plain_text_area_selection_tree(content, width, anchor, focus);

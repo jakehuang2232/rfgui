@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
+fn text_area_projection_selection_is_path_scoped_and_ordered() {
     let selected_fixture = || {
         let (arena, roots, root, projection, projected_text) = prepared_projection_text_area_tree();
         {
@@ -16,7 +16,7 @@ fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
         }
         (arena, roots, root, projection, projected_text)
     };
-    assert_whole_frame_structural_parity(
+    eligible_whole_frame_rects(
         || {
             let (arena, roots, ..) = selected_fixture();
             (arena, roots)
@@ -143,7 +143,7 @@ fn text_area_projection_selection_is_path_scoped_ordered_and_matches_legacy() {
 }
 
 #[test]
-fn text_area_atomic_projection_disjoint_root_selection_is_ordered_and_matches_legacy() {
+fn text_area_atomic_projection_disjoint_root_selection_is_ordered() {
     let fixture = || {
         let (arena, roots, root, projection, projected_text) = prepared_projection_text_area_tree();
         {
@@ -158,7 +158,7 @@ fn text_area_atomic_projection_disjoint_root_selection_is_ordered_and_matches_le
         }
         (arena, roots, root, projection, projected_text)
     };
-    assert_whole_frame_structural_parity(
+    eligible_whole_frame_rects(
         || {
             let (arena, roots, ..) = fixture();
             (arena, roots)
@@ -215,7 +215,7 @@ fn text_area_selection_crossing_projection_is_split_between_root_and_child() {
         }
         (arena, roots, root, projection, projected_text)
     };
-    assert_whole_frame_structural_parity(
+    eligible_whole_frame_rects(
         || {
             let (arena, roots, ..) = fixture();
             (arena, roots)
@@ -268,7 +268,7 @@ fn text_area_projection_selection_utf8_local_range_and_metadata_full_identity_ar
         }
         (arena, roots, root, projection, projected_text)
     };
-    assert_whole_frame_structural_parity(
+    eligible_whole_frame_rects(
         || {
             let (arena, roots, ..) = utf8_fixture();
             (arena, roots)
@@ -453,7 +453,7 @@ fn text_area_projection_selection_visibility_gate_prevents_artifact_only_underla
             }
             (arena, roots, root, projected_text)
         };
-        assert_whole_frame_structural_parity(
+        eligible_whole_frame_rects(
             || {
                 let (arena, roots, ..) = fixture();
                 (arena, roots)

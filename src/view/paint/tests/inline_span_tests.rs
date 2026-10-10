@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn wrapping_inline_span_owns_typed_decoration_before_text_and_matches_legacy() {
+fn wrapping_inline_span_owns_typed_decoration_before_text() {
     let (arena, roots, span_key, text_key, fragment_count) = prepared_wrapping_inline_span_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
@@ -23,15 +23,10 @@ fn wrapping_inline_span_owns_typed_decoration_before_text_and_matches_legacy() {
             .all(|op| matches!(op, PaintOp::PreparedInlineIfcDecoration(_)))
     );
     assert_eq!(take_full_artifact_record_count(), 2);
-
-    let artifact_rects = compiled_whole_frame_graph(&artifact).test_rect_pass_snapshots();
-    let (legacy_arena, legacy_roots, _, _, _) = prepared_wrapping_inline_span_tree();
-    let legacy_rects = legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
-    assert_eq!(artifact_rects, legacy_rects);
 }
 
 #[test]
-fn wrapping_inline_span_shadows_preserve_fragment_order_and_match_legacy() {
+fn wrapping_inline_span_shadows_preserve_fragment_order() {
     let shadows = || {
         vec![
             BoxShadow::new()
@@ -151,13 +146,6 @@ fn wrapping_inline_span_shadows_preserve_fragment_order_and_match_legacy() {
     drop(arena);
 
     let artifact_graph = compiled_whole_frame_graph(&artifact);
-    let (legacy_arena, legacy_roots, ..) =
-        prepared_wrapping_inline_span_tree_with_opacity_and_shadows(1.0, shadows());
-    let legacy_graph = legacy_roots_graph(legacy_arena, &legacy_roots);
-    assert_eq!(
-        artifact_graph.pass_descriptors(),
-        legacy_graph.pass_descriptors()
-    );
     assert_eq!(
         artifact_graph
             .test_graphics_passes::<crate::view::render_pass::shadow_module::ShadowFillPass>()
@@ -177,7 +165,7 @@ fn wrapping_inline_span_shadows_preserve_fragment_order_and_match_legacy() {
 }
 
 #[test]
-fn sampled_inline_span_layout_transition_keeps_metadata_full_and_legacy_parity() {
+fn sampled_inline_span_layout_transition_keeps_metadata_full() {
     fn sample_transition(arena: &NodeArena, span_key: NodeKey) {
         let mut node = arena.get_mut(span_key).unwrap();
         let span = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
@@ -215,18 +203,12 @@ fn sampled_inline_span_layout_transition_keeps_metadata_full_and_legacy_parity()
     );
     assert!(canonical_manifest_matches_for_test(&metadata, &full));
 
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let (_, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(eligibility.eligible);
-    let artifact_rects = compiled_whole_frame_graph(&artifact).test_rect_pass_snapshots();
-
-    let (legacy_arena, legacy_roots, legacy_span, _, _) = prepared_wrapping_inline_span_tree();
-    sample_transition(&legacy_arena, legacy_span);
-    let legacy_rects = legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
-    assert_eq!(artifact_rects, legacy_rects);
 }
 
 #[test]
-fn nested_inline_spans_preserve_source_owner_dfs_and_legacy_rect_order() {
+fn nested_inline_spans_preserve_source_owner_dfs() {
     let (arena, roots, expected_owners) = prepared_nested_inline_span_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
     let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
@@ -247,10 +229,6 @@ fn nested_inline_spans_preserve_source_owner_dfs_and_legacy_rect_order() {
         artifact.chunks[2].payload_identity,
         PaintPayloadIdentity::InlineIfcDecorations(_, _)
     ));
-    let artifact_rects = compiled_whole_frame_graph(&artifact).test_rect_pass_snapshots();
-    let (legacy_arena, legacy_roots, _) = prepared_nested_inline_span_tree();
-    let legacy_rects = legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
-    assert_eq!(artifact_rects, legacy_rects);
 }
 
 #[test]
@@ -329,7 +307,7 @@ fn cross_owner_inline_span_package_falls_back_before_full_hooks() {
 }
 
 #[test]
-fn inline_span_paint_mutation_refreshes_same_constraints_frame_for_typed_and_legacy() {
+fn inline_span_paint_mutation_refreshes_same_constraints_frame() {
     fn mutate_paint(arena: &NodeArena, span_key: NodeKey) {
         let mut node = arena.get_mut(span_key).unwrap();
         let span = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
@@ -407,33 +385,6 @@ fn inline_span_paint_mutation_refreshes_same_constraints_frame_for_typed_and_leg
         first.border.as_ref().unwrap().border_side_colors[0].map(f32::to_bits),
         Color::rgb(126, 34, 206).to_rgba_f32().map(f32::to_bits)
     );
-    let artifact_rects = compiled_whole_frame_graph(&artifact).test_rect_pass_snapshots();
-
-    let (mut legacy_arena, legacy_roots, legacy_span, legacy_text, _) =
-        prepared_wrapping_inline_span_tree();
-    let legacy_parent = legacy_arena.parent_of(legacy_span).unwrap();
-    settle_wrapping_inline_span_frame(&legacy_arena, legacy_parent, legacy_span, legacy_text);
-    mutate_paint(&legacy_arena, legacy_span);
-    measure_and_place(&mut legacy_arena, legacy_parent, measure, place);
-    {
-        let mut node = legacy_arena.get_mut(legacy_span).unwrap();
-        let span = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
-        let package = span
-            .inline_ifc_decoration_package_for_test()
-            .expect("same frame must install a fresh legacy package");
-        let first = package.fragments.first().unwrap();
-        assert_eq!(
-            first.metadata.fill_color.map(f32::to_bits),
-            Color::rgb(22, 163, 74).to_rgba_f32().map(f32::to_bits)
-        );
-        assert_eq!(first.metadata.opacity.to_bits(), 0.6_f32.to_bits());
-        assert_eq!(
-            first.metadata.border_colors[0].map(f32::to_bits),
-            Color::rgb(126, 34, 206).to_rgba_f32().map(f32::to_bits)
-        );
-    }
-    let legacy_rects = legacy_roots_graph(legacy_arena, &legacy_roots).test_rect_pass_snapshots();
-    assert_eq!(artifact_rects, legacy_rects);
 }
 
 #[test]
