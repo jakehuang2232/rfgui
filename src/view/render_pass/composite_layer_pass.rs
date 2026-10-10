@@ -9,8 +9,9 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, render_target_origin, render_target_sample_count,
-    render_target_view, resolve_graphics_pass_scissor_to_target_physical, resolve_texture_ref,
+    GraphicsPassContext as RenderPassContext, render_target_origin, render_target_raster_scale,
+    render_target_sample_count, render_target_view,
+    resolve_graphics_pass_scissor_to_target_physical, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use rustc_hash::FxHashSet;
@@ -267,7 +268,8 @@ impl GraphicsPass for CompositeLayerPass {
             let (x, y) = render_target_origin(ctx, layer_handle).unwrap_or((0, 0));
             [x as f32, y as f32]
         });
-        let scale = ctx.viewport.scale_factor();
+        let scale = render_target_raster_scale(ctx, self.output.render_target.handle())
+            .unwrap_or_else(|| ctx.viewport.scale_factor());
         let scaled_rect_pos = [
             self.params.rect_pos[0] * scale - target_origin.0 as f32
                 + target_meta.logical_origin.0 as f32,
@@ -373,8 +375,13 @@ impl GraphicsPass for CompositeLayerPass {
             };
 
             let bind_group = resources.bind_group(&device, &layer_view);
+            let scale = render_target_raster_scale(
+                ctx.frame_resources(),
+                self.output.render_target.handle(),
+            )
+            .unwrap_or_else(|| ctx.viewport().scale_factor());
             let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
-                ctx.viewport(),
+                scale,
                 self.input.pass_context.scissor_rect,
                 self.params.scissor_rect,
                 target_origin,

@@ -6,8 +6,8 @@ use crate::view::frame_graph::{
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, render_target_format, render_target_origin,
-    render_target_sample_count, resolve_graphics_pass_scissor_to_target_physical,
-    resolve_texture_ref,
+    render_target_raster_scale, render_target_sample_count,
+    resolve_graphics_pass_scissor_to_target_physical, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use parley::FontData as ParleyFontData;
@@ -645,6 +645,7 @@ fn prepare_text_prepared_input_pass(
     })?;
 
     let target_handle = output.render_target.handle();
+    let target_scale = render_target_raster_scale(ctx, target_handle);
     let (device, queue, surface_format, surface_size, scale_factor) = {
         let viewport = ctx.viewport();
         (
@@ -652,7 +653,9 @@ fn prepare_text_prepared_input_pass(
             viewport.queue()?.clone(),
             viewport.surface_format(),
             viewport.surface_size(),
-            viewport.scale_factor().max(0.0001),
+            target_scale
+                .unwrap_or_else(|| viewport.scale_factor())
+                .max(0.0001),
         )
     };
 
@@ -673,7 +676,7 @@ fn prepare_text_prepared_input_pass(
         (input.pass_context.scissor_rect, None)
     };
     let scissor_rect = resolve_graphics_pass_scissor_to_target_physical(
-        ctx.viewport(),
+        scale_factor,
         pass_scissor,
         explicit_logical_scissor,
         target_origin,

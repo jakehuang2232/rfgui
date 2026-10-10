@@ -106,27 +106,29 @@ fn full_window_budget_uses_exact_aggregate_bytes_and_physical_dimensions() {
                 prepare_artifact_surface_raster_plan(artifact.clone(), context(bytes, dimension))
                     .is_ok()
             );
-            // Below the device limit, a source that is too long only along its
-            // scroll axis windows to the scrollport; one too wide for the
-            // target it fills cannot shrink.
+            // Below the device limit, a source too long only along its scroll
+            // axis windows to the scrollport at full resolution; one too wide
+            // for the target it fills draws at a lower resolution. Neither is
+            // rejected for its size.
             let limited = prepare_artifact_surface_raster_plan(
                 artifact.clone(),
                 context(bytes, dimension - 1),
-            );
-            if tall && physical_height > physical_width {
-                let plan = limited.expect("the scroll source windows below the device limit");
-                for node in plan.nodes() {
-                    assert!(node.target().color.height() < physical_height);
+            )
+            .expect("no surface is rejected for its size");
+            for node in limited.nodes() {
+                let size = [node.target().color.width(), node.target().color.height()];
+                assert!(size.iter().all(|n| *n < dimension), "{size:?}");
+                if tall && physical_height > physical_width {
+                    assert_eq!(
+                        size[0], physical_width,
+                        "the scroll source keeps its resolution"
+                    );
+                } else {
+                    assert!(
+                        size[0] < physical_width,
+                        "the layer draws at a lower resolution"
+                    );
                 }
-            } else {
-                assert!(matches!(
-                    limited,
-                    Err(
-                        crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(
-                            _
-                        )
-                    )
-                ));
             }
             assert_eq!(
                 prepare_artifact_surface_raster_plan(artifact.clone(), context(LIMIT, 8192))

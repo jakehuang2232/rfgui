@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::base_component::RetainedSurfaceBounds;
 
 #[test]
 fn signed_raster_origin_and_zero_origin_descriptor_share_one_target_extent() {

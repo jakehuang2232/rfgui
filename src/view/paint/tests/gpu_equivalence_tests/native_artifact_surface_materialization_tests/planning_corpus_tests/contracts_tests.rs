@@ -183,11 +183,15 @@ fn planning_corpus_preserves_command_order_and_exact_once_ownership() {
                         1,
                         "non-translation content retains its raster target"
                     );
+                    // The 2x scale rasters at its displayed resolution; a
+                    // rotation keeps the local one.
+                    let shown =
+                        if matches!(scene, Scene::QuarterTurn | Scene::ObliqueTurn) { 1 } else { 2 };
                     let target = plan.nodes()[0].target();
                     assert_eq!(
                         [target.color.width(), target.color.height()],
-                        [20 * dpr as u32, 16 * dpr as u32],
-                        "scale/rotation changes composite geometry, not local raster resolution"
+                        [20 * dpr as u32 * shown, 16 * dpr as u32 * shown],
+                        "a transform rasters at the resolution it shows content at"
                     );
                 }
                 let mut actual = Vec::new();

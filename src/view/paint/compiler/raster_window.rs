@@ -86,17 +86,12 @@ pub(super) fn select(
             region[axis + 2] = full[axis + 2].min(1. / scale);
         }
     }
-    let origin = ArtifactSurfaceRasterOriginProjection::new(
+    // A window beyond the device limit still bounds the raster; the plan
+    // then lowers that raster's resolution to fit.
+    ArtifactSurfaceRasterOriginProjection::new(
         region.map(f32::to_bits),
         context.scale_factor_bits,
     )?;
-    if origin
-        .target_size
-        .iter()
-        .any(|n| *n > context.max_texture_dimension_2d)
-    {
-        return None;
-    }
     Some(RasterWindow {
         content_bounds_bits,
         raster_bounds_bits: region.map(f32::to_bits),

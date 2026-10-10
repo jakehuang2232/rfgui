@@ -1103,6 +1103,10 @@ pub struct ViewportContext {
     target_height: u32,
     target_format: wgpu::TextureFormat,
     scale_factor: f32,
+    /// Whether `scale_factor` is a surface's own raster scale rather than the
+    /// device's; targets built here then record it for the passes drawing
+    /// into them.
+    rescaled: bool,
     render_transform: Option<Mat4>,
     paint_offset: [f32; 2],
     host_neutral_owner_paint_offset: [f32; 2],
@@ -1320,6 +1324,10 @@ pub(crate) fn persistent_target_texture_descriptors(
     .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT)
     .with_sample_count(color.sample_count())
     .with_label(depth_label);
+    let depth = match color.raster_scale() {
+        Some(scale) => depth.with_raster_scale(scale),
+        None => depth,
+    };
     (color, depth)
 }
 
@@ -1343,6 +1351,10 @@ pub(crate) fn transient_target_texture_descriptors(
     .with_usage(wgpu::TextureUsages::RENDER_ATTACHMENT)
     .with_sample_count(color.sample_count())
     .with_label(depth_label);
+    let depth = match color.raster_scale() {
+        Some(scale) => depth.with_raster_scale(scale),
+        None => depth,
+    };
     (color, depth)
 }
 
@@ -1363,6 +1375,7 @@ impl UiBuildContext {
                 target_height: viewport_height.max(1),
                 target_format: viewport_format,
                 scale_factor: scale_factor.max(0.0001),
+                rescaled: false,
                 render_transform: None,
                 paint_offset: [0.0, 0.0],
                 host_neutral_owner_paint_offset: [0.0, 0.0],
@@ -1423,12 +1436,12 @@ impl UiBuildContext {
         stable_key: PersistentTextureKey,
         bounds: RetainedSurfaceBounds,
     ) -> RenderTargetOut {
-        let desc = texture_desc_for_logical_bounds(
+        let desc = self.viewport.scaled_target_desc(texture_desc_for_logical_bounds(
             bounds,
             self.viewport.scale_factor,
             self.viewport.render_transform,
             self.viewport.target_format,
-        );
+        ));
         self.next_persistent_target_with_desc(graph, desc, stable_key)
     }
 
@@ -1472,7 +1485,8 @@ impl UiBuildContext {
         graph: &mut FrameGraph,
         desc: TextureDesc,
     ) -> RenderTargetOut {
-        let (color_desc, depth_desc) = transient_target_texture_descriptors(desc);
+        let (color_desc, depth_desc) =
+            transient_target_texture_descriptors(self.viewport.scaled_target_desc(desc));
         let color = graph.declare_texture::<RenderTargetTag>(color_desc);
         let depth_stencil = graph.declare_texture::<RenderTargetTag>(depth_desc);
         if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
@@ -1774,6 +1788,25 @@ impl UiBuildContext {
 impl ViewportContext {
     pub fn scale_factor(&self) -> f32 {
         self.scale_factor
+    }
+
+    /// The same viewport drawing at `scale_factor` physical pixels per
+    /// logical pixel, as a surface rastered at its displayed resolution does.
+    pub(crate) fn with_scale_factor(&self, scale_factor: f32) -> Self {
+        Self {
+            scale_factor,
+            rescaled: true,
+            ..self.clone()
+        }
+    }
+
+    /// `desc`, recording this viewport's scale when it is a surface's own.
+    fn scaled_target_desc(&self, desc: TextureDesc) -> TextureDesc {
+        if self.rescaled {
+            desc.with_raster_scale(self.scale_factor)
+        } else {
+            desc
+        }
     }
 
     pub fn target_width(&self) -> u32 {

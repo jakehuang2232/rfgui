@@ -1,6 +1,5 @@
 use super::*;
 use crate::view::frame_graph::RetainedTextureRole;
-use crate::view::viewport::Viewport;
 
 fn generic(key: u64) -> PersistentTextureKey {
     PersistentTextureKey::Generic(key)
@@ -89,22 +88,15 @@ fn targeted_persistent_release_removes_color_depth_pair_only() {
 
 #[test]
 fn logical_scissor_to_target_physical_preserves_fractional_scaled_coverage() {
-    let mut viewport = Viewport::new();
-    viewport.set_scale_factor(1.25);
-
-    let physical =
-        logical_scissor_to_target_physical(&viewport, [10, 20, 101, 51], (3, 7), (200, 200));
+    let physical = logical_scissor_to_target_physical(1.25, [10, 20, 101, 51], (3, 7), (200, 200));
 
     assert_eq!(physical, Some([9, 18, 127, 64]));
 }
 
 #[test]
 fn target_physical_scissor_bypasses_logical_projection_and_clamps_to_target() {
-    let mut viewport = Viewport::new();
-    viewport.set_scale_factor(2.0);
-
     let physical = resolve_graphics_pass_scissor_to_target_physical(
-        &viewport,
+        2.0,
         Some(GraphicsPassScissor::TargetPhysical([5, 7, 100, 100])),
         None,
         (100, 200),

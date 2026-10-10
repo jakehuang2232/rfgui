@@ -12,6 +12,9 @@ pub struct TextureDesc {
     dimension: wgpu::TextureDimension,
     usage: wgpu::TextureUsages,
     sample_count: u32,
+    /// Physical pixels per logical pixel drawn into this texture, when it
+    /// differs from the viewport's, as a raster at its displayed resolution.
+    raster_scale_bits: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -45,7 +48,19 @@ impl TextureDesc {
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::COPY_DST,
             sample_count: 1,
+            raster_scale_bits: None,
         }
+    }
+
+    /// Draws into this texture at `scale` physical pixels per logical pixel.
+    pub(crate) fn with_raster_scale(mut self, scale: f32) -> Self {
+        self.raster_scale_bits = Some(scale.to_bits());
+        self
+    }
+
+    /// The scale drawing into this texture uses, if not the viewport's.
+    pub(crate) fn raster_scale(&self) -> Option<f32> {
+        self.raster_scale_bits.map(f32::from_bits)
     }
 
     /// Attachments paired with an exact persistent color cannot be enlarged

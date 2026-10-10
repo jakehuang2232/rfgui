@@ -602,8 +602,11 @@ impl ArtifactSurfaceEmitter<'_> {
         let parent_target = parent_ctx
             .current_target()
             .expect("artifact surface has a receiver target");
+        // The surface rasters at its own resolution; its commands draw there.
         let mut layer_ctx = UiBuildContext::from_parts(
-            parent_ctx.viewport(),
+            parent_ctx
+                .viewport()
+                .with_scale_factor(f32::from_bits(node.target().scale_factor_bits)),
             parent_ctx.layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
         );
         let layer_target = layer_ctx.allocate_retained_raster_target(

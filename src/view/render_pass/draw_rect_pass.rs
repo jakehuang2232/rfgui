@@ -6,8 +6,9 @@ use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, render_target_origin, render_target_sample_count,
-    resolve_graphics_pass_scissor_to_target_physical, resolve_texture_ref,
+    GraphicsPassContext as RenderPassContext, render_target_origin, render_target_raster_scale,
+    render_target_sample_count, resolve_graphics_pass_scissor_to_target_physical,
+    resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use rustc_hash::FxHashSet;
@@ -467,7 +468,8 @@ impl DrawRectPass {
             .handle()
             .and_then(|target| render_target_origin(ctx, target))
             .unwrap_or((0, 0));
-        let scale = ctx.viewport.scale_factor();
+        let scale = render_target_raster_scale(ctx, self.output.render_target.handle())
+            .unwrap_or_else(|| ctx.viewport.scale_factor());
         let scaled_position = [
             self.params.position[0] * scale - target_origin.0 as f32
                 + target_meta.logical_origin.0 as f32,
@@ -632,7 +634,7 @@ impl DrawRectPass {
             )
         });
         let scissor = resolve_graphics_pass_scissor_to_target_physical(
-            ctx.viewport,
+            scale,
             self.input.pass_context.scissor_rect,
             self.scissor_rect,
             target_origin,

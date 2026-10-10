@@ -8,8 +8,9 @@ use crate::view::frame_graph::{
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
-    GraphicsPassContext as RenderPassContext, ResolvedTextureRef, render_target_sample_count,
-    render_target_view, resolve_graphics_pass_scissor_to_target_physical, resolve_texture_ref,
+    GraphicsPassContext as RenderPassContext, ResolvedTextureRef, render_target_raster_scale,
+    render_target_sample_count, render_target_view,
+    resolve_graphics_pass_scissor_to_target_physical, resolve_texture_ref,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use crate::view::sampled_texture::SampledTextureUpload;
@@ -448,7 +449,8 @@ impl GraphicsPass for TextureCompositePass {
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
         let surface_size = ctx.viewport.surface_size();
-        let scale = ctx.viewport.scale_factor();
+        let scale = render_target_raster_scale(ctx, self.output.render_target.handle())
+            .unwrap_or_else(|| ctx.viewport.scale_factor());
         let resolved = resolve_composite_geometry(
             &self.params,
             self.input.source.handle(),
@@ -614,7 +616,11 @@ impl GraphicsPass for TextureCompositePass {
                     (vb, ib)
                 } else {
                     let surface_size = ctx.viewport().surface_size();
-                    let scale = ctx.viewport().scale_factor();
+                    let scale = render_target_raster_scale(
+                        ctx.frame_resources(),
+                        self.output.render_target.handle(),
+                    )
+                    .unwrap_or_else(|| ctx.viewport().scale_factor());
                     let resolved = resolve_composite_geometry(
                         &self.params,
                         self.input.source.handle(),
@@ -655,8 +661,13 @@ impl GraphicsPass for TextureCompositePass {
                 None,
             );
             let (target_w, target_h) = target_meta.physical_size;
+            let scale = render_target_raster_scale(
+                ctx.frame_resources(),
+                self.output.render_target.handle(),
+            )
+            .unwrap_or_else(|| ctx.viewport().scale_factor());
             let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
-                ctx.viewport(),
+                scale,
                 self.input.pass_context.scissor_rect,
                 self.params.scissor_rect,
                 target_meta.global_origin,
@@ -718,6 +729,10 @@ fn resolve_composite_geometry(
     let mask_meta = resolve_target_meta(mask_handle, ctx, source_meta.physical_size, None)
         .with_fallback_origin(source_meta.global_origin)
         .with_fallback_logical_origin(source_meta.logical_origin);
+    // A source rastered at its own resolution maps its logical bounds to
+    // texels at that scale; `scale` is the destination's.
+    let source_scale = render_target_raster_scale(ctx, source_handle).unwrap_or(scale);
+    let mask_scale = render_target_raster_scale(ctx, mask_handle).unwrap_or(source_scale);
     let (target_w, target_h) = target_meta.physical_size;
     let bounds = resolve_bounds(
         params.bounds,
@@ -729,7 +744,11 @@ fn resolve_composite_geometry(
     );
     let source_uv_bounds = resolve_uv_bounds(
         params.uv_bounds,
-        if sampled_extent.is_some() { 1.0 } else { scale },
+        if sampled_extent.is_some() {
+            1.0
+        } else {
+            source_scale
+        },
         source_meta.physical_size.0 as f32,
         source_meta.physical_size.1 as f32,
         source_meta.global_origin_f32(),
@@ -737,7 +756,7 @@ fn resolve_composite_geometry(
     );
     let mask_uv_bounds = resolve_uv_bounds(
         params.mask_uv_bounds.or(params.uv_bounds),
-        scale,
+        mask_scale,
         mask_meta.physical_size.0 as f32,
         mask_meta.physical_size.1 as f32,
         mask_meta.global_origin_f32(),
@@ -760,6 +779,7 @@ fn resolve_composite_geometry(
             bounds,
             source_meta.physical_size,
             scale,
+            source_scale,
         ),
         layer_origin: [bounds[0], bounds[1]],
         target_meta,
@@ -782,10 +802,13 @@ fn render_target_pixel_preserving(
     physical_bounds: [f32; 4],
     source_size: (u32, u32),
     scale: f32,
+    source_scale: f32,
 ) -> bool {
     if params.use_mask
         || !scale.is_finite()
         || scale <= 0.0
+        || !source_scale.is_finite()
+        || source_scale <= 0.0
         || !physical_bounds.iter().all(|v| v.is_finite())
         || params
             .uv_bounds
@@ -796,7 +819,7 @@ fn render_target_pixel_preserving(
     let source_span = params
         .uv_bounds
         .map_or([source_size.0 as f32, source_size.1 as f32], |uv| {
-            [uv[2] * scale, uv[3] * scale]
+            [uv[2] * source_scale, uv[3] * source_scale]
         });
     if !source_span.iter().all(|v| v.is_finite() && *v > 0.0) {
         return false;

@@ -799,6 +799,15 @@ pub(crate) fn render_target_origin(
     Some(texture_desc_for_handle(ctx, handle)?.origin())
 }
 
+/// The scale drawing into `handle` uses: its own raster scale, else `None`
+/// for the viewport's.
+pub(crate) fn render_target_raster_scale(
+    ctx: &impl FrameResourceContext,
+    handle: Option<TextureHandle>,
+) -> Option<f32> {
+    texture_desc_for_handle(ctx, handle?)?.raster_scale()
+}
+
 pub(crate) fn render_target_format(
     ctx: &impl FrameResourceContext,
     handle: TextureHandle,
@@ -814,12 +823,12 @@ pub(crate) fn render_target_sample_count(
 }
 
 pub(crate) fn logical_scissor_to_target_physical(
-    viewport: &crate::view::viewport::Viewport,
+    scale: f32,
     scissor_rect: [u32; 4],
     target_origin: (u32, u32),
     target_size: (u32, u32),
 ) -> Option<[u32; 4]> {
-    let scale = viewport.scale_factor().max(0.0001);
+    let scale = scale.max(0.0001);
     let [x, y, width, height] = scissor_rect;
     let left = (x as f32 * scale).floor().max(0.0) as i64 - target_origin.0 as i64;
     let top = (y as f32 * scale).floor().max(0.0) as i64 - target_origin.1 as i64;
@@ -846,7 +855,7 @@ pub(crate) fn logical_scissor_to_target_physical(
 }
 
 pub(crate) fn resolve_graphics_pass_scissor_to_target_physical(
-    viewport: &crate::view::viewport::Viewport,
+    scale: f32,
     pass_scissor: Option<GraphicsPassScissor>,
     explicit_logical_scissor: Option<[u32; 4]>,
     target_origin: (u32, u32),
@@ -855,14 +864,14 @@ pub(crate) fn resolve_graphics_pass_scissor_to_target_physical(
     let pass_scissor = match pass_scissor {
         None => None,
         Some(GraphicsPassScissor::Logical(scissor_rect)) => {
-            logical_scissor_to_target_physical(viewport, scissor_rect, target_origin, target_size)
+            logical_scissor_to_target_physical(scale, scissor_rect, target_origin, target_size)
         }
         Some(GraphicsPassScissor::TargetPhysical(scissor_rect)) => {
             clamp_target_physical_scissor(scissor_rect, target_size)
         }
     };
     let explicit_scissor = explicit_logical_scissor.and_then(|scissor_rect| {
-        logical_scissor_to_target_physical(viewport, scissor_rect, target_origin, target_size)
+        logical_scissor_to_target_physical(scale, scissor_rect, target_origin, target_size)
     });
     intersect_target_physical_scissors(pass_scissor, explicit_scissor)
 }

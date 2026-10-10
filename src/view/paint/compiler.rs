@@ -1,6 +1,5 @@
 use crate::view::base_component::{
-    Rect, RetainedSurfaceBounds, UiBuildContext, exact_logical_scissor_for_rect,
-    logical_scissor_for_clip_rect,
+    Rect, UiBuildContext, exact_logical_scissor_for_rect, logical_scissor_for_clip_rect,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipGeometry, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId,
@@ -207,7 +206,8 @@ impl RetainedSurfaceRasterInputs {
             scale,
             None,
             self.color.format(),
-        );
+        )
+        .with_raster_scale(scale);
         let (expected_color, expected_depth) =
             crate::view::base_component::persistent_target_texture_descriptors(
                 expected_color,
@@ -424,6 +424,14 @@ impl ArtifactSurfaceRasterContext {
 
     fn scale_factor(self) -> f32 {
         f32::from_bits(self.scale_factor_bits)
+    }
+
+    /// The same facts for a raster drawn at `scale_factor`.
+    fn with_scale_factor(self, scale_factor: f32) -> Self {
+        Self {
+            scale_factor_bits: scale_factor.to_bits(),
+            ..self
+        }
     }
 
     /// The scene-root target in logical viewport space.
@@ -1743,13 +1751,6 @@ impl ArtifactSurfaceRasterOriginProjection {
         }
         let physical_left = finite_f32_to_i64((x * scale).floor())?;
         let physical_top = finite_f32_to_i64((y * scale).floor())?;
-        let physical_right = finite_f32_to_i64(((x + width) * scale).ceil())?;
-        let physical_bottom = finite_f32_to_i64(((y + height) * scale).ceil())?;
-        let target_width = u32::try_from(physical_right.checked_sub(physical_left)?).ok()?;
-        let target_height = u32::try_from(physical_bottom.checked_sub(physical_top)?).ok()?;
-        if target_width == 0 || target_height == 0 {
-            return None;
-        }
         let logical_origin = [physical_left as f32 / scale, physical_top as f32 / scale];
         let translation = [-logical_origin[0], -logical_origin[1]];
         let normalized = [x + translation[0], y + translation[1], width, height];
@@ -1759,6 +1760,16 @@ impl ArtifactSurfaceRasterOriginProjection {
             || normalized[0] >= 1.0 / scale
             || normalized[1] >= 1.0 / scale
         {
+            return None;
+        }
+        // Size the target from the normalized bounds, exactly as a descriptor
+        // derived from them is sized: at a scale that is not a whole number,
+        // the raw bounds can round one pixel apart.
+        let target_width = finite_f32_to_i64(((normalized[0] + width) * scale).ceil())
+            .and_then(|n| u32::try_from(n).ok())?;
+        let target_height = finite_f32_to_i64(((normalized[1] + height) * scale).ceil())
+            .and_then(|n| u32::try_from(n).ok())?;
+        if target_width == 0 || target_height == 0 {
             return None;
         }
         Some(Self {
@@ -2965,6 +2976,56 @@ fn surface_receiver_visible_rects(
     receiver_visible
 }
 
+/// The scale each surface rasters at, by execution index: its receiver's,
+/// times the scale its own transform shows content at, so a surface rasters at
+/// the resolution it is displayed at. The scene root rasters at the device
+/// scale. Parents come first.
+fn surface_raster_scales(
+    program: &ValidatedArtifactSurfaceDagProgram,
+    context: ArtifactSurfaceRasterContext,
+) -> Vec<f32> {
+    let nodes = program.execution_order.nodes();
+    let device = context.scale_factor();
+    let mut scales = vec![device; nodes.len()];
+    for execution in nodes.iter().copied() {
+        let receiver = match execution.receiver() {
+            SurfaceDagExecutionTargetId::SceneRoot(_) => device,
+            SurfaceDagExecutionTargetId::Surface(parent) => scales[parent.index()],
+        };
+        let own = program
+            .surface_dag
+            .nodes()
+            .get(execution.source().index())
+            .filter(|node| node.id() == execution.source())
+            .and_then(|node| match node.kind() {
+                SurfaceDagNodeKind::Transform(transform) => program
+                    .spatial
+                    .owner_viewport_transform(transform)
+                    .map(transform_display_scale),
+                SurfaceDagNodeKind::Effect(_) | SurfaceDagNodeKind::ScrollContent { .. } => None,
+            })
+            .unwrap_or(1.0);
+        // Bounds keep the physical projection of any finite layout
+        // representable; the plan still fits each raster to the device limit.
+        scales[execution.id().index()] = (receiver * own).clamp(device / 1024.0, device * 256.0);
+    }
+    scales
+}
+
+/// The factor a transform scales content by: the longer of its mapped unit
+/// axes, so neither axis is drawn below its displayed resolution. A rotation
+/// alone keeps 1.
+fn transform_display_scale(matrix: glam::Mat4) -> f32 {
+    let x = glam::Vec2::new(matrix.x_axis.x, matrix.x_axis.y).length();
+    let y = glam::Vec2::new(matrix.y_axis.x, matrix.y_axis.y).length();
+    let scale = x.max(y);
+    if !scale.is_finite() || scale <= 0.0 || (scale - 1.0).abs() < 0.000_1 {
+        1.0
+    } else {
+        scale
+    }
+}
+
 /// The overlap of two rectangles; an empty overlap keeps zero size.
 fn intersect_rects(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let x = a[0].max(b[0]);
@@ -3021,6 +3082,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
         &scrolls,
         &clips,
     );
+    let raster_scales = surface_raster_scales(&program, context);
     let mut prepared_nodes: Vec<Option<PreparedArtifactSurfaceRasterNode>> =
         vec![None; program.execution_order.nodes().len()];
     // Source output and declared upload buffers share the aggregate limit
@@ -3196,9 +3258,10 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 &clips,
             )
         };
+        let raster_context = context.with_scale_factor(raster_scales[execution.id().index()]);
         let full_origin = ArtifactSurfaceRasterOriginProjection::new(
             content_bounds_bits,
-            context.scale_factor_bits,
+            raster_context.scale_factor_bits,
         )
         .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(source))?;
         // A fixed working-set threshold makes raster geometry independent of
@@ -3227,18 +3290,39 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 receiver_visible[execution.id().index()],
                 receiver_paint_offset,
                 root_delta,
-                context,
+                raster_context,
             )
         } else {
             None
         };
         let raw_source_bounds_bits =
             window.map_or(content_bounds_bits, |window| window.raster_bounds_bits);
-        let raster_origin = ArtifactSurfaceRasterOriginProjection::new(
+        let mut raster_context = raster_context;
+        let mut raster_origin = ArtifactSurfaceRasterOriginProjection::new(
             raw_source_bounds_bits,
-            context.scale_factor_bits,
+            raster_context.scale_factor_bits,
         )
         .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(source))?;
+        // What the device cannot hold in one texture is drawn at a lower
+        // resolution rather than not at all.
+        let longest = raster_origin.target_size[0].max(raster_origin.target_size[1]);
+        if longest > context.max_texture_dimension_2d {
+            let display_scale = raster_context.scale_factor();
+            let fit = context.max_texture_dimension_2d as f32 / longest as f32;
+            for shrink in [fit, fit * 0.99, fit * 0.98] {
+                raster_context = raster_context.with_scale_factor(display_scale * shrink);
+                raster_origin = ArtifactSurfaceRasterOriginProjection::new(
+                    raw_source_bounds_bits,
+                    raster_context.scale_factor_bits,
+                )
+                .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(source))?;
+                if raster_origin.target_size[0].max(raster_origin.target_size[1])
+                    <= context.max_texture_dimension_2d
+                {
+                    break;
+                }
+            }
+        }
         // Local clips lie below a scrollport and clip only its descendants'
         // content, which rasters `base_delta` away from viewport space.
         let raster_local_clip = |clip: &ClipNodeSnapshot| program.raster_clip(clip, base_delta);
@@ -3355,19 +3439,15 @@ fn prepare_artifact_surface_raster_plan_from_program(
 
         let source_bounds_bits = raster_origin.normalized_source_bounds_bits;
         let identity = surface_identity(node.kind(), node.target(), node.stable_id());
-        let [x, y, width, height] = source_bounds_bits.map(f32::from_bits);
-        let color = crate::view::base_component::texture_desc_for_logical_bounds(
-            RetainedSurfaceBounds {
-                x,
-                y,
-                width,
-                height,
-                corner_radii: [0.0; 4],
-            },
-            context.scale_factor(),
-            None,
+        // The projection's own physical size: logical bounds at a scale that
+        // is not a whole number cannot round-trip to the same pixel count.
+        let color = crate::view::frame_graph::texture_resource::TextureDesc::new(
+            raster_origin.target_size[0],
+            raster_origin.target_size[1],
             context.target_format,
-        );
+            wgpu::TextureDimension::D2,
+        )
+        .with_raster_scale(raster_context.scale_factor());
         let (color, depth) = crate::view::base_component::persistent_target_texture_descriptors(
             color,
             identity.color_key,
@@ -3396,7 +3476,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
         let target = RetainedSurfaceRasterInputs {
             color,
             depth,
-            scale_factor_bits: context.scale_factor_bits,
+            scale_factor_bits: raster_context.scale_factor_bits,
             source_bounds_bits,
         };
         if !target.has_canonical_descriptor_pair_for(identity)

@@ -12,6 +12,7 @@ fn translated_rasters_preserve_texels_at_both_dprs_and_fractional_origins() {
                 &params,
                 physical,
                 (256, 256),
+                scale,
                 scale
             ));
             params.quad_positions = Some([
@@ -24,6 +25,7 @@ fn translated_rasters_preserve_texels_at_both_dprs_and_fractional_origins() {
                 &params,
                 physical,
                 (256, 256),
+                scale,
                 scale
             ));
         }
@@ -38,6 +40,7 @@ fn resampling_and_unproven_mask_mappings_keep_linear_filtering() {
         &params,
         params.bounds,
         (48, 120),
+        1.0,
         1.0
     ));
     for size in [(24, 60), (96, 240), (48, 121)] {
@@ -45,6 +48,7 @@ fn resampling_and_unproven_mask_mappings_keep_linear_filtering() {
             &params,
             params.bounds,
             size,
+            1.0,
             1.0
         ));
     }
@@ -53,6 +57,7 @@ fn resampling_and_unproven_mask_mappings_keep_linear_filtering() {
         &params,
         params.bounds,
         (48, 120),
+        1.0,
         1.0
     ));
     params.use_mask = false;
@@ -67,6 +72,7 @@ fn resampling_and_unproven_mask_mappings_keep_linear_filtering() {
             &params,
             params.bounds,
             (48, 120),
+            1.0,
             1.0
         ));
     }
@@ -76,6 +82,7 @@ fn resampling_and_unproven_mask_mappings_keep_linear_filtering() {
         &params,
         params.bounds,
         (48, 120),
+        1.0,
         1.0
     ));
 }

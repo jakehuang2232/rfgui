@@ -9,7 +9,7 @@ use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
     GraphicsPassScissor, render_target_format, render_target_origin, render_target_ref,
-    render_target_view, resolve_graphics_pass_scissor_to_target_physical,
+    render_target_view, render_target_raster_scale, resolve_graphics_pass_scissor_to_target_physical,
 };
 use crate::view::render_pass::{GraphicsCtx, GraphicsPass};
 use std::sync::{Mutex, OnceLock};
@@ -197,8 +197,13 @@ impl GraphicsPass for BlurPass {
                 ],
             });
 
+            let scale = render_target_raster_scale(
+                ctx.frame_resources(),
+                self.output.render_target.handle(),
+            )
+            .unwrap_or_else(|| ctx.viewport().scale_factor());
             let scissor_rect_physical = resolve_graphics_pass_scissor_to_target_physical(
-                ctx.viewport(),
+                scale,
                 self.params.scissor_rect,
                 None,
                 self.output
