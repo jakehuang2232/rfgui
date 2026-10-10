@@ -2819,6 +2819,120 @@ fn fold_materialized_composite_boundaries(
     Ok(geometry)
 }
 
+/// Each surface's visible rectangle in its receiver's space, by execution
+/// index: its receiver clip, within what the receiver itself shows. A scene
+/// root shows its target. Parents come first, so an unclipped nested surface
+/// inherits its parent's visible part. A composite mapping does not depend on
+/// content bounds, so unit bounds stand in for the not yet known envelopes.
+/// `None` when nothing bounds what a surface shows. This only narrows raster
+/// windows; the plan itself still validates every geometry.
+fn surface_receiver_visible_rects(
+    program: &ValidatedArtifactSurfaceDagProgram,
+    context: ArtifactSurfaceRasterContext,
+    host_placement: &ResolvedArtifactSurfaceHostPlacement,
+    transforms: &FxHashMap<TransformNodeId, TransformNodeSnapshot>,
+    effects: &FxHashMap<EffectNodeId, EffectNodeSnapshot>,
+    scrolls: &FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
+    clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+) -> Vec<Option<[f32; 4]>> {
+    let nodes = program.execution_order.nodes();
+    let mut receiver_visible = vec![None; nodes.len()];
+    // Each surface's visible part in its own raster space, and the translation
+    // from its receiver space into that raster space.
+    let mut own_visible: Vec<Option<[f32; 4]>> = vec![None; nodes.len()];
+    let mut base_deltas = vec![[0.0_f32; 2]; nodes.len()];
+    let unit = [0.0_f32, 0.0, 1.0, 1.0];
+    for execution in nodes.iter().copied() {
+        let index = execution.id().index();
+        let visible = (|| {
+            let source = execution.source();
+            let node = program
+                .surface_dag
+                .nodes()
+                .get(source.index())
+                .filter(|node| node.id() == source)?;
+            let coverage = program
+                .coverage
+                .nodes()
+                .get(source.index())
+                .filter(|coverage| coverage.surface() == source)?;
+            let folded_boundaries = program.execution_order.folded_boundaries(execution.id())?;
+            base_deltas[index] = materialized_surface_raster_translation(
+                source,
+                node.kind(),
+                folded_boundaries,
+                &program.surface_dag,
+                scrolls,
+            )
+            .ok()?;
+            let receiver_paint_offset =
+                host_placement.receiver_paint_offset(node.target(), execution.receiver())?;
+            let geometry = surface_composite_geometry(
+                node,
+                node.owner_properties().clip,
+                unit.map(f32::to_bits),
+                unit.map(f32::to_bits),
+                execution.receiver(),
+                receiver_paint_offset,
+                context,
+                transforms,
+                effects,
+                scrolls,
+                clips,
+                coverage.clip_closure(),
+                &program.spatial,
+            )
+            .ok()?;
+            let geometry = fold_materialized_composite_boundaries(
+                geometry,
+                folded_boundaries,
+                &program.surface_dag,
+                execution.receiver(),
+                receiver_paint_offset,
+                context,
+                clips,
+            )
+            .ok()?;
+            let shown_by_receiver = match execution.receiver() {
+                SurfaceDagExecutionTargetId::SceneRoot(_) => Some(context.target_logical_rect()),
+                SurfaceDagExecutionTargetId::Surface(parent) => {
+                    let [dx, dy] = base_deltas[parent.index()];
+                    own_visible[parent.index()].map(|[x, y, w, h]| [x - dx, y - dy, w, h])
+                }
+            };
+            let receiver_rect = match geometry.resolved_receiver_clip() {
+                ArtifactSurfaceResolvedClip::Scissor(GraphicsPassScissor::Logical(clip)) => {
+                    let clip = clip.map(|n| n as f32);
+                    Some(shown_by_receiver.map_or(clip, |shown| intersect_rects(clip, shown)))
+                }
+                ArtifactSurfaceResolvedClip::Empty => Some([0.0; 4]),
+                ArtifactSurfaceResolvedClip::Unclipped
+                | ArtifactSurfaceResolvedClip::Scissor(GraphicsPassScissor::TargetPhysical(_)) => {
+                    shown_by_receiver
+                }
+            }?;
+            receiver_visible[index] = Some(receiver_rect);
+            Some(raster_window::receiver_read(
+                unit,
+                geometry,
+                receiver_rect,
+                receiver_paint_offset,
+            ))
+        })();
+        own_visible[index] = visible.filter(|rect| rect.iter().all(|n| n.is_finite()));
+    }
+    receiver_visible
+}
+
+/// The overlap of two rectangles; an empty overlap keeps zero size.
+fn intersect_rects(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let x = a[0].max(b[0]);
+    let y = a[1].max(b[1]);
+    let right = (a[0] + a[2]).min(b[0] + b[2]);
+    let bottom = (a[1] + a[3]).min(b[1] + b[3]);
+    [x, y, (right - x).max(0.0), (bottom - y).max(0.0)]
+}
+
 fn prepare_artifact_surface_raster_plan_from_program(
     program: ValidatedArtifactSurfaceDagProgram,
     context: ArtifactSurfaceRasterContext,
@@ -2857,6 +2971,15 @@ fn prepare_artifact_surface_raster_plan_from_program(
         .iter()
         .map(|snapshot| (snapshot.id, *snapshot))
         .collect::<FxHashMap<_, _>>();
+    let receiver_visible = surface_receiver_visible_rects(
+        &program,
+        context,
+        &host_placement,
+        &transforms,
+        &effects,
+        &scrolls,
+        &clips,
+    );
     let mut prepared_nodes: Vec<Option<PreparedArtifactSurfaceRasterNode>> =
         vec![None; program.execution_order.nodes().len()];
     // Source output and declared upload buffers share the aggregate limit
@@ -3055,10 +3178,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
             raster_window::select(
                 content_bounds_bits,
                 geometry,
-                matches!(
-                    execution.receiver(),
-                    SurfaceDagExecutionTargetId::SceneRoot(_)
-                ),
+                receiver_visible[execution.id().index()],
                 receiver_paint_offset,
                 context,
             )

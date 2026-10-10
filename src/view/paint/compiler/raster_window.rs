@@ -34,15 +34,17 @@ impl RasterWindow {
 
 /// A finite receiver clip is a proof that pixels outside its inverse image
 /// cannot contribute. The predicate consumes geometry, never property families.
-/// An unclipped scene-root receiver reads only its target. A transform maps the
-/// receiver clip back through its matrix; the preimage's bounding box holds every
-/// source pixel the clip can show, whatever the rotation or perspective.
+/// `receiver_visible` is the part of the receiver this surface can show, in the
+/// receiver's space: its clip within what the receiver itself shows (a scene
+/// root shows its target). A transform maps it back through its matrix; the
+/// preimage's bounding box holds every source pixel it can show, whatever the
+/// rotation or perspective.
 /// A 256 physical pixel grid plus a one-texel sampling guard avoids reallocating
 /// for each scroll tick. No command or full content envelope is discarded.
 pub(super) fn select(
     content_bounds_bits: [u32; 4],
     geometry: ArtifactSurfaceCompositeGeometryStamp,
-    receiver_is_scene_root: bool,
+    receiver_visible: Option<[f32; 4]>,
     receiver_paint_offset: [f32; 2],
     context: ArtifactSurfaceRasterContext,
 ) -> Option<RasterWindow> {
@@ -52,42 +54,12 @@ pub(super) fn select(
         return None;
     }
     let clip = match geometry.resolved_receiver_clip() {
-        ArtifactSurfaceResolvedClip::Scissor(GraphicsPassScissor::Logical(clip)) => {
-            clip.map(|n| n as f32)
-        }
-        ArtifactSurfaceResolvedClip::Unclipped if receiver_is_scene_root => {
-            context.target_logical_rect()
-        }
         // There is no receiver read at all. Keep a minimal valid target rather
         // than allocating a huge invisible envelope; an exposed clip replans.
         ArtifactSurfaceResolvedClip::Empty => [dest[0], dest[1], 0., 0.],
-        _ => return None,
+        _ => receiver_visible?,
     };
-    // The source rectangle the receiver clip reads, before snapping.
-    let read = match geometry {
-        ArtifactSurfaceCompositeGeometryStamp::Transform {
-            receiver_transform_bits,
-            ..
-        } if !geometry.transform_quad().is_some_and(|quad| {
-            let [x, y, w, h] = dest;
-            quad == [[x, y + h], [x + w, y + h], [x + w, y], [x, y]]
-        }) =>
-        {
-            let matrix = glam::Mat4::from_cols_array(&receiver_transform_bits.map(f32::from_bits));
-            // A clip corner seen from behind the eye has no finite preimage:
-            // every source pixel may then be visible.
-            transformed_preimage(matrix, receiver_paint_offset, clip).unwrap_or(full)
-        }
-        _ => {
-            let mut read = [0.; 4];
-            for axis in 0..2 {
-                let ratio = full[axis + 2] / dest[axis + 2];
-                read[axis] = full[axis] + (clip[axis] - dest[axis]) * ratio;
-                read[axis + 2] = clip[axis + 2] * ratio;
-            }
-            read
-        }
-    };
+    let read = receiver_read(full, geometry, clip, receiver_paint_offset);
     let scale = context.scale_factor();
     let mut region = [0.; 4];
     for axis in 0..2 {
@@ -122,6 +94,42 @@ pub(super) fn select(
         content_bounds_bits,
         raster_bounds_bits: region.map(f32::to_bits),
     })
+}
+
+/// The source rectangle, in the space of `full`, that `geometry` composites
+/// into `receiver_rect`, before snapping. `full` is the source envelope the
+/// geometry was built from; its destination must be finite and non-empty.
+pub(super) fn receiver_read(
+    full: [f32; 4],
+    geometry: ArtifactSurfaceCompositeGeometryStamp,
+    receiver_rect: [f32; 4],
+    receiver_paint_offset: [f32; 2],
+) -> [f32; 4] {
+    let dest = geometry.destination_bounds_bits().map(f32::from_bits);
+    match geometry {
+        ArtifactSurfaceCompositeGeometryStamp::Transform {
+            receiver_transform_bits,
+            ..
+        } if !geometry.transform_quad().is_some_and(|quad| {
+            let [x, y, w, h] = dest;
+            quad == [[x, y + h], [x + w, y + h], [x + w, y], [x, y]]
+        }) =>
+        {
+            let matrix = glam::Mat4::from_cols_array(&receiver_transform_bits.map(f32::from_bits));
+            // A clip corner seen from behind the eye has no finite preimage:
+            // every source pixel may then be visible.
+            transformed_preimage(matrix, receiver_paint_offset, receiver_rect).unwrap_or(full)
+        }
+        _ => {
+            let mut read = [0.; 4];
+            for axis in 0..2 {
+                let ratio = full[axis + 2] / dest[axis + 2];
+                read[axis] = full[axis] + (receiver_rect[axis] - dest[axis]) * ratio;
+                read[axis + 2] = receiver_rect[axis + 2] * ratio;
+            }
+            read
+        }
+    }
 }
 
 /// The bounding box of the source points, on the `z = 0` plane, that `matrix`
