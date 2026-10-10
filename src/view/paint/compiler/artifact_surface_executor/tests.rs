@@ -79,6 +79,7 @@ fn prepared_child_mask_surface_frame() -> PreparedArtifactSurfaceFrame {
         wgpu::TextureFormat::Bgra8Unorm,
         [0.0, 0.0],
         None,
+        [4096, 4096],
         4096,
         256 * 1024 * 1024,
     )
@@ -112,6 +113,7 @@ fn raster_context() -> ArtifactSurfaceRasterContext {
         wgpu::TextureFormat::Bgra8Unorm,
         [0.0, 0.0],
         None,
+        [4096, 4096],
         4096,
         256 * 1024 * 1024,
     )

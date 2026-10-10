@@ -68,6 +68,7 @@ fn materialized_two_boundary_graph(
         FORMAT,
         ctx.paint_offset(),
         ctx.graphics_pass_context().logical_scissor_rect(),
+        [4096, 4096],
         wgpu::Limits::default().max_texture_dimension_2d,
         128 * 1024 * 1024,
     )

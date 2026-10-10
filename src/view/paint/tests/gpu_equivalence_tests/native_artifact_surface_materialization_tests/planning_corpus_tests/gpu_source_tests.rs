@@ -289,10 +289,12 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
             1 => op.source.extent[0] += 1,
             _ => op.source.uniforms = Arc::from([0; 16]),
         }
-        assert!(matches!(prepare_artifact_surface_raster_plan(changed,ArtifactSurfaceRasterContext::new(1.,FORMAT,[0.;2],None,8192,128*1024*1024).unwrap()),Err(crate::view::paint::ArtifactSurfaceRasterPlanError::ArtifactProgram(crate::view::paint::SingleTargetSurfaceDagPrepareError::InvalidArtifactStore))),"unsealed payload drift {drift}");
+        assert!(matches!(prepare_artifact_surface_raster_plan(changed,ArtifactSurfaceRasterContext::new(1.,FORMAT,[0.;2],None, [4096, 4096],8192,128*1024*1024).unwrap()),Err(crate::view::paint::ArtifactSurfaceRasterPlanError::ArtifactProgram(crate::view::paint::SingleTargetSurfaceDagPrepareError::InvalidArtifactStore))),"unsealed payload drift {drift}");
     }
     prepare(artifact.clone(), 1., [0.; 2]);
-    let budget = ArtifactSurfaceRasterContext::new(1., FORMAT, [0.; 2], None, 8192, 1280).unwrap();
+    let budget =
+        ArtifactSurfaceRasterContext::new(1., FORMAT, [0.; 2], None, [4096, 4096], 8192, 1280)
+            .unwrap();
     assert!(matches!(
         prepare_artifact_surface_raster_plan(artifact.clone(), budget),
         Err(crate::view::paint::ArtifactSurfaceRasterPlanError::GpuSourceBudgetExceeded)
@@ -300,8 +302,16 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
     assert!(matches!(
         prepare_artifact_surface_raster_plan(
             artifact,
-            ArtifactSurfaceRasterContext::new(2., FORMAT, [0.; 2], None, 8192, 128 * 1024 * 1024)
-                .unwrap()
+            ArtifactSurfaceRasterContext::new(
+                2.,
+                FORMAT,
+                [0.; 2],
+                None,
+                [4096, 4096],
+                8192,
+                128 * 1024 * 1024
+            )
+            .unwrap()
         ),
         Err(crate::view::paint::ArtifactSurfaceRasterPlanError::InvalidGpuSource)
     ));
@@ -435,6 +445,7 @@ fn gpu_source_conflicting_shared_producers_are_rejected_before_scheduling() {
                     FORMAT,
                     [0.; 2],
                     None,
+                    [4096, 4096],
                     8192,
                     128 * 1024 * 1024
                 )

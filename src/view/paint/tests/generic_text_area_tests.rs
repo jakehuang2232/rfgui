@@ -168,6 +168,7 @@ fn generic_text_area_projection_rejects_a_missing_frozen_spatial_parent() {
         wgpu::TextureFormat::Rgba8Unorm,
         [0.0, 0.0],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )

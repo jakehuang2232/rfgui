@@ -61,6 +61,7 @@ fn local_clip_edit_reprepares_only_spans_that_consume_it() {
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )

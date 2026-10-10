@@ -32,6 +32,7 @@ fn recorded_plan(
             wgpu::TextureFormat::Bgra8Unorm,
             [0.0, 0.0],
             None,
+            [4096, 4096],
             4096,
             MATERIALIZATION_BUDGET_BYTES,
         )
@@ -156,6 +157,7 @@ fn materialization_eliminates_only_the_pass_through_target_across_host_paint_cas
                         wgpu::TextureFormat::Bgra8Unorm,
                         [0.0, 0.0],
                         None,
+                        [4096, 4096],
                         4096,
                         MATERIALIZATION_BUDGET_BYTES,
                     )
@@ -259,6 +261,7 @@ fn materialization_rule_is_not_tied_to_the_retiring_scroll_transform_authority()
                 wgpu::TextureFormat::Bgra8Unorm,
                 [0.0, 0.0],
                 None,
+                [4096, 4096],
                 4096,
                 MATERIALIZATION_BUDGET_BYTES,
             )

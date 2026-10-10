@@ -33,6 +33,7 @@ fn synthetic_generic_resident_stamp(topology_revision: u64) -> RetainedSurfaceRa
         wgpu::TextureFormat::Bgra8Unorm,
         [0.0, 0.0],
         None,
+        [4096, 4096],
         8192,
         u64::MAX,
     )

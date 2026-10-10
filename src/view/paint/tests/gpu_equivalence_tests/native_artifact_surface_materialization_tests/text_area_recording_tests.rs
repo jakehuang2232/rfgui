@@ -205,6 +205,7 @@ fn run(legacy: bool) -> Result<(), String> {
                         FORMAT,
                         ctx.paint_offset(),
                         None,
+                        [4096, 4096],
                         8192,
                         128 * 1024 * 1024,
                     )
@@ -308,7 +309,7 @@ fn generic_text_area_resident_span_uses_parent_edges_not_store_order() {
     );
     drop(arena);
     let context =
-        ArtifactSurfaceRasterContext::new(1.0, FORMAT, [0.0, 0.0], None, 8192, 128 * 1024 * 1024)
+        ArtifactSurfaceRasterContext::new(1.0, FORMAT, [0.0, 0.0], None, [4096, 4096], 8192, 128 * 1024 * 1024)
             .unwrap();
     for reverse in [false, true] {
         let mut reordered = artifact.clone();

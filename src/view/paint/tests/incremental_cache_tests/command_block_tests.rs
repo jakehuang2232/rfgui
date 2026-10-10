@@ -11,6 +11,7 @@ fn complete_blocks_reuse_commands_but_mutation_and_current_opacity_fail_closed()
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )
@@ -118,6 +119,7 @@ fn cached_blocks_still_check_cross_block_masks_and_duplicate_slots() {
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )

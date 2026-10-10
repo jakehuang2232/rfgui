@@ -906,6 +906,7 @@ fn artifact_surface_raster_context(
         viewport.target_format(),
         ctx.paint_offset(),
         ctx.graphics_pass_context().logical_scissor_rect(),
+        [viewport.target_width(), viewport.target_height()],
         max_texture_dimension_2d,
         max_texture_bytes,
     )

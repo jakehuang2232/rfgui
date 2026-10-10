@@ -8,6 +8,7 @@ fn changed_command_geometry_reuses_relations_but_validates_current_bounds() {
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )

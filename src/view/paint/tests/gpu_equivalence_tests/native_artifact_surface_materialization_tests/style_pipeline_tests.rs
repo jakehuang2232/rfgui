@@ -195,6 +195,7 @@ fn materialization_style_pipeline_resolves_and_eliminates_translation_boundaries
                         FORMAT,
                         [0.0, 0.0],
                         None,
+                        [4096, 4096],
                         4096,
                         128 * 1024 * 1024,
                     )

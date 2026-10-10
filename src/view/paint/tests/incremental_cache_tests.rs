@@ -18,6 +18,7 @@ fn replay_preserves_full_recording_and_planning_across_content_and_geometry_edit
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )
@@ -259,6 +260,7 @@ fn warm_geometry_never_skips_current_command_identity_validation() {
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )
@@ -396,6 +398,7 @@ fn relationship_replay_still_checks_current_effect_values_and_command_opacity() 
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )
@@ -430,6 +433,7 @@ fn local_content_edit_reuses_unaffected_raster_span_and_matches_fresh_planning()
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )
@@ -483,6 +487,7 @@ fn parent_graph_replay_keeps_current_transform_validation_and_composition() {
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )
@@ -594,6 +599,7 @@ fn parent_graph_replay_uses_live_spatial_and_clip_values() {
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )

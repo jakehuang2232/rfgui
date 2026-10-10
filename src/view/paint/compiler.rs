@@ -380,6 +380,8 @@ pub(crate) struct ArtifactSurfaceRasterContext {
     target_format: wgpu::TextureFormat,
     paint_offset_bits: [u32; 2],
     incoming_scissor: Option<[u32; 4]>,
+    /// Physical size of the scene-root target. Nothing outside it is visible.
+    target_size: [u32; 2],
     max_texture_dimension_2d: u32,
     max_texture_bytes: u64,
 }
@@ -390,6 +392,7 @@ impl ArtifactSurfaceRasterContext {
         target_format: wgpu::TextureFormat,
         paint_offset: [f32; 2],
         incoming_scissor: Option<[u32; 4]>,
+        target_size: [u32; 2],
         max_texture_dimension_2d: u32,
         max_texture_bytes: u64,
     ) -> Option<Self> {
@@ -402,6 +405,7 @@ impl ArtifactSurfaceRasterContext {
                     || x.checked_add(width).is_none()
                     || y.checked_add(height).is_none()
             })
+            || target_size.contains(&0)
             || max_texture_dimension_2d == 0
             || max_texture_bytes == 0
         {
@@ -412,6 +416,7 @@ impl ArtifactSurfaceRasterContext {
             target_format,
             paint_offset_bits: paint_offset.map(f32::to_bits),
             incoming_scissor,
+            target_size,
             max_texture_dimension_2d,
             max_texture_bytes,
         })
@@ -419,6 +424,17 @@ impl ArtifactSurfaceRasterContext {
 
     fn scale_factor(self) -> f32 {
         f32::from_bits(self.scale_factor_bits)
+    }
+
+    /// The scene-root target in logical viewport space.
+    fn target_logical_rect(self) -> [f32; 4] {
+        let scale = self.scale_factor();
+        [
+            0.0,
+            0.0,
+            self.target_size[0] as f32 / scale,
+            self.target_size[1] as f32 / scale,
+        ]
     }
 
     fn paint_offset(self) -> [f32; 2] {
@@ -3020,18 +3036,32 @@ fn prepare_artifact_surface_raster_plan_from_program(
         // the caller's aggregate budget. Lowering that budget cannot silently
         // choose smaller windows to evade an otherwise exact-byte rejection.
         // The complete envelope survives in the stamp; only a proved finite
-        // receiver read can restrict the allocated raster region.
+        // receiver read can restrict the allocated raster region. A device
+        // whose texture limit is below 8192 windows from its own limit.
         const MAX_UNWINDOWED_BYTES: u64 = 32 * 1024 * 1024;
         let full_bytes =
             u64::from(full_origin.target_size[0]) * u64::from(full_origin.target_size[1]) * 12;
-        let window = if full_origin.target_size.iter().any(|n| *n > 8192)
+        let max_unwindowed_dimension = context.max_texture_dimension_2d.min(8192);
+        let window = if full_origin
+            .target_size
+            .iter()
+            .any(|n| *n > max_unwindowed_dimension)
             || full_bytes > MAX_UNWINDOWED_BYTES
         {
             let geometry = geometry_for_bounds(
                 content_bounds_bits,
                 full_origin.normalized_source_bounds_bits,
             )?;
-            raster_window::select(content_bounds_bits, geometry, context)
+            raster_window::select(
+                content_bounds_bits,
+                geometry,
+                matches!(
+                    execution.receiver(),
+                    SurfaceDagExecutionTargetId::SceneRoot(_)
+                ),
+                receiver_paint_offset,
+                context,
+            )
         } else {
             None
         };

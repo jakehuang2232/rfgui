@@ -176,6 +176,7 @@ fn generic_recording_deferred_phase_and_scrollbar_overlay_keep_canonical_order()
             wgpu::TextureFormat::Rgba8Unorm,
             [0.0, 0.0],
             None,
+            [4096, 4096],
             8192,
             128 * 1024 * 1024,
         )
@@ -358,6 +359,7 @@ fn generic_recording_capability_matrix_closes_and_compiles_native_commands() {
             wgpu::TextureFormat::Rgba8Unorm,
             [0.0, 0.0],
             None,
+            [4096, 4096],
             8192,
             128 * 1024 * 1024,
         )

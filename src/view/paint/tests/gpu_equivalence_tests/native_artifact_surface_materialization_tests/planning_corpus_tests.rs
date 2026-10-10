@@ -53,8 +53,16 @@ fn prepare(
 ) -> PreparedArtifactSurfaceRasterPlan {
     prepare_artifact_surface_raster_plan(
         artifact,
-        ArtifactSurfaceRasterContext::new(dpr, FORMAT, offset, None, 8192, 128 * 1024 * 1024)
-            .unwrap(),
+        ArtifactSurfaceRasterContext::new(
+            dpr,
+            FORMAT,
+            offset,
+            None,
+            [4096, 4096],
+            8192,
+            128 * 1024 * 1024,
+        )
+        .unwrap(),
     )
     .expect("generic plan")
 }

@@ -7,7 +7,7 @@ const LIMIT: u64 = 128 * 1024 * 1024;
 
 // The large DPR 2 scroll source keeps its full 1280x1440 logical envelope,
 // while its 720px receiver reads only the first guarded 256px-grid window.
-// Ordinary opacity layers have no finite receiver-clip proof and stay whole.
+// Ordinary opacity layers fill the whole target, so they stay whole.
 fn expected_physical_size(tall: bool, dpr: u32) -> [u32; 2] {
     [
         WINDOW[0] * dpr,
@@ -82,6 +82,7 @@ fn full_window_budget_uses_exact_aggregate_bytes_and_physical_dimensions() {
                     FORMAT,
                     [0.0; 2],
                     None,
+                    [4096, 4096],
                     max_dimension,
                     limit,
                 )
@@ -105,13 +106,28 @@ fn full_window_budget_uses_exact_aggregate_bytes_and_physical_dimensions() {
                 prepare_artifact_surface_raster_plan(artifact.clone(), context(bytes, dimension))
                     .is_ok()
             );
-            assert!(matches!(
-                prepare_artifact_surface_raster_plan(
-                    artifact.clone(),
-                    context(bytes, dimension - 1)
-                ),
-                Err(crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_))
-            ));
+            // Below the device limit, a source that is too long only along its
+            // scroll axis windows to the scrollport; one too wide for the
+            // target it fills cannot shrink.
+            let limited = prepare_artifact_surface_raster_plan(
+                artifact.clone(),
+                context(bytes, dimension - 1),
+            );
+            if tall && physical_height > physical_width {
+                let plan = limited.expect("the scroll source windows below the device limit");
+                for node in plan.nodes() {
+                    assert!(node.target().color.height() < physical_height);
+                }
+            } else {
+                assert!(matches!(
+                    limited,
+                    Err(
+                        crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(
+                            _
+                        )
+                    )
+                ));
+            }
             assert_eq!(
                 prepare_artifact_surface_raster_plan(artifact.clone(), context(LIMIT, 8192))
                     .is_ok(),

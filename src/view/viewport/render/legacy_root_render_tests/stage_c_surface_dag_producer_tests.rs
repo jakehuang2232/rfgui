@@ -172,6 +172,7 @@ fn measure_recorded_scene(
                 wgpu::TextureFormat::Bgra8Unorm,
                 [0.0, 0.0],
                 None,
+                [4096, 4096],
                 4096,
                 MEASUREMENT_BUDGET_BYTES,
             )
@@ -247,6 +248,7 @@ fn prepared_recorded_scene(
         wgpu::TextureFormat::Bgra8Unorm,
         [0.0, 0.0],
         None,
+        [4096, 4096],
         4096,
         MEASUREMENT_BUDGET_BYTES,
     )
@@ -632,6 +634,7 @@ fn effect_scroll_stencil_mask_stays_neutral_while_color_opacity_is_rebased() {
         wgpu::TextureFormat::Bgra8Unorm,
         [0.0, 0.0],
         None,
+        [4096, 4096],
         4096,
         MEASUREMENT_BUDGET_BYTES,
     )

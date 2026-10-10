@@ -92,6 +92,7 @@ fn native_generic_and_legacy_frozen_scrollbar_absolute_alpha() -> Result<(), Str
                     FORMAT,
                     ctx.paint_offset(),
                     None,
+                    [4096, 4096],
                     8192,
                     128 * 1024 * 1024,
                 )

@@ -289,6 +289,7 @@ pub(super) fn raster_context() -> ArtifactSurfaceRasterContext {
         wgpu::TextureFormat::Bgra8Unorm,
         [3.0, 5.0],
         Some([1, 2, 300, 200]),
+        [4096, 4096],
         4096,
         256 * 1024 * 1024,
     )
@@ -329,6 +330,7 @@ pub(super) fn raster_context_with_incoming_scissor(
         wgpu::TextureFormat::Bgra8Unorm,
         [0.0, 0.0],
         Some(scissor),
+        [4096, 4096],
         4096,
         256 * 1024 * 1024,
     )
@@ -343,6 +345,7 @@ fn artifact_surface_raster_context_rejects_each_invalid_value_family() {
             wgpu::TextureFormat::Bgra8Unorm,
             [0.0, 0.0],
             None,
+            [4096, 4096],
             4096,
             1,
         )
@@ -354,6 +357,7 @@ fn artifact_surface_raster_context_rejects_each_invalid_value_family() {
             wgpu::TextureFormat::Bgra8Unorm,
             [f32::INFINITY, 0.0],
             None,
+            [4096, 4096],
             4096,
             1,
         )
@@ -365,6 +369,7 @@ fn artifact_surface_raster_context_rejects_each_invalid_value_family() {
             wgpu::TextureFormat::Bgra8Unorm,
             [0.0, 0.0],
             Some([0, 0, 0, 1]),
+            [4096, 4096],
             4096,
             1,
         )
@@ -376,6 +381,7 @@ fn artifact_surface_raster_context_rejects_each_invalid_value_family() {
             wgpu::TextureFormat::Bgra8Unorm,
             [0.0, 0.0],
             None,
+            [4096, 4096],
             0,
             1,
         )
@@ -387,6 +393,7 @@ fn artifact_surface_raster_context_rejects_each_invalid_value_family() {
             wgpu::TextureFormat::Bgra8Unorm,
             [0.0, 0.0],
             None,
+            [4096, 4096],
             4096,
             0,
         )
@@ -491,6 +498,7 @@ fn artifact_surface_raster_plan_rejects_a_too_small_texture_budget() {
         wgpu::TextureFormat::Bgra8Unorm,
         [0.0, 0.0],
         None,
+        [4096, 4096],
         4096,
         1,
     )
@@ -508,6 +516,7 @@ fn artifact_surface_raster_origin_rejects_unrepresentable_physical_projection_be
         wgpu::TextureFormat::Bgra8Unorm,
         [0.0, 0.0],
         None,
+        [4096, 4096],
         u32::MAX,
         u64::MAX,
     )

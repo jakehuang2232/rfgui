@@ -10,6 +10,7 @@ fn planning_changes_survive_dirty_consumption_without_becoming_reuse_authority()
         wgpu::TextureFormat::Rgba8Unorm,
         [0., 0.],
         None,
+        [4096, 4096],
         8192,
         128 * 1024 * 1024,
     )
