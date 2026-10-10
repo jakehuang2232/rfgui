@@ -1,3 +1,4 @@
+mod fallback_ledger;
 mod surface_acquisition;
 #[cfg(test)]
 mod attempts;
@@ -2350,6 +2351,7 @@ impl Viewport {
         let capture_paint_authority_telemetry = self.debug_options.trace_render_time
             || self.debug_options.retained_auto_overlay
             || self.debug_options.retained_auto_census
+            || fallback_ledger::enabled()
             || paint_authority_test_capture_enabled();
         let artifact_surface_max_texture_dimension_2d = self
             .device()
@@ -2646,6 +2648,7 @@ impl Viewport {
             .take()
             .map(|c| (c.topology_key, c.graph));
         let mut compiled_topology_key = None;
+        let mut graph_failure = None;
         let compiled = match graph.compile_with_upload_cached(self, prior_cache) {
             Ok((profile, topology_key)) => {
                 if self.debug_options.trace_render_time {
@@ -2659,6 +2662,9 @@ impl Viewport {
             }
             Err(err) => {
                 eprintln!("[warn] frame graph compile failed: {:?}", err);
+                if fallback_ledger::enabled() {
+                    graph_failure = Some(format!("compile: {err:?}"));
+                }
                 // compile_cache already cleared by take() above
                 false
             }
@@ -2683,7 +2689,12 @@ impl Viewport {
                 Err(crate::view::frame_graph::FrameGraphError::SurfaceUnavailable) => {
                     surface_unavailable = true;
                 }
-                Err(error) => eprintln!("[warn] frame graph execution failed: {error:?}"),
+                Err(error) => {
+                    eprintln!("[warn] frame graph execution failed: {error:?}");
+                    if fallback_ledger::enabled() {
+                        graph_failure = Some(format!("execute: {error:?}"));
+                    }
+                }
             }
         }
         // Failed execution still consumes this phase; a missing profile
@@ -2742,6 +2753,14 @@ impl Viewport {
             telemetry.set_detail(paint_authority_trace);
             #[cfg(any(test, feature = "renderer-test-support"))]
             store_paint_authority_test_snapshot(telemetry);
+            if fallback_ledger::enabled() {
+                fallback_ledger::record(
+                    frame_number,
+                    telemetry,
+                    self.frame.last_retained_auto_debug.as_ref(),
+                    graph_failure.as_deref(),
+                );
+            }
         }
 
         // Never retain topology from a terminal frame. In particular, an
