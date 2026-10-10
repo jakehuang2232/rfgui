@@ -2898,15 +2898,16 @@ pub trait ElementTrait:
 
     /// Records complete paint for a property-neutral custom leaf.
     ///
-    /// The default records nothing and therefore preserves the legacy
-    /// `UnknownHost` fallback. Implementations must be pure reads: metadata
-    /// preflight and full artifact recording call this hook independently and
-    /// compare their canonical identities before the artifact may compile.
+    /// The default records nothing, so a visible leaf that implements neither
+    /// this hook nor [`Self::prepared_gpu_paint_source`] is `UnknownHost`.
+    /// Implementations must be pure reads: metadata preflight and full
+    /// artifact recording call this hook independently and compare their
+    /// canonical identities before the artifact may compile.
     ///
     /// Contract v1 accepts exactly one fill of
     /// [`CustomLeafPaintContext::bounds`]. The engine owns properties, chunk
-    /// identity, and traversal; arbitrary GPU work remains in Legacy
-    /// [`Renderable::build`].
+    /// identity, and traversal; shader output belongs in
+    /// [`Self::prepared_gpu_paint_source`].
     fn record_custom_leaf_paint(
         &self,
         _context: CustomLeafPaintContext,

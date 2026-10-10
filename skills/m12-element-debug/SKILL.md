@@ -1,6 +1,6 @@
 ---
 name: m12-element-debug
-description: "Diagnose rfgui Element layout, placement, paint, hit-test, dirty-state, promotion, and reuse problems through targeted debug flags and Element debug_info output. Use whenever an Element behaves incorrectly or is difficult to inspect: first inventory and reuse the current DebugType and viewport/env debug capabilities; when none can expose the needed state, add the smallest phase-specific debug solution, verify it, and record the new flag and usage in this skill."
+description: "Diagnose rfgui Element layout, placement, paint recording, raster reuse, hit-test, and dirty-state problems through targeted debug flags and Element debug_info output. Use whenever an Element behaves incorrectly or is difficult to inspect: first inventory and reuse the current DebugType and viewport/env debug capabilities; when none can expose the needed state, add the smallest phase-specific debug solution, verify it, and record the new flag and usage in this skill."
 ---
 
 # Element Debugging
@@ -45,18 +45,22 @@ rg -n "DebugType|debug_type|ViewportDebugOptions|RFGUI_(TRACE|DEBUG)_|trace_.*en
 Check these current capability groups:
 
 - `DebugCapture` / `DebugQuery`: tree identity, layout, interaction, dirty, render, and arena snapshots.
-- `trace_layout_detail`: frame-level layout timing detail.
-- `trace_compile_detail` / `trace_execute_detail`: frame-graph compile and execution detail.
-- `trace_reuse_path`: retained rendering and reuse decisions.
-- `geometry_overlay`: geometry visualization.
-- `RFGUI_TRACE_LAYOUT`: broad Element build geometry output.
-- `RFGUI_TRACE_PROMOTED_BUILD`: promoted-build phase output.
+- `trace_fps` / `trace_render_time` (`RFGUI_TRACE_FPS` / `RFGUI_TRACE_RENDER_TIME`): frame rate and per-phase frame timing.
+- `trace_layout_detail` (`RFGUI_TRACE_LAYOUT_DETAIL`): frame-level layout timing detail.
+- `trace_compile_detail` / `trace_execute_detail` (`RFGUI_TRACE_COMPILE_DETAIL` / `RFGUI_TRACE_EXECUTE_DETAIL`): frame-graph compile and execution detail, under `trace_render_time`.
+- `RFGUI_TRACE_BATCH=1`: rect pass order and batch keys at frame-graph compile.
+- `geometry_overlay` (`RFGUI_DEBUG_GEOMETRY_OVERLAY`): geometry visualization.
+- `retained_auto_overlay` (`RFGUI_DEBUG_RETAINED_AUTO`): marks the frame roots (`retained_auto_authority`) and, on a frame that fell back to Legacy, the nodes and reasons that caused it (`retained_auto_fallback_reasons`). `retained_auto_reuse_actions` is accepted but not drawn yet.
+- `retained_auto_census` (`RFGUI_DEBUG_RETAINED_AUTO_CENSUS`) with `Viewport::capture_retained_auto_census()`: fallback reasons aggregated by element type, stage, and category, without the overlay. Its recording pass does not use the production surface plan, so per-node attribution can name nodes production admits.
+- `RFGUI_RETAINED_FALLBACK_LEDGER=<path>`: one JSONL line per frame that fell back to Legacy, with stages and reasons; summarize with `python3 -I scripts/retained-fallback-ledger-summary.py <path>`. Temporary; removed with Legacy.
+- `Viewport::gpu_paint_observations()`: whether each `GpuPaintSource` was rendered or reused in the last frame.
+- `RFGUI_TRACE_LAYOUT`: Element geometry printed from Legacy `Element::build`. It prints nothing under `RetainedAuto` and is removed with Legacy.
 
 Do not force an unrelated flag to carry different semantics merely to avoid adding a new one.
 
 ## Diagnosis workflow
 
-1. Read the target Element call path and identify the owning phase: measure, place, paint/build, hit-test, dirty propagation, promotion, or reuse.
+1. Read the target Element call path and identify the owning phase: measure, place, paint recording, raster planning and reuse, hit-test, or dirty propagation.
 2. Inspect the current `DebugType` flags, viewport options, environment toggles, capture API, and phase-local trace helpers.
 3. Select the narrowest existing capability that exposes the required state.
 4. Mark only the target Element when an Element flag exists; enable its matching global trigger and collect focused output.

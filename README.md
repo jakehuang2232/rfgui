@@ -14,12 +14,13 @@
 It is designed for developers who want **🎛 explicit control over rendering passes**, predictable performance, and a **📐 modern retained UI model**, rather than an immediate-mode GUI.
 
 RFGUI treats UI rendering as a **🔗 directed acyclic graph (DAG) of render passes**, similar to frame graph systems used in modern game engines.  
-Each UI component contributes render passes and resources, which are composed and scheduled automatically.
+Each UI component records what it paints; the engine works out which content can reuse a raster from an earlier frame and compiles the rest into render passes and resources, scheduled automatically.
 
 ## ✨ Key Characteristics
 
 - 🧱 **Retained-mode GUI** — UI state is preserved and updated declaratively, instead of redrawn every frame
 - 🧠 **Frame Graph architecture** — rendering is expressed as connected render passes with explicit resource dependencies
+- ♻️ **Retained paint** — content that did not change reuses its raster; only what cannot be reused is drawn again
 - 🧮 **Deterministic rendering order** — pass execution is derived from graph topology, not ad-hoc draw calls
 - 🗂 **Explicit resource management** — textures, buffers, and render targets are modeled as graph resources
 - 🚀 **Designed for modern GPU APIs** — suitable for rendering backends
@@ -35,6 +36,7 @@ It is closer in spirit to **🏗 retained UI frameworks combined with 🎮 engin
 - RSX-style UI declaration via `rust-gui-rsx`
 - `#[component]` for reusable UI composition
 - Custom host-element extension by composing from `Element`
+- Custom paint through typed retained hooks, including engine-scheduled GPU sources (`GpuPaintSource`)
 - Typed style/layout model (`Length`, `Border`, `BorderRadius`, `ColorLike`)
 - Frame Graph abstraction for pass/resource orchestration
 - Built-in interaction primitives: hover, scroll, bubbling events, transitions
@@ -66,7 +68,7 @@ cargo run -r -p examples --bin 00_hello_world
 ├── src/
 │   ├── style/         # typed style model + parsing/computation
 │   ├── ui/            # RSX tree, events, runtime, host elements
-│   ├── view/          # viewport, render passes, frame graph
+│   ├── view/          # viewport, paint recording, compositor, frame graph
 │   ├── transition/    # animation/transition system
 │   └── shader/        # WGSL shaders
 ├── rsx-macro/         # proc-macro crate for RSX
@@ -78,6 +80,17 @@ cargo run -r -p examples --bin 00_hello_world
 - Parsed Style: typed external style input (`PropertyId` + typed values)
 - ComputedStyle: structured engine-level style (no string parsing)
 - LayoutState: solver output only (position/size/baseline, etc.)
+
+## Rendering Pipeline
+
+Every frame goes through one pipeline, `RetainedAuto`:
+
+1. **Layout** measures and places the node arena.
+2. **Paint recording** captures what each node paints as typed paint operations (`src/view/paint/`). Transforms, clips, scrolling, and opacity live in compositor property trees (`src/view/compositor/`).
+3. **Raster planning** groups the content into surfaces and keeps a surface's raster from an earlier frame when nothing it depends on changed. Content that cannot be reused is drawn again this frame.
+4. **Frame Graph** compiles the remaining raster and composite work into render passes and executes them on `wgpu`.
+
+The older Legacy renderer, in which every element built its own render passes each frame, is being retired.
 
 ## Frame Graph
 
@@ -159,6 +172,15 @@ impl RsxChildrenPolicy for Card {
     const ACCEPTS_CHILDREN: bool = true;
 }
 ```
+
+### 3) Custom host paint
+
+A host element that paints content of its own implements a retained paint hook on `ElementTrait` instead of building render passes:
+
+- `record_custom_leaf_paint` / `record_custom_wrapper_paint` record typed fill commands covering the engine-provided bounds, before or after the children the engine traverses.
+- `prepared_gpu_paint_source` returns a `GpuPaintSource` frozen in `Layoutable::prepare_paint_resources`: one validated WGSL draw that the engine renders into its own texture and composites with the scene's transforms, clips, and effects. `examples/bin/01_window/scene_windows/particle_demo.rs` is a complete example.
+
+Prefer composing built-in elements when they can express the content. `Renderable::build` is still required while the Legacy renderer exists; it must paint the same as the retained hook and goes away with Legacy.
 
 ## Rendering
 
