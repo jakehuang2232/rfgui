@@ -1205,6 +1205,9 @@ pub(crate) struct PropertyTrees {
     pub(crate) validation_errors: Vec<PropertyTreeValidationError>,
     pub(crate) spatial_validation_errors: Vec<SpatialTreeValidationError>,
     pub(crate) epoch: u64,
+    /// The logical viewport size, which bounds the clip of a host deferred to
+    /// the root viewport that reports none of its own.
+    viewport_size: Option<[f32; 2]>,
 }
 
 mod incremental;
@@ -1212,6 +1215,29 @@ pub(crate) mod observed_map;
 pub(crate) use observed_map::{PropertyStoreStamp, GenerationStoreStamp};
 
 impl PropertyTrees {
+    pub(crate) fn set_viewport_size(&mut self, size: [f32; 2]) {
+        self.viewport_size = Some(size);
+    }
+
+    /// The clip of a host deferred to the root viewport that reports none
+    /// of its own: deferral escapes every ancestor clip for the viewport's.
+    fn deferred_viewport_clip(
+        &self,
+        element: &dyn crate::view::base_component::ElementTrait,
+    ) -> Option<ClipGeometry> {
+        let [width, height] = self.viewport_size?;
+        if !element.is_deferred_to_root_viewport_render() {
+            return None;
+        }
+        crate::view::base_component::exact_logical_scissor_for_rect(Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        })
+        .map(ClipGeometry::Viewport)
+    }
+
     #[cfg(test)]
     pub(crate) fn epoch(&self) -> u64 {
         self.epoch
@@ -1861,6 +1887,7 @@ impl PropertyTrees {
                     node.element
                         .exact_generic_subtree_self_clip_geometry(key, arena, is_frame_root)
                 })
+                .or_else(|| self.deferred_viewport_clip(node.element.as_ref()))
         };
         let clip = if let Some(geometry) = clip {
             let id = ClipNodeId {

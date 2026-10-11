@@ -391,12 +391,21 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
 ) -> Option<super::PaintDeferredViewportSelfClipWitness> {
     let node = arena.get(owner)?;
     let stable_id = node.element.stable_id();
-    let geometry = node
-        .element
-        .exact_retained_deferred_viewport_self_clip_geometry(owner, arena)?;
     let id = ClipNodeId {
         owner,
         role: crate::view::compositor::property_tree::ClipNodeRole::SelfClip,
+    };
+    // A deferred host that reports no clip of its own paints under the
+    // viewport clip the property tree gave it.
+    let geometry = match node
+        .element
+        .exact_retained_deferred_viewport_self_clip_geometry(owner, arena)
+    {
+        Some(geometry) => geometry,
+        None if node.element.is_deferred_to_root_viewport_render() => {
+            property_trees.clips.get(&id)?.geometry
+        }
+        None => return None,
     };
     let state = property_trees.node_state_for(owner)?;
     let exact_clip_state = crate::view::compositor::property_tree::PropertyTreeState {

@@ -2840,7 +2840,8 @@ pub trait ElementTrait:
     /// Returns the exact native self-clip admitted by the retained property
     /// tree. Native wrappers must forward this to their embedded `Element`;
     /// custom hosts remain unsupported unless they can provide an equivalent
-    /// closed proof.
+    /// closed proof. A host deferred to the root viewport that reports none
+    /// paints under the whole viewport's clip.
     #[allow(private_interfaces)]
     fn exact_retained_self_clip_geometry(
         &self,
@@ -2987,8 +2988,7 @@ pub trait ElementTrait:
         let snapshot = self.box_model_snapshot();
         if recording_context.surface_dag
             && !snapshot.should_render
-            && !deferred_phase_root
-            && !self.is_deferred_to_root_viewport_render()
+            && custom_leaf_phase_admissible(self, deferred_phase_root, recording_context)
             && self.children().is_empty()
             && snapshot.node_id == self.stable_id()
             && [snapshot.x, snapshot.y, snapshot.width, snapshot.height]
@@ -3365,6 +3365,8 @@ pub trait ElementTrait:
         false
     }
 
+    /// Whether the host paints in the root viewport's late phase: after the
+    /// rest of the scene, clipped to the viewport instead of its ancestors.
     fn is_deferred_to_root_viewport_render(&self) -> bool {
         false
     }
@@ -3879,6 +3881,28 @@ impl PreparedCustomLeafPaint {
     }
 }
 
+/// Whether a custom leaf records in this phase: one deferred to the root
+/// viewport under the viewport clip coverage proved for it as that phase's
+/// root, any other in the normal phase.
+fn custom_leaf_phase_admissible<T: ElementTrait + ?Sized>(
+    element: &T,
+    deferred_phase_root: bool,
+    recording_context: &crate::view::paint::PaintRecordingContext,
+) -> bool {
+    if !element.is_deferred_to_root_viewport_render() {
+        return !deferred_phase_root;
+    }
+    let stable_id = element.stable_id();
+    match recording_context.opacity_authority {
+        crate::view::paint::PaintOpacityAuthority::NeutralRootEffect(effect) => {
+            recording_context.authorizes_deferred_viewport_effect_for(stable_id, effect)
+        }
+        crate::view::paint::PaintOpacityAuthority::Baked => {
+            recording_context.authorizes_deferred_viewport_self_clip_for(stable_id)
+        }
+    }
+}
+
 fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
     element: &T,
     deferred_phase_root: bool,
@@ -3888,8 +3912,7 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
         let snapshot = element.box_model_snapshot();
         let props = element.retained_paint_properties();
         if !recording_context.surface_dag
-            || deferred_phase_root
-            || element.is_deferred_to_root_viewport_render()
+            || !custom_leaf_phase_admissible(element, deferred_phase_root, recording_context)
             || !element.children().is_empty()
             || !snapshot.should_render
             || snapshot.node_id != element.stable_id()
@@ -3924,8 +3947,7 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
             payload_identity,
         });
     }
-    if deferred_phase_root
-        || element.is_deferred_to_root_viewport_render()
+    if !custom_leaf_phase_admissible(element, deferred_phase_root, recording_context)
         || element.has_active_animator()
         || element
             .placement_eligibility_metadata()
@@ -4025,8 +4047,11 @@ fn prepare_owned_custom_leaf_paint<T: ElementTrait + ?Sized>(
     arena: &NodeArena,
     recording_context: &crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomLeafPaint> {
+    // A deferred leaf paints under the viewport clip its admission proved.
     if properties != Default::default()
         && !(recording_context.surface_dag && element.prepared_gpu_paint_source().is_some())
+        && !(element.is_deferred_to_root_viewport_render()
+            && custom_leaf_phase_admissible(element, false, recording_context))
     {
         return None;
     }

@@ -10,6 +10,9 @@ impl Viewport {
     /// resource preparation. Property topology is frozen first because paint
     /// generation observations include the owning property generations.
     pub(super) fn sync_compositor_property_trees(&mut self) {
+        self.compositor
+            .property_trees
+            .set_viewport_size([self.logical_width, self.logical_height]);
         let arena = &self.scene.node_arena;
         let roots = &self.scene.ui_root_keys;
         crate::view::base_component::profile_layout_place_time(

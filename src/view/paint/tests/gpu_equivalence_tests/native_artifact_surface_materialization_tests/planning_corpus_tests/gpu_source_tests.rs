@@ -7,6 +7,7 @@ use crate::view::base_component::{
 use crate::view::gpu_paint::{GpuPaintProgram, GpuPaintSource, GpuPaintSourceId};
 use crate::view::viewport::ViewportPaintRendererMode;
 use std::sync::Arc;
+mod deferred_tests;
 mod inline_atomic_tests;
 mod lifecycle_tests;
 mod mixed_changes_tests;
@@ -74,6 +75,7 @@ struct GpuHost {
     source: Option<GpuPaintSource>,
     dirty: DirtyFlags,
     triangles: usize,
+    deferred: bool,
 }
 impl GpuHost {
     fn new(id: u64) -> Self {
@@ -88,6 +90,7 @@ impl GpuHost {
             source: None,
             dirty: DirtyFlags::ALL,
             triangles: 2,
+            deferred: false,
         }
     }
 }
@@ -177,6 +180,9 @@ impl ElementTrait for GpuHost {
     }
     fn local_dirty_flags(&self) -> DirtyFlags {
         self.dirty
+    }
+    fn is_deferred_to_root_viewport_render(&self) -> bool {
+        self.deferred
     }
     fn clear_local_dirty_flags(&mut self, f: DirtyFlags) {
         self.dirty = self.dirty.without(f);
