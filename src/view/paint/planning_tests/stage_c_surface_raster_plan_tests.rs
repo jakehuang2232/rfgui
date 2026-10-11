@@ -490,23 +490,46 @@ fn depth_four_artifact_seals_an_arbitrary_depth_surface_program() {
     );
 }
 
+/// The texture budget bounds what the surface cache keeps, not what is drawn.
 #[test]
-fn artifact_surface_raster_plan_rejects_a_too_small_texture_budget() {
-    let artifact = depth_four_effect_artifact();
-    let context = ArtifactSurfaceRasterContext::new(
-        2.0,
-        wgpu::TextureFormat::Bgra8Unorm,
-        [0.0, 0.0],
-        None,
-        [4096, 4096],
-        4096,
-        1,
-    )
-    .expect("value-valid but insufficient texture budget");
-    assert!(matches!(
-        prepare_artifact_surface_raster_plan(artifact, context),
-        Err(ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_))
-    ));
+fn artifact_surface_raster_plan_keeps_only_what_the_texture_budget_holds() {
+    let plan = |budget| {
+        let context = ArtifactSurfaceRasterContext::new(
+            2.0,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [0.0, 0.0],
+            None,
+            [4096, 4096],
+            4096,
+            budget,
+        )
+        .expect("value-valid texture budget");
+        prepare_artifact_surface_raster_plan(depth_four_effect_artifact(), context)
+            .expect("a surface past the budget is still planned")
+    };
+    let kept = |budget| {
+        plan(budget)
+            .nodes()
+            .iter()
+            .filter(|node| node.retained())
+            .count()
+    };
+    let surfaces = plan(1).nodes().len();
+    assert!(surfaces >= 4);
+    assert_eq!(kept(1), 0);
+    assert_eq!(kept(u64::MAX), surfaces);
+    let smallest = plan(u64::MAX)
+        .nodes()
+        .iter()
+        .map(|node| {
+            [&node.target().color, &node.target().depth]
+                .into_iter()
+                .map(|desc| crate::view::raster_cost::texture_desc_payload_bytes(desc).bytes)
+                .sum::<u64>()
+        })
+        .min()
+        .unwrap();
+    assert!((1..surfaces).contains(&kept(smallest)));
 }
 
 #[test]
@@ -787,7 +810,6 @@ fn artifact_surface_raster_plan_error_taxonomy_is_exhaustive() {
             ArtifactSurfaceRasterPlanError::LocalizedPayload { .. } => "payload",
             ArtifactSurfaceRasterPlanError::InvalidNestedSurface { .. } => "nested-surface",
             ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(_) => "raster-origin",
-            ArtifactSurfaceRasterPlanError::GpuSourceBudgetExceeded => "gpu-source-budget",
             ArtifactSurfaceRasterPlanError::InvalidGpuSource => "gpu-source-descriptor",
         }
     }

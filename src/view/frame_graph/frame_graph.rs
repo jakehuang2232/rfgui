@@ -1051,6 +1051,9 @@ enum ExecuteStep {
 pub struct FrameGraph {
     pub(crate) gpu_paint_sources:
         FxHashMap<u64, (crate::view::gpu_paint::GpuPaintSource, TextureHandle)>,
+    /// GPU sources the cache does not keep this frame: their output lives in
+    /// a frame-local texture and is produced again next frame.
+    transient_gpu_paint_sources: FxHashSet<u64>,
     pub(crate) shadow_templates: crate::view::render_pass::shadow_module::ShadowTemplateFrame,
     /// The device's longest texture side, which every texture sized from
     /// content rather than a fixed target must fit.
@@ -1210,6 +1213,7 @@ impl FrameGraph {
     pub fn new() -> Self {
         Self {
             gpu_paint_sources: FxHashMap::default(),
+            transient_gpu_paint_sources: FxHashSet::default(),
             shadow_templates: Default::default(),
             max_texture_dimension_2d: wgpu::Limits::default().max_texture_dimension_2d,
             passes: Vec::new(),
@@ -1233,6 +1237,14 @@ impl FrameGraph {
 
     pub(crate) fn set_max_texture_dimension_2d(&mut self, max_texture_dimension_2d: u32) {
         self.max_texture_dimension_2d = max_texture_dimension_2d;
+    }
+
+    pub(crate) fn gpu_paint_source_is_transient(&self, id: u64) -> bool {
+        self.transient_gpu_paint_sources.contains(&id)
+    }
+
+    pub(crate) fn set_transient_gpu_paint_sources(&mut self, ids: FxHashSet<u64>) {
+        self.transient_gpu_paint_sources = ids;
     }
 
     /// Shadow templates this frame may read without producing them: written

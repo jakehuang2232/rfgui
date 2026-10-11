@@ -124,15 +124,6 @@ fn execution_context() -> UiBuildContext {
     UiBuildContext::new(800, 600, wgpu::TextureFormat::Bgra8Unorm, 1.0)
 }
 
-fn execution_error_name(error: ArtifactSurfaceExecutionError) -> &'static str {
-    match error {
-        ArtifactSurfaceExecutionError::InactiveFrameStageOwner => "inactive-frame-stage-owner",
-        ArtifactSurfaceExecutionError::PersistentKeyAlreadyDeclared(_) => {
-            "persistent-key-already-declared"
-        }
-    }
-}
-
 fn prepared_depth_four_surface_frame() -> PreparedArtifactSurfaceFrame {
     crate::view::paint::planning_tests::prepared_depth_four_surface_frame()
 }

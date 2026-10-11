@@ -224,12 +224,11 @@ fn run(legacy: bool) -> Result<(), String> {
                     let _ = take_last_production_actions_for_test();
                     emit_prepared_artifact_surface_frame_from_pool(
                         &mut viewport,
-                        owner,
+                        Some(owner),
                         frame_plan,
                         &mut graph,
                         ctx,
-                    )
-                    .map_err(|error| format!("emit: {error:?}"))?;
+                    );
                     let actions = take_last_production_actions_for_test();
                     add_present(&mut graph, &target)?;
                     (graph, Some(owner), actions)

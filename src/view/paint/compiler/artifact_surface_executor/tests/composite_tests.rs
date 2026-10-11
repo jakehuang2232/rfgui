@@ -289,12 +289,11 @@ fn three_surface_roles_emit_only_their_sealed_typed_composites() {
     let mut graph = FrameGraph::new();
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut viewport,
-        owner,
+        Some(owner),
         prepared,
         &mut graph,
         execution_context(),
-    )
-    .expect("three-role emission");
+    );
 
     assert_eq!(
         graph.test_graphics_passes::<TextureCompositePass>().len(),

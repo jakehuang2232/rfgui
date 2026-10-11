@@ -60,97 +60,73 @@ fn prepared_forest(dpr: f32) -> crate::view::paint::PreparedArtifactSurfaceFrame
     seal_prepared_artifact_surface_frame(plan).unwrap()
 }
 
+/// A surface whose color or depth key the graph already declared is drawn
+/// into a frame-local target and dropped from the cache; the rest are not.
 #[test]
-fn multi_target_preflight_rejects_every_color_and_depth_collision_atomically() {
+fn surface_with_a_taken_color_or_depth_key_alone_is_drawn_without_being_kept() {
     let entries = prepared_forest(1.0)
         .residents()
         .ordered_entries()
         .iter()
-        .map(|e| (e.stamp().identity.color_key, e.stamp().target.clone()))
+        .map(|e| {
+            (
+                e.resident_key(),
+                e.stamp().identity.color_key,
+                e.stamp().target.clone(),
+            )
+        })
         .collect::<Vec<_>>();
-    for (index, (color, target)) in entries.iter().enumerate() {
+    for (index, (resident_key, color, target)) in entries.iter().enumerate() {
         for (key, desc) in [
             (*color, target.color.clone()),
             (color.depth_stencil().unwrap(), target.depth.clone()),
         ] {
             let mut viewport = Viewport::new();
             let owner = viewport.begin_retained_surface_frame_stage().unwrap();
-            let mut baseline_graph = FrameGraph::new();
             emit_prepared_artifact_surface_frame_from_pool(
                 &mut viewport,
-                owner,
+                Some(owner),
                 prepared_forest(1.0),
-                &mut baseline_graph,
+                &mut FrameGraph::new(),
                 UiBuildContext::new(96, 64, FORMAT, 1.0),
-            )
-            .unwrap();
+            );
             assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
-            let committed = viewport.committed_retained_surface_resident_keys_for_test();
-            assert_eq!(committed.len(), 4);
-            let owner = viewport.begin_retained_surface_frame_stage().unwrap();
-            let mut graph = FrameGraph::new();
-            graph.declare_persistent_texture_internal::<()>(desc, key);
-            let before = graph.build_state_snapshot_for_test();
-            let error = emit_prepared_artifact_surface_frame_from_pool(
-                &mut viewport,
-                owner,
-                prepared_forest(1.0),
-                &mut graph,
-                UiBuildContext::new(96, 64, FORMAT, 1.0),
-            )
-            .err()
-            .expect("collision must reject");
-            assert_eq!(
-                error,
-                crate::view::paint::ArtifactSurfaceExecutionError::PersistentKeyAlreadyDeclared(
-                    key
-                ),
-                "entry {index}"
-            );
-            assert_eq!(
-                graph.build_state_snapshot_for_test(),
-                before,
-                "no earlier target may be appended before a late collision"
-            );
-            assert_eq!(
-                viewport.pending_artifact_surface_resident_keys_for_test(),
-                None
-            );
-            assert_eq!(
-                viewport.committed_retained_surface_resident_keys_for_test(),
-                committed
-            );
-            assert!(viewport.retained_surface_release_log_for_test().is_empty());
-            assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), false));
-            // Preparation rejected before staging or execution. Closing the
-            // empty transaction preserves the previously committed frame;
-            // execution failure invalidation is a different contract below.
-            assert_eq!(
-                viewport.committed_retained_surface_resident_keys_for_test(),
-                committed
-            );
-            // Retry replaces the entire set, not just the rejected target.
-            let retry = viewport.begin_retained_surface_frame_stage().unwrap();
-            let mut graph = FrameGraph::new();
-            emit_prepared_artifact_surface_frame_from_pool(
-                &mut viewport,
-                retry,
-                prepared_forest(1.0),
-                &mut graph,
-                UiBuildContext::new(96, 64, FORMAT, 1.0),
-            )
-            .unwrap();
             assert_eq!(
                 viewport
-                    .pending_artifact_surface_resident_keys_for_test()
-                    .unwrap()
+                    .committed_retained_surface_resident_keys_for_test()
                     .len(),
                 4
             );
-            assert!(viewport.finish_retained_surface_transaction_for_frame(Some(retry), true));
+            let owner = viewport.begin_retained_surface_frame_stage().unwrap();
+            let mut graph = FrameGraph::new();
+            graph.declare_persistent_texture_internal::<()>(desc, key);
+            let _ = take_last_production_actions_for_test();
+            emit_prepared_artifact_surface_frame_from_pool(
+                &mut viewport,
+                Some(owner),
+                prepared_forest(1.0),
+                &mut graph,
+                UiBuildContext::new(96, 64, FORMAT, 1.0),
+            );
+            let transient = take_last_production_actions_for_test()
+                .into_iter()
+                .map(|action| action == RetainedSurfaceCompileAction::Transient)
+                .collect::<Vec<_>>();
             assert_eq!(
-                viewport.committed_retained_surface_resident_keys_for_test(),
-                committed
+                transient,
+                (0..4).map(|i| i == index).collect::<Vec<_>>(),
+                "entry {index}"
+            );
+            let kept = viewport
+                .pending_artifact_surface_resident_keys_for_test()
+                .unwrap();
+            assert_eq!(kept.len(), 3, "entry {index}");
+            assert!(!kept.contains(resident_key), "entry {index}");
+            assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
+            assert_eq!(
+                viewport.retained_surface_release_log_for_test(),
+                [*color],
+                "entry {index}"
             );
         }
     }
@@ -231,60 +207,6 @@ fn native_multi_target_failure_at_every_execution_step_recovers_the_whole_forest
             }
             counts.push(counter.steps());
             targets = observed.color_targets;
-        }
-        // Preparation failures use the common emitter with the actual GPU
-        // pairs populated by the production frames above. They happen before
-        // graph mutation, so the previous committed frame must stay resident.
-        // This directly exercises preflight; execution/abort below uses the
-        // production frame entry without manually staging any resident state.
-        let committed = baseline.committed_retained_surface_resident_keys_for_test();
-        for resident in prepared_forest(dpr as f32).residents().ordered_entries() {
-            let stamp = resident.stamp();
-            for (key, desc) in [
-                (stamp.identity.color_key, stamp.target.color.clone()),
-                (
-                    stamp.identity.color_key.depth_stencil().unwrap(),
-                    stamp.target.depth.clone(),
-                ),
-            ] {
-                let owner = baseline.begin_retained_surface_frame_stage().unwrap();
-                let mut graph = FrameGraph::new();
-                graph.declare_persistent_texture_internal::<()>(desc, key);
-                let before = graph.build_state_snapshot_for_test();
-                let release_count = baseline.retained_surface_release_log_for_test().len();
-                let error = emit_prepared_artifact_surface_frame_from_pool(
-                    &mut baseline,
-                    owner,
-                    prepared_forest(dpr as f32),
-                    &mut graph,
-                    UiBuildContext::new(SIZE[0] * dpr, SIZE[1] * dpr, FORMAT, dpr as f32),
-                )
-                .err()
-                .expect("resident-pool preflight collision must reject");
-                assert_eq!(
-                    error,
-                    crate::view::paint::ArtifactSurfaceExecutionError::PersistentKeyAlreadyDeclared(
-                        key
-                    )
-                );
-                assert_eq!(graph.build_state_snapshot_for_test(), before);
-                assert_eq!(
-                    baseline.pending_artifact_surface_resident_keys_for_test(),
-                    None
-                );
-                assert_eq!(
-                    baseline.committed_retained_surface_resident_keys_for_test(),
-                    committed
-                );
-                assert_eq!(
-                    baseline.retained_surface_release_log_for_test().len(),
-                    release_count
-                );
-                assert!(baseline.finish_retained_surface_transaction_for_frame(Some(owner), false));
-                for (key, desc) in &targets {
-                    assert!(baseline.has_compatible_persistent_render_target(*key, desc));
-                }
-            }
         }
         // Enumerate every actual cold and warm execute step, including the last
         // one just before commit/submit. No hard-coded pass order is assumed.

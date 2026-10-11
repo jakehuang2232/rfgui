@@ -88,8 +88,16 @@ fn full_window_budget_uses_exact_aggregate_bytes_and_physical_dimensions() {
                 )
                 .unwrap()
             };
+            let kept = |limit| {
+                prepare_artifact_surface_raster_plan(artifact.clone(), context(limit, 8192))
+                    .expect("a surface past the budget is still planned")
+                    .nodes()
+                    .iter()
+                    .filter(|node| node.retained())
+                    .count()
+            };
             let plan = prepare_artifact_surface_raster_plan(artifact.clone(), context(bytes, 8192))
-                .expect("exact byte limit is inclusive");
+                .unwrap();
             assert_eq!(plan.nodes().len(), layers);
             for node in plan.nodes() {
                 assert_eq!(
@@ -97,10 +105,10 @@ fn full_window_budget_uses_exact_aggregate_bytes_and_physical_dimensions() {
                     (physical_width, physical_height)
                 );
             }
-            assert!(matches!(
-                prepare_artifact_surface_raster_plan(artifact.clone(), context(bytes - 1, 8192)),
-                Err(crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_))
-            ));
+            // The exact byte limit is inclusive; one byte less drops a layer
+            // from the cache.
+            assert_eq!(kept(bytes), layers);
+            assert_eq!(kept(bytes - 1), layers - 1);
             let dimension = physical_width.max(physical_height);
             assert!(
                 prepare_artifact_surface_raster_plan(artifact.clone(), context(bytes, dimension))
@@ -130,18 +138,14 @@ fn full_window_budget_uses_exact_aggregate_bytes_and_physical_dimensions() {
                     );
                 }
             }
-            assert_eq!(
-                prepare_artifact_surface_raster_plan(artifact.clone(), context(LIMIT, 8192))
-                    .is_ok(),
-                bytes <= LIMIT
-            );
+            assert_eq!(kept(LIMIT) == layers, bytes <= LIMIT);
         }
     }
 }
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
-fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Result<(), String> {
+fn native_full_window_budget_descriptors_and_reuse() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU");
     for mode in [
@@ -157,15 +161,16 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                 let mut viewport = Viewport::new();
                 viewport.set_paint_renderer_mode(mode);
                 viewport.install_single_viewport_forest_for_test(f.arena, f.roots);
-                let mut first: Option<
+                let mut first = std::collections::HashMap::<
+                    u32,
                     Vec<(
                         crate::view::frame_graph::PersistentTextureKey,
                         crate::view::frame_graph::TextureDesc,
                     )>,
-                > = None;
-                // Four layers cross the real policy boundary on DPR 1 -> 2,
-                // then return to 1. Rejection must invalidate prior residents;
-                // its next admitted frame must reraster before becoming warm.
+                >::new();
+                // Four layers cross the cache budget on DPR 1 -> 2, then return
+                // to 1. Past the budget one layer is drawn every frame without
+                // being kept; every DPR change rasters the kept layers again.
                 let sequence = if layers == 4 {
                     vec![1, 1, 2, 2, 1, 1]
                 } else {
@@ -184,12 +189,7 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                     )?;
                     viewport.set_scale_factor(dpr as f32);
                     assert_eq!(viewport.logical_size(), (1280.0, 720.0));
-                    let rejected = mode == ViewportPaintRendererMode::RetainedAuto && bytes > LIMIT;
-                    let observed = if rejected {
-                        viewport.render_single_viewport_budget_fallback_for_test()?
-                    } else {
-                        viewport.render_single_viewport_scene_for_test()?
-                    };
+                    let observed = viewport.render_single_viewport_scene_for_test()?;
                     let pixels =
                         read_submitted_texture(&observed.texture, gpu, WINDOW.map(|v| v * dpr))?;
                     // Repeated independent half-opacity red roots: alpha = 1 - 0.5^N.
@@ -210,37 +210,35 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                             &pixels[at..at + 4]
                         );
                     }
-                    if mode == ViewportPaintRendererMode::Legacy || rejected {
+                    if mode == ViewportPaintRendererMode::Legacy {
                         assert!(observed.legacy_selected);
                         assert!(observed.actions.is_empty());
-                        if rejected {
-                            for (key, desc) in
-                                first.as_ref().expect("DPR 1 populated the prior pairs")
-                            {
-                                assert!(
-                                    !viewport.has_compatible_persistent_render_target(*key, desc),
-                                    "budget fallback must release the displaced generic pairs"
-                                );
-                            }
-                        }
                         continue;
                     }
                     assert!(observed.artifact_selected);
-                    assert_eq!(observed.color_targets.len(), layers);
+                    let kept = if bytes > LIMIT { layers - 1 } else { layers };
+                    assert_eq!(observed.color_targets.len(), kept);
                     // Admission reserves color + potential depth (12 B/px); only color
                     // is persistent now (4 B/px), even on cold raster frames.
-                    assert_eq!(observed.texture_bytes, bytes / 3);
                     assert_eq!(
-                        observed.actions,
-                        vec![
-                            if frame == 0 || (layers == 4 && frame == 4) {
-                                RetainedSurfaceCompileAction::Reraster
-                            } else {
-                                RetainedSurfaceCompileAction::Reuse
-                            };
-                            layers
-                        ]
+                        observed.texture_bytes,
+                        bytes / 3 / layers as u64 * kept as u64
                     );
+                    let cached = if frame > 0 && sequence[frame - 1] == dpr {
+                        RetainedSurfaceCompileAction::Reuse
+                    } else {
+                        RetainedSurfaceCompileAction::Reraster
+                    };
+                    assert_eq!(
+                        observed
+                            .actions
+                            .iter()
+                            .filter(|action| **action == RetainedSurfaceCompileAction::Transient)
+                            .count(),
+                        layers - kept
+                    );
+                    assert!(observed.actions.iter().all(|action| *action == cached
+                        || *action == RetainedSurfaceCompileAction::Transient));
                     for (key, desc) in &observed.color_targets {
                         assert_eq!(
                             (desc.width(), desc.height()),
@@ -248,11 +246,10 @@ fn native_full_window_budget_descriptors_reuse_and_whole_frame_legacy() -> Resul
                         );
                         assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                     }
-                    if let Some(first) = &first {
-                        assert_eq!(&observed.color_targets, first);
-                    } else {
-                        first = Some(observed.color_targets);
-                    }
+                    let first = first
+                        .entry(dpr)
+                        .or_insert_with(|| observed.color_targets.clone());
+                    assert_eq!(&observed.color_targets, first);
                 }
                 eprintln!(
                     "full window {mode:?}: layers={layers} tall={tall} DPR sequence={sequence:?} passed"

@@ -303,10 +303,14 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
     let budget =
         ArtifactSurfaceRasterContext::new(1., FORMAT, [0.; 2], None, [4096, 4096], 8192, 1280)
             .unwrap();
-    assert!(matches!(
-        prepare_artifact_surface_raster_plan(artifact.clone(), budget),
-        Err(crate::view::paint::ArtifactSurfaceRasterPlanError::GpuSourceBudgetExceeded)
-    ));
+    // A source past the cache budget is still drawn, without being kept.
+    let over_budget = prepare_artifact_surface_raster_plan(artifact.clone(), budget).unwrap();
+    assert_eq!(over_budget.transient_gpu_sources().len(), 1);
+    assert!(
+        prepare(artifact.clone(), 1., [0.; 2])
+            .transient_gpu_sources()
+            .is_empty()
+    );
     assert!(matches!(
         prepare_artifact_surface_raster_plan(
             artifact,

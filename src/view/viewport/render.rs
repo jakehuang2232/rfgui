@@ -23,14 +23,6 @@ fn build_root_legacy(
         .expect("root should exist during the build walk")
 }
 
-enum ArtifactFrameCompileOutcome {
-    Compiled {
-        state: crate::view::base_component::BuildState,
-        eligibility: crate::view::paint::FrameArtifactEligibility,
-    },
-    CompileRejected(crate::view::paint::ArtifactCompileErrorKind),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AutoAuthorityKind {
     Artifact,
@@ -339,11 +331,6 @@ impl PaintAuthorityTelemetry {
         PaintAuthorityTelemetrySnapshot {
             authority_label: self.authority_label(),
             selected: self.final_authority(),
-            rejection_labels: self
-                .selection_rejections
-                .iter()
-                .map(PaintAuthoritySelectionRejection::debug_label)
-                .collect(),
             legacy_fallback_stage: self.legacy_fallback_stage,
             terminal_failure_stage: self.terminal_failure_stage,
             resident_release_count: self.resident_release_count,
@@ -718,7 +705,6 @@ fn retained_auto_fallback_overlay_records(
 struct PaintAuthorityTelemetrySnapshot {
     authority_label: String,
     selected: PaintAuthorityKind,
-    rejection_labels: Vec<String>,
     legacy_fallback_stage: Option<PaintAuthorityFallbackStage>,
     terminal_failure_stage: Option<PaintAuthorityFallbackStage>,
     resident_release_count: Option<usize>,
@@ -886,13 +872,11 @@ fn should_store_compile_cache(compiled: bool, executed: bool) -> bool {
     compiled && executed
 }
 
-// Per-frame generic detached color + depth payload limit (128 MiB).
-// Count every materialized target, including warm reused targets, using real
-// physical descriptors after DPR and content-envelope resolution. This is
-// not a cap on total GPU residency, sampled resources, or Legacy rendering.
-// C-3 full-window gates cover 1280x720 at DPR 1/2 and aggregate rejection.
-// A budget/dimension rejection selects whole-frame Legacy directly; it must
-// not retry an older retained planner with a different accounting policy.
+// What the surface cache may keep across frames: color + depth payload of
+// GPU source outputs and surface rasters (128 MiB), counted with real physical
+// descriptors after DPR and content-envelope resolution. Past it a surface is
+// still drawn, every frame, into a frame-local target. This is not a cap on
+// total GPU residency or sampled resources.
 const ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
 
 fn artifact_surface_raster_context(
@@ -1080,27 +1064,6 @@ fn select_retained_auto_authority(
     ctx: &crate::view::base_component::UiBuildContext,
     capture_trace: bool,
 ) -> RetainedAutoDecision {
-    select_retained_auto_authority_with_artifact_budget_for_test(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        ctx,
-        ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
-        capture_trace,
-    )
-}
-
-#[cfg(test)]
-fn select_retained_auto_authority_with_artifact_budget_for_test(
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-    paint_generations: &crate::view::compositor::PaintGenerationTracker,
-    ctx: &crate::view::base_component::UiBuildContext,
-    artifact_surface_max_texture_bytes: u64,
-    capture_trace: bool,
-) -> RetainedAutoDecision {
     select_retained_auto_frame(
         arena,
         roots,
@@ -1108,66 +1071,40 @@ fn select_retained_auto_authority_with_artifact_budget_for_test(
         paint_generations,
         ctx,
         wgpu::Limits::default().max_texture_dimension_2d,
-        artifact_surface_max_texture_bytes,
+        ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         capture_trace,
         None,
         None,
     )
 }
 
-fn try_compile_auto_artifact_frame(
+/// Emits the recorded frame. Without `owner` the surface cache is unavailable
+/// and every surface is drawn without being kept.
+fn compile_auto_artifact_frame(
     viewport: &mut Viewport,
-    owner: crate::view::viewport::RetainedSurfaceFrameStageOwner,
+    owner: Option<crate::view::viewport::RetainedSurfaceFrameStageOwner>,
     graph: &mut FrameGraph,
     candidate: RecordedArtifactCandidate,
     ctx: &crate::view::base_component::UiBuildContext,
-) -> ArtifactFrameCompileOutcome {
-    let stage_is_active = viewport.retained_surface_frame_stage_owner_is_active(owner);
-    debug_assert!(
-        stage_is_active,
-        "artifact dispatch requires an active owner and an empty pending slot"
-    );
-    if !stage_is_active {
-        return ArtifactFrameCompileOutcome::CompileRejected(
-            crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(
-                crate::view::paint::ArtifactSurfaceExecutionError::InactiveFrameStageOwner,
-            ),
-        );
-    }
+) -> (
+    crate::view::base_component::BuildState,
+    crate::view::paint::FrameArtifactEligibility,
+) {
     let RecordedArtifactCandidate {
         payload,
         eligibility,
     } = candidate;
-    match payload {
-        RecordedArtifactPayload::ArtifactSurface(frame) => {
-            let artifact_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                ctx.viewport(),
-                ctx.state_clone(),
-            );
-            match crate::view::paint::emit_prepared_artifact_surface_frame_from_pool(
-                viewport,
-                owner,
-                frame,
-                graph,
-                artifact_ctx,
-            ) {
-                Ok(state) => ArtifactFrameCompileOutcome::Compiled { state, eligibility },
-                Err(error) => {
-                    if error
-                        != crate::view::paint::ArtifactSurfaceExecutionError::InactiveFrameStageOwner
-                    {
-                        assert!(
-                            viewport.stage_retained_surface_clear(),
-                            "active artifact surface rejection must stage exactly one clear transaction"
-                        );
-                    }
-                    ArtifactFrameCompileOutcome::CompileRejected(
-                        crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(error),
-                    )
-                }
-            }
-        }
-    }
+    let RecordedArtifactPayload::ArtifactSurface(frame) = payload;
+    let artifact_ctx =
+        crate::view::base_component::UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
+    let state = crate::view::paint::emit_prepared_artifact_surface_frame_from_pool(
+        viewport,
+        owner,
+        frame,
+        graph,
+        artifact_ctx,
+    );
+    (state, eligibility)
 }
 
 #[cfg(test)]
@@ -1247,9 +1184,9 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
         .begin_retained_surface_frame_stage()
         .ok_or_else(|| "artifact surface frame stage is already active".to_owned())?;
     let _ = crate::view::paint::take_last_production_actions_for_test();
-    let attempt = try_compile_auto_artifact_frame(
+    compile_auto_artifact_frame(
         viewport,
-        owner,
+        Some(owner),
         graph,
         RecordedArtifactCandidate {
             payload: RecordedArtifactPayload::ArtifactSurface(frame),
@@ -1257,14 +1194,6 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
         },
         ctx,
     );
-    match attempt {
-        ArtifactFrameCompileOutcome::Compiled { .. } => {}
-        ArtifactFrameCompileOutcome::CompileRejected(error) => {
-            return Err(format!(
-                "selected artifact surface compile rejected: {error:?}"
-            ));
-        }
-    }
     let actions = crate::view::paint::take_last_production_actions_for_test();
     if actions.len() != surface_count {
         return Err(format!(
@@ -2462,48 +2391,23 @@ impl Viewport {
         arena.seed_defer_render_with_stack(&mut self.scene.popup_stack, &mut ctx);
         let (build_whole_frame_legacy, mut paint_authority_trace) = match frame_paint_selection {
             FramePaintSelection::AutoArtifact(candidate) => {
-                let artifact_attempt = retained_surface_frame_owner.map_or_else(
-                        || {
-                            // A missing owner means another transaction owns
-                            // the slot. Preserve it rather than staging Clear.
-                            ArtifactFrameCompileOutcome::CompileRejected(
-                                crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(
-                                    crate::view::paint::ArtifactSurfaceExecutionError::InactiveFrameStageOwner,
-                                ),
-                            )
-                        },
-                        |owner| {
-                            try_compile_auto_artifact_frame(
-                                self,
-                                owner,
-                                &mut graph,
-                                candidate,
-                                &ctx,
-)
-                        },
-                    );
-                match artifact_attempt {
-                    ArtifactFrameCompileOutcome::Compiled { state, eligibility } => {
-                        ctx.set_state(state);
-                        (
-                            false,
-                            format!(
-                                "retained-auto authority=artifact chunks={} ops={}",
-                                eligibility.chunk_count, eligibility.op_count
-                            ),
-                        )
-                    }
-                    ArtifactFrameCompileOutcome::CompileRejected(kind) => {
-                        if paint_authority_telemetry.is_some() {
-                            dispatch_legacy_fallback_stage =
-                                Some(PaintAuthorityFallbackStage::Compile);
-                        }
-                        (
-                            true,
-                            format!("retained-auto authority=legacy compile-rejected={kind:?}"),
-                        )
-                    }
-                }
+                // A missing owner means another transaction owns the slot:
+                // draw without the surface cache rather than staging Clear.
+                let (state, eligibility) = compile_auto_artifact_frame(
+                    self,
+                    retained_surface_frame_owner,
+                    &mut graph,
+                    candidate,
+                    &ctx,
+                );
+                ctx.set_state(state);
+                (
+                    false,
+                    format!(
+                        "retained-auto authority=artifact chunks={} ops={}",
+                        eligibility.chunk_count, eligibility.op_count
+                    ),
+                )
             }
             FramePaintSelection::AutoLegacy => {
                 self.stage_retained_surface_clear();

@@ -76,11 +76,9 @@ impl ArtifactSurfaceResolvedClip {
 mod artifact_surface_executor;
 mod planning_cache;
 mod span_seal_cache;
+pub(crate) use artifact_surface_executor::emit_prepared_artifact_surface_frame_from_pool;
 #[cfg(any(test, feature = "renderer-test-support"))]
 pub(crate) use artifact_surface_executor::take_last_production_actions_for_test;
-pub(crate) use artifact_surface_executor::{
-    ArtifactSurfaceExecutionError, emit_prepared_artifact_surface_frame_from_pool,
-};
 pub(crate) use planning_cache::PlanningCache;
 #[cfg(test)]
 mod tests;
@@ -358,14 +356,15 @@ pub(crate) struct RetainedSurfaceChunkStamp {
 pub(crate) enum RetainedSurfaceCompileAction {
     Reraster,
     Reuse,
+    /// Drawn into a frame-local target and not kept: the surface cache could
+    /// not hold it this frame.
+    Transient,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArtifactCompileErrorKind {
-    #[cfg(test)]
     InvalidStore,
-
-    SurfaceExecution(ArtifactSurfaceExecutionError),
 }
 
 /// Minimal host facts required to seal detached raster descriptors and final
@@ -467,7 +466,6 @@ pub(crate) enum ArtifactSurfaceRasterPlanError {
     InvalidRasterOrigin(SurfaceDagNodeId),
     InvalidDescriptor(SurfaceDagNodeId),
     TextureBudgetExceeded(SurfaceDagNodeId),
-    GpuSourceBudgetExceeded,
     InvalidGpuSource,
     InvalidCoverageSpan(ArtifactSurfaceRasterTargetId),
     InvalidOwnerTopology {
@@ -1026,6 +1024,9 @@ pub(crate) struct PreparedArtifactSurfaceRasterNode {
     geometry: ArtifactSurfaceCompositeGeometryState,
     clip_closure: Option<SurfaceDagClipClosureProjection>,
     steps: Vec<PreparedArtifactSurfaceRasterStep>,
+    /// Whether the surface cache keeps this raster. A surface past the cache
+    /// budget is still drawn, into a frame-local target.
+    retained: bool,
 }
 
 impl PreparedArtifactSurfaceRasterNode {
@@ -1063,6 +1064,10 @@ impl PreparedArtifactSurfaceRasterNode {
 
     pub(crate) fn steps(&self) -> &[PreparedArtifactSurfaceRasterStep] {
         &self.steps
+    }
+
+    pub(crate) fn retained(&self) -> bool {
+        self.retained
     }
 
     #[cfg(test)]
@@ -1122,6 +1127,8 @@ pub(crate) struct PreparedArtifactSurfaceRasterPlan {
     context: ArtifactSurfaceRasterContext,
     roots: Vec<PreparedArtifactSurfaceRasterRoot>,
     nodes: Vec<PreparedArtifactSurfaceRasterNode>,
+    /// GPU sources past the cache budget, produced into frame-local targets.
+    transient_gpu_sources: FxHashSet<u64>,
     #[cfg(test)]
     materialization_decisions: Vec<SurfaceMaterializationDecision>,
 }
@@ -1133,6 +1140,10 @@ impl PreparedArtifactSurfaceRasterPlan {
 
     pub(crate) fn nodes(&self) -> &[PreparedArtifactSurfaceRasterNode] {
         &self.nodes
+    }
+
+    pub(crate) fn transient_gpu_sources(&self) -> &FxHashSet<u64> {
+        &self.transient_gpu_sources
     }
 
     #[cfg(test)]
@@ -3086,11 +3097,22 @@ fn prepare_artifact_surface_raster_plan_from_program(
     let raster_scales = surface_raster_scales(&program, context);
     let mut prepared_nodes: Vec<Option<PreparedArtifactSurfaceRasterNode>> =
         vec![None; program.execution_order.nodes().len()];
-    // Source output and declared upload buffers share the aggregate limit
-    // with materialized native targets, including warm sources. Shader/pipeline
-    // driver allocations and sampled assets are not GPU-residency accounting.
+    // The cache budget: GPU source outputs and surface rasters it can hold are
+    // kept across frames; the rest are drawn every frame into frame-local
+    // targets. Sources claim it first, then surfaces, children before parents.
+    // Shader/pipeline driver allocations and sampled assets are not counted.
     let mut gpu_sources = FxHashMap::default();
+    let mut transient_gpu_sources = FxHashSet::default();
     let mut total_texture_bytes = 0_u64;
+    let mut claim_budget = |bytes: u64| {
+        let total = total_texture_bytes
+            .checked_add(bytes)
+            .filter(|total| *total <= context.max_texture_bytes);
+        if let Some(total) = total {
+            total_texture_bytes = total;
+        }
+        total.is_some()
+    };
     for op in &program.artifact.ops {
         if let PaintOp::PreparedGpu(op) = op {
             let source = &op.source;
@@ -3103,11 +3125,8 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 if previous != source {
                     return Err(ArtifactSurfaceRasterPlanError::InvalidGpuSource);
                 }
-            } else {
-                total_texture_bytes = total_texture_bytes
-                    .checked_add(source.allocated_bytes(context.max_texture_dimension_2d))
-                    .filter(|b| *b <= context.max_texture_bytes)
-                    .ok_or(ArtifactSurfaceRasterPlanError::GpuSourceBudgetExceeded)?;
+            } else if !claim_budget(source.allocated_bytes(context.max_texture_dimension_2d)) {
+                transient_gpu_sources.insert(source.id.get());
             }
         }
     }
@@ -3262,11 +3281,11 @@ fn prepare_artifact_surface_raster_plan_from_program(
         )
         .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(source))?;
         // A fixed working-set threshold makes raster geometry independent of
-        // the caller's aggregate budget. Lowering that budget cannot silently
-        // choose smaller windows to evade an otherwise exact-byte rejection.
-        // The complete envelope survives in the stamp; only a proved finite
-        // receiver read can restrict the allocated raster region. A device
-        // whose texture limit is below 8192 windows from its own limit.
+        // the cache budget: lowering that budget changes what is kept, never
+        // what is drawn. The complete envelope survives in the stamp; only a
+        // proved finite receiver read can restrict the allocated raster
+        // region. A device whose texture limit is below 8192 windows from its
+        // own limit.
         const MAX_UNWINDOWED_BYTES: u64 = 32 * 1024 * 1024;
         let full_bytes =
             u64::from(full_origin.target_size[0]) * u64::from(full_origin.target_size[1]) * 12;
@@ -3463,13 +3482,10 @@ fn prepare_artifact_surface_raster_plan_from_program(
         if !color_bytes.confidence.budget_usable() || !depth_bytes.confidence.budget_usable() {
             return Err(ArtifactSurfaceRasterPlanError::InvalidDescriptor(source));
         }
-        total_texture_bytes = total_texture_bytes
-            .checked_add(color_bytes.bytes)
-            .and_then(|bytes| bytes.checked_add(depth_bytes.bytes))
-            .filter(|bytes| *bytes <= context.max_texture_bytes)
-            .ok_or(ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(
-                source,
-            ))?;
+        let retained = color_bytes
+            .bytes
+            .checked_add(depth_bytes.bytes)
+            .is_some_and(&mut claim_budget);
         let target = RetainedSurfaceRasterInputs {
             color,
             depth,
@@ -3523,6 +3539,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 None => None,
             },
             steps,
+            retained,
         });
     }
     for node in prepared_nodes.iter_mut().flatten() {
@@ -3614,6 +3631,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
         context,
         roots,
         nodes,
+        transient_gpu_sources,
         #[cfg(test)]
         materialization_decisions: program.execution_order.decisions().to_vec(),
     })
@@ -3713,6 +3731,25 @@ impl SealedArtifactSurfaceResidentSet {
     pub(crate) fn into_ordered_entries(self) -> Vec<SealedArtifactSurfaceResidentEntry> {
         drop(self.validated_entries);
         std::sync::Arc::unwrap_or_clone(self.ordered_entries)
+    }
+
+    /// The entries `keep` selects, in order: what the surface cache holds
+    /// after a frame that drew some surfaces without keeping them. Each entry
+    /// stays as sealed; the subset is only committed, never emitted.
+    pub(crate) fn retaining(
+        self,
+        keep: impl FnMut(&SealedArtifactSurfaceResidentEntry) -> bool,
+    ) -> Self {
+        let entries = std::sync::Arc::new(
+            self.into_ordered_entries()
+                .into_iter()
+                .filter(keep)
+                .collect::<Vec<_>>(),
+        );
+        Self {
+            ordered_entries: entries.clone(),
+            validated_entries: entries,
+        }
     }
 
     #[cfg(test)]

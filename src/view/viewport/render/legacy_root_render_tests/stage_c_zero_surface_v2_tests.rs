@@ -256,34 +256,6 @@ fn stage_c_detached_gate_accepts_scroll_and_rejects_empty() {
 }
 
 #[test]
-fn stage_c_no_scroll_budget_rejection_selects_whole_frame_legacy() {
-    let (arena, roots) = prepared_transform_leaf();
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let AutoAuthorityDecision::Legacy { trace } =
-        select_retained_auto_authority_with_artifact_budget_for_test(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &context,
-            1,
-            true,
-        )
-    else {
-        panic!("typed artifact budget rejection must fall back before dispatch")
-    };
-    assert!(trace.rejections.iter().any(|rejection| matches!(
-        rejection,
-        AutoAuthorityRejection::ArtifactPrepare {
-            error: RecordedArtifactSurfacePrepareError::RasterPlan(
-                crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_),
-            ),
-        }
-    )));
-}
-
-#[test]
 fn stage_c_zero_surface_prepare_rejects_invalid_store_without_graph_mutation() {
     let (arena, roots, _) = prepared_zero_surface_three_chunk_frame();
     let (mut artifact, _) = recorded_zero_surface_artifact(&arena, &roots);
@@ -329,16 +301,13 @@ fn stage_c_zero_surface_child_mask_compiles_at_254_and_isolates_past_a_full_sten
         .begin_retained_surface_frame_stage()
         .expect("accepted frame owns one resident transaction");
     crate::view::paint::take_artifact_compile_count();
-    assert!(matches!(
-        try_compile_auto_artifact_frame(
-            &mut accepted_viewport,
-            accepted_owner,
-            &mut accepted_graph,
-            recorded_zero_surface_child_mask_candidate(),
-            &accepted_ctx,
-        ),
-        ArtifactFrameCompileOutcome::Compiled { .. }
-    ));
+    compile_auto_artifact_frame(
+        &mut accepted_viewport,
+        Some(accepted_owner),
+        &mut accepted_graph,
+        recorded_zero_surface_child_mask_candidate(),
+        &accepted_ctx,
+    );
     assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
     assert_eq!(
         accepted_viewport.pending_artifact_surface_resident_keys_for_test(),
@@ -367,16 +336,13 @@ fn stage_c_zero_surface_child_mask_compiles_at_254_and_isolates_past_a_full_sten
     let full_owner = full_viewport
         .begin_retained_surface_frame_stage()
         .expect("full-stencil frame owns one resident transaction");
-    assert!(matches!(
-        try_compile_auto_artifact_frame(
-            &mut full_viewport,
-            full_owner,
-            &mut full_graph,
-            recorded_zero_surface_child_mask_candidate(),
-            &full_ctx,
-        ),
-        ArtifactFrameCompileOutcome::Compiled { .. }
-    ));
+    compile_auto_artifact_frame(
+        &mut full_viewport,
+        Some(full_owner),
+        &mut full_graph,
+        recorded_zero_surface_child_mask_candidate(),
+        &full_ctx,
+    );
     assert!(full_viewport.finish_retained_surface_transaction_for_frame(Some(full_owner), true));
 }
 
@@ -416,10 +382,13 @@ fn stage_c_zero_surface_retained_auto_emits_the_leaf_fill_once() {
     let mut compile_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let target = compile_ctx.allocate_target(&mut graph);
     compile_ctx.set_current_target(target);
-    assert!(matches!(
-        try_compile_auto_artifact_frame(&mut viewport, owner, &mut graph, candidate, &compile_ctx,),
-        ArtifactFrameCompileOutcome::Compiled { .. }
-    ));
+    compile_auto_artifact_frame(
+        &mut viewport,
+        Some(owner),
+        &mut graph,
+        candidate,
+        &compile_ctx,
+    );
     assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
     assert_eq!(
         viewport.pending_artifact_surface_resident_keys_for_test(),

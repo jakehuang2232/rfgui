@@ -22,6 +22,16 @@ impl PoolCanonicalArtifactSurfaceResidents {
     fn into_ordered_entries(self) -> Vec<crate::view::paint::SealedArtifactSurfaceResidentEntry> {
         self.residents.into_ordered_entries()
     }
+
+    /// A subset of pool-canonical residents is still pool canonical.
+    pub(crate) fn retaining(
+        self,
+        keep: impl FnMut(&crate::view::paint::SealedArtifactSurfaceResidentEntry) -> bool,
+    ) -> Self {
+        Self {
+            residents: self.residents.retaining(keep),
+        }
+    }
 }
 
 /// One emission-scoped binding between pool-canonical residents and actions

@@ -25,16 +25,20 @@ impl GpuPaintSource {
             );
             OutSlot::with_handle(*handle)
         } else {
-            let output = graph.declare_persistent_texture_internal(
-                self.descriptor(graph.max_texture_dimension_2d()),
-                self.key(),
-            );
+            let descriptor = self.descriptor(graph.max_texture_dimension_2d());
+            let transient = graph.gpu_paint_source_is_transient(self.id.get());
+            let output = if transient {
+                graph.declare_texture(descriptor.with_exact_extent())
+            } else {
+                graph.declare_persistent_texture_internal(descriptor, self.key())
+            };
             graph
                 .gpu_paint_sources
                 .insert(self.id.get(), (self.clone(), output.handle().unwrap()));
             graph.add_graphics_pass(SourcePass {
                 source: self.clone(),
                 output,
+                transient,
                 uniform: Default::default(),
                 vertices: Default::default(),
                 uploaded: false,
@@ -64,6 +68,8 @@ impl GpuPaintSource {
 struct SourcePass {
     source: GpuPaintSource,
     output: RenderTargetOut,
+    /// Produced into a frame-local texture the cache does not keep.
+    transient: bool,
     uniform: OutSlot<BufferResource, ()>,
     vertices: OutSlot<BufferResource, ()>,
     uploaded: bool,
@@ -98,7 +104,9 @@ impl GraphicsPass for SourcePass {
         builder.read_buffer(&self.vertices, BufferReadUsage::Vertex);
     }
     fn prepare(&mut self, ctx: &mut PrepareContext<'_, '_>) {
-        let (reuse, resources) = ctx.viewport().prepare_gpu_paint_source(&self.source);
+        let (reuse, resources) = ctx
+            .viewport()
+            .prepare_gpu_paint_source(&self.source, !self.transient);
         self.reuse = reuse;
         self.resources = Some(resources);
         if reuse {
@@ -125,7 +133,7 @@ impl GraphicsPass for SourcePass {
         ctx.draw(0..3, 0..1);
         if self.source.instance_count == 0 || self.source.vertex_count == 0 {
             ctx.viewport()
-                .note_gpu_paint_source_written(self.source.id.get());
+                .note_gpu_paint_source_written(self.source.id.get(), !self.transient);
             return;
         }
         let Some(uniform) = ctx
@@ -158,7 +166,7 @@ impl GraphicsPass for SourcePass {
         ctx.set_vertex_buffer(0, vertices.slice(..));
         ctx.draw(0..self.source.vertex_count, 0..self.source.instance_count);
         ctx.viewport()
-            .note_gpu_paint_source_written(self.source.id.get());
+            .note_gpu_paint_source_written(self.source.id.get(), !self.transient);
     }
 }
 

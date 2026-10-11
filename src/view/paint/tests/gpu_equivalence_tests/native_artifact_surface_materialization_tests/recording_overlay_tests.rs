@@ -104,12 +104,11 @@ fn native_generic_and_legacy_frozen_scrollbar_absolute_alpha() -> Result<(), Str
                 let owner = viewport.begin_retained_surface_frame_stage().unwrap();
                 emit_prepared_artifact_surface_frame_from_pool(
                     &mut viewport,
-                    owner,
+                    Some(owner),
                     plan,
                     &mut graph,
                     ctx,
-                )
-                .map_err(|error| format!("emit: {error:?}"))?;
+                );
                 Some(owner)
             };
             add_present(&mut graph, &target)?;

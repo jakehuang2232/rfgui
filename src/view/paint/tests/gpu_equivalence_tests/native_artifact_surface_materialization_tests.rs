@@ -106,8 +106,7 @@ fn materialized_two_boundary_graph(
         .begin_retained_surface_frame_stage()
         .ok_or_else(|| "materialized S->T retained stage is unavailable".to_owned())?;
     let _ = take_last_production_actions_for_test();
-    emit_prepared_artifact_surface_frame_from_pool(viewport, owner, frame, &mut graph, ctx)
-        .map_err(|error| format!("materialized S->T execution rejected: {error:?}"))?;
+    emit_prepared_artifact_surface_frame_from_pool(viewport, Some(owner), frame, &mut graph, ctx);
     let actions = take_last_production_actions_for_test();
     add_present(&mut graph, &target)?;
     Ok((graph, owner, actions, aggregate_texture_bytes))

@@ -39,6 +39,7 @@ fn fixture(
         // A zero generation survives metadata recording, but the Surface DAG
         // planner rejects it. This is deliberately a non-budget late failure.
         Case::LatePlanning => properties.scrolls.values_mut().next().unwrap().generation = 0,
+        // The budget bounds the surface cache, not what is drawn.
         Case::Budget => budget = 1,
     }
     (arena, roots, properties, generations, ctx, budget)
@@ -64,7 +65,7 @@ fn retained_auto_rejects_once_with_capture_independent_stage() {
                 });
                 let trace = match decision {
                     RetainedAutoDecision::Artifact { candidate, trace } => {
-                        assert!(matches!(case, Case::Accepted));
+                        assert!(matches!(case, Case::Accepted | Case::Budget));
                         assert!(matches!(
                             candidate.payload,
                             RecordedArtifactPayload::ArtifactSurface(_)
@@ -73,7 +74,7 @@ fn retained_auto_rejects_once_with_capture_independent_stage() {
                         trace
                     }
                     RetainedAutoDecision::Legacy { trace } => {
-                        assert!(!matches!(case, Case::Accepted));
+                        assert!(!matches!(case, Case::Accepted | Case::Budget));
                         assert_eq!(
                             auto_artifact_legacy_fallback_stage(&trace),
                             if matches!(case, Case::EarlyRecording) {
@@ -85,11 +86,15 @@ fn retained_auto_rejects_once_with_capture_independent_stage() {
                         assert_eq!(trace.rejections.len(), usize::from(capture));
                         if capture {
                             match case {
-                                Case::EarlyRecording => assert!(matches!(trace.rejections[0], AutoAuthorityRejection::Artifact { .. })),
-                                Case::LatePlanning => assert!(matches!(trace.rejections[0], AutoAuthorityRejection::ArtifactPrepare { error }
-                                    if !matches!(error, RecordedArtifactSurfacePrepareError::RasterPlan(crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_))))),
-                                Case::Budget => assert!(matches!(trace.rejections[0], AutoAuthorityRejection::ArtifactPrepare { error: RecordedArtifactSurfacePrepareError::RasterPlan(crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_)) })),
-                                Case::Accepted => unreachable!(),
+                                Case::EarlyRecording => assert!(matches!(
+                                    trace.rejections[0],
+                                    AutoAuthorityRejection::Artifact { .. }
+                                )),
+                                Case::LatePlanning => assert!(
+                                    matches!(trace.rejections[0], AutoAuthorityRejection::ArtifactPrepare { error }
+                                    if !matches!(error, RecordedArtifactSurfacePrepareError::RasterPlan(crate::view::paint::ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_))))
+                                ),
+                                Case::Accepted | Case::Budget => unreachable!(),
                             }
                         }
                         trace
@@ -105,7 +110,7 @@ fn retained_auto_rejects_once_with_capture_independent_stage() {
                 );
                 assert_eq!(
                     counts.get("resident-seal").copied().unwrap_or(0),
-                    usize::from(matches!(case, Case::Accepted))
+                    usize::from(matches!(case, Case::Accepted | Case::Budget))
                 );
                 assert!(!counts.contains_key("compatibility-cascade"));
                 assert!(!counts.contains_key("compatibility-record"));

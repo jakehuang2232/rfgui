@@ -7,7 +7,7 @@ use super::{
     SealedArtifactSurfaceResidentSet, SurfaceDagExecutionNodeId,
 };
 use crate::view::base_component::{AncestorClipContext, BuildState, UiBuildContext};
-use crate::view::frame_graph::{FrameGraph, PersistentTextureKey};
+use crate::view::frame_graph::FrameGraph;
 use crate::view::render_pass::clear_pass::{ClearInput, ClearOutput, ClearParams};
 use crate::view::render_pass::composite_layer_pass::{
     CompositeLayerInput, CompositeLayerOutput, CompositeLayerParams, CompositeLayerPass, LayerIn,
@@ -130,12 +130,6 @@ pub(super) struct PreparedArtifactSurfaceExecution {
     frame: PreparedArtifactSurfaceFrame,
     root_programs: Vec<ArtifactSurfaceChildMaskTargetProgram>,
     node_programs: Vec<ArtifactSurfaceChildMaskTargetProgram>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ArtifactSurfaceExecutionError {
-    InactiveFrameStageOwner,
-    PersistentKeyAlreadyDeclared(PersistentTextureKey),
 }
 
 #[derive(Clone, Copy)]
@@ -627,6 +621,10 @@ impl ArtifactSurfaceEmitter<'_> {
             })
             .expect("sealed target program id");
         let action = self.actions[child.index()];
+        // Under a reused parent only a kept raster needs refreshing.
+        if !composite_to_parent && action == RetainedSurfaceCompileAction::Transient {
+            return parent_ctx.into_state();
+        }
         let parent_target = parent_ctx
             .current_target()
             .expect("artifact surface has a receiver target");
@@ -637,14 +635,21 @@ impl ArtifactSurfaceEmitter<'_> {
                 .with_scale_factor(f32::from_bits(node.target().scale_factor_bits)),
             parent_ctx.layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
         );
-        let layer_target = layer_ctx.allocate_retained_raster_target(
-            graph,
-            node.target().color.clone(),
-            node.identity().color_key,
-            action == RetainedSurfaceCompileAction::Reraster,
-        );
+        let layer_target = match action {
+            RetainedSurfaceCompileAction::Transient => {
+                layer_ctx.allocate_transient_raster_target(graph, node.target().color.clone())
+            }
+            RetainedSurfaceCompileAction::Reraster | RetainedSurfaceCompileAction::Reuse => {
+                layer_ctx.allocate_retained_raster_target(
+                    graph,
+                    node.target().color.clone(),
+                    node.identity().color_key,
+                    action == RetainedSurfaceCompileAction::Reraster,
+                )
+            }
+        };
         layer_ctx.set_current_target(layer_target);
-        if action == RetainedSurfaceCompileAction::Reraster {
+        if action != RetainedSurfaceCompileAction::Reuse {
             graph.add_graphics_pass(ClearPass::new(
                 ClearParams::new([0.0, 0.0, 0.0, 0.0]),
                 ClearInput {
@@ -750,33 +755,33 @@ impl ArtifactSurfaceEmitter<'_> {
 }
 
 /// Emits one fully sealed artifact Surface DAG frame and atomically stages the
-/// same resident set. Pool canonicality must be established before target
-/// allocation because persistent color allocation otherwise contains a
-/// depth-key `expect`. Graph-key collision is checked last in preflight so no
-/// claimed graph state can go stale before the first append-only mutation.
+/// resident set the surface cache keeps. Pool canonicality must be established
+/// before target allocation because persistent color allocation otherwise
+/// contains a depth-key `expect`.
+///
+/// Without an active frame owner the surface cache is unavailable: every
+/// surface is drawn into a frame-local target and nothing is staged. A surface
+/// whose persistent key the graph already declared is drawn the same way.
 pub(crate) fn emit_prepared_artifact_surface_frame_from_pool(
     viewport: &mut Viewport,
-    owner: RetainedSurfaceFrameStageOwner,
+    owner: Option<RetainedSurfaceFrameStageOwner>,
     frame: PreparedArtifactSurfaceFrame,
     graph: &mut FrameGraph,
     ctx: UiBuildContext,
-) -> Result<BuildState, ArtifactSurfaceExecutionError> {
-    emit_prepared_artifact_surface_frame(viewport, owner, frame, graph, ctx, false)
-        .map(|(state, _)| state)
+) -> BuildState {
+    emit_prepared_artifact_surface_frame(viewport, owner, frame, graph, ctx, false).0
 }
 
 fn emit_prepared_artifact_surface_frame(
     viewport: &mut Viewport,
-    owner: RetainedSurfaceFrameStageOwner,
+    owner: Option<RetainedSurfaceFrameStageOwner>,
     frame: PreparedArtifactSurfaceFrame,
     graph: &mut FrameGraph,
     mut ctx: UiBuildContext,
     allow_forced_pair_witness: bool,
-) -> Result<(BuildState, Vec<RetainedSurfaceCompileAction>), ArtifactSurfaceExecutionError> {
+) -> (BuildState, Vec<RetainedSurfaceCompileAction>) {
     let _profile = crate::view::paint::work_profile::scope("emit_prepared_artifact_surface_frame");
-    if !viewport.retained_surface_frame_stage_owner_is_active(owner) {
-        return Err(ArtifactSurfaceExecutionError::InactiveFrameStageOwner);
-    }
+    let owner = owner.filter(|owner| viewport.retained_surface_frame_stage_owner_is_active(*owner));
     let execution = seal_prepared_artifact_surface_execution(frame);
     let PreparedArtifactSurfaceExecution {
         frame,
@@ -807,12 +812,28 @@ fn emit_prepared_artifact_surface_frame(
     let residents = pool_emission.residents();
     let ordered_actions = pool_emission.ordered_actions();
     assert_eq!(ordered_actions.len(), residents.len());
+    let declared = graph
+        .declared_persistent_texture_keys()
+        .collect::<FxHashSet<_>>();
     let actions = ordered_actions
         .iter()
         .zip(residents.ordered_entries())
-        .map(|((key, action), resident)| {
+        .zip(plan.nodes())
+        .map(|(((key, action), resident), node)| {
             assert_eq!(*key, resident.resident_key());
-            *action
+            let color = resident.stamp().identity.color_key;
+            let depth = color
+                .depth_stencil()
+                .expect("pool-canonical artifact color key owns a depth role");
+            let cached = owner.is_some()
+                && node.retained()
+                && !declared.contains(&color)
+                && !declared.contains(&depth);
+            if cached {
+                *action
+            } else {
+                RetainedSurfaceCompileAction::Transient
+            }
         })
         .collect::<Vec<_>>();
     #[cfg(any(test, feature = "renderer-test-support"))]
@@ -830,25 +851,7 @@ fn emit_prepared_artifact_surface_frame(
         })
         .collect::<Vec<_>>();
 
-    // Keep this as the final preflight read. No graph-derived bool or key-set
-    // snapshot is stored in the execution capability.
-    let declared = graph
-        .declared_persistent_texture_keys()
-        .collect::<FxHashSet<_>>();
-    for resident in residents.ordered_entries() {
-        let color = resident.stamp().identity.color_key;
-        let depth = color
-            .depth_stencil()
-            .expect("pool-canonical artifact color key owns a depth role");
-        for key in [color, depth] {
-            if declared.contains(&key) {
-                return Err(ArtifactSurfaceExecutionError::PersistentKeyAlreadyDeclared(
-                    key,
-                ));
-            }
-        }
-    }
-
+    graph.set_transient_gpu_paint_sources(plan.transient_gpu_sources().clone());
     let parent_target = ctx.current_target().unwrap_or_else(|| {
         let target = ctx.allocate_target(graph);
         ctx.set_current_target(target);
@@ -876,7 +879,12 @@ fn emit_prepared_artifact_surface_frame(
     // does not protect the staging slot across emission. Pool canonicality is
     // already carried by the linear capability, so this assertion now guards
     // only that the owner stayed active and the pending slot stayed empty.
-    let residents = pool_emission.into_canonical_residents();
+    let mut transient = actions
+        .iter()
+        .map(|action| *action == RetainedSurfaceCompileAction::Transient);
+    let residents = pool_emission
+        .into_canonical_residents()
+        .retaining(|_| !transient.next().expect("one action per resident"));
     if viewport.debug_options().trace_render_time {
         viewport.record_retained_raster_diagnostics(
             plan.nodes()
@@ -893,21 +901,23 @@ fn emit_prepared_artifact_surface_frame(
         );
     }
 
-    assert!(
-        viewport.stage_artifact_surface_resident_set(owner, residents),
-        "preflighted artifact resident transaction must stage after emission"
-    );
-    Ok((ctx.into_state(), actions))
+    if let Some(owner) = owner {
+        assert!(
+            viewport.stage_artifact_surface_resident_set(owner, residents),
+            "preflighted artifact resident transaction must stage after emission"
+        );
+    }
+    (ctx.into_state(), actions)
 }
 
 #[cfg(test)]
 fn emit_prepared_artifact_surface_frame_for_forced_test(
     viewport: &mut Viewport,
-    owner: RetainedSurfaceFrameStageOwner,
+    owner: Option<RetainedSurfaceFrameStageOwner>,
     frame: PreparedArtifactSurfaceFrame,
     graph: &mut FrameGraph,
     ctx: UiBuildContext,
-) -> Result<(BuildState, Vec<RetainedSurfaceCompileAction>), ArtifactSurfaceExecutionError> {
+) -> (BuildState, Vec<RetainedSurfaceCompileAction>) {
     emit_prepared_artifact_surface_frame(viewport, owner, frame, graph, ctx, true)
 }
 

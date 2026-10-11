@@ -12,12 +12,11 @@ fn depth_four_execution_declares_one_retained_color_and_one_raster_per_surface()
     let mut graph = FrameGraph::new();
     let (_, actions) = emit_prepared_artifact_surface_frame_for_forced_test(
         &mut viewport,
-        owner,
+        Some(owner),
         prepared,
         &mut graph,
         execution_context(),
-    )
-    .expect("depth-four emission");
+    );
 
     assert_eq!(actions.len(), 4);
     assert_eq!(graph.declared_persistent_texture_keys().count(), 4);
@@ -34,12 +33,11 @@ fn sealed_shadow_prefix_and_empty_suffix_drive_emission_without_rederivation() {
     let mut visible_graph = FrameGraph::new();
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut visible_viewport,
-        visible_owner,
+        Some(visible_owner),
         prepared_self_clip_shadow_surface_frame(false),
         &mut visible_graph,
         execution_context(),
-    )
-    .expect("visible suffix emission");
+    );
 
     let mut empty_viewport = Viewport::new();
     let empty_owner = empty_viewport
@@ -48,12 +46,11 @@ fn sealed_shadow_prefix_and_empty_suffix_drive_emission_without_rederivation() {
     let mut empty_graph = FrameGraph::new();
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut empty_viewport,
-        empty_owner,
+        Some(empty_owner),
         prepared_self_clip_shadow_surface_frame(true),
         &mut empty_graph,
         execution_context(),
-    )
-    .expect("empty suffix emission");
+    );
 
     assert!(visible_graph.pass_descriptors().len() > empty_graph.pass_descriptors().len());
     assert!(
@@ -69,14 +66,13 @@ fn sealed_shadow_prefix_and_empty_suffix_drive_emission_without_rederivation() {
     let mut scissor_graph = FrameGraph::new();
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut scissor_viewport,
-        scissor_owner,
+        Some(scissor_owner),
         prepared_whole_chunk_clip_surface_frame(ArtifactSurfaceResolvedClip::Scissor(
             GraphicsPassScissor::Logical(expected_scissor),
         )),
         &mut scissor_graph,
         execution_context(),
-    )
-    .expect("whole-chunk scissor emission");
+    );
     let visible_rects = scissor_graph
         .test_rect_pass_snapshots()
         .into_iter()
@@ -97,12 +93,11 @@ fn sealed_shadow_prefix_and_empty_suffix_drive_emission_without_rederivation() {
     let mut whole_empty_graph = FrameGraph::new();
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut whole_empty_viewport,
-        whole_empty_owner,
+        Some(whole_empty_owner),
         prepared_whole_chunk_clip_surface_frame(ArtifactSurfaceResolvedClip::Empty),
         &mut whole_empty_graph,
         execution_context(),
-    )
-    .expect("whole-chunk empty emission");
+    );
     assert_eq!(
         whole_empty_graph
             .test_rect_pass_snapshots()
@@ -127,14 +122,13 @@ fn sealed_terminal_clip_replaces_a_disjoint_incoming_scissor() {
     let mut graph = FrameGraph::new();
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut viewport,
-        owner,
+        Some(owner),
         prepared_whole_chunk_clip_surface_frame(ArtifactSurfaceResolvedClip::Scissor(
             GraphicsPassScissor::Logical(sealed_scissor),
         )),
         &mut graph,
         ctx,
-    )
-    .expect("terminal-clip emission");
+    );
 
     let visible_rects = graph
         .test_rect_pass_snapshots()
@@ -168,12 +162,11 @@ fn child_mask_past_a_full_stencil_isolates_then_emits_sealed_push_and_pop() {
     let mut full_graph = FrameGraph::new();
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut full_viewport,
-        full_owner,
+        Some(full_owner),
         prepared_child_mask_surface_frame(),
         &mut full_graph,
         full_ctx,
-    )
-    .expect("a full stencil isolates instead of rejecting");
+    );
     let full_snapshots = full_graph.test_rect_pass_snapshots();
     assert!(
         full_snapshots
@@ -193,12 +186,11 @@ fn child_mask_past_a_full_stencil_isolates_then_emits_sealed_push_and_pop() {
     let mut graph = FrameGraph::new();
     emit_prepared_artifact_surface_frame_for_forced_test(
         &mut viewport,
-        owner,
+        Some(owner),
         prepared_child_mask_surface_frame(),
         &mut graph,
         execution_context(),
-    )
-    .expect("child-mask emission");
+    );
     let snapshots = graph.test_rect_pass_snapshots();
     assert!(snapshots.iter().any(|pass| matches!(
         pass.stencil_mode,

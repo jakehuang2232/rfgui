@@ -4,7 +4,6 @@ pub(crate) struct SingleViewportFrameObservation {
     pub(crate) texture: wgpu::Texture,
     pub(crate) artifact_selected: bool,
     pub(crate) legacy_selected: bool,
-    pub(crate) rejection_labels: Vec<String>,
     pub(crate) actions: Vec<crate::view::paint::RetainedSurfaceCompileAction>,
     pub(crate) color_targets: Vec<(
         crate::view::frame_graph::PersistentTextureKey,
@@ -147,33 +146,11 @@ impl Viewport {
             texture,
             artifact_selected: snapshot.selected == PaintAuthorityKind::Artifact,
             legacy_selected: snapshot.selected == PaintAuthorityKind::Legacy,
-            rejection_labels: snapshot.rejection_labels,
             actions: crate::view::paint::take_last_production_actions_for_test(),
             color_targets,
             texture_bytes,
             frame_number: self.frame.frame_number,
         })
-    }
-
-    pub(crate) fn render_single_viewport_budget_fallback_for_test(
-        &mut self,
-    ) -> Result<SingleViewportFrameObservation, String> {
-        let observed = self.render_single_viewport_observed_frame_for_test(
-            Some(PaintAuthorityFallbackStage::Prepare),
-            crate::time::Instant::now(),
-        )?;
-        if observed.rejection_labels.len() != 1
-            || !observed.rejection_labels[0]
-                .starts_with("artifact-prepare:RasterPlan(TextureBudgetExceeded(")
-            || !observed.actions.is_empty()
-            || self.retained_surface_transaction_shape_for_test() != (0, None)
-        {
-            return Err(format!(
-                "budget rejection must bypass compatibility and stage no residents: {:?}",
-                observed.rejection_labels
-            ));
-        }
-        Ok(observed)
     }
 }
 

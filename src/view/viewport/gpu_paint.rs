@@ -41,9 +41,12 @@ impl Viewport {
         }
     }
 
+    /// Whether `source`'s kept output can be reused, and its pipeline. A
+    /// source the cache does not `retain` this frame is always produced.
     pub(crate) fn prepare_gpu_paint_source(
         &mut self,
         source: &GpuPaintSource,
+        retain: bool,
     ) -> (bool, Arc<SourceResources>) {
         // Prepare runs before this source's output attachment is acquired. A
         // stable key is insufficient: the physical backing must still exist.
@@ -52,7 +55,7 @@ impl Viewport {
             &source.descriptor(self.max_texture_dimension_2d()),
         );
         if let Some(entry) = self.frame.gpu_paint_sources.get(&source.id.get()) {
-            if entry.valid && resident && entry.source == *source {
+            if retain && entry.valid && resident && entry.source == *source {
                 return (true, entry.resources.clone());
             }
         }
@@ -81,9 +84,11 @@ impl Viewport {
         );
         (false, resources)
     }
-    pub(crate) fn note_gpu_paint_source_written(&mut self, owner: u64) {
+    /// A produced output becomes reusable only if it was `kept`; a frame-local
+    /// output leaves the source to be produced again and frees its old backing.
+    pub(crate) fn note_gpu_paint_source_written(&mut self, owner: u64, kept: bool) {
         if let Some(entry) = self.frame.gpu_paint_sources.get_mut(&owner) {
-            entry.written = true;
+            entry.written = kept;
             entry.work = Some(GpuPaintWork::Rendered);
         }
     }

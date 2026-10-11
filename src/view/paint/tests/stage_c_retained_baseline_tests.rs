@@ -122,7 +122,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         "native_persistent_retirement_preserves_unsubmitted_attachments",
         "native_transient_texture_working_set_survives_pressure_between_frames",
         "native_controls_record_and_reuse_real_component_trees",
-        "native_full_window_budget_descriptors_reuse_and_whole_frame_legacy",
+        "native_full_window_budget_descriptors_and_reuse",
         "native_generic_and_legacy_frozen_scrollbar_absolute_alpha",
         "native_generic_text_area_frozen_ime_caret_and_reuse",
         "native_legacy_planning_corpus_absolute_coordinates",

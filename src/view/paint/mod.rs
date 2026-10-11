@@ -49,20 +49,19 @@ pub(crate) use artifact::{
 pub(crate) use compiler::take_last_production_actions_for_test;
 #[allow(unused_imports)]
 pub(crate) use compiler::{
-    ArtifactCompileErrorKind, ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceExecutionError,
-    ArtifactSurfaceLocalizationError, ArtifactSurfacePaintOpKind, ArtifactSurfaceRasterContext,
-    ArtifactSurfaceRasterPlanError, ArtifactSurfaceRasterTargetId,
-    ArtifactSurfaceResidentSealError, PlanningCache, PreparedArtifactSurfaceFrame,
-    PreparedArtifactSurfaceRasterChunk, PreparedArtifactSurfaceRasterNode,
-    PreparedArtifactSurfaceRasterPlan, PreparedArtifactSurfaceRasterRoot,
-    PreparedArtifactSurfaceRasterSpan, PreparedArtifactSurfaceRasterStep, ResolvedClip,
-    RetainedSurfaceChunkStamp, RetainedSurfaceCompileAction, RetainedSurfaceRasterIdentity,
-    RetainedSurfaceRasterInputs, RetainedSurfaceRasterRole, RetainedSurfaceRasterStamp,
-    RetainedSurfaceResidentKey, SealedArtifactSurfaceResidentEntry,
-    SealedArtifactSurfaceResidentSet, SingleTargetSurfaceDagPrepareError,
-    emit_prepared_artifact_surface_frame_from_pool, localize_artifact_surface_op,
-    prepare_artifact_surface_raster_plan, prepare_artifact_surface_raster_plan_cached,
-    seal_prepared_artifact_surface_frame,
+    ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceLocalizationError,
+    ArtifactSurfacePaintOpKind, ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError,
+    ArtifactSurfaceRasterTargetId, ArtifactSurfaceResidentSealError, PlanningCache,
+    PreparedArtifactSurfaceFrame, PreparedArtifactSurfaceRasterChunk,
+    PreparedArtifactSurfaceRasterNode, PreparedArtifactSurfaceRasterPlan,
+    PreparedArtifactSurfaceRasterRoot, PreparedArtifactSurfaceRasterSpan,
+    PreparedArtifactSurfaceRasterStep, ResolvedClip, RetainedSurfaceChunkStamp,
+    RetainedSurfaceCompileAction, RetainedSurfaceRasterIdentity, RetainedSurfaceRasterInputs,
+    RetainedSurfaceRasterRole, RetainedSurfaceRasterStamp, RetainedSurfaceResidentKey,
+    SealedArtifactSurfaceResidentEntry, SealedArtifactSurfaceResidentSet,
+    SingleTargetSurfaceDagPrepareError, emit_prepared_artifact_surface_frame_from_pool,
+    localize_artifact_surface_op, prepare_artifact_surface_raster_plan,
+    prepare_artifact_surface_raster_plan_cached, seal_prepared_artifact_surface_frame,
 };
 #[cfg(test)]
 pub(crate) use compiler::{

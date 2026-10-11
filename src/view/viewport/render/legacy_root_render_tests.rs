@@ -75,21 +75,21 @@ impl ElementTrait for UnknownOverlayHost {
 }
 
 use super::{
-    ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES, ArtifactFrameCompileOutcome, AutoAuthorityKind,
-    AutoAuthorityRejection, AutoAuthorityTrace, CachedCompiledGraph, FrameDisposition,
-    FramePaintSelection, PaintAuthorityFallbackStage, PaintAuthorityKind, PaintAuthorityTelemetry,
+    ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES, AutoAuthorityKind, AutoAuthorityRejection,
+    AutoAuthorityTrace, CachedCompiledGraph, FrameDisposition, FramePaintSelection,
+    PaintAuthorityFallbackStage, PaintAuthorityKind, PaintAuthorityTelemetry,
     RecordedArtifactCandidate, RecordedArtifactPayload, RecordedArtifactSurfacePrepareError,
     RetainedAutoDecision as AutoAuthorityDecision, RetainedAutoTerminalFailureStage, Viewport,
     artifact_surface_raster_context, auto_artifact_legacy_fallback_stage,
-    begin_paint_authority_telemetry_attempt, build_root_legacy, debug_legacy_fallback,
-    enable_paint_authority_test_capture, finish_frame_dirty_lifecycle, frame_disposition,
-    paint_authority_test_capture_enabled, require_detached_artifact_surface_plan,
-    require_zero_resident_artifact_surface_plan, retained_auto_circuit_breaker_selection,
-    retained_auto_fallback_overlay_records, retained_auto_overlay_label,
-    retained_auto_terminal_fallback_stage, select_retained_auto_authority,
-    select_retained_auto_authority_with_artifact_budget_for_test, should_store_compile_cache,
+    begin_paint_authority_telemetry_attempt, build_root_legacy, compile_auto_artifact_frame,
+    debug_legacy_fallback, enable_paint_authority_test_capture, finish_frame_dirty_lifecycle,
+    frame_disposition, paint_authority_test_capture_enabled,
+    require_detached_artifact_surface_plan, require_zero_resident_artifact_surface_plan,
+    retained_auto_circuit_breaker_selection, retained_auto_fallback_overlay_records,
+    retained_auto_overlay_label, retained_auto_terminal_fallback_stage,
+    select_retained_auto_authority, should_store_compile_cache,
     store_paint_authority_test_snapshot, take_paint_authority_test_snapshot,
-    terminal_failure_stage, try_compile_auto_artifact_frame,
+    terminal_failure_stage,
 };
 
 fn constraints() -> (LayoutConstraints, LayoutPlacement) {
@@ -1279,10 +1279,7 @@ fn assert_native_root_opacity_artifact(
     let mut ctx = ctx;
     let target = ctx.allocate_target(&mut graph);
     ctx.set_current_target(target);
-    assert!(matches!(
-        try_compile_auto_artifact_frame(&mut viewport, owner, &mut graph, candidate, &ctx,),
-        ArtifactFrameCompileOutcome::Compiled { .. }
-    ));
+    compile_auto_artifact_frame(&mut viewport, Some(owner), &mut graph, candidate, &ctx);
     assert_eq!(
         viewport
             .pending_artifact_surface_resident_keys_for_test()
@@ -1340,16 +1337,12 @@ fn assert_native_artifact_surface_authority(
     let mut execution_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let target = execution_ctx.allocate_target(&mut graph);
     execution_ctx.set_current_target(target);
-    let outcome = try_compile_auto_artifact_frame(
+    compile_auto_artifact_frame(
         &mut viewport,
-        frame_owner,
+        Some(frame_owner),
         &mut graph,
         candidate,
         &execution_ctx,
-    );
-    assert!(
-        matches!(outcome, ArtifactFrameCompileOutcome::Compiled { .. }),
-        "{host}: artifact surface execution"
     );
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true,));
 }
@@ -1367,11 +1360,7 @@ fn emit_selected_artifact_surface(
     let mut ctx = ctx;
     let target = ctx.allocate_target(&mut graph);
     ctx.set_current_target(target);
-    let attempt = try_compile_auto_artifact_frame(viewport, owner, &mut graph, candidate, &ctx);
-    assert!(
-        matches!(attempt, ArtifactFrameCompileOutcome::Compiled { .. }),
-        "{host}: production artifact executor must compile"
-    );
+    compile_auto_artifact_frame(viewport, Some(owner), &mut graph, candidate, &ctx);
     let pending = viewport
         .pending_artifact_surface_resident_keys_for_test()
         .unwrap_or_else(|| panic!("{host}: artifact transaction must be staged"));
@@ -1624,8 +1613,6 @@ mod property_boundary_forest_plain_root_tests;
 mod property_boundary_forest_tests;
 
 mod nested_scroll_tests;
-
-mod scroll_production_dispatch_tests;
 
 mod window_showcase_tests;
 

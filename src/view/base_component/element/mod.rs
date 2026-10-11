@@ -1489,6 +1489,16 @@ impl UiBuildContext {
     ) -> RenderTargetOut {
         let (color_desc, depth_desc) =
             transient_target_texture_descriptors(self.viewport.scaled_target_desc(desc));
+        self.declare_target_pair(graph, color_desc, depth_desc)
+    }
+
+    /// A frame-local color target and its own depth/stencil.
+    fn declare_target_pair(
+        &mut self,
+        graph: &mut FrameGraph,
+        color_desc: TextureDesc,
+        depth_desc: TextureDesc,
+    ) -> RenderTargetOut {
         let color = graph.declare_texture::<RenderTargetTag>(color_desc);
         let depth_stencil = graph.declare_texture::<RenderTargetTag>(depth_desc);
         if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
@@ -1522,15 +1532,21 @@ impl UiBuildContext {
             )
             .with_label("Scratch Render Target"),
         );
-        let color = graph.declare_texture::<RenderTargetTag>(color_desc);
-        let depth_stencil = graph.declare_texture::<RenderTargetTag>(depth_desc);
-        if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
-            self.state
-                .target_pairs
-                .insert(color_handle.0, AttachmentTarget::Texture(depth_handle));
-            graph.pair_texture_attachment(color_handle, AttachmentTarget::Texture(depth_handle));
-        }
-        color
+        self.declare_target_pair(graph, color_desc, depth_desc)
+    }
+
+    /// A frame-local target with a surface raster's exact extent, for a raster
+    /// the surface cache does not keep.
+    pub(crate) fn allocate_transient_raster_target(
+        &mut self,
+        graph: &mut FrameGraph,
+        desc: TextureDesc,
+    ) -> RenderTargetOut {
+        let (color_desc, depth_desc) = transient_target_texture_descriptors(
+            desc.with_label("Transient Surface Raster")
+                .with_exact_extent(),
+        );
+        self.declare_target_pair(graph, color_desc, depth_desc.with_exact_extent())
     }
 
     /// Retained pixels own only color backing. Depth/stencil is scratch space
