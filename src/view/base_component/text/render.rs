@@ -93,6 +93,7 @@ impl Text {
     /// uses 1.0, while baked paths use the clamped local opacity.
     pub(super) fn is_paint_visible(&self, effective_opacity: f32) -> bool {
         self.layout_state.should_render
+            && !self.backface_culled
             && !self.content.is_empty()
             && effective_opacity.is_finite()
             && effective_opacity > 0.0

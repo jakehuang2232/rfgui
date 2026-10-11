@@ -15,7 +15,7 @@ impl Renderable for Element {
                 self.layout_state.should_render
             );
         }
-        if !self.layout_state.should_render {
+        if !self.layout_state.should_render || self.backface_culled {
             // Viewport-clip descendants were already collected once at
             // frame start via `NodeArena::refresh_defer_render_nodes`, so
             // skipping the subtree here no longer drops them.

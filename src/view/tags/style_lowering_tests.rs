@@ -42,6 +42,7 @@ fn hover_text_style() -> HoverTextStylePropSchema {
             6.0,
         ))])),
         transform_origin: Some(TransformOrigin::px(3.0, 4.0)),
+        backface_visibility: Some(BackfaceVisibility::Hidden),
         transition: Some(transition()),
     }
 }
@@ -136,6 +137,7 @@ fn text_style() -> TextStylePropSchema {
         opacity: hover.opacity,
         transform: hover.transform.clone(),
         transform_origin: hover.transform_origin,
+        backface_visibility: hover.backface_visibility,
         transition: hover.transition.clone(),
     }
 }
@@ -154,6 +156,7 @@ fn element_style() -> ElementStylePropSchema {
         opacity: text.opacity,
         transform: text.transform.clone(),
         transform_origin: text.transform_origin,
+        backface_visibility: text.backface_visibility,
         transition: text.transition.clone(),
         background_color: Some(color("#abcdef")),
         layout: Some(Layout::Inline),
@@ -205,6 +208,10 @@ fn assert_shared_fields(style: &Style) {
     assert_eq!(
         style.get(PropertyId::TransformOrigin),
         Some(&ParsedValue::TransformOrigin(TransformOrigin::px(3.0, 4.0)))
+    );
+    assert_eq!(
+        style.get(PropertyId::BackfaceVisibility),
+        Some(&ParsedValue::BackfaceVisibility(BackfaceVisibility::Hidden))
     );
     assert!(matches!(
         style.get(PropertyId::Transition),

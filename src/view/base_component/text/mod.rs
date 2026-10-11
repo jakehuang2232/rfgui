@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use crate::style::{
-    ColorLike, Cursor, HexColor, TextWrap, Transform, TransformKind, TransformOrigin,
+    BackfaceVisibility, ColorLike, Cursor, HexColor, TextWrap, Transform, TransformKind,
+    TransformOrigin,
 };
 use crate::view::inline_formatting_context::{
     InlineFormattingContext, InlineIfcAlignment, InlineIfcTextPassPaintInput,
@@ -110,6 +111,9 @@ pub struct Text {
     pub(super) transform: Transform,
     pub(super) transform_origin: TransformOrigin,
     pub(super) resolved_transform: Option<Mat4>,
+    pub(super) backface_visibility: BackfaceVisibility,
+    /// Hidden backface and the resolved transform shows the back.
+    pub(super) backface_culled: bool,
     pub(super) auto_width: bool,
     pub(super) auto_height: bool,
     pub(super) text_wrap: TextWrap,
@@ -204,6 +208,8 @@ impl Text {
             transform: Transform::default(),
             transform_origin: TransformOrigin::center(),
             resolved_transform: None,
+            backface_visibility: BackfaceVisibility::Visible,
+            backface_culled: false,
             auto_width: false,
             auto_height: false,
             text_wrap: TextWrap::Wrap,
@@ -225,6 +231,12 @@ impl Text {
 
     fn update_resolved_transform(&mut self) {
         self.resolved_transform = self.compute_transform_matrix();
+        let culled = self.backface_visibility == BackfaceVisibility::Hidden
+            && self.resolved_transform.is_some_and(super::is_back_facing);
+        if culled != self.backface_culled {
+            self.backface_culled = culled;
+            self.dirty_flags = self.dirty_flags.union(super::DirtyFlags::PAINT);
+        }
     }
 
     fn compute_local_transform_payload(&self) -> Option<(Mat4, Vec3)> {
@@ -1049,6 +1061,10 @@ impl ElementTrait for Text {
         }
     }
 
+    fn is_backface_culled(&self) -> bool {
+        self.backface_culled
+    }
+
     fn placement_eligibility_metadata(
         &self,
     ) -> crate::view::node_arena::PlacementEligibilityMetadata {
@@ -1181,6 +1197,7 @@ impl ElementTrait for Text {
         // the layout frame's position.
         let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.layout_state.should_render.hash(&mut hasher);
+        self.backface_culled.hash(&mut hasher);
         self.content_hash.hash(&mut hasher);
         self.color.to_rgba_u8().hash(&mut hasher);
         self.font_families.hash(&mut hasher);

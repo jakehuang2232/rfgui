@@ -4,11 +4,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::{ComputedStyleConsumer, ElementCore, Position, Size, Text, TextInlineIfcStyleMetadata};
 use crate::style::ColorLike;
 use crate::style::{
-    Align, AnchorName, BoxShadow, ClipMode, Collision, CollisionBoundary, Color, ComputedStyle,
-    Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length, PositionMode, ScrollDirection,
-    SizeValue, Style, StyleComputeContext, TextWrap, Transform, TransformKind, TransformOrigin,
-    TransitionProperty, TransitionTiming, VerticalAlign, compute_style_with_context,
-    interpolate_transform_with_reference_box,
+    Align, AnchorName, BackfaceVisibility, BoxShadow, ClipMode, Collision, CollisionBoundary,
+    Color, ComputedStyle, Cursor, FlowDirection, FlowWrap, JustifyContent, Layout, Length,
+    PositionMode, ScrollDirection, SizeValue, Style, StyleComputeContext, TextWrap, Transform,
+    TransformKind, TransformOrigin, TransitionProperty, TransitionTiming, VerticalAlign,
+    compute_style_with_context, interpolate_transform_with_reference_box,
 };
 use crate::transition::{
     AnimationRequest, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
@@ -3359,6 +3359,12 @@ pub trait ElementTrait:
         true
     }
 
+    /// `backface-visibility: hidden` and this frame's transform shows the
+    /// host's back: it and its subtree neither paint nor hit-test.
+    fn is_backface_culled(&self) -> bool {
+        false
+    }
+
     fn is_deferred_to_root_viewport_render(&self) -> bool {
         false
     }
@@ -4449,6 +4455,18 @@ impl LocalTransformSnapshot {
 
 pub(crate) fn compose_transform_about_origin(matrix: Mat4, origin: Vec3) -> Mat4 {
     Mat4::from_translation(origin) * matrix * Mat4::from_translation(-origin)
+}
+
+/// CSS back-face test: the element's +z normal, carried through `matrix`,
+/// points away from the viewer. Under rotation and perspective this is the
+/// projected plane's winding reversing; a 2D mirror such as `scaleX(-1)`
+/// keeps its normal and stays front-facing. An edge-on (singular) matrix
+/// covers no area and is not back-facing.
+pub(crate) fn is_back_facing(matrix: Mat4) -> bool {
+    if matrix.determinant().abs() <= 0.000_001 {
+        return false;
+    }
+    matrix.inverse().z_axis.z < 0.0
 }
 
 /// Stable spatial reference selected while layout still owns the placement
@@ -6115,6 +6133,9 @@ pub struct Element {
     #[cfg(test)]
     resolved_local_transform_for_test: Option<Mat4>,
     resolved_inverse_transform: Option<Mat4>,
+    /// `backface-visibility: hidden` and the resolved transform shows the
+    /// element's back: it and its subtree neither paint nor hit-test.
+    backface_culled: bool,
     foreground_color: Color,
     opacity: f32,
     scroll_direction: ScrollDirection,
@@ -8299,7 +8320,7 @@ impl ElementTrait for Element {
         deferred_phase_root: bool,
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
-        if !self.layout_state.should_render {
+        if !self.layout_state.should_render || self.backface_culled {
             let blocker = if self.resolved_transform.is_some()
                 && !recording_context.authorizes_transform_surface_root(self.stable_id())
             {
@@ -8594,12 +8615,17 @@ impl ElementTrait for Element {
         self.last_started_animator.is_some()
     }
 
+    fn is_backface_culled(&self) -> bool {
+        self.backface_culled
+    }
+
     fn retained_paint_signature(&self) -> u64 {
         // Paint is recorded relative to the owner's layout frame, and the
         // property tree carries where that frame is. Moving the owner is not
         // a paint change: hash relative geometry only.
         let mut hasher = crate::view::compositor::paint_signature_hasher();
         self.layout_state.should_render.hash(&mut hasher);
+        self.backface_culled.hash(&mut hasher);
         self.core.should_paint.hash(&mut hasher);
         hash_f32(&mut hasher, self.layout_state.layout_size.width.max(0.0));
         hash_f32(&mut hasher, self.layout_state.layout_size.height.max(0.0));

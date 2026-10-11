@@ -4,10 +4,10 @@
 
 use crate::style::style_props::{AllStyleSet, NoStylePropSchema, StylePropTrait, TextStyleSet};
 use crate::style::{
-    Align, Animator, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor, Flex, FontFamily,
-    FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding, Position,
-    ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform, TransformOrigin,
-    Transitions, VerticalAlign,
+    Align, Animator, BackfaceVisibility, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor,
+    Flex, FontFamily, FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding,
+    Position, ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform,
+    TransformOrigin, Transitions, VerticalAlign,
 };
 use crate::ui::RsxNode;
 use crate::ui::{
@@ -133,6 +133,7 @@ pub struct ElementStylePropSchema {
     pub padding: Option<Padding>,
     pub transform: Option<Transform>,
     pub transform_origin: Option<TransformOrigin>,
+    pub backface_visibility: Option<BackfaceVisibility>,
     pub transition: Option<Transitions>,
     pub animator: Option<Animator>,
 }
@@ -173,6 +174,7 @@ pub struct HoverElementStylePropSchema {
     pub padding: Option<Padding>,
     pub transform: Option<Transform>,
     pub transform_origin: Option<TransformOrigin>,
+    pub backface_visibility: Option<BackfaceVisibility>,
     pub transition: Option<Transitions>,
     pub animator: Option<Animator>,
 }
@@ -192,6 +194,7 @@ pub struct TextStylePropSchema {
     pub opacity: Option<Opacity>,
     pub transform: Option<Transform>,
     pub transform_origin: Option<TransformOrigin>,
+    pub backface_visibility: Option<BackfaceVisibility>,
     pub transition: Option<Transitions>,
 }
 
@@ -209,6 +212,7 @@ pub struct HoverTextStylePropSchema {
     pub opacity: Option<Opacity>,
     pub transform: Option<Transform>,
     pub transform_origin: Option<TransformOrigin>,
+    pub backface_visibility: Option<BackfaceVisibility>,
     pub transition: Option<Transitions>,
 }
 
@@ -1099,6 +1103,7 @@ struct ElementStyleFields<'a> {
     padding: Option<Padding>,
     transform: &'a Option<Transform>,
     transform_origin: Option<TransformOrigin>,
+    backface_visibility: Option<BackfaceVisibility>,
     animator: &'a Option<Animator>,
 }
 
@@ -1134,6 +1139,7 @@ impl ElementStylePropFields for ElementStylePropSchema {
             padding: self.padding,
             transform: &self.transform,
             transform_origin: self.transform_origin,
+            backface_visibility: self.backface_visibility,
             animator: &self.animator,
         }
     }
@@ -1167,6 +1173,7 @@ impl ElementStylePropFields for HoverElementStylePropSchema {
             padding: self.padding,
             transform: &self.transform,
             transform_origin: self.transform_origin,
+            backface_visibility: self.backface_visibility,
             animator: &self.animator,
         }
     }
@@ -1230,6 +1237,15 @@ fn apply_shared_transition_style_field(style: &mut Style, fields: &SharedStyleFi
         style.insert(
             crate::style::PropertyId::Transition,
             crate::style::ParsedValue::Transition(transition.clone()),
+        );
+    }
+}
+
+fn apply_backface_visibility(style: &mut Style, backface_visibility: Option<BackfaceVisibility>) {
+    if let Some(backface_visibility) = backface_visibility {
+        style.insert(
+            crate::style::PropertyId::BackfaceVisibility,
+            crate::style::ParsedValue::BackfaceVisibility(backface_visibility),
         );
     }
 }
@@ -1353,6 +1369,7 @@ where
     if let Some(transform_origin) = fields.transform_origin {
         style.set_transform_origin(transform_origin);
     }
+    apply_backface_visibility(style, fields.backface_visibility);
     apply_shared_transition_style_field(style, &shared);
     if let Some(animator) = fields.animator {
         style.insert(
@@ -1408,6 +1425,7 @@ impl HoverTextStylePropSchema {
         if let Some(transform_origin) = self.transform_origin {
             style.set_transform_origin(transform_origin);
         }
+        apply_backface_visibility(&mut style, self.backface_visibility);
         style
     }
 }
@@ -1422,6 +1440,7 @@ impl TextStylePropSchema {
         if let Some(transform_origin) = self.transform_origin {
             style.set_transform_origin(transform_origin);
         }
+        apply_backface_visibility(&mut style, self.backface_visibility);
         if let Some(hover) = &self.hover {
             style.set_hover(hover.to_style());
         }

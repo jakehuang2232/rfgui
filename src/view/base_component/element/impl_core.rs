@@ -783,6 +783,7 @@ impl Element {
             #[cfg(test)]
             resolved_local_transform_for_test: None,
             resolved_inverse_transform: None,
+            backface_culled: false,
             foreground_color: Color::rgb(0, 0, 0),
             opacity: 1.0,
             scroll_direction: ScrollDirection::None,

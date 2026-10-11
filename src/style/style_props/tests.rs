@@ -110,6 +110,7 @@ fn registry_covers_current_property_id_variants() {
         PropertyId::BoxShadow,
         PropertyId::Transform,
         PropertyId::TransformOrigin,
+        PropertyId::BackfaceVisibility,
         PropertyId::Transition,
         PropertyId::Animator,
         PropertyId::VerticalAlign,

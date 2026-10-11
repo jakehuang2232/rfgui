@@ -1455,6 +1455,14 @@ impl ElementTrait for Svg {
         deferred_phase_root: bool,
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> super::ShadowPaintRecordingCapability {
+        // A turned-away host records nothing, whatever its source state.
+        if self.element.is_backface_culled() {
+            return self.element.shadow_paint_recording_capability(
+                arena,
+                deferred_phase_root,
+                recording_context,
+            );
+        }
         if !self.element.layout_state.should_render {
             let paint = self.element.retained_paint_properties();
             let blocker = if self.element.has_retained_transform_surface()
@@ -1687,6 +1695,10 @@ impl ElementTrait for Svg {
 
     fn has_active_animator(&self) -> bool {
         self.element.has_active_animator()
+    }
+
+    fn is_backface_culled(&self) -> bool {
+        self.element.is_backface_culled()
     }
 
     fn is_deferred_to_root_viewport_render(&self) -> bool {

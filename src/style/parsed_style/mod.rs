@@ -66,6 +66,7 @@ pub(crate) enum PropertyId {
     BoxShadow,
     Transform,
     TransformOrigin,
+    BackfaceVisibility,
     Transition,
     Animator,
     VerticalAlign,
@@ -725,6 +726,17 @@ impl Default for VerticalAlign {
     fn default() -> Self {
         Self::Baseline
     }
+}
+
+/// Whether an element stays visible while its own transform turns its
+/// back to the viewer, as CSS `backface-visibility`. Only the element's
+/// own transform decides; there is no `preserve-3d`, so a flipped
+/// ancestor carries its descendants with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackfaceVisibility {
+    #[default]
+    Visible,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2483,6 +2495,7 @@ pub(crate) enum ParsedValue {
     BoxShadow(Vec<BoxShadow>),
     Transform(Transform),
     TransformOrigin(TransformOrigin),
+    BackfaceVisibility(BackfaceVisibility),
     Transition(Transitions),
     Animator(Animator),
     Color(StyleColor),

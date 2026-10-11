@@ -448,6 +448,7 @@ mod inline_ifc_package_tests;
 mod vertical_align_tests;
 mod persistent_target_key_tests;
 mod translation_sync_tests;
+mod backface_tests;
 
 pub(super) mod inline_ifc_preflight_tests;
 

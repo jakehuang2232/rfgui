@@ -145,6 +145,9 @@ fn hit_test_subtree(
     {
         return None;
     }
+    if element.is_backface_culled() {
+        return None;
+    }
 
     let (hit_x, hit_y) = hit_test_point_for_node(element, query.x, query.y);
     let child_query = HitTestQuery { x: hit_x, y: hit_y };

@@ -25,6 +25,7 @@ pub(crate) struct TextComputedStyleBridge {
     has_vertical_align: bool,
     has_transform: bool,
     has_transform_origin: bool,
+    has_backface_visibility: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +80,7 @@ impl TextComputedStyleBridge {
             has_vertical_align: style.get(PropertyId::VerticalAlign).is_some(),
             has_transform: style.get(PropertyId::Transform).is_some(),
             has_transform_origin: style.get(PropertyId::TransformOrigin).is_some(),
+            has_backface_visibility: style.get(PropertyId::BackfaceVisibility).is_some(),
             computed,
         }
     }
@@ -310,6 +312,21 @@ impl Text {
         self.transform_origin
     }
 
+    pub fn set_backface_visibility(
+        &mut self,
+        backface_visibility: crate::style::BackfaceVisibility,
+    ) {
+        if self.backface_visibility == backface_visibility {
+            return;
+        }
+        self.backface_visibility = backface_visibility;
+        self.update_resolved_transform();
+    }
+
+    pub fn backface_visibility(&self) -> crate::style::BackfaceVisibility {
+        self.backface_visibility
+    }
+
     pub fn set_text_wrap(&mut self, text_wrap: TextWrap) {
         if self.text_wrap != text_wrap {
             self.text_wrap = text_wrap;
@@ -406,6 +423,7 @@ impl Text {
         } else if mode == TextStyleApplyMode::Incremental {
             self.set_transform(crate::style::Transform::default());
             self.set_transform_origin(crate::style::TransformOrigin::center());
+            self.set_backface_visibility(crate::style::BackfaceVisibility::Visible);
         }
 
         self.apply_inherited(inherited);
@@ -446,6 +464,11 @@ impl Text {
         } else {
             self.set_transform_origin(crate::style::TransformOrigin::center());
         }
+        self.set_backface_visibility(if bridge.has_backface_visibility {
+            bridge.computed.backface_visibility
+        } else {
+            crate::style::BackfaceVisibility::Visible
+        });
         if bridge.has_font_family {
             self.set_fonts(bridge.computed.font_families.iter().cloned());
         }

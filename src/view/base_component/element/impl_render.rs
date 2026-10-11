@@ -415,7 +415,7 @@ impl Element {
                     None => transform,
                 });
         ctx.set_current_render_transform(accumulated_render_transform);
-        if !self.layout_state.should_render {
+        if !self.layout_state.should_render || self.backface_culled {
             // Viewport-clip descendants were already collected once at
             // frame start via `NodeArena::refresh_defer_render_nodes`.
             return ctx.into_state();
@@ -1755,7 +1755,16 @@ impl Element {
                 Some(matrix.inverse())
             }
         });
+        let culled = self.computed_style.backface_visibility == BackfaceVisibility::Hidden
+            && self.resolved_transform.is_some_and(is_back_facing);
+        if culled != self.backface_culled {
+            // An animated transform turning past edge-on changes what is
+            // recorded, not just where it is composited.
+            self.backface_culled = culled;
+            self.mark_paint_dirty();
+        }
     }
+
 
     fn compute_local_transform_payload(&self) -> Option<(Mat4, Vec3)> {
         if self.transform.as_slice().is_empty() {

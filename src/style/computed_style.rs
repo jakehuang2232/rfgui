@@ -5,9 +5,9 @@
 use crate::style::color::Color;
 use crate::style::gradient::Gradient;
 use crate::style::parsed_style::{
-    Align, Animator, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length, ParsedValue, Position,
-    PropertyId, ScrollDirection, Style, TextWrap, Transform, TransformOrigin, Transitions,
-    VerticalAlign,
+    Align, Animator, BackfaceVisibility, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length,
+    ParsedValue, Position, PropertyId, ScrollDirection, Style, TextWrap, Transform,
+    TransformOrigin, Transitions, VerticalAlign,
 };
 use crate::style::style_props::apply_inherited_properties;
 
@@ -81,6 +81,7 @@ pub struct ComputedStyle {
     pub box_shadow: Vec<BoxShadow>,
     pub transform: Transform,
     pub transform_origin: TransformOrigin,
+    pub backface_visibility: BackfaceVisibility,
     pub transition: Transitions,
     pub animator: Option<Animator>,
 }
@@ -152,6 +153,7 @@ impl Default for ComputedStyle {
             box_shadow: Vec::new(),
             transform: Transform::default(),
             transform_origin: TransformOrigin::center(),
+            backface_visibility: BackfaceVisibility::Visible,
             transition: Transitions::default(),
             animator: None,
         }
@@ -553,6 +555,11 @@ pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) 
             PropertyId::TransformOrigin => {
                 if let ParsedValue::TransformOrigin(value) = &declaration.value {
                     computed.transform_origin = *value;
+                }
+            }
+            PropertyId::BackfaceVisibility => {
+                if let ParsedValue::BackfaceVisibility(value) = &declaration.value {
+                    computed.backface_visibility = *value;
                 }
             }
             PropertyId::Transition => {

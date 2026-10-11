@@ -88,6 +88,7 @@ impl StylePropSet for TextStyleSet {
                 | PropertyId::Opacity
                 | PropertyId::Transform
                 | PropertyId::TransformOrigin
+                | PropertyId::BackfaceVisibility
                 | PropertyId::Transition
         )
     }
@@ -183,6 +184,7 @@ style_prop_registry! {
     BoxShadow => { inherited: false, animatable: true },
     Transform => { inherited: false, animatable: true },
     TransformOrigin => { inherited: false, animatable: true },
+    BackfaceVisibility => { inherited: false, animatable: false },
     Transition => { inherited: false, animatable: false },
     Animator => { inherited: false, animatable: false },
     VerticalAlign => { inherited: true, animatable: false },
