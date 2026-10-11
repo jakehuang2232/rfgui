@@ -191,6 +191,9 @@ struct CompositeVertex {
     position: [f32; 2],
     source_uv: [f32; 2],
     mask_uv: [f32; 2],
+    /// Clip-space w the position is lifted by, so a quad seen in perspective
+    /// interpolates its texture coordinates perspective-correctly.
+    clip_w: f32,
 }
 
 struct TextureCompositeResources {
@@ -1203,6 +1206,11 @@ fn create_pipeline(
                         offset: (std::mem::size_of::<[f32; 2]>() * 2) as u64,
                         shader_location: 2,
                     },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32,
+                        offset: (std::mem::size_of::<[f32; 2]>() * 3) as u64,
+                        shader_location: 3,
+                    },
                 ],
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -1309,21 +1317,25 @@ fn quad_for_bounds(
                 position: [left, bottom],
                 source_uv: [source_uv_left, source_uv_bottom],
                 mask_uv: [mask_uv_left, mask_uv_bottom],
+                clip_w: 1.0,
             },
             CompositeVertex {
                 position: [right, bottom],
                 source_uv: [source_uv_right, source_uv_bottom],
                 mask_uv: [mask_uv_right, mask_uv_bottom],
+                clip_w: 1.0,
             },
             CompositeVertex {
                 position: [right, top],
                 source_uv: [source_uv_right, source_uv_top],
                 mask_uv: [mask_uv_right, mask_uv_top],
+                clip_w: 1.0,
             },
             CompositeVertex {
                 position: [left, top],
                 source_uv: [source_uv_left, source_uv_top],
                 mask_uv: [mask_uv_left, mask_uv_top],
+                clip_w: 1.0,
             },
         ],
         [0, 1, 2, 0, 2, 3],
@@ -1359,6 +1371,7 @@ fn quad_for_positions(
     let mask_uv_top = mask_uv_bounds[1];
     let mask_uv_right = mask_uv_bounds[0] + mask_uv_bounds[2].max(0.0);
     let mask_uv_bottom = mask_uv_bounds[1] + mask_uv_bounds[3].max(0.0);
+    let clip_w = perspective_clip_w(positions);
     (
         [
             CompositeVertex {
@@ -1368,6 +1381,7 @@ fn quad_for_positions(
                 ],
                 source_uv: [source_uv_left, source_uv_bottom],
                 mask_uv: [mask_uv_left, mask_uv_bottom],
+                clip_w: clip_w[0],
             },
             CompositeVertex {
                 position: [
@@ -1376,6 +1390,7 @@ fn quad_for_positions(
                 ],
                 source_uv: [source_uv_right, source_uv_bottom],
                 mask_uv: [mask_uv_right, mask_uv_bottom],
+                clip_w: clip_w[1],
             },
             CompositeVertex {
                 position: [
@@ -1384,6 +1399,7 @@ fn quad_for_positions(
                 ],
                 source_uv: [source_uv_right, source_uv_top],
                 mask_uv: [mask_uv_right, mask_uv_top],
+                clip_w: clip_w[2],
             },
             CompositeVertex {
                 position: [
@@ -1392,10 +1408,33 @@ fn quad_for_positions(
                 ],
                 source_uv: [source_uv_left, source_uv_top],
                 mask_uv: [mask_uv_left, mask_uv_top],
+                clip_w: clip_w[3],
             },
         ],
         [0, 1, 2, 0, 2, 3],
     )
+}
+
+/// Clip-space w for a quad's corners, in order around it, that makes the
+/// rasterizer interpolate perspective-correctly. A rectangle seen in
+/// perspective projects to a quad whose diagonals cross at the image of its
+/// center, `t` of the way along p0-p2 and `s` along p1-p3; each corner's w is
+/// proportional to its far share of its diagonal. A parallelogram's diagonals
+/// bisect each other, so it keeps w = 1 and interpolates affinely as before.
+fn perspective_clip_w(p: [[f32; 2]; 4]) -> [f32; 4] {
+    let d02 = [p[2][0] - p[0][0], p[2][1] - p[0][1]];
+    let d13 = [p[3][0] - p[1][0], p[3][1] - p[1][1]];
+    let r = [p[1][0] - p[0][0], p[1][1] - p[0][1]];
+    let denom = d02[0] * d13[1] - d02[1] * d13[0];
+    let t = (r[0] * d13[1] - r[1] * d13[0]) / denom;
+    let s = (r[0] * d02[1] - r[1] * d02[0]) / denom;
+    // A degenerate or non-convex quad is no rectangle in perspective.
+    if !(t > 0.0 && t < 1.0 && s > 0.0 && s < 1.0)
+        || ((t - 0.5).abs() <= 1e-5 && (s - 0.5).abs() <= 1e-5)
+    {
+        return [1.0; 4];
+    }
+    [1.0 - t, 1.0 - s, t, s]
 }
 
 fn texture_composite_geometry(

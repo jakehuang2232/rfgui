@@ -33,9 +33,12 @@ fn vs_main(
     @location(0) position: vec2<f32>,
     @location(1) source_uv: vec2<f32>,
     @location(2) mask_uv: vec2<f32>,
+    @location(3) clip_w: f32,
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.position = vec4<f32>(position, 0.0, 1.0);
+    // Lifting by w leaves the projected position as is, but makes the
+    // rasterizer interpolate the coordinates below perspective-correctly.
+    out.position = vec4<f32>(position * clip_w, 0.0, clip_w);
     out.source_uv = source_uv;
     out.mask_uv = mask_uv;
     return out;
