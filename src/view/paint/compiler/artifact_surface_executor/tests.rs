@@ -127,7 +127,6 @@ fn execution_context() -> UiBuildContext {
 fn execution_error_name(error: ArtifactSurfaceExecutionError) -> &'static str {
     match error {
         ArtifactSurfaceExecutionError::InactiveFrameStageOwner => "inactive-frame-stage-owner",
-        ArtifactSurfaceExecutionError::ChildMaskDepthOverflow { .. } => "child-mask-depth-overflow",
         ArtifactSurfaceExecutionError::PersistentKeyAlreadyDeclared(_) => {
             "persistent-key-already-declared"
         }

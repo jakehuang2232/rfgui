@@ -693,9 +693,6 @@ fn transition_error_taxonomy_is_exhaustive() {
                 "unknown-layout-position-reference"
             }
             TransitionError::UnknownVisualOffsetReference(_) => "unknown-visual-offset-reference",
-            TransitionError::PropertySnapshotChainDepthOverflow(_) => {
-                "property-snapshot-chain-depth-overflow"
-            }
             TransitionError::DuplicateOwnerPropertyState(_) => "duplicate-owner-property-state",
             TransitionError::MissingOwnerPropertyState(_) => "missing-owner-property-state",
             TransitionError::UnreferencedOwnerPropertyState(_) => {
@@ -727,7 +724,7 @@ fn transition_error_taxonomy_is_exhaustive() {
 }
 
 #[test]
-fn surface_membership_parent_chain_is_bounded_and_cycle_closed() {
+fn surface_membership_parent_chain_is_unbounded_and_cycle_closed() {
     let mut arena = NodeArena::new();
     let owners = (0..=usize::from(u8::MAX))
         .map(|index| insert_owner(&mut arena, 0xc4_1000 + index as u64))
@@ -753,14 +750,15 @@ fn surface_membership_parent_chain_is_bounded_and_cycle_closed() {
         layout_positions: FxHashMap::default(),
         visual_offsets: FxHashMap::default(),
     };
+    // Deeper than any fixed bound, the chain still resolves whole.
     assert_eq!(
-        graph.surface_membership(PropertyTreeState {
-            transform: owners.last().copied().map(TransformNodeId),
-            ..PropertyTreeState::default()
-        }),
-        Err(TransitionError::PropertySnapshotChainDepthOverflow(
-            PropertySnapshotChainId::Transform(TransformNodeId(owners[0])),
-        )),
+        graph
+            .surface_membership(PropertyTreeState {
+                transform: owners.last().copied().map(TransformNodeId),
+                ..PropertyTreeState::default()
+            })
+            .map(|membership| membership.transforms.len()),
+        Ok(owners.len()),
     );
 
     let first = TransformNodeId(owners[0]);

@@ -223,7 +223,7 @@ fn compile_validated_artifact_segment(
     ctx: &mut UiBuildContext,
     child_mask_scopes: &mut Vec<(crate::view::node_arena::NodeKey, u8, Option<[u32; 4]>)>,
 ) {
-    let max_mask_depth = artifact_surface_executor::artifact_child_mask_max_depth(
+    let max_mask_depth = artifact_child_mask_max_depth(
         artifact.chunks.iter().map(|chunk| chunk.id),
         child_mask_scopes.len(),
     );
@@ -311,4 +311,27 @@ fn compile_validated_artifact_segment(
 
 fn validate_artifact_store(artifact: &PaintArtifact) -> Option<ValidatedArtifact> {
     validate_artifact_store_with_policy(artifact, ArtifactStoreValidationPolicy::General)
+}
+
+/// The deepest child-mask nesting one ordered chunk-id stream reaches.
+/// `carried_in_depth` carries the scopes a segment opened in earlier calls.
+fn artifact_child_mask_max_depth(
+    ids: impl IntoIterator<Item = super::super::PaintChunkId>,
+    carried_in_depth: usize,
+) -> usize {
+    let mut depth = carried_in_depth;
+    let mut maximum = 0;
+    for id in ids {
+        if id.slot != super::super::RETAINED_CHILD_MASK_SLOT {
+            continue;
+        }
+        match id.phase {
+            super::super::PaintNodePhase::BeforeChildren => {
+                depth = depth.saturating_add(1);
+                maximum = maximum.max(depth);
+            }
+            super::super::PaintNodePhase::AfterChildren => depth = depth.saturating_sub(1),
+        }
+    }
+    maximum
 }

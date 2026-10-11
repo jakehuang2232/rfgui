@@ -1,4 +1,4 @@
-use super::super::{PaintChunkId, PaintNodePhase, RETAINED_CHILD_MASK_SLOT};
+use super::super::{PaintNodePhase, RETAINED_CHILD_MASK_SLOT};
 use super::{
     ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterOriginProjection,
     ArtifactSurfaceRasterTargetId, ArtifactSurfaceResolvedClip, PreparedArtifactSurfaceFrame,
@@ -53,7 +53,7 @@ enum ArtifactSurfaceChildMaskAction {
 
 impl ArtifactSurfaceChildMaskAction {
     #[cfg(test)]
-    fn from_chunk_id(id: PaintChunkId) -> Self {
+    fn from_chunk_id(id: super::super::PaintChunkId) -> Self {
         if id.slot != RETAINED_CHILD_MASK_SLOT {
             return Self::Unchanged;
         }
@@ -117,7 +117,6 @@ enum ArtifactSurfaceChildMaskStep {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ArtifactSurfaceChildMaskTargetProgram {
     target: ArtifactSurfaceRasterTargetId,
-    max_mask_depth: usize,
     steps: Vec<ArtifactSurfaceChildMaskStep>,
 }
 
@@ -136,11 +135,6 @@ pub(super) struct PreparedArtifactSurfaceExecution {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArtifactSurfaceExecutionError {
     InactiveFrameStageOwner,
-    ChildMaskDepthOverflow {
-        target: ArtifactSurfaceRasterTargetId,
-        incoming_depth: u8,
-        max_mask_depth: usize,
-    },
     PersistentKeyAlreadyDeclared(PersistentTextureKey),
 }
 
@@ -159,42 +153,11 @@ enum PreparedArtifactSurfaceComposite {
     },
 }
 
-/// Computes the absolute maximum child-mask depth for one ordered chunk-id
-/// stream. `carried_in_depth` preserves the legacy segment emitter's scopes
-/// that may span several calls; complete C3 targets pass zero.
-pub(super) fn artifact_child_mask_max_depth(
-    ids: impl IntoIterator<Item = PaintChunkId>,
-    carried_in_depth: usize,
-) -> usize {
-    let mut depth = carried_in_depth;
-    let mut maximum = 0;
-    for id in ids {
-        if id.slot != RETAINED_CHILD_MASK_SLOT {
-            continue;
-        }
-        match id.phase {
-            PaintNodePhase::BeforeChildren => {
-                depth = depth.saturating_add(1);
-                maximum = maximum.max(depth);
-            }
-            PaintNodePhase::AfterChildren => depth = depth.saturating_sub(1),
-        }
-    }
-    maximum
-}
-
 fn seal_target_program(
     target: ArtifactSurfaceRasterTargetId,
     steps: &[PreparedArtifactSurfaceRasterStep],
     raster_origin: Option<ArtifactSurfaceRasterOriginProjection>,
 ) -> ArtifactSurfaceChildMaskTargetProgram {
-    let max_mask_depth = artifact_child_mask_max_depth(
-        steps
-            .iter()
-            .flat_map(step_chunks)
-            .map(|chunk| chunk.source().id),
-        0,
-    );
     let steps = steps
         .iter()
         .enumerate()
@@ -216,18 +179,7 @@ fn seal_target_program(
             }
         })
         .collect();
-    ArtifactSurfaceChildMaskTargetProgram {
-        target,
-        max_mask_depth,
-        steps,
-    }
-}
-
-fn step_chunks(step: &PreparedArtifactSurfaceRasterStep) -> &[PreparedArtifactSurfaceRasterChunk] {
-    match step {
-        PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) => span.chunks(),
-        PreparedArtifactSurfaceRasterStep::NestedSurface(_) => &[],
-    }
+    ArtifactSurfaceChildMaskTargetProgram { target, steps }
 }
 
 /// Seals only execution facts absent from `PreparedArtifactSurfaceFrame`.
@@ -343,26 +295,93 @@ fn prepare_composite_geometry(
     }
 }
 
+/// One open child mask: its owner, its stencil value, the scissor it
+/// replaced, and the scratch layer it opened when the stencil was full.
+struct ChildMaskScope {
+    owner: crate::view::node_arena::NodeKey,
+    clip_id: u8,
+    previous_scissor: Option<GraphicsPassScissor>,
+    layer: Option<ChildMaskLayer>,
+}
+
+/// A target holds 255 nested masks in its stencil. A deeper mask draws itself
+/// and everything it clips into a scratch layer whose stencil starts empty,
+/// which composites back where the outer masks pass.
+struct ChildMaskLayer {
+    layer: RenderTargetOut,
+    outer: RenderTargetOut,
+    outer_clip_ids: Vec<u8>,
+}
+
+impl ChildMaskLayer {
+    fn open(graph: &mut FrameGraph, ctx: &mut UiBuildContext) -> Self {
+        let outer = ctx
+            .current_target()
+            .expect("artifact child masks draw into a target");
+        let layer = ctx.allocate_target_like(graph, outer);
+        let outer_clip_ids = ctx.take_clip_ids();
+        ctx.set_current_target(layer);
+        graph.add_graphics_pass(ClearPass::new(
+            ClearParams::new([0.0, 0.0, 0.0, 0.0]),
+            ClearInput {
+                pass_context: ctx.graphics_pass_context(),
+                clear_depth_stencil: true,
+            },
+            ClearOutput {
+                render_target: layer,
+            },
+        ));
+        Self {
+            layer,
+            outer,
+            outer_clip_ids,
+        }
+    }
+
+    fn close(self, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
+        ctx.restore_clip_ids(self.outer_clip_ids);
+        ctx.set_current_target(self.outer);
+        // Empty bounds cover the whole target: the layer matches it texel for
+        // texel, and the outer masks' stencil test admits it.
+        graph.add_graphics_pass(TextureCompositePass::new(
+            TextureCompositeParams {
+                source_is_premultiplied: true,
+                ..Default::default()
+            },
+            TextureCompositeInput::from_render_target(
+                TextureCompositeSourceIn::with_handle(
+                    self.layer
+                        .handle()
+                        .expect("a scratch layer owns a texture handle"),
+                ),
+                Default::default(),
+                ctx.graphics_pass_context(),
+            ),
+            TextureCompositeOutput {
+                render_target: self.outer,
+            },
+        ));
+    }
+}
+
 fn emit_child_mask_chunk(
     action: ArtifactSurfaceChildMaskAction,
     chunk: &PreparedArtifactSurfaceRasterChunk,
     graph: &mut FrameGraph,
     ctx: &mut UiBuildContext,
-    scopes: &mut Vec<(
-        crate::view::node_arena::NodeKey,
-        u8,
-        Option<GraphicsPassScissor>,
-    )>,
+    scopes: &mut Vec<ChildMaskScope>,
 ) {
     let [super::PaintOp::DrawRect(mask)] = chunk.localized_ops() else {
         unreachable!("sealed child-mask chunk owns one localized rect")
     };
     match action {
         ArtifactSurfaceChildMaskAction::Push(scissor) => {
+            let layer =
+                (ctx.current_clip_id() == u8::MAX).then(|| ChildMaskLayer::open(graph, ctx));
             let parent_clip_id = ctx.current_clip_id();
             let child_clip_id = ctx
                 .push_clip_id()
-                .expect("preflighted artifact target child-mask depth");
+                .expect("a full stencil opens a scratch layer");
             let previous_scissor = ctx.push_graphics_pass_scissor(scissor);
             let mut pass = DrawRectPass::new(
                 mask.params.clone(),
@@ -373,10 +392,20 @@ fn emit_child_mask_chunk(
             pass.set_stencil_increment(parent_clip_id);
             pass.set_color_write_enabled(false);
             ctx.emit_draw_rect_pass(graph, pass);
-            scopes.push((chunk.source().owner, child_clip_id, previous_scissor));
+            scopes.push(ChildMaskScope {
+                owner: chunk.source().owner,
+                clip_id: child_clip_id,
+                previous_scissor,
+                layer,
+            });
         }
         ArtifactSurfaceChildMaskAction::Pop => {
-            let (owner, child_clip_id, previous_scissor) = scopes
+            let ChildMaskScope {
+                owner,
+                clip_id: child_clip_id,
+                previous_scissor,
+                layer,
+            } = scopes
                 .pop()
                 .expect("sealed child-mask target program is balanced");
             assert_eq!(owner, chunk.source().owner);
@@ -391,6 +420,9 @@ fn emit_child_mask_chunk(
             ctx.emit_draw_rect_pass(graph, pass);
             ctx.pop_clip_id();
             ctx.restore_graphics_pass_scissor(previous_scissor);
+            if let Some(layer) = layer {
+                layer.close(graph, ctx);
+            }
         }
         ArtifactSurfaceChildMaskAction::Unchanged => {
             unreachable!("ordinary chunks never enter the child-mask emitter")
@@ -455,11 +487,7 @@ fn emit_artifact_span(
     actions: &[ArtifactSurfaceChildMaskAction],
     graph: &mut FrameGraph,
     ctx: &mut UiBuildContext,
-    scopes: &mut Vec<(
-        crate::view::node_arena::NodeKey,
-        u8,
-        Option<GraphicsPassScissor>,
-    )>,
+    scopes: &mut Vec<ChildMaskScope>,
 ) {
     assert_eq!(span.chunks().len(), actions.len());
     let before = ctx.opaque_rect_order();
@@ -691,11 +719,7 @@ impl ArtifactSurfaceEmitter<'_> {
         steps: &[PreparedArtifactSurfaceRasterStep],
         graph: &mut FrameGraph,
         ctx: &mut UiBuildContext,
-        scopes: &mut Vec<(
-            crate::view::node_arena::NodeKey,
-            u8,
-            Option<GraphicsPassScissor>,
-        )>,
+        scopes: &mut Vec<ChildMaskScope>,
     ) {
         assert_eq!(program.steps.len(), steps.len());
         for program_step in &program.steps {
@@ -805,21 +829,6 @@ fn emit_prepared_artifact_surface_frame(
                 .expect("prepared artifact geometry has a typed render-pass projection")
         })
         .collect::<Vec<_>>();
-
-    let incoming_depth = ctx.current_clip_id();
-    for program in root_programs.iter().chain(&node_programs) {
-        let target_incoming = match program.target {
-            ArtifactSurfaceRasterTargetId::SceneRoot(_) => incoming_depth,
-            ArtifactSurfaceRasterTargetId::Surface(_) => 0,
-        };
-        if usize::from(target_incoming) + program.max_mask_depth > usize::from(u8::MAX) {
-            return Err(ArtifactSurfaceExecutionError::ChildMaskDepthOverflow {
-                target: program.target,
-                incoming_depth: target_incoming,
-                max_mask_depth: program.max_mask_depth,
-            });
-        }
-    }
 
     // Keep this as the final preflight read. No graph-derived bool or key-set
     // snapshot is stored in the execution capability.

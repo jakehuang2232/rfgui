@@ -999,7 +999,7 @@ impl SurfaceDag {
             let mut folded = Vec::new();
             let mut seen = FxHashSet::default();
             while let SurfaceDagTargetId::Surface(parent) = receiver {
-                if !seen.insert(parent) || seen.len() > usize::from(u8::MAX) {
+                if !seen.insert(parent) {
                     return Err(SurfaceDagError::CyclicSurfaceReceiver(parent));
                 }
                 if retained[parent.index()] {
@@ -1080,7 +1080,7 @@ impl SurfaceDag {
             let mut cursor = node.id;
             let mut seen = FxHashSet::default();
             let execution = loop {
-                if !seen.insert(cursor) || seen.len() > usize::from(u8::MAX) {
+                if !seen.insert(cursor) {
                     return Err(SurfaceDagError::CyclicSurfaceReceiver(cursor));
                 }
                 if let Some(execution) = source_to_execution[cursor.index()] {

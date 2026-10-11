@@ -93,14 +93,9 @@ fn global_clip_dependencies(
     let mut visited = FxHashSet::default();
     for state in span.localized_states() {
         let mut cursor = state.clip;
-        let mut depth = 0;
         while let Some(id) = cursor {
             if !visited.insert(id) {
                 break;
-            }
-            depth += 1;
-            if depth > usize::from(u8::MAX) {
-                return None;
             }
             let snapshot = if let Some(snapshot) = local.get(&id) {
                 **snapshot

@@ -1500,6 +1500,39 @@ impl UiBuildContext {
         color
     }
 
+    /// A scratch target with `target`'s exact color descriptor, origin and
+    /// raster scale included, and a depth/stencil of its own.
+    pub(crate) fn allocate_target_like(
+        &mut self,
+        graph: &mut FrameGraph,
+        target: RenderTargetOut,
+    ) -> RenderTargetOut {
+        let Some(desc) = target
+            .handle()
+            .and_then(|handle| graph.texture_desc(handle))
+        else {
+            return self.next_target(graph);
+        };
+        let (color_desc, depth_desc) = transient_target_texture_descriptors(
+            desc.with_usage(
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+            )
+            .with_label("Scratch Render Target"),
+        );
+        let color = graph.declare_texture::<RenderTargetTag>(color_desc);
+        let depth_stencil = graph.declare_texture::<RenderTargetTag>(depth_desc);
+        if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
+            self.state
+                .target_pairs
+                .insert(color_handle.0, AttachmentTarget::Texture(depth_handle));
+            graph.pair_texture_attachment(color_handle, AttachmentTarget::Texture(depth_handle));
+        }
+        color
+    }
+
     /// Retained pixels own only color backing. Depth/stencil is scratch space
     /// for an actual raster pass and must not become a cross-frame reuse dependency.
     pub(crate) fn allocate_retained_raster_target(
@@ -1657,6 +1690,15 @@ impl UiBuildContext {
 
     pub(crate) fn pop_clip_id(&mut self) {
         let _ = self.state.clip_id_stack.pop();
+    }
+
+    /// Detach the stencil scopes, so a scratch target starts with none.
+    pub(crate) fn take_clip_ids(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.state.clip_id_stack)
+    }
+
+    pub(crate) fn restore_clip_ids(&mut self, clip_ids: Vec<u8>) {
+        self.state.clip_id_stack = clip_ids;
     }
 
     pub(crate) fn push_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) -> Option<[u32; 4]> {

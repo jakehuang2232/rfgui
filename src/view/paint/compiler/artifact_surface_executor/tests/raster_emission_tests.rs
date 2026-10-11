@@ -154,36 +154,37 @@ fn sealed_terminal_clip_replaces_a_disjoint_incoming_scissor() {
 }
 
 #[test]
-fn child_mask_preflight_rejects_overflow_then_emits_sealed_push_and_pop() {
-    let mut overflow_ctx = execution_context();
+fn child_mask_past_a_full_stencil_isolates_then_emits_sealed_push_and_pop() {
+    // Arriving with the stencil full, the mask opens a scratch layer whose
+    // stencil starts empty, and composites it back under the outer masks.
+    let mut full_ctx = execution_context();
     for _ in 0..u8::MAX {
-        assert!(overflow_ctx.push_clip_id().is_some());
+        assert!(full_ctx.push_clip_id().is_some());
     }
-    let mut overflow_viewport = Viewport::new();
-    let overflow_owner = overflow_viewport
+    let mut full_viewport = Viewport::new();
+    let full_owner = full_viewport
         .begin_retained_surface_frame_stage()
-        .expect("overflow owner");
-    let mut overflow_graph = FrameGraph::new();
-    let before = overflow_graph.build_state_snapshot_for_test();
-    let Err(error) = emit_prepared_artifact_surface_frame_for_forced_test(
-        &mut overflow_viewport,
-        overflow_owner,
+        .expect("full-stencil owner");
+    let mut full_graph = FrameGraph::new();
+    emit_prepared_artifact_surface_frame_for_forced_test(
+        &mut full_viewport,
+        full_owner,
         prepared_child_mask_surface_frame(),
-        &mut overflow_graph,
-        overflow_ctx,
-    ) else {
-        panic!("overflowing child-mask target must reject")
-    };
-    assert!(matches!(
-        error,
-        ArtifactSurfaceExecutionError::ChildMaskDepthOverflow {
-            incoming_depth: u8::MAX,
-            max_mask_depth: 1,
-            ..
-        }
-    ));
-    assert_eq!(execution_error_name(error), "child-mask-depth-overflow");
-    assert_eq!(overflow_graph.build_state_snapshot_for_test(), before);
+        &mut full_graph,
+        full_ctx,
+    )
+    .expect("a full stencil isolates instead of rejecting");
+    let full_snapshots = full_graph.test_rect_pass_snapshots();
+    assert!(
+        full_snapshots
+            .iter()
+            .any(|pass| pass.stencil_mode == RectStencilModeTestSnapshot::Increment { clip_id: 0 })
+    );
+    assert!(
+        full_snapshots
+            .iter()
+            .any(|pass| pass.stencil_mode == RectStencilModeTestSnapshot::Decrement { clip_id: 1 })
+    );
 
     let mut viewport = Viewport::new();
     let owner = viewport

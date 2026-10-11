@@ -121,14 +121,6 @@ fn prepare_error_label(
     }
 }
 
-fn compile_error_label(error: crate::view::paint::ArtifactCompileErrorKind) -> &'static str {
-    use crate::view::paint::ArtifactCompileErrorKind;
-    match error {
-        ArtifactCompileErrorKind::InvalidStore => "invalid-store",
-        ArtifactCompileErrorKind::SurfaceExecution(_) => "surface-execution",
-    }
-}
-
 #[test]
 fn stage_c_zero_surface_prepare_seals_exact_multi_root_artifact_order() {
     let (arena, roots, child) = prepared_zero_surface_three_chunk_frame();
@@ -324,7 +316,7 @@ fn stage_c_zero_surface_prepare_rejects_invalid_store_without_graph_mutation() {
 }
 
 #[test]
-fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before_graph_mutation() {
+fn stage_c_zero_surface_child_mask_compiles_at_254_and_isolates_past_a_full_stencil() {
     let mut accepted_graph = FrameGraph::new();
     let mut accepted_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let accepted_target = accepted_ctx.allocate_target(&mut accepted_graph);
@@ -362,61 +354,30 @@ fn stage_c_zero_surface_child_mask_depth_seam_accepts_254_and_rejects_255_before
             .is_none()
     );
 
-    let mut rejected_graph = FrameGraph::new();
-    let mut rejected_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let rejected_target = rejected_ctx.allocate_target(&mut rejected_graph);
-    rejected_ctx.set_current_target(rejected_target);
+    // Arriving with the stencil full, the mask isolates into a scratch layer
+    // rather than rejecting the frame.
+    let mut full_graph = FrameGraph::new();
+    let mut full_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let full_target = full_ctx.allocate_target(&mut full_graph);
+    full_ctx.set_current_target(full_target);
     for expected in 1..=u8::MAX {
-        assert_eq!(rejected_ctx.push_clip_id(), Some(expected));
+        assert_eq!(full_ctx.push_clip_id(), Some(expected));
     }
-    assert_eq!(rejected_ctx.push_clip_id(), None);
-    let before = rejected_graph.build_state_snapshot_for_test();
-    let mut rejected_viewport = Viewport::new();
-    let rejected_owner = rejected_viewport
+    let mut full_viewport = Viewport::new();
+    let full_owner = full_viewport
         .begin_retained_surface_frame_stage()
-        .expect("rejected frame owns one resident transaction");
-    crate::view::paint::take_artifact_compile_count();
-    let rejection = try_compile_auto_artifact_frame(
-        &mut rejected_viewport,
-        rejected_owner,
-        &mut rejected_graph,
-        recorded_zero_surface_child_mask_candidate(),
-        &rejected_ctx,
-    );
+        .expect("full-stencil frame owns one resident transaction");
     assert!(matches!(
-        &rejection,
-        ArtifactFrameCompileOutcome::CompileRejected(
-            crate::view::paint::ArtifactCompileErrorKind::SurfaceExecution(
-                crate::view::paint::ArtifactSurfaceExecutionError::ChildMaskDepthOverflow {
-                    incoming_depth: u8::MAX,
-                    max_mask_depth: 1,
-                    ..
-                }
-            )
-        )
+        try_compile_auto_artifact_frame(
+            &mut full_viewport,
+            full_owner,
+            &mut full_graph,
+            recorded_zero_surface_child_mask_candidate(),
+            &full_ctx,
+        ),
+        ArtifactFrameCompileOutcome::Compiled { .. }
     ));
-    let ArtifactFrameCompileOutcome::CompileRejected(kind) = rejection else {
-        unreachable!()
-    };
-    assert_eq!(compile_error_label(kind), "surface-execution");
-    assert_eq!(rejected_graph.build_state_snapshot_for_test(), before);
-    assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
-    assert!(
-        rejected_viewport
-            .compositor
-            .pending_retained_surfaces
-            .is_some()
-    );
-    assert!(
-        rejected_viewport
-            .pending_artifact_surface_resident_keys_for_test()
-            .is_none(),
-        "typed rejection stages Clear rather than an empty artifact set"
-    );
-    assert!(
-        rejected_viewport
-            .finish_retained_surface_transaction_for_frame(Some(rejected_owner), true,)
-    );
+    assert!(full_viewport.finish_retained_surface_transaction_for_frame(Some(full_owner), true));
 }
 
 #[test]

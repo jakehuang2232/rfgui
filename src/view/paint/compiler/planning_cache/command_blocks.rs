@@ -139,9 +139,6 @@ pub(in super::super) fn validate(
         for event in &summary.masks {
             match event.phase {
                 PaintNodePhase::BeforeChildren => {
-                    if masks.len() >= u8::MAX as usize {
-                        return None;
-                    }
                     masks.push((event.owner, event.scissor, &event.payload));
                 }
                 PaintNodePhase::AfterChildren => {

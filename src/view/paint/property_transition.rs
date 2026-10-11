@@ -39,7 +39,6 @@ pub(crate) enum TransitionError {
     UnknownScrollReference(ScrollNodeId),
     UnknownLayoutPositionReference(LayoutPositionNodeId),
     UnknownVisualOffsetReference(VisualOffsetNodeId),
-    PropertySnapshotChainDepthOverflow(PropertySnapshotChainId),
     DuplicateOwnerPropertyState(NodeKey),
     MissingOwnerPropertyState(NodeKey),
     UnreferencedOwnerPropertyState(NodeKey),
@@ -70,15 +69,6 @@ pub(crate) enum TransitionError {
         previous_chunk: usize,
         current_chunk: usize,
     },
-}
-
-/// Property identity naming the first snapshot beyond the bounded ancestry
-/// accepted by an artifact surface membership derivation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PropertySnapshotChainId {
-    Transform(TransformNodeId),
-    Effect(EffectNodeId),
-    Scroll(ScrollNodeId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -429,64 +419,45 @@ impl PropertySnapshotGraph {
             .ok_or(TransitionError::UnknownClipReference(id))
     }
 
-    /// Expands the three surface-producing property leaves into bounded,
-    /// ancestor-inclusive membership sets. One implementation owns missing,
-    /// cycle, and depth behavior so transition and coverage users cannot grow
+    /// Expands the three surface-producing property leaves into
+    /// ancestor-inclusive membership sets. One implementation owns missing
+    /// and cycle behavior so transition and coverage users cannot grow
     /// separate parent-chain rules.
     pub(crate) fn surface_membership(
         &self,
         state: PropertyTreeState,
     ) -> Result<PropertySurfaceMembership, TransitionError> {
         Ok(PropertySurfaceMembership {
-            transforms: bounded_parent_chain(
+            transforms: parent_chain(
                 state.transform,
                 &self.transforms,
                 TransitionError::UnknownTransformReference,
                 |id| TransitionError::SpatialSnapshot(SpatialProjectionError::CyclicTransform(id)),
-                |id| {
-                    TransitionError::PropertySnapshotChainDepthOverflow(
-                        PropertySnapshotChainId::Transform(id),
-                    )
-                },
             )?,
-            effects: bounded_parent_chain(
+            effects: parent_chain(
                 state.effect,
                 &self.effects,
                 TransitionError::UnknownEffectReference,
                 TransitionError::CyclicEffect,
-                |id| {
-                    TransitionError::PropertySnapshotChainDepthOverflow(
-                        PropertySnapshotChainId::Effect(id),
-                    )
-                },
             )?,
-            scrolls: bounded_parent_chain(
+            scrolls: parent_chain(
                 state.scroll,
                 &self.scrolls,
                 TransitionError::UnknownScrollReference,
                 |id| TransitionError::SpatialSnapshot(SpatialProjectionError::CyclicScroll(id)),
-                |id| {
-                    TransitionError::PropertySnapshotChainDepthOverflow(
-                        PropertySnapshotChainId::Scroll(id),
-                    )
-                },
             )?,
         })
     }
 }
 
-fn bounded_parent_chain<Id: Copy + Eq + std::hash::Hash, Error>(
+fn parent_chain<Id: Copy + Eq + std::hash::Hash, Error>(
     mut cursor: Option<Id>,
     parents: &FxHashMap<Id, Option<Id>>,
     missing: impl Fn(Id) -> Error,
     cyclic: impl Fn(Id) -> Error,
-    too_deep: impl Fn(Id) -> Error,
 ) -> Result<FxHashSet<Id>, Error> {
     let mut chain = FxHashSet::default();
     while let Some(id) = cursor {
-        if chain.len() >= usize::from(u8::MAX) {
-            return Err(too_deep(id));
-        }
         if !chain.insert(id) {
             return Err(cyclic(id));
         }

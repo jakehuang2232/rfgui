@@ -148,7 +148,6 @@ pub(crate) struct PaintOwnerScope {
     pub(crate) clips: [std::sync::Arc<[ClipNodeSnapshot]>; 2],
     pub(crate) effects: [std::sync::Arc<[EffectNodeSnapshot]>; 2],
     pub(crate) parent: Option<std::sync::Arc<PaintOwnerScope>>,
-    depth: usize,
 }
 
 impl PaintOwnerScope {
@@ -157,7 +156,6 @@ impl PaintOwnerScope {
             && self.state == fresh.state
             && self.clips == fresh.clips
             && self.effects == fresh.effects
-            && self.depth == fresh.depth
             && match (&self.parent, &fresh.parent) {
                 (None, None) => true,
                 (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
@@ -1903,7 +1901,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
             leaf: NodeKey,
         ) -> Result<std::sync::Arc<PaintOwnerScope>, PaintCoverageValidationError> {
             // The scope belongs to this traversal and already passed the
-            // ancestry/depth and endpoint checks below. Conflicting owner
+            // ancestry and endpoint checks below. Conflicting owner
             // observations reject in walk before they can reach this lookup.
             self.restore_owner_inputs(leaf);
             if let Some(scope) = self.owner_scopes.get(&leaf) {
@@ -1915,15 +1913,10 @@ fn record_coverage_manifest_with_property_authorities_impl(
             let mut cursor = Some(leaf);
             while let Some(owner) = cursor {
                 self.restore_owner_inputs(owner);
-                if let Some(scope) = self.owner_scopes.get(&owner) {
-                    if self.scope_pending.len() + scope.depth > usize::from(u8::MAX) {
-                        return Err(invalid());
-                    }
+                if self.owner_scopes.contains_key(&owner) {
                     break;
                 }
-                if !self.scope_seen.insert(owner)
-                    || self.scope_pending.len() >= usize::from(u8::MAX)
-                {
+                if !self.scope_seen.insert(owner) {
                     return Err(invalid());
                 }
                 self.scope_pending.push(owner);
@@ -1968,7 +1961,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     state,
                     clips,
                     effects,
-                    depth: parent.as_ref().map_or(1, |parent| parent.depth + 1),
                     parent,
                 };
                 let scope = match self.recording_cache.as_deref_mut() {

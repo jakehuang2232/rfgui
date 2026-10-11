@@ -964,7 +964,8 @@ impl ArtifactSurfaceCompositeGeometryState {
             if boundary_clips.contains(&id) {
                 break;
             }
-            if local.len() >= usize::from(u8::MAX) {
+            // A chain longer than the clips it draws from has a cycle.
+            if local.len() >= clips.len() {
                 return None;
             }
             let snapshot = *clips.get(&id)?;
@@ -1898,7 +1899,7 @@ fn resolve_artifact_surface_clip(
     let mut chain = Vec::new();
     let mut seen = FxHashSet::default();
     loop {
-        if !seen.insert(cursor) || chain.len() >= usize::from(u8::MAX) {
+        if !seen.insert(cursor) {
             return None;
         }
         let snapshot = *clips.get(&cursor)?;
@@ -5141,7 +5142,7 @@ fn validate_artifact_store_with_cache(
         let mut cursor = chunk.owner;
         let mut depth = 0usize;
         loop {
-            if depth >= usize::from(u8::MAX) || ancestry.insert(cursor, depth).is_some() {
+            if ancestry.insert(cursor, depth).is_some() {
                 return None;
             }
             let snapshot = *owner_nodes.get(&cursor)?;
@@ -5249,10 +5250,9 @@ fn validate_artifact_store_with_cache(
             Some(leaf) => {
                 let mut cursor = leaf;
                 let mut chain_seen = FxHashSet::default();
-                let mut depth = 0usize;
                 let mut previous_owner_depth = None;
                 loop {
-                    if !chain_seen.insert(cursor) || depth >= usize::from(u8::MAX) {
+                    if !chain_seen.insert(cursor) {
                         return None;
                     }
                     let snapshot = *effect_nodes.get(&cursor)?;
@@ -5262,7 +5262,6 @@ fn validate_artifact_store_with_cache(
                     }
                     previous_owner_depth = Some(owner_depth);
                     referenced_effects.insert(cursor);
-                    depth = depth.saturating_add(1);
                     let Some(parent) = snapshot.parent else {
                         break;
                     };
@@ -5295,7 +5294,7 @@ fn validate_artifact_store_with_cache(
             let mut cursor = state.effect;
             let mut seen = FxHashSet::default();
             while let Some(id) = cursor {
-                if !seen.insert(id) || seen.len() >= usize::from(u8::MAX) {
+                if !seen.insert(id) {
                     return None;
                 }
                 referenced_effects.insert(id);
@@ -5367,7 +5366,7 @@ fn validate_artifact_store_with_cache(
         let mut chain_seen = FxHashSet::default();
         let mut previous_owner = None;
         loop {
-            if !chain_seen.insert(cursor) || chain.len() >= usize::from(u8::MAX) {
+            if !chain_seen.insert(cursor) {
                 return None;
             }
             let snapshot = *clip_nodes.get(&cursor)?;
@@ -5397,7 +5396,7 @@ fn validate_artifact_store_with_cache(
             let mut cursor = state.clip;
             let mut seen = FxHashSet::default();
             while let Some(id) = cursor {
-                if !seen.insert(id) || seen.len() >= usize::from(u8::MAX) {
+                if !seen.insert(id) {
                     return None;
                 }
                 referenced.insert(id);
@@ -5454,7 +5453,8 @@ fn resolve_validated_clip_values(artifact: &PaintArtifact) -> Option<Vec<Resolve
             chain.clear();
             let mut cursor = Some(leaf);
             while let Some(id) = cursor {
-                if chain.len() >= usize::from(u8::MAX) {
+                // A chain longer than the clips it draws from has a cycle.
+                if chain.len() >= clip_nodes.len() {
                     return None;
                 }
                 let snapshot = *clip_nodes.get(&id)?;

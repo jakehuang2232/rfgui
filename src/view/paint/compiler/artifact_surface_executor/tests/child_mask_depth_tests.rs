@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::paint::PaintChunkId;
 use slotmap::SlotMap;
 
 fn chunk_id(phase: PaintNodePhase, slot: u16) -> PaintChunkId {
@@ -10,21 +11,6 @@ fn chunk_id(phase: PaintNodePhase, slot: u16) -> PaintChunkId {
         slot,
         role: crate::view::paint::PaintChunkRole::SelfDecoration,
     }
-}
-
-#[test]
-fn child_mask_depth_derivation_preserves_carried_scope_and_saturating_phase_rules() {
-    let ids = [
-        chunk_id(PaintNodePhase::AfterChildren, 0),
-        chunk_id(PaintNodePhase::BeforeChildren, RETAINED_CHILD_MASK_SLOT),
-        chunk_id(PaintNodePhase::BeforeChildren, RETAINED_CHILD_MASK_SLOT),
-        chunk_id(PaintNodePhase::AfterChildren, RETAINED_CHILD_MASK_SLOT),
-        chunk_id(PaintNodePhase::AfterChildren, RETAINED_CHILD_MASK_SLOT),
-        chunk_id(PaintNodePhase::AfterChildren, RETAINED_CHILD_MASK_SLOT),
-    ];
-    assert_eq!(artifact_child_mask_max_depth(ids, 0), 2);
-    assert_eq!(artifact_child_mask_max_depth(ids, 7), 9);
-    assert_eq!(artifact_child_mask_max_depth([], 7), 0);
 }
 
 #[test]

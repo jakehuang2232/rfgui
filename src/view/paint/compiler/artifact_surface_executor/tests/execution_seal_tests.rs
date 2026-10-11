@@ -63,10 +63,6 @@ fn execution_seal_keeps_the_frame_and_one_child_mask_program_together() {
             .count(),
         1,
     );
-    assert_eq!(
-        programs.iter().map(|program| program.max_mask_depth).max(),
-        Some(1),
-    );
     let root_push_scissors = execution
         .root_programs
         .iter()
@@ -225,7 +221,6 @@ fn scroll_boundary_masks_wrap_nested_composites_in_the_receiver_program() {
     let root_program = &execution.root_programs[0];
     let root_steps = &execution.frame.raster_plan().roots()[0].steps;
     assert_eq!(significant_steps(root_program), ["push", "nested", "pop"]);
-    assert_eq!(root_program.max_mask_depth, 1);
 
     let outer_index = execution
         .frame
@@ -252,15 +247,6 @@ fn scroll_boundary_masks_wrap_nested_composites_in_the_receiver_program() {
         "the outer resident excludes its own boundary mask but retains the inner boundary around the nested composite",
     );
     assert!(significant_steps(inner_program).is_empty());
-    assert_eq!(
-        (
-            root_program.max_mask_depth,
-            outer_program.max_mask_depth,
-            inner_program.max_mask_depth,
-        ),
-        (1, 1, 0),
-        "mask depth moves from each detached target to its receiver without changing the nesting maximum",
-    );
 
     let outer_owner = outer_node.identity().boundary_root;
     let inner_owner = inner_node.identity().boundary_root;
@@ -273,4 +259,11 @@ fn scroll_boundary_masks_wrap_nested_composites_in_the_receiver_program() {
         [inner_owner, inner_owner],
     );
     assert!(mask_owners(inner_program, inner_node.steps()).is_empty());
+}
+
+fn step_chunks(step: &PreparedArtifactSurfaceRasterStep) -> &[PreparedArtifactSurfaceRasterChunk] {
+    match step {
+        PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) => span.chunks(),
+        PreparedArtifactSurfaceRasterStep::NestedSurface(_) => &[],
+    }
 }

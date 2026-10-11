@@ -99,13 +99,13 @@ pub(crate) fn snapped_owner_paint_offsets(
         seen.clear();
         let mut cursor = owner.owner;
         // Artifact owner stores preserve canonical traversal order, not a
-        // parent-first topological order. Resolve the bounded ancestry
+        // parent-first topological order. Resolve the ancestry
         // explicitly so a child-first store cannot change snap semantics.
         let mut paint_offset = loop {
             if let Some(offset) = offsets.get(&cursor) {
                 break *offset;
             }
-            if chain.len() >= usize::from(u8::MAX) || !seen.insert(cursor) {
+            if !seen.insert(cursor) {
                 return Err(SpatialProjectionError::InvalidSnapshot(cursor));
             }
             let current = by_owner

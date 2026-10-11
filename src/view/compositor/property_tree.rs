@@ -1465,7 +1465,7 @@ impl PropertyTrees {
         let mut seen = FxHashSet::default();
         let mut cursor = leaf;
         while let Some(id) = cursor {
-            if !seen.insert(id) || snapshots.len() >= usize::from(u8::MAX) {
+            if !seen.insert(id) {
                 return None;
             }
             let snapshot = self.clip_node_snapshot_for(id)?;
@@ -1476,8 +1476,8 @@ impl PropertyTrees {
     }
 
     /// Returns the complete leaf-to-root effect chain. `None` means the
-    /// retained tree is incomplete, cyclic, or exceeds the bounded depth and
-    /// therefore cannot be captured safely into an owning artifact.
+    /// retained tree is incomplete or cyclic and therefore cannot be captured
+    /// safely into an owning artifact.
     pub(crate) fn effect_snapshot_for(
         &self,
         leaf: Option<EffectNodeId>,
@@ -1486,7 +1486,7 @@ impl PropertyTrees {
         let mut seen = FxHashSet::default();
         let mut cursor = leaf;
         while let Some(id) = cursor {
-            if !seen.insert(id) || snapshots.len() >= usize::from(u8::MAX) {
+            if !seen.insert(id) {
                 return None;
             }
             let snapshot = self.effect_node_snapshot_for(id)?;
