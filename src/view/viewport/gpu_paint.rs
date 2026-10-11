@@ -47,8 +47,10 @@ impl Viewport {
     ) -> (bool, Arc<SourceResources>) {
         // Prepare runs before this source's output attachment is acquired. A
         // stable key is insufficient: the physical backing must still exist.
-        let resident =
-            self.has_compatible_persistent_render_target(source.key(), &source.descriptor());
+        let resident = self.has_compatible_persistent_render_target(
+            source.key(),
+            &source.descriptor(self.max_texture_dimension_2d()),
+        );
         if let Some(entry) = self.frame.gpu_paint_sources.get(&source.id.get()) {
             if entry.valid && resident && entry.source == *source {
                 return (true, entry.resources.clone());
@@ -104,7 +106,7 @@ impl Viewport {
                 valid_resident: entry.valid
                     && self.has_compatible_persistent_render_target(
                         entry.source.key(),
-                        &entry.source.descriptor(),
+                        &entry.source.descriptor(self.max_texture_dimension_2d()),
                     ),
             })
             .collect();

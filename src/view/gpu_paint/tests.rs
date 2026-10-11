@@ -81,12 +81,13 @@ fn source_packets_validate_dimensions_and_preserve_exact_payload() {
     for (revision, extent, scale) in [
         (0, [20, 16], 1.),
         (1, [0, 16], 1.),
-        (1, [8193, 16], 1.),
         (1, [20, 16], f32::NAN),
         (1, [20, 16], 0.),
     ] {
         assert!(make(revision, extent, scale, u.clone(), v.clone()).is_err());
     }
+    // The renderer fits an extent past the texture limit; the source keeps it.
+    assert!(make(1, [20_000, 16], 1., u.clone(), v.clone()).is_ok());
     assert!(make(1, [20, 16], 1., Arc::from([0; 12]), v.clone()).is_err());
     assert!(make(1, [20, 16], 1., u, Arc::from([0; 44])).is_err());
     assert_ne!(id, GpuPaintSourceId::new());

@@ -1052,6 +1052,9 @@ pub struct FrameGraph {
     pub(crate) gpu_paint_sources:
         FxHashMap<u64, (crate::view::gpu_paint::GpuPaintSource, TextureHandle)>,
     pub(crate) shadow_templates: crate::view::render_pass::shadow_module::ShadowTemplateFrame,
+    /// The device's longest texture side, which every texture sized from
+    /// content rather than a fixed target must fit.
+    max_texture_dimension_2d: u32,
     passes: Vec<PassNode>,
     textures: Vec<TextureDesc>,
     texture_attachment_pairs: FxHashMap<TextureHandle, AttachmentTarget>,
@@ -1208,6 +1211,7 @@ impl FrameGraph {
         Self {
             gpu_paint_sources: FxHashMap::default(),
             shadow_templates: Default::default(),
+            max_texture_dimension_2d: wgpu::Limits::default().max_texture_dimension_2d,
             passes: Vec::new(),
             textures: Vec::new(),
             texture_attachment_pairs: FxHashMap::default(),
@@ -1221,6 +1225,14 @@ impl FrameGraph {
             build_errors: Vec::new(),
             execute_steps: Vec::new(),
         }
+    }
+
+    pub(crate) fn max_texture_dimension_2d(&self) -> u32 {
+        self.max_texture_dimension_2d
+    }
+
+    pub(crate) fn set_max_texture_dimension_2d(&mut self, max_texture_dimension_2d: u32) {
+        self.max_texture_dimension_2d = max_texture_dimension_2d;
     }
 
     /// Shadow templates this frame may read without producing them: written

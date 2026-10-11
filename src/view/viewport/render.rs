@@ -2340,6 +2340,7 @@ impl Viewport {
         crate::view::paint::work_profile::begin();
         self.clear_debug_overlay_geometry();
         let mut graph = FrameGraph::new();
+        graph.set_max_texture_dimension_2d(self.max_texture_dimension_2d());
         graph.set_resident_shadow_templates(self.resident_shadow_templates());
         let mut ctx = crate::view::base_component::UiBuildContext::new(
             self.gpu.surface_config.width,
@@ -2354,10 +2355,7 @@ impl Viewport {
             || self.debug_options.retained_auto_census
             || fallback_ledger::enabled()
             || paint_authority_test_capture_enabled();
-        let artifact_surface_max_texture_dimension_2d = self
-            .device()
-            .map(|device| device.limits().max_texture_dimension_2d)
-            .unwrap_or_else(|| wgpu::Limits::default().max_texture_dimension_2d);
+        let artifact_surface_max_texture_dimension_2d = self.max_texture_dimension_2d();
         let retained_auto_terminal_failure = self.retained_auto_terminal_failure;
         let paint_select_started = self.debug_options.trace_render_time.then(Instant::now);
         let frame_paint_selection = if self.paint_renderer_mode == ViewportPaintRendererMode::Legacy

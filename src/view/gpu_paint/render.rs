@@ -25,7 +25,10 @@ impl GpuPaintSource {
             );
             OutSlot::with_handle(*handle)
         } else {
-            let output = graph.declare_persistent_texture_internal(self.descriptor(), self.key());
+            let output = graph.declare_persistent_texture_internal(
+                self.descriptor(graph.max_texture_dimension_2d()),
+                self.key(),
+            );
             graph
                 .gpu_paint_sources
                 .insert(self.id.get(), (self.clone(), output.handle().unwrap()));

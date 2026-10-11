@@ -950,6 +950,15 @@ impl Viewport {
         self.gpu.device.as_ref()
     }
 
+    /// The longest texture side the device allows; wgpu's default limit
+    /// before a device exists.
+    pub(crate) fn max_texture_dimension_2d(&self) -> u32 {
+        self.device().map_or_else(
+            || wgpu::Limits::default().max_texture_dimension_2d,
+            |device| device.limits().max_texture_dimension_2d,
+        )
+    }
+
     pub(crate) fn render_resource_scope_id(&self) -> u64 {
         self.gpu.render_resource_scope_id
     }

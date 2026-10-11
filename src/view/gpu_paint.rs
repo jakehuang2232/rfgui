@@ -227,7 +227,7 @@ impl GpuPaintSource {
             wgpu::VertexStepMode::Instance => instance_count,
         };
         if revision == 0
-            || extent.iter().any(|n| *n == 0 || *n > 8192)
+            || extent.contains(&0)
             || !scale.is_finite()
             || scale <= 0.0
             || uniforms.len() as u64 != program.uniform_size
@@ -257,8 +257,23 @@ impl GpuPaintSource {
     pub fn extent(&self) -> [u32; 2] {
         self.extent
     }
-    pub(crate) fn allocated_bytes(&self) -> u64 {
-        u64::from(self.extent[0]) * u64::from(self.extent[1]) * 4
+    /// The size of the texture the source renders into: its extent, scaled
+    /// down as a whole when a side exceeds the device's texture limit. The
+    /// producer draws in clip space, so a smaller target holds the same
+    /// picture at a lower resolution, stretched back over its bounds when
+    /// composited.
+    pub(crate) fn resident_extent(&self, max_dimension: u32) -> [u32; 2] {
+        let longest = self.extent[0].max(self.extent[1]);
+        if longest <= max_dimension {
+            return self.extent;
+        }
+        let fit = f64::from(max_dimension) / f64::from(longest);
+        self.extent
+            .map(|n| ((f64::from(n) * fit) as u32).clamp(1, max_dimension))
+    }
+    pub(crate) fn allocated_bytes(&self, max_dimension: u32) -> u64 {
+        let [width, height] = self.resident_extent(max_dimension);
+        u64::from(width) * u64::from(height) * 4
             + self.uniforms.len() as u64
             + self.vertices.len() as u64
     }
@@ -277,10 +292,14 @@ impl GpuPaintSource {
             self.id.get(),
         )
     }
-    pub(crate) fn descriptor(&self) -> crate::view::frame_graph::texture_resource::TextureDesc {
+    pub(crate) fn descriptor(
+        &self,
+        max_dimension: u32,
+    ) -> crate::view::frame_graph::texture_resource::TextureDesc {
+        let [width, height] = self.resident_extent(max_dimension);
         crate::view::frame_graph::texture_resource::TextureDesc::new(
-            self.extent[0],
-            self.extent[1],
+            width,
+            height,
             wgpu::TextureFormat::Rgba8UnormSrgb,
             wgpu::TextureDimension::D2,
         )

@@ -10,6 +10,7 @@ use std::sync::Arc;
 mod inline_atomic_tests;
 mod lifecycle_tests;
 mod mixed_changes_tests;
+mod oversized_tests;
 mod vertex_growth_tests;
 
 const SHADER: &str = r#"

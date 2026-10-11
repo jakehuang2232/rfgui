@@ -3094,10 +3094,6 @@ fn prepare_artifact_surface_raster_plan_from_program(
         if let PaintOp::PreparedGpu(op) = op {
             let source = &op.source;
             if source.scale_bits != context.scale_factor_bits
-                || source
-                    .extent
-                    .iter()
-                    .any(|n| *n > context.max_texture_dimension_2d)
                 || !source.matches_size([op.params.bounds[2], op.params.bounds[3]])
             {
                 return Err(ArtifactSurfaceRasterPlanError::InvalidGpuSource);
@@ -3108,7 +3104,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 }
             } else {
                 total_texture_bytes = total_texture_bytes
-                    .checked_add(source.allocated_bytes())
+                    .checked_add(source.allocated_bytes(context.max_texture_dimension_2d))
                     .filter(|b| *b <= context.max_texture_bytes)
                     .ok_or(ArtifactSurfaceRasterPlanError::GpuSourceBudgetExceeded)?;
             }

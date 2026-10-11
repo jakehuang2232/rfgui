@@ -96,9 +96,10 @@ fn native_gpu_source_residency_and_shared_consumers() -> Result<(), String> {
                     .unwrap()
                     .clone();
                 assert!(v.release_persistent_render_target_pair(source.key()));
-                assert!(
-                    !v.has_compatible_persistent_render_target(source.key(), &source.descriptor())
-                );
+                assert!(!v.has_compatible_persistent_render_target(
+                    source.key(),
+                    &source.descriptor(v.max_texture_dimension_2d())
+                ));
                 assert!(!v.release_persistent_render_target_pair(source.key()));
             }
             if frame == 7 {
