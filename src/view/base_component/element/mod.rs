@@ -3553,15 +3553,16 @@ pub trait ElementTrait:
 
     /// The `LayoutPlacement` this node was last placed with, if any.
     /// Powers the translation fast-path's "differs only by a uniform
-    /// translation?" check. Default `None` (host opted out / never placed).
+    /// translation?" check, and lets an owning inline root confirm it placed
+    /// this atomic child where its install says. Default `None` (host opted
+    /// out / never placed).
     fn last_placement(&self) -> Option<LayoutPlacement> {
         None
     }
 
     /// Complete, retained measurement input for an atomic inline child.
-    /// Unknown hosts deliberately return `None`: an owning IFC root cannot
-    /// prove placement freshness without the exact proposal that produced the
-    /// measured size.
+    /// Default `None`: the owning IFC root lays the host out at its
+    /// `measured_size` under the line width.
     #[allow(private_interfaces)]
     #[doc(hidden)]
     fn inline_atomic_measurement_snapshot(&self) -> Option<InlineIfcMeasuredAtomicBox> {
@@ -3569,8 +3570,8 @@ pub trait ElementTrait:
     }
 
     /// Resolved vertical alignment used when positioning an atomic inline
-    /// child. The safe default is unsupported rather than CSS baseline: a
-    /// wrapper host must explicitly delegate its Element style authority.
+    /// child. Default `None` sits the host on the baseline; a wrapper host
+    /// delegates its Element's style here to honor `vertical-align`.
     #[doc(hidden)]
     fn inline_atomic_vertical_align(&self) -> Option<VerticalAlign> {
         None
@@ -4963,6 +4964,16 @@ fn layout_placement_bits_eq(left: LayoutPlacement, right: LayoutPlacement) -> bo
         && option_f32_bits_eq(left.percent_base_height, right.percent_base_height)
 }
 
+/// Whether `element` still reports layout or placement work after layout.
+/// A host that does not track its dirty observation is observed every pass
+/// and need never clear its flags, so they are no evidence of a stale install.
+fn reports_stale_layout(element: &dyn ElementTrait) -> bool {
+    element.dirty_observation_is_tracked()
+        && element
+            .local_dirty_flags()
+            .intersects(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT))
+}
+
 /// Atomic placement authority covers the whole hosted subtree, not just the
 /// atomic shell. Read every node's local state directly: cached subtree
 /// aggregates are pass-scoped and may not have been refreshed at paint
@@ -4979,7 +4990,7 @@ fn inline_ifc_atomic_subtree_layout_placement_clean(arena: &NodeArena, root: Nod
             return false;
         };
         if arena.arena_local_dirty(node_key).intersects(mask)
-            || node.element.local_dirty_flags().intersects(mask)
+            || reports_stale_layout(node.element.as_ref())
         {
             return false;
         }
@@ -5288,12 +5299,7 @@ fn inline_ifc_atomic_install_witness(
 ) -> Option<InlineIfcAtomicInstallWitness> {
     let package = context.atomic_box_placement_package(source);
     let placement = exact_inline_ifc_atomic_placement(&package, source)?;
-    // Layout permits the legacy baseline default for opaque hosts. Paint
-    // separately requires the generic vertical-align accessor to return
-    // `Some` before accepting the owning-root witness.
-    let vertical_align = element
-        .inline_atomic_vertical_align()
-        .unwrap_or(VerticalAlign::Baseline);
+    let vertical_align = inline_atomic_vertical_align(element);
     let line = snapshot.lines.get(placement.line_index)?;
     let mut aligned_rect = placement.rect;
     let item_height = aligned_rect.height.max(0.0);
@@ -5831,17 +5837,13 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
                 } else {
                     CollectedNode::Atomic {
                         source,
-                        measurement: element.inline_atomic_measurement_snapshot().unwrap_or_else(
-                            || self.legacy_atomic_measurement(element.measured_size()),
-                        ),
+                        measurement: inline_atomic_measurement(element, self.max_width),
                     }
                 }
             } else {
                 CollectedNode::Atomic {
                     source,
-                    measurement: element
-                        .inline_atomic_measurement_snapshot()
-                        .unwrap_or_else(|| self.legacy_atomic_measurement(element.measured_size())),
+                    measurement: inline_atomic_measurement(element, self.max_width),
                 }
             }
         };
@@ -5923,17 +5925,30 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
             self.viewport_height,
         )
     }
+}
 
-    /// Layout-only compatibility for opaque atomic hosts. Their measured size
-    /// must still participate in the IFC so legacy layout remains correct;
-    /// retained paint separately requires the exact generic snapshot and
-    /// therefore rejects these hosts in the owning-root witness.
-    fn legacy_atomic_measurement(&self, measured_size: (f32, f32)) -> InlineIfcMeasuredAtomicBox {
+/// The measurement an owning IFC lays an atomic child out with: the child's
+/// own snapshot, or, for a host that reports none, its measured size under
+/// the line width. Layout and the paint witness both derive it here.
+fn inline_atomic_measurement(
+    element: &dyn ElementTrait,
+    line_width: f32,
+) -> InlineIfcMeasuredAtomicBox {
+    element.inline_atomic_measurement_snapshot().unwrap_or_else(|| {
+        let (width, height) = element.measured_size();
         InlineIfcMeasuredAtomicBox::new(
-            InlineIfcSize::new(measured_size.0, measured_size.1),
-            InlineIfcAtomicMeasureConstraints::new(Some(self.max_width)),
+            InlineIfcSize::new(width, height),
+            InlineIfcAtomicMeasureConstraints::new(Some(line_width)),
         )
-    }
+    })
+}
+
+/// The vertical alignment an owning IFC places an atomic child with: a host
+/// that reports none sits on the baseline.
+fn inline_atomic_vertical_align(element: &dyn ElementTrait) -> VerticalAlign {
+    element
+        .inline_atomic_vertical_align()
+        .unwrap_or(VerticalAlign::Baseline)
 }
 
 fn element_inline_ifc_source_id_for_node(
@@ -6354,19 +6369,18 @@ impl Element {
             return Err(reject());
         }
 
+        let collector_input = ElementInlineIfcMetadataCollectorInput::new(
+            root_key,
+            install.build_inner_width,
+            install.viewport_width,
+            install.viewport_height,
+        );
+        let line_width = collector_input.max_width;
         let collected = {
             let _profile =
                 crate::view::paint::work_profile::scope("collect_live_inline_root_inputs");
-            ElementInlineIfcMetadataCollector::collect(
-                arena,
-                ElementInlineIfcMetadataCollectorInput::new(
-                    root_key,
-                    install.build_inner_width,
-                    install.viewport_width,
-                    install.viewport_height,
-                ),
-            )
-            .ok_or_else(reject)?
+            ElementInlineIfcMetadataCollector::collect(arena, collector_input)
+                .ok_or_else(reject)?
         };
         if !collected.root_source.matches_cache_key(&install.cache_key) {
             return Err(reject());
@@ -6429,11 +6443,7 @@ impl Element {
                 return Err(reject());
             }
             let node = arena.get(node_key).ok_or_else(reject)?;
-            if node
-                .element
-                .local_dirty_flags()
-                .intersects(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT))
-            {
+            if reports_stale_layout(node.element.as_ref()) {
                 return Err(reject());
             }
             match op {
@@ -6570,26 +6580,28 @@ impl Element {
                     let current_witness = current_atomic_witnesses
                         .remove(&node_key)
                         .ok_or_else(reject)?;
-                    let current_measurement = node
-                        .element
-                        .inline_atomic_measurement_snapshot()
-                        .ok_or_else(reject)?;
-                    let current_vertical_align = node
-                        .element
-                        .inline_atomic_vertical_align()
-                        .ok_or_else(reject)?;
-                    let (expected_placement, _) = inline_ifc_atomic_layout_placement(
-                        install.applied_origins.2,
-                        install.applied_origins.3,
-                        self.layout_state.layout_position.x
-                            - self.layout_state.layout_flow_position.x,
-                        self.layout_state.layout_position.y
-                            - self.layout_state.layout_flow_position.y,
-                        install.content_top_offset,
-                        placement,
-                        witness.aligned_rect,
+                    let current_measurement = inline_atomic_measurement(
+                        node.element.as_ref(),
+                        line_width,
                     );
-                    let actual_placement = node.element.last_placement().ok_or_else(reject)?;
+                    let current_vertical_align = inline_atomic_vertical_align(node.element.as_ref());
+                    // Only this install places an atomic child, so a host that
+                    // does not report its placement sits where the current
+                    // install put it.
+                    let placement_matches = node.element.last_placement().is_none_or(|actual| {
+                        let (expected, _) = inline_ifc_atomic_layout_placement(
+                            install.applied_origins.2,
+                            install.applied_origins.3,
+                            self.layout_state.layout_position.x
+                                - self.layout_state.layout_flow_position.x,
+                            self.layout_state.layout_position.y
+                                - self.layout_state.layout_flow_position.y,
+                            install.content_top_offset,
+                            placement,
+                            witness.aligned_rect,
+                        );
+                        layout_placement_bits_eq(actual, expected)
+                    });
                     if !inline_ifc_atomic_witness_bits_eq(witness, &current_witness)
                         || witness.stable_id != node.element.stable_id()
                         || current_vertical_align != witness.vertical_align
@@ -6597,7 +6609,7 @@ impl Element {
                             &witness.measurement,
                             &current_measurement,
                         )
-                        || !layout_placement_bits_eq(actual_placement, expected_placement)
+                        || !placement_matches
                     {
                         return Err(reject());
                     }

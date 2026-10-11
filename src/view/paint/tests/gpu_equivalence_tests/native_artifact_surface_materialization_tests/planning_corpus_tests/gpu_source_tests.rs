@@ -7,6 +7,7 @@ use crate::view::base_component::{
 use crate::view::gpu_paint::{GpuPaintProgram, GpuPaintSource, GpuPaintSourceId};
 use crate::view::viewport::ViewportPaintRendererMode;
 use std::sync::Arc;
+mod inline_atomic_tests;
 mod lifecycle_tests;
 mod mixed_changes_tests;
 mod vertex_growth_tests;
