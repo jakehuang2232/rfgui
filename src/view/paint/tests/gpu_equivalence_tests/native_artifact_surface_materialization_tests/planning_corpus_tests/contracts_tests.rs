@@ -185,8 +185,11 @@ fn planning_corpus_preserves_command_order_and_exact_once_ownership() {
                     );
                     // The 2x scale rasters at its displayed resolution; a
                     // rotation keeps the local one.
-                    let shown =
-                        if matches!(scene, Scene::QuarterTurn | Scene::ObliqueTurn) { 1 } else { 2 };
+                    let shown = if matches!(scene, Scene::QuarterTurn | Scene::ObliqueTurn) {
+                        1
+                    } else {
+                        2
+                    };
                     let target = plan.nodes()[0].target();
                     assert_eq!(
                         [target.color.width(), target.color.height()],

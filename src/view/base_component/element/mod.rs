@@ -1436,12 +1436,14 @@ impl UiBuildContext {
         stable_key: PersistentTextureKey,
         bounds: RetainedSurfaceBounds,
     ) -> RenderTargetOut {
-        let desc = self.viewport.scaled_target_desc(texture_desc_for_logical_bounds(
-            bounds,
-            self.viewport.scale_factor,
-            self.viewport.render_transform,
-            self.viewport.target_format,
-        ));
+        let desc = self
+            .viewport
+            .scaled_target_desc(texture_desc_for_logical_bounds(
+                bounds,
+                self.viewport.scale_factor,
+                self.viewport.render_transform,
+                self.viewport.target_format,
+            ));
         self.next_persistent_target_with_desc(graph, desc, stable_key)
     }
 
@@ -5106,7 +5108,14 @@ fn inline_span_has_positioned_descendants(arena: &NodeArena, span: NodeKey) -> b
     let Some(children) = arena.get(span).and_then(|node| {
         let element = node.element.as_any().downcast_ref::<Element>()?;
         let mask = element.compute_children_absolute_mask(arena);
-        Some(element.children.iter().copied().zip(mask).collect::<Vec<_>>())
+        Some(
+            element
+                .children
+                .iter()
+                .copied()
+                .zip(mask)
+                .collect::<Vec<_>>(),
+        )
     }) else {
         return false;
     };
@@ -5934,13 +5943,15 @@ fn inline_atomic_measurement(
     element: &dyn ElementTrait,
     line_width: f32,
 ) -> InlineIfcMeasuredAtomicBox {
-    element.inline_atomic_measurement_snapshot().unwrap_or_else(|| {
-        let (width, height) = element.measured_size();
-        InlineIfcMeasuredAtomicBox::new(
-            InlineIfcSize::new(width, height),
-            InlineIfcAtomicMeasureConstraints::new(Some(line_width)),
-        )
-    })
+    element
+        .inline_atomic_measurement_snapshot()
+        .unwrap_or_else(|| {
+            let (width, height) = element.measured_size();
+            InlineIfcMeasuredAtomicBox::new(
+                InlineIfcSize::new(width, height),
+                InlineIfcAtomicMeasureConstraints::new(Some(line_width)),
+            )
+        })
 }
 
 /// The vertical alignment an owning IFC places an atomic child with: a host
@@ -6379,8 +6390,7 @@ impl Element {
         let collected = {
             let _profile =
                 crate::view::paint::work_profile::scope("collect_live_inline_root_inputs");
-            ElementInlineIfcMetadataCollector::collect(arena, collector_input)
-                .ok_or_else(reject)?
+            ElementInlineIfcMetadataCollector::collect(arena, collector_input).ok_or_else(reject)?
         };
         if !collected.root_source.matches_cache_key(&install.cache_key) {
             return Err(reject());
@@ -6580,11 +6590,10 @@ impl Element {
                     let current_witness = current_atomic_witnesses
                         .remove(&node_key)
                         .ok_or_else(reject)?;
-                    let current_measurement = inline_atomic_measurement(
-                        node.element.as_ref(),
-                        line_width,
-                    );
-                    let current_vertical_align = inline_atomic_vertical_align(node.element.as_ref());
+                    let current_measurement =
+                        inline_atomic_measurement(node.element.as_ref(), line_width);
+                    let current_vertical_align =
+                        inline_atomic_vertical_align(node.element.as_ref());
                     // Only this install places an atomic child, so a host that
                     // does not report its placement sits where the current
                     // install put it.

@@ -308,9 +308,16 @@ fn generic_text_area_resident_span_uses_parent_edges_not_store_order() {
         "fixture must expose a transparent parent discovered after its paint child"
     );
     drop(arena);
-    let context =
-        ArtifactSurfaceRasterContext::new(1.0, FORMAT, [0.0, 0.0], None, [4096, 4096], 8192, 128 * 1024 * 1024)
-            .unwrap();
+    let context = ArtifactSurfaceRasterContext::new(
+        1.0,
+        FORMAT,
+        [0.0, 0.0],
+        None,
+        [4096, 4096],
+        8192,
+        128 * 1024 * 1024,
+    )
+    .unwrap();
     for reverse in [false, true] {
         let mut reordered = artifact.clone();
         if reverse {

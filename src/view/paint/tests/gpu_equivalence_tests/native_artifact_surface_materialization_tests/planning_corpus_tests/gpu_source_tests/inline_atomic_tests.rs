@@ -32,7 +32,12 @@ fn custom_host_in_an_inline_box_paints_where_it_is_placed() -> Result<(), String
         let observed = v.render_single_viewport_scene_for_test()?;
         assert!(observed.artifact_selected, "DPR {dpr}");
         let pixels = read_submitted_texture(&observed.texture, gpu, [80 * dpr, 64 * dpr])?;
-        let b = v.node_arena().get(host).unwrap().element.box_model_snapshot();
+        let b = v
+            .node_arena()
+            .get(host)
+            .unwrap()
+            .element
+            .box_model_snapshot();
         assert!(b.x >= 8. && b.y >= 12. && b.width == 20. && b.height == 16.);
         let pixel = |x: f32, y: f32| {
             let at = (((y * dpr as f32) as u32 * 80 * dpr + (x * dpr as f32) as u32) * 4) as usize;
