@@ -5017,6 +5017,9 @@ fn install_inline_ifc_span_op(
     top_offset: f32,
     change: NodeChange,
 ) {
+    // The formatting context root's content origin, scroll included: the
+    // frame its layout-parent descendants are placed in.
+    let root_content_origin = [origin_x, origin_y];
     // Every rect is the content origin plus its plan-relative offset, in
     // that order, exactly as the paint witness re-derives it; folding the
     // top offset in after the rect drifts by an ulp at some origins.
@@ -5046,14 +5049,112 @@ fn install_inline_ifc_span_op(
         width: rect.width,
         height: rect.height,
     }));
+    // The span is placed here, not by its own `place`. Freeze its position
+    // against its parent's content frame, as placement does, so positioned
+    // children laid out or anchored against the span resolve to this box.
+    // A parent span's content frame is its box; the root's is its content
+    // origin, whose scroll the spatial tree applies itself.
+    let reference_origin = inline_span_has_positioned_descendants(arena, node_key)
+        .then(|| arena.parent_of(node_key))
+        .flatten()
+        .and_then(|parent| arena.get(parent))
+        .map(
+            |parent| match parent.element.as_any().downcast_ref::<Element>() {
+                Some(span) if span.inline_ifc_owned_by_root => [
+                    span.layout_state.layout_position.x,
+                    span.layout_state.layout_position.y,
+                ],
+                _ => root_content_origin,
+            },
+        );
     with_inline_ifc_owned_node(arena, node_key, change, |child, _arena| {
         if let Some(element) = child.as_any_mut().downcast_mut::<Element>() {
             element.install_inline_ifc_rollout_packages_from_candidate(package.as_ref());
             element.inline_ifc_owned_by_root = true;
             element.place_as_inline_ifc_owned_box(bounds);
+            element.spatial_placement_snapshot = reference_origin.map(|[x, y]| {
+                let position = [bounds.x, bounds.y];
+                SpatialPlacementSnapshot::new(
+                    SpatialPositionReferenceSnapshot::LayoutParent(None),
+                    [bounds.x - x, bounds.y - y],
+                    position,
+                    [0.0, 0.0],
+                    position,
+                )
+            });
             element.inline_paint_fragments = absolute;
         }
     });
+}
+
+/// Whether a positioned element lies under `span` through inline spans only:
+/// such an element is placed against the span, so the span and every span
+/// above it need a spatial frame. Other spans keep none, as their paint
+/// belongs to the formatting context's root.
+fn inline_span_has_positioned_descendants(arena: &NodeArena, span: NodeKey) -> bool {
+    let Some(children) = arena.get(span).and_then(|node| {
+        let element = node.element.as_any().downcast_ref::<Element>()?;
+        let mask = element.compute_children_absolute_mask(arena);
+        Some(element.children.iter().copied().zip(mask).collect::<Vec<_>>())
+    }) else {
+        return false;
+    };
+    children.into_iter().any(|(child, absolute)| {
+        absolute
+            || arena.get(child).is_some_and(|node| {
+                node.element
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .is_some_and(|element| element.inline_ifc_owned_by_root)
+            }) && inline_span_has_positioned_descendants(arena, child)
+    })
+}
+
+/// Place an installed span's positioned children against the box its
+/// fragments span, as `Element::place` places an element's positioned
+/// children against its inner box. The span is placed by its formatting
+/// context's root, never by its own `place`, so nothing else positions them.
+fn place_inline_ifc_span_absolute_children(
+    arena: &mut NodeArena,
+    span: NodeKey,
+    placement: LayoutPlacement,
+) {
+    let Some((children, origin, size)) = arena.get(span).and_then(|node| {
+        let element = node.element.as_any().downcast_ref::<Element>()?;
+        let mask = element.compute_children_absolute_mask(arena);
+        let children = element
+            .children
+            .iter()
+            .zip(mask)
+            .filter_map(|(&child, absolute)| absolute.then_some(child))
+            .collect::<Vec<_>>();
+        Some((
+            children,
+            element.layout_state.layout_inner_position,
+            element.layout_state.layout_inner_size,
+        ))
+    }) else {
+        return;
+    };
+    for child in children {
+        arena.with_element_taken(child, |child, arena| {
+            child.place(
+                LayoutPlacement {
+                    parent_x: origin.x,
+                    parent_y: origin.y,
+                    visual_offset_x: 0.0,
+                    visual_offset_y: 0.0,
+                    available_width: size.width,
+                    available_height: size.height,
+                    viewport_width: placement.viewport_width,
+                    viewport_height: placement.viewport_height,
+                    percent_base_width: Some(size.width),
+                    percent_base_height: Some(size.height),
+                },
+                arena,
+            );
+        });
+    }
 }
 
 /// Install one text op of an origin-independent plan at the root's content
@@ -7124,7 +7225,10 @@ impl Element {
             self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
         let visual_offset_y =
             self.layout_state.layout_position.y - self.layout_state.layout_flow_position.y;
-        if has_atomic {
+        // Children placed here, atomic boxes and spans' positioned children,
+        // must see the clip scopes place_children gives in-flow children.
+        let places_children = has_atomic || moved;
+        if places_children {
             let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
             self.push_hit_test_clip_scope(child_parent_hit_test_clip);
             self.push_child_clip_scope(self.child_paint_cull_rect());
@@ -7147,6 +7251,7 @@ impl Element {
                             top_offset,
                             NodeChange::Translation,
                         );
+                        place_inline_ifc_span_absolute_children(arena, *node_key, placement);
                     }
                 }
                 InlineIfcNodeInstallOp::Text {
@@ -7187,7 +7292,7 @@ impl Element {
                 }
             }
         }
-        if has_atomic {
+        if places_children {
             self.pop_child_clip_scope();
             self.pop_hit_test_clip_scope();
         }
@@ -7259,16 +7364,19 @@ impl Element {
                     node_key,
                     package,
                     paint_fragments,
-                } => install_inline_ifc_span_op(
-                    arena,
-                    *node_key,
-                    package.as_ref(),
-                    paint_fragments,
-                    origin_x,
-                    origin_y,
-                    top_offset,
-                    NodeChange::Mutation,
-                ),
+                } => {
+                    install_inline_ifc_span_op(
+                        arena,
+                        *node_key,
+                        package.as_ref(),
+                        paint_fragments,
+                        origin_x,
+                        origin_y,
+                        top_offset,
+                        NodeChange::Mutation,
+                    );
+                    place_inline_ifc_span_absolute_children(arena, *node_key, placement);
+                }
                 InlineIfcNodeInstallOp::Text {
                     node_key,
                     lines,
@@ -7975,8 +8083,11 @@ impl ElementTrait for Element {
             })
     }
 
+    /// The coverage walk records every Element's escaping children after
+    /// its normal ones, inline elements included: their inline content paints
+    /// with the formatting context's root, so only positioned children remain.
     fn retains_absolute_clip_child_phase_order(&self) -> bool {
-        !self.is_fragmentable_inline_element() && !self.inline_ifc_owned_by_root
+        true
     }
 
     fn retained_absolute_clip_mode_witness(
@@ -8631,9 +8742,7 @@ impl ElementTrait for Element {
                 position,
             ));
         }
-        (!self.inline_ifc_owned_by_root)
-            .then_some(self.spatial_placement_snapshot)
-            .flatten()
+        self.spatial_placement_snapshot
     }
 
     fn is_deferred_to_root_viewport_render(&self) -> bool {
