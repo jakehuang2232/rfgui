@@ -195,7 +195,7 @@ fn svg_rasters() -> &'static Mutex<SvgRasterRegistry> {
 fn next_document_key() -> u64 {
     static NEXT_DOCUMENT_KEY: AtomicU64 = AtomicU64::new(1);
     NEXT_DOCUMENT_KEY
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("SVG document key space exhausted")
@@ -204,7 +204,7 @@ fn next_document_key() -> u64 {
 fn next_raster_key() -> u64 {
     static NEXT_RASTER_KEY: AtomicU64 = AtomicU64::new(1);
     NEXT_RASTER_KEY
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("SVG raster key space exhausted")
@@ -213,7 +213,7 @@ fn next_raster_key() -> u64 {
 fn next_generation() -> u64 {
     static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
     NEXT_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("SVG raster generation ID space exhausted")
@@ -222,7 +222,7 @@ fn next_generation() -> u64 {
 fn next_raster_asset_id() -> SvgRasterAssetId {
     static NEXT_RASTER_ASSET_ID: AtomicU64 = AtomicU64::new(1);
     let raw = NEXT_RASTER_ASSET_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("SVG raster asset ID space exhausted");

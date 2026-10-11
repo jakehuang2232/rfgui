@@ -510,7 +510,7 @@ struct GpuContext {
 
 fn allocate_render_resource_scope_id(counter: &AtomicU64) -> u64 {
     let scope_id = counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("render resource scope ID space exhausted");

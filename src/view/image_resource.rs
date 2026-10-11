@@ -198,7 +198,7 @@ fn image_registry() -> &'static Mutex<ImageRegistry> {
 fn next_generation() -> u64 {
     static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
     NEXT_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("image generation ID space exhausted")
@@ -207,7 +207,7 @@ fn next_generation() -> u64 {
 fn next_asset_id() -> ImageAssetId {
     static NEXT_ASSET_ID: AtomicU64 = AtomicU64::new(1);
     let raw = NEXT_ASSET_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("image asset ID space exhausted");
