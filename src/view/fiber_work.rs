@@ -362,32 +362,9 @@ fn patch_to_fiber_work_with_rsx_at_root(
     // When per-root rsx is available, map rsx paths → arena paths for
     // the `resolve_path` calls below. rsx-path is still passed to
     // `walk_rsx_by_index_path*` which needs rsx-space indices.
-    let arena_path_for = |rsx_path: &[usize]| -> Option<Vec<usize>> {
-        match per_root_old_rsx {
-            None => Some(rsx_path.to_vec()),
-            Some(old) => match rsx_to_arena_path(old, rsx_path) {
-                ArenaPathResolution::Arena(p) => Some(p),
-                ArenaPathResolution::Invalid => None,
-            },
-        }
-    };
-    let full_new_path_for = |relative_path: &[usize]| -> Option<Vec<usize>> {
-        let ctx = ctx?;
-        match new_root_index {
-            Some(root_index) => match ctx.new_rsx_root {
-                RsxNode::Fragment(fragment) => {
-                    fragment.children.get(root_index)?;
-                    let mut full_path = Vec::with_capacity(relative_path.len() + 1);
-                    full_path.push(root_index);
-                    full_path.extend_from_slice(relative_path);
-                    Some(full_path)
-                }
-                _ if root_index == 0 => Some(relative_path.to_vec()),
-                _ => None,
-            },
-            None => Some(relative_path.to_vec()),
-        }
-    };
+    let arena_path_for = |rsx_path: &[usize]| old_rsx_arena_path(per_root_old_rsx, rsx_path);
+    let full_new_path_for =
+        |relative_path: &[usize]| full_new_rsx_path(ctx, new_root_index, relative_path);
     match patch {
         Patch::ReplaceRoot(new_node) => {
             // Need DescriptorContext — without it we can't build the
@@ -477,36 +454,15 @@ fn patch_to_fiber_work_with_rsx_at_root(
             path,
             node: new_node,
         } => {
-            let ctx = ctx?;
-            // Non-empty path: reconciler emits ReplaceRoot for path==[].
-            if path.is_empty() {
-                return None;
-            }
-            let (&index, parent_path) = path.split_last()?;
-            let parent_arena_path = arena_path_for(parent_path)?;
-            let parent_key = resolve_path(arena, root, &parent_arena_path)?;
-            // Rebuild the inherited cascade at the arena parent so the
-            // new subtree sees the same ancestor style the cold path
-            // would.
-            let inherited = crate::view::renderer_adapter::style_cascade_at_parent(
+            let (parent_key, descriptors) = replacement_descriptors(
+                &path,
+                &new_node,
                 arena,
-                parent_key,
-                ctx.inherited_style,
-                ctx.viewport_width,
-                ctx.viewport_height,
-            );
-            let full_path = full_new_path_for(&path)?;
-            let target = walk_rsx_by_index_path(ctx.new_rsx_root, &full_path)?;
-            if target.identity() != new_node.identity() {
-                return None;
-            }
-            let descriptors =
-                crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
-                    ctx.new_rsx_root,
-                    &full_path,
-                    &inherited,
-                )
-                .ok()?;
+                root,
+                ctx,
+                per_root_old_rsx,
+                new_root_index,
+            )?;
             // 軌 1 #5: Fragment new-node → N descriptors at the replaced
             // slot. Unlike a root replacement, an empty Fragment here is a
             // valid unmount: translate it to Delete so a conditional child
@@ -529,7 +485,7 @@ fn patch_to_fiber_work_with_rsx_at_root(
             }
             Some(FiberWork::ReplaceNode {
                 parent: parent_key,
-                index,
+                index: *path.last()?,
                 descriptors,
             })
         }
@@ -576,83 +532,19 @@ fn patch_to_fiber_work_with_rsx_at_root(
             index,
             node: _new_node,
         } => {
-            // M5 #5/#6: build a descriptor for the freshly-inserted
-            // child via the cold-path converter.
-            //
-            // Context gate: no DescriptorContext → fall back. Callers
-            // that don't have a NEW rsx root on hand (unit tests, the
-            // convenience wrapper `patches_to_fiber_works`) thus keep
-            // the pre-M5 behaviour.
-            let ctx = ctx?;
-
-            // 1) Resolve the arena parent. parent_path is rsx-space
-            //    from the reconciler; translate via `arena_path_for`
-            //    so Fragment mid-tree parents land on the right arena
-            //    key.
-            let parent_arena_path = arena_path_for(&parent_path)?;
-            let parent_key = resolve_path(arena, root, &parent_arena_path)?;
-
-            // 2) Walk the NEW rsx tree along the SAME OLD rsx-space
-            //    path to find the parent node. 軌 1 #6: when an
-            //    old-tree snapshot is available in `ctx`, run the
-            //    identity-validated lockstep walk instead — any
-            //    structural drift higher up aborts the translation
-            //    so the caller falls back to a full rebuild.
-            //
-            //    Note: per-root `old_rsx_root` lives in `ctx` (the
-            //    full fragment root); the per-root tree we passed
-            //    into `arena_path_for` for arena alignment isn't
-            //    used here because `ctx.new_rsx_root` is the full
-            //    NEW tree of matching shape.
-            // Track 1 #10 fix: use per-root rsx when caller provided.
-            // ctx.{old,new}_rsx_root is the FULL (fragment-at-root) tree,
-            // but reconcile_multi emits paths relative to each root_index
-            // subtree. Walking from the full root silently misaligns by
-            // one level for root_index > 0.
-            let walk_old_root: Option<&RsxNode> = per_root_old_rsx.or(ctx.old_rsx_root);
-            let walk_new_root: &RsxNode = per_root_new_rsx.unwrap_or(ctx.new_rsx_root);
-            let new_parent_rsx = match walk_old_root {
-                Some(old) => walk_rsx_by_index_path_validated(old, walk_new_root, &parent_path)?,
-                None => walk_rsx_by_index_path(walk_new_root, &parent_path)?,
-            };
-
-            // 3) Fish out the freshly-authored child at the NEW index.
-            let kids = new_parent_rsx.children()?;
-            let child_rsx = kids.get(index)?;
-
-            // 4) Reuse the cold-path converter. M6 cascade: rebuild
-            //    the `StyleCascadeContext` at the arena parent by
-            //    walking its ancestor chain and replaying each
-            //    Element's `parsed_style` through `merge_style`. This
-            //    matches what `build_container_element_shell` does in
-            //    the cold-path loop, so text children inherit
-            //    font_size / color / etc. from ancestors instead of
-            //    the viewport-root approximation M5.0 shipped.
-            let inherited = crate::view::renderer_adapter::style_cascade_at_parent(
+            let (parent_key, mut descriptors) = inserted_child_descriptors(
+                &parent_path,
+                index,
                 arena,
-                parent_key,
-                ctx.inherited_style,
-                ctx.viewport_width,
-                ctx.viewport_height,
-            );
-            let mut child_path = parent_path.clone();
-            child_path.push(index);
-            let full_path = full_new_path_for(&child_path)?;
-            let target = walk_rsx_by_index_path(ctx.new_rsx_root, &full_path)?;
-            if target.identity() != child_rsx.identity() {
-                return None;
-            }
-            let mut descriptors =
-                crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
-                    ctx.new_rsx_root,
-                    &full_path,
-                    &inherited,
-                )
-                .ok()?;
-
-            // 5) Single-descriptor case → Create. Multi-descriptor
-            //    (Fragment expansion) → 軌 1 #5 CreateMany, inserted
-            //    as consecutive children starting at `index`.
+                root,
+                ctx,
+                per_root_old_rsx,
+                per_root_new_rsx,
+                new_root_index,
+            )?;
+            // Single-descriptor case → Create. Multi-descriptor (Fragment
+            // expansion) → 軌 1 #5 CreateMany, inserted as consecutive
+            // children starting at `index`.
             match descriptors.len() {
                 0 => None,
                 1 => {
@@ -672,6 +564,9 @@ fn patch_to_fiber_work_with_rsx_at_root(
                 }),
             }
         }
+        // A lone patch has no image of its child list, so its index is
+        // taken as the arena index; batches translate through
+        // `translate_rooted_patches_all_or_nothing`, which keeps one.
         Patch::RemoveChild { parent_path, index } => {
             let parent_arena_path = arena_path_for(&parent_path)?;
             let parent = resolve_path(arena, root, &parent_arena_path)?;
@@ -699,6 +594,157 @@ fn patch_to_fiber_work_with_rsx_at_root(
             })
         }
     }
+}
+
+/// `rsx_path` through the per-root old tree, as a path through the arena.
+/// Without an old tree the two coincide.
+fn old_rsx_arena_path(
+    per_root_old_rsx: Option<&RsxNode>,
+    rsx_path: &[usize],
+) -> Option<Vec<usize>> {
+    match per_root_old_rsx {
+        None => Some(rsx_path.to_vec()),
+        Some(old) => match rsx_to_arena_path(old, rsx_path) {
+            ArenaPathResolution::Arena(path) => Some(path),
+            ArenaPathResolution::Invalid => None,
+        },
+    }
+}
+
+/// A per-root rsx path as a path from `ctx.new_rsx_root`, which holds every
+/// root of a fragment-at-root scene.
+fn full_new_rsx_path(
+    ctx: Option<&DescriptorContext<'_>>,
+    new_root_index: Option<usize>,
+    relative_path: &[usize],
+) -> Option<Vec<usize>> {
+    let ctx = ctx?;
+    match new_root_index {
+        Some(root_index) => match ctx.new_rsx_root {
+            RsxNode::Fragment(fragment) => {
+                fragment.children.get(root_index)?;
+                let mut full_path = Vec::with_capacity(relative_path.len() + 1);
+                full_path.push(root_index);
+                full_path.extend_from_slice(relative_path);
+                Some(full_path)
+            }
+            _ if root_index == 0 => Some(relative_path.to_vec()),
+            _ => None,
+        },
+        None => Some(relative_path.to_vec()),
+    }
+}
+
+/// The arena parent of an `InsertChild` patch and the descriptors its new
+/// child commits as: one, several for a fragment, none for an empty one.
+#[allow(clippy::too_many_arguments)]
+fn inserted_child_descriptors(
+    parent_path: &[usize],
+    index: usize,
+    arena: &NodeArena,
+    root: NodeKey,
+    ctx: Option<&DescriptorContext<'_>>,
+    per_root_old_rsx: Option<&RsxNode>,
+    per_root_new_rsx: Option<&RsxNode>,
+    new_root_index: Option<usize>,
+) -> Option<(NodeKey, Vec<ElementDescriptor>)> {
+    // M5 #5/#6: build a descriptor for the freshly-inserted child via the
+    // cold-path converter. No DescriptorContext → fall back. Callers that
+    // don't have a NEW rsx root on hand (unit tests, the convenience
+    // wrapper `patches_to_fiber_works`) thus keep the pre-M5 behaviour.
+    let ctx = ctx?;
+
+    // 1) Resolve the arena parent. parent_path is rsx-space from the
+    //    reconciler; translate it so Fragment mid-tree parents land on the
+    //    right arena key.
+    let parent_arena_path = old_rsx_arena_path(per_root_old_rsx, parent_path)?;
+    let parent_key = resolve_path(arena, root, &parent_arena_path)?;
+
+    // 2) Walk the NEW rsx tree along the SAME OLD rsx-space path to find
+    //    the parent node. 軌 1 #6: when an old-tree snapshot is available,
+    //    run the identity-validated lockstep walk instead — any structural
+    //    drift higher up aborts the translation so the caller falls back.
+    //    Track 1 #10 fix: walk the per-root rsx when the caller provided
+    //    it. ctx.{old,new}_rsx_root is the FULL (fragment-at-root) tree,
+    //    but reconcile_multi emits paths relative to each root_index
+    //    subtree; walking from the full root misaligns by one level for
+    //    root_index > 0.
+    let walk_old_root: Option<&RsxNode> = per_root_old_rsx.or(ctx.old_rsx_root);
+    let walk_new_root: &RsxNode = per_root_new_rsx.unwrap_or(ctx.new_rsx_root);
+    let new_parent_rsx = match walk_old_root {
+        Some(old) => walk_rsx_by_index_path_validated(old, walk_new_root, parent_path)?,
+        None => walk_rsx_by_index_path(walk_new_root, parent_path)?,
+    };
+
+    // 3) Fish out the freshly-authored child at the NEW index.
+    let kids = new_parent_rsx.children()?;
+    let child_rsx = kids.get(index)?;
+
+    // 4) Reuse the cold-path converter. M6 cascade: rebuild the
+    //    `StyleCascadeContext` at the arena parent by replaying its
+    //    ancestors' `parsed_style`, as `build_container_element_shell`
+    //    does on the cold path, so text children inherit font_size /
+    //    color / etc. from their ancestors.
+    let inherited = crate::view::renderer_adapter::style_cascade_at_parent(
+        arena,
+        parent_key,
+        ctx.inherited_style,
+        ctx.viewport_width,
+        ctx.viewport_height,
+    );
+    let mut child_path = parent_path.to_vec();
+    child_path.push(index);
+    let full_path = full_new_rsx_path(Some(ctx), new_root_index, &child_path)?;
+    let target = walk_rsx_by_index_path(ctx.new_rsx_root, &full_path)?;
+    if target.identity() != child_rsx.identity() {
+        return None;
+    }
+    let descriptors = crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
+        ctx.new_rsx_root,
+        &full_path,
+        &inherited,
+    )
+    .ok()?;
+    Some((parent_key, descriptors))
+}
+
+/// The arena parent of a `ReplaceNode` patch and the descriptors its new
+/// node commits as: one, several for a fragment, none for an empty one.
+fn replacement_descriptors(
+    path: &[usize],
+    new_node: &RsxNode,
+    arena: &NodeArena,
+    root: NodeKey,
+    ctx: Option<&DescriptorContext<'_>>,
+    per_root_old_rsx: Option<&RsxNode>,
+    new_root_index: Option<usize>,
+) -> Option<(NodeKey, Vec<ElementDescriptor>)> {
+    let ctx = ctx?;
+    // Non-empty path: reconciler emits ReplaceRoot for path==[].
+    let (_, parent_path) = path.split_last()?;
+    let parent_arena_path = old_rsx_arena_path(per_root_old_rsx, parent_path)?;
+    let parent_key = resolve_path(arena, root, &parent_arena_path)?;
+    // Rebuild the inherited cascade at the arena parent so the new subtree
+    // sees the same ancestor style the cold path would.
+    let inherited = crate::view::renderer_adapter::style_cascade_at_parent(
+        arena,
+        parent_key,
+        ctx.inherited_style,
+        ctx.viewport_width,
+        ctx.viewport_height,
+    );
+    let full_path = full_new_rsx_path(Some(ctx), new_root_index, path)?;
+    let target = walk_rsx_by_index_path(ctx.new_rsx_root, &full_path)?;
+    if target.identity() != new_node.identity() {
+        return None;
+    }
+    let descriptors = crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
+        ctx.new_rsx_root,
+        &full_path,
+        &inherited,
+    )
+    .ok()?;
+    Some((parent_key, descriptors))
 }
 
 /// Convenience: run `patch_to_fiber_work` over a batch. Skips patches
@@ -761,6 +807,7 @@ pub fn translate_rooted_patches_all_or_nothing(
     // at translate time. Track the active permutation so the per-pair
     // dispatcher resolves to the right currently-live NodeKey.
     let mut permutation: Option<Vec<usize>> = None;
+    let mut slots = child_slots::ChildSlotTracker::default();
     for rp in patches {
         let root = match &rp.patch {
             Patch::ReplaceAllRoots(_) => roots.first().copied().unwrap_or(NodeKey::default()),
@@ -803,41 +850,50 @@ pub fn translate_rooted_patches_all_or_nothing(
         // (`patch_to_fiber_work_with_rsx`) needs the rsx-space path
         // for NEW-tree walks (InsertChild) and internally maps
         // rsx → arena via `rsx_to_arena_path` for `resolve_path`.
-        let translated_patch = rp.patch;
-        // Keep a copy for the per-patch ReplaceNode fallback path below.
-        let patch_snapshot = translated_patch.clone();
-        match patch_to_fiber_work_with_rsx_at_root(
-            translated_patch,
-            id_to_key,
-            arena,
-            root,
-            ctx,
-            per_root_old_rsx,
-            per_root_new_rsx,
-            Some(rp.root_index),
-        ) {
-            Some(work) => out.push(work),
+        let mut translate = |patch: &Patch| -> Option<Vec<FiberWork>> {
+            // Structural patches go through the slot image of their child
+            // list, which knows the arena run each rsx child holds.
+            if let Some(old_rsx) = per_root_old_rsx
+                && matches!(
+                    patch,
+                    Patch::InsertChild { .. }
+                        | Patch::RemoveChild { .. }
+                        | Patch::MoveChild { .. }
+                        | Patch::ReplaceNode { .. }
+                )
+            {
+                let scope = child_slots::RootScope {
+                    arena,
+                    root,
+                    ctx,
+                    old_rsx,
+                    new_rsx: per_root_new_rsx,
+                    new_root_index: Some(rp.root_index),
+                };
+                return slots.translate(patch, &scope);
+            }
+            patch_to_fiber_work_with_rsx_at_root(
+                patch.clone(),
+                id_to_key,
+                arena,
+                root,
+                ctx,
+                per_root_old_rsx,
+                per_root_new_rsx,
+                Some(rp.root_index),
+            )
+            .map(|work| vec![work])
+        };
+        match translate(&rp.patch) {
+            Some(works) => out.extend(works),
             None => {
                 // Per-patch fallback: convert to `ReplaceNode` at the
                 // failing subtree. Keeps other roots / siblings on the
                 // incremental path; only the one subtree rebuilds.
-                if let Some(fallback) =
-                    fallback_replace_node_patch(&patch_snapshot, per_root_old_rsx, per_root_new_rsx)
-                    && let Some(work) = patch_to_fiber_work_with_rsx_at_root(
-                        fallback,
-                        id_to_key,
-                        arena,
-                        root,
-                        ctx,
-                        per_root_old_rsx,
-                        per_root_new_rsx,
-                        Some(rp.root_index),
-                    )
-                {
-                    out.push(work);
-                    continue;
-                }
-                return None;
+                let works =
+                    fallback_replace_node_patch(&rp.patch, per_root_old_rsx, per_root_new_rsx)
+                        .and_then(|fallback| translate(&fallback))?;
+                out.extend(works);
             }
         }
     }
@@ -1510,5 +1566,6 @@ fn element_tag_hint(_el: &RsxElementNode) -> u64 {
 // Tests
 // ---------------------------------------------------------------------------
 
+mod child_slots;
 #[cfg(test)]
 mod tests;

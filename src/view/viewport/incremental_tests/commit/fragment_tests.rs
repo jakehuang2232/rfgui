@@ -411,3 +411,103 @@ fn rsx_to_arena_path_handles_nested_fragments() {
 // ---------------------------------------------------------------------------
 // 軌 1 #8 Text::apply_style incremental
 // ---------------------------------------------------------------------------
+
+/// A keyed sibling taking an empty fragment's slot keeps its node, and the
+/// fragment coming back removes only the keyed node it replaces: the arena
+/// holds nothing for an empty fragment, so no index may count one.
+#[test]
+fn keyed_sibling_swapping_with_an_empty_fragment_keeps_every_node() {
+    let page = |key: usize, width: f32| {
+        rsx! {
+            <HostElement key={key}>
+                <HostElement style={{ width: Length::px(width) }} />
+            </HostElement>
+        }
+    };
+    let tree = |current: usize, previous: Option<usize>, width: f32| {
+        rsx! {
+            <HostElement>
+                <HostElement />
+                {previous.map_or(RsxNode::fragment(vec![]), |key| page(key, 10.0))}
+                {page(current, width)}
+            </HostElement>
+        }
+    };
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+    viewport
+        .render_rsx(&tree(0, None, 10.0))
+        .expect("cold render");
+    let root = viewport.scene.ui_root_keys[0];
+    let [background, page_0] = viewport.scene.node_arena.children_of(root)[..] else {
+        panic!("background and page 0")
+    };
+
+    // Page 0 moves into the fragment's slot; page 1 mounts after it.
+    viewport
+        .render_rsx(&tree(1, Some(0), 20.0))
+        .expect("swap in");
+    let children = viewport.scene.node_arena.children_of(root);
+    assert_eq!(viewport.scene.ui_root_keys, vec![root]);
+    assert_eq!(children.len(), 3);
+    assert_eq!(children[..2], [background, page_0]);
+    let page_1 = children[2];
+
+    // A change inside page 1 reaches it in place.
+    viewport
+        .render_rsx(&tree(1, Some(0), 30.0))
+        .expect("update");
+    assert_eq!(
+        viewport.scene.node_arena.children_of(root),
+        vec![background, page_0, page_1]
+    );
+
+    // The fragment returns: page 0 alone unmounts.
+    viewport.render_rsx(&tree(1, None, 30.0)).expect("swap out");
+    assert_eq!(viewport.scene.ui_root_keys, vec![root]);
+    assert_eq!(
+        viewport.scene.node_arena.children_of(root),
+        vec![background, page_1]
+    );
+    assert!(viewport.scene.node_arena.get(page_0).is_none());
+}
+
+/// A fragment's children sit in its parent's arena list: a child inserted
+/// into it lands after the fragment's existing children, and keyed
+/// siblings after the fragment reorder past its whole run.
+#[test]
+fn keyed_siblings_reorder_after_a_fragment_that_grows() {
+    let tree = |items: &[usize], order: [usize; 2]| {
+        let fragment = RsxNode::fragment(
+            items
+                .iter()
+                .map(|&key| rsx! { <HostElement key={key} /> })
+                .collect(),
+        );
+        rsx! {
+            <HostElement>
+                {fragment}
+                <HostElement key={order[0]} />
+                <HostElement key={order[1]} />
+            </HostElement>
+        }
+    };
+    let mut viewport = Viewport::new();
+    viewport.set_use_incremental_commit(true);
+    viewport
+        .render_rsx(&tree(&[10, 11], [1, 2]))
+        .expect("cold render");
+    let root = viewport.scene.ui_root_keys[0];
+    let [a, b, x, y] = viewport.scene.node_arena.children_of(root)[..] else {
+        panic!("two fragment children and two keyed siblings")
+    };
+
+    viewport
+        .render_rsx(&tree(&[10, 11, 12], [2, 1]))
+        .expect("grow and swap");
+    let children = viewport.scene.node_arena.children_of(root);
+    assert_eq!(viewport.scene.ui_root_keys, vec![root]);
+    assert_eq!(children.len(), 5);
+    assert_eq!(children[..2], [a, b]);
+    assert_eq!(children[3..], [y, x]);
+}
