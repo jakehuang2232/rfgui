@@ -6347,9 +6347,9 @@ impl Element {
             || install.viewport_height != placement.viewport_height
             || install.applied_origins != self.inline_ifc_apply_origins()
             || !install.build_inner_width.is_finite()
-            || install.build_inner_width <= 0.0
+            || install.build_inner_width < 0.0
             || !install.applied_inner_width.is_finite()
-            || install.applied_inner_width <= 0.0
+            || install.applied_inner_width < 0.0
         {
             return Err(reject());
         }

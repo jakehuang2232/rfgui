@@ -317,15 +317,16 @@ impl Layoutable for Element {
             }
 
             // Inline IFC root: the shaped line stack, not the per-child
-            // union, is the auto size of this box.
+            // union, is the auto size of this box. An empty stack too: the
+            // union holds Text children the IFC never measures, which still
+            // carry their constructed size.
             if self.computed_style.layout == Layout::Inline && !self.inline_ifc_owned_by_root {
                 if let Some((content_w, content_h)) = self.measure_inline_ifc_root_content_size(
                     arena,
                     inner_w,
                     proposal.viewport_width,
                     proposal.viewport_height,
-                ) && (content_w > 0.0 || content_h > 0.0)
-                {
+                ) {
                     self.layout_state.content_size = Size {
                         width: content_w,
                         height: content_h,
