@@ -1450,7 +1450,7 @@ impl Element {
             let package_matches = fragment.source == package.source
                 && fragment.style_key == package.style_key
                 && fragment_insets.map(f32::to_bits) == package_insets.map(f32::to_bits)
-                && fragment.range.start < fragment.range.end
+                && fragment.range.start <= fragment.range.end
                 && previous_order.is_none_or(|previous| previous < order)
                 && fragment.is_first_for_source == (index == 0)
                 && fragment.is_last_for_source == (index == last_index)
@@ -1560,7 +1560,9 @@ impl Element {
         if !self.layout_state.should_render {
             return Some(ShadowPaintBlocker::StatefulPaint);
         }
-        if self.resolved_transform.is_some() {
+        if self.resolved_transform.is_some()
+            && !recording_context.authorizes_transform_surface_root(self.stable_id())
+        {
             return Some(ShadowPaintBlocker::Transform);
         }
         if self.should_append_to_root_viewport_render() {

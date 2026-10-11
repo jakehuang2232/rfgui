@@ -5063,11 +5063,12 @@ fn install_inline_ifc_span_op(
         height: rect.height,
     }));
     // The span is placed here, not by its own `place`. Freeze its position
-    // against its parent's content frame, as placement does, so positioned
-    // children laid out or anchored against the span resolve to this box.
-    // A parent span's content frame is its box; the root's is its content
-    // origin, whose scroll the spatial tree applies itself.
-    let reference_origin = inline_span_has_positioned_descendants(arena, node_key)
+    // against its parent's content frame, as placement does, so its own
+    // transform, the atomic boxes in it and positioned children laid out or
+    // anchored against it resolve to this box. A parent span's content frame
+    // is its box; the root's is its content origin, whose scroll the spatial
+    // tree applies itself.
+    let reference_origin = inline_span_needs_spatial_frame(arena, node_key)
         .then(|| arena.parent_of(node_key))
         .flatten()
         .and_then(|parent| arena.get(parent))
@@ -5100,34 +5101,67 @@ fn install_inline_ifc_span_op(
     });
 }
 
-/// Whether a positioned element lies under `span` through inline spans only:
-/// such an element is placed against the span, so the span and every span
-/// above it need a spatial frame. Other spans keep none, as their paint
-/// belongs to the formatting context's root.
-fn inline_span_has_positioned_descendants(arena: &NodeArena, span: NodeKey) -> bool {
-    let Some(children) = arena.get(span).and_then(|node| {
+/// Whether `span` is transformed, or a positioned element or an atomic box
+/// lies under it through inline spans only: a transform surface and such a
+/// box are both measured from a spatial frame, so the span and every span
+/// above it need one. Other spans keep none, as their paint belongs to the
+/// formatting context's root.
+fn inline_span_needs_spatial_frame(arena: &NodeArena, span: NodeKey) -> bool {
+    let Some((transformed, children)) = arena.get(span).and_then(|node| {
         let element = node.element.as_any().downcast_ref::<Element>()?;
         let mask = element.compute_children_absolute_mask(arena);
-        Some(
+        Some((
+            !element.transform.as_slice().is_empty(),
             element
                 .children
                 .iter()
                 .copied()
                 .zip(mask)
                 .collect::<Vec<_>>(),
-        )
+        ))
     }) else {
         return false;
     };
-    children.into_iter().any(|(child, absolute)| {
-        absolute
-            || arena.get(child).is_some_and(|node| {
-                node.element
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .is_some_and(|element| element.inline_ifc_owned_by_root)
-            }) && inline_span_has_positioned_descendants(arena, child)
-    })
+    transformed
+        || children.into_iter().any(|(child, absolute)| {
+            absolute
+                || arena.get(child).is_some_and(|node| {
+                    if node.element.as_any().is::<Text>() {
+                        return false;
+                    }
+                    let is_span = node
+                        .element
+                        .as_any()
+                        .downcast_ref::<Element>()
+                        .is_some_and(Element::is_fragmentable_inline_element);
+                    drop(node);
+                    !is_span || inline_span_needs_spatial_frame(arena, child)
+                })
+        })
+}
+
+/// An atomic child's spatial offset from its layout parent's content frame.
+/// `offset` is measured from the root's content origin, which is the parent's
+/// frame unless the child sits in a span, whose frame is its own box.
+fn inline_atomic_spatial_offset(
+    arena: &NodeArena,
+    node_key: NodeKey,
+    offset: [f32; 2],
+    root_content_origin: [f32; 2],
+) -> [f32; 2] {
+    arena
+        .parent_of(node_key)
+        .and_then(|parent| arena.get(parent))
+        .and_then(|parent| {
+            let span = parent.element.as_any().downcast_ref::<Element>()?;
+            span.inline_ifc_owned_by_root.then(|| {
+                [
+                    offset[0] - (span.layout_state.layout_position.x - root_content_origin[0]),
+                    offset[1] - (span.layout_state.layout_position.y - root_content_origin[1]),
+                ]
+            })
+        })
+        .unwrap_or(offset)
 }
 
 /// Place an installed span's positioned children against the box its
@@ -7305,6 +7339,12 @@ impl Element {
                         placement,
                         witness.aligned_rect,
                     );
+                    let offset = inline_atomic_spatial_offset(
+                        arena,
+                        witness.node_key,
+                        offset,
+                        [origin_x, origin_y],
+                    );
                     arena.with_element_taken(witness.node_key, |child, arena| {
                         child.set_layout_offset(0.0, 0.0);
                         child.place(child_placement, arena);
@@ -7423,6 +7463,12 @@ impl Element {
                         top_offset,
                         placement,
                         witness.aligned_rect,
+                    );
+                    let offset = inline_atomic_spatial_offset(
+                        arena,
+                        witness.node_key,
+                        offset,
+                        [origin_x, origin_y],
                     );
                     arena.with_element_taken(witness.node_key, |child, arena| {
                         // Bake the line placement into the parent origin:

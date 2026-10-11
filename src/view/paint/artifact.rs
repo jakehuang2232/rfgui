@@ -2120,7 +2120,7 @@ impl PreparedInlineIfcDecorationIdentity {
         fill: &RectPassParams,
         border: Option<&RectPassParams>,
     ) -> Option<Self> {
-        if descriptor.range.start >= descriptor.range.end
+        if descriptor.range.start > descriptor.range.end
             || descriptor
                 .slice_insets
                 .iter()

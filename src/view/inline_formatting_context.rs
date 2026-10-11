@@ -1842,8 +1842,16 @@ impl InlineFormattingContext {
                 .iter()
                 .filter(|source| source.kind == InlineIfcSourceKind::Span)
             {
-                let start = source.range.start.max(line_range.start);
-                let end = source.range.end.min(line_range.end);
+                // A line holding only inline boxes reports an inverted text
+                // range; the span's fragment there is empty at its own start.
+                let (start, end) = if line_range.start <= line_range.end {
+                    (
+                        source.range.start.max(line_range.start),
+                        source.range.end.min(line_range.end),
+                    )
+                } else {
+                    (source.range.start, source.range.start)
+                };
                 let mut horizontal_extent: Option<(f32, f32)> = None;
                 let mut vertical_extent: Option<(f32, f32)> = None;
                 let mut include = |left: f32, right: f32| {
