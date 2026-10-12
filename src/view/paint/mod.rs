@@ -32,7 +32,7 @@ pub(crate) use artifact::{
     PreparedInlineIfcDecorationOp, PreparedScrollbarOverlayIdentity, PreparedScrollbarOverlayOp,
     PreparedShadowIdentity, PreparedShadowOp, PreparedSvgIdentity, PreparedSvgOp,
     PreparedTextIdentity, PreparedTextOp, RETAINED_CHILD_MASK_SLOT, RetainedChildMaskPlan,
-    preedit_glyph_identity_is_exact, preedit_underline_identity_is_exact,
+    bounds_with_shadow_ink, preedit_glyph_identity_is_exact, preedit_underline_identity_is_exact,
 };
 #[cfg(any(test, feature = "renderer-test-support"))]
 pub(crate) use compiler::take_last_production_actions_for_test;

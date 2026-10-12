@@ -738,6 +738,46 @@ impl PreparedShadowOp {
     pub(crate) fn frozen_identity(&self) -> PreparedShadowIdentity {
         self.identity.clone()
     }
+
+    /// Where this shadow can paint. An inset shadow stays inside its shape;
+    /// an outer one moves by its offset and its blur reaches 1.5 blur radii
+    /// past the shape, as the shadow module pads it, plus a pixel of rounding.
+    pub(crate) fn ink_bounds(&self) -> Rect {
+        let shape = self.shape;
+        if self.params.clip_to_geometry {
+            return Rect {
+                x: shape.x,
+                y: shape.y,
+                width: shape.width,
+                height: shape.height,
+            };
+        }
+        let reach = self.params.blur_radius.max(0.0) * 1.5 + 1.0;
+        Rect {
+            x: shape.x + self.params.offset_x - reach,
+            y: shape.y + self.params.offset_y - reach,
+            width: shape.width + reach * 2.0,
+            height: shape.height + reach * 2.0,
+        }
+    }
+}
+
+/// `bounds` grown to cover everything `shadows` paint. A chunk's bounds are
+/// its ink: a surface rasters only the union of its chunks' bounds.
+pub(crate) fn bounds_with_shadow_ink(bounds: Rect, shadows: &[PreparedShadowOp]) -> Rect {
+    shadows.iter().fold(bounds, |bounds, shadow| {
+        let ink = shadow.ink_bounds();
+        let left = bounds.x.min(ink.x);
+        let top = bounds.y.min(ink.y);
+        let right = (bounds.x + bounds.width).max(ink.x + ink.width);
+        let bottom = (bounds.y + bounds.height).max(ink.y + ink.height);
+        Rect {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        }
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

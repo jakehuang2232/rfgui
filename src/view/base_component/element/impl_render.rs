@@ -24,6 +24,13 @@ struct PreparedSelfPaintRecord {
     payload_identity: crate::view::paint::PaintPayloadIdentity,
 }
 
+impl PreparedSelfPaintRecord {
+    /// The border box grown to cover the outer shadows.
+    fn ink_bounds(&self) -> crate::view::base_component::Rect {
+        crate::view::paint::bounds_with_shadow_ink(self.geometry.bounds, &self.shadows)
+    }
+}
+
 /// One frozen native texture operation owned by this Element's paint scope.
 /// Bounds are prepared with zero paint offset and no owner transform. The
 /// owner walk applies its snap once, before restoring self clip or compositing
@@ -800,6 +807,7 @@ impl Element {
         let prepared = self.prepared_self_paint_record()?;
         let mut metadata =
             self.record_shadow_node_paint_metadata(owner, properties, content_revision)?;
+        metadata.bounds = prepared.ink_bounds();
         let mut ops = prepared
             .shadows
             .iter()
@@ -807,7 +815,6 @@ impl Element {
             .map(PaintOp::PreparedShadow)
             .collect::<Vec<_>>();
         ops.extend(prepared.decoration.into_iter().map(PaintOp::DrawRect));
-        metadata.bounds = prepared.geometry.bounds;
         metadata.payload_identity = prepared.payload_identity;
         Some(PaintArtifact {
             chunks: vec![PaintChunk {
@@ -858,7 +865,7 @@ impl Element {
                 role: PaintChunkRole::SelfDecoration,
             },
             owner,
-            bounds: prepared.geometry.bounds,
+            bounds: prepared.ink_bounds(),
             properties,
             content_revision,
             payload_identity: prepared.payload_identity,
@@ -1130,12 +1137,15 @@ impl Element {
             return None;
         }
         Some(PreparedElementInlineIfcDecorationPayload {
-            bounds: Rect {
-                x: left,
-                y: top,
-                width,
-                height,
-            },
+            bounds: crate::view::paint::bounds_with_shadow_ink(
+                Rect {
+                    x: left,
+                    y: top,
+                    width,
+                    height,
+                },
+                &shadows,
+            ),
             shadows,
             ops,
         })
