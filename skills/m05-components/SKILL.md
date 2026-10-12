@@ -41,15 +41,15 @@ When adding an optional host prop:
 A host element paints only through retained hooks; the engine records, reuses, and composites the result. Pick the first that fits:
 
 1. Compose built-in `Element` / `Text` / `Image` / `Svg` nodes.
-2. `ElementTrait::record_custom_leaf_paint` / `record_custom_wrapper_paint`: typed fills covering exactly the engine-provided bounds. The engine traverses children; never call `child.build(...)`.
+2. `ElementTrait::record_custom_leaf_paint` / `record_custom_wrapper_paint`: typed fills covering exactly the engine-provided bounds. The engine traverses children; a host never paints them itself.
 3. `ElementTrait::prepared_gpu_paint_source`: a `GpuPaintSource` frozen in `Layoutable::prepare_paint_resources` (`requires_paint_resource_preparation` returns `true`). One WGSL draw validated by `GpuPaintProgram::new`; extent = ceil(layout size × device scale); bump the revision only when input bytes change. Reference: `examples/bin/01_window/scene_windows/particle_demo.rs`.
 
 Rules:
 
 - Hooks are pure reads; freeze per-frame state in `prepare_paint_resources`.
 - Report paint changes through `retained_paint_signature` and dirty flags; a false-clean host reuses stale pixels.
-- `Renderable::build` is still required while the Legacy renderer exists. Make it paint exactly what the retained hook records (`GpuPaintSource::paint` for a GPU source). It goes away with Legacy, so put nothing there that only Legacy can draw.
-- Test pixels against the fixture's own geometry and colors, or a fresh viewport drawing the same state, never against Legacy output.
+- A leaf hook that records nothing, or more than one fill, paints nothing for that host; its children still paint.
+- Test pixels against the fixture's own geometry and colors, or a fresh viewport drawing the same state, never against another frame's readback.
 
 ---
 

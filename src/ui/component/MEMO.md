@@ -43,7 +43,7 @@ fn ExternalView() -> RsxNode {
 
 `memo/tests.rs` 直接透過真正的 macro、lazy component walker 與 C 的 scheduler，驗證 256 個 Rows 只改一個時的 render／hit 數、共享輸出、children、callback／不可比較 props、泛型與手寫 impl、state／mount／cleanup、舊 setter、外部資料 opt-out、context 新增／替換／移除／遮蔽／依賴切換、cached child 重播，以及 erased props 的 panic／卸載釋放。
 
-效能基準沿用 `tests/frontend_pipeline_bench.rs`：它包含 setter、flush、App build、component expansion、reconcile、arena commit；不包含 layout、raster、GPU 或 present。GPU 回歸另行驗證 Legacy 與 RetainedAuto，不能用前段 CPU 時間代替像素或 backing reuse 證據。
+效能基準沿用 `tests/frontend_pipeline_bench.rs`：它包含 setter、flush、App build、component expansion、reconcile、arena commit；不包含 layout、raster、GPU 或 present。GPU 回歸另行驗證，不能用前段 CPU 時間代替像素或 backing reuse 證據。
 
 ## 本次驗證（2026-09-20）
 

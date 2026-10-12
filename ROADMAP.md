@@ -100,7 +100,7 @@ pub struct Axis2<T> {
 
 ### 4. Reorganize `base_element` Trait Boundaries
 **Goal**
-- Audit and reduce responsibility overlap between `ElementTrait`, `Layoutable`, `EventTarget`, and `Renderable`.
+- Audit and reduce responsibility overlap between `ElementTrait`, `Layoutable`, and `EventTarget`.
 - Reduce reliance on `as_any + downcast::<Element>` and move toward capability-oriented interfaces.
 - This stage focuses on design and migration planning, not a large behavior rewrite.
 

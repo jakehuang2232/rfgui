@@ -1,5 +1,7 @@
 # State → build → render：A＋B
 
+> Legacy renderer 已在 129e982 移除。下文的 Legacy 數據、renderer selector 與「兩個 renderer」敘述都是當時的紀錄；現在只剩 RetainedAuto。
+
 範圍：以前一版 `ddb7925` 為基準，補前段觀測、消除重複 reconciliation、縮小 incremental scroll 搬移。State 快照／batching、memo 失效策略、layout dirty 刷新和 renderer authority 維持原有語意。
 
 ## 觀測入口

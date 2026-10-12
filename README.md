@@ -90,7 +90,9 @@ Every frame goes through one pipeline, `RetainedAuto`:
 3. **Raster planning** groups the content into surfaces and keeps a surface's raster from an earlier frame when nothing it depends on changed. Content that cannot be reused is drawn again this frame.
 4. **Frame Graph** compiles the remaining raster and composite work into render passes and executes them on `wgpu`.
 
-The older Legacy renderer, in which every element built its own render passes each frame, is being retired.
+Kept surfaces are only a cache. A surface the cache cannot keep, for example past its 128 MiB budget, is drawn into a frame-local texture and dropped after the frame; nothing falls back to another renderer or skips a frame. If compiling or executing the graph fails, the frame is discarded and the next frame paints again.
+
+To see what the cache did, enable `ViewportDebugOptions::retained_auto_overlay` (or `RFGUI_DEBUG_RETAINED_AUTO=1`): every surface is outlined on its owner node in green (reused), orange (drawn again and kept) or red (drawn and not kept), labelled with its size and raster scale. In the example runner, F9 prints the same information for the next frame.
 
 ## Frame Graph
 
@@ -180,7 +182,7 @@ A host element that paints content of its own implements a retained paint hook o
 - `record_custom_leaf_paint` / `record_custom_wrapper_paint` record typed fill commands covering the engine-provided bounds, before or after the children the engine traverses.
 - `prepared_gpu_paint_source` returns a `GpuPaintSource` frozen in `Layoutable::prepare_paint_resources`: one validated WGSL draw that the engine renders into its own texture and composites with the scene's transforms, clips, and effects. `examples/bin/01_window/scene_windows/particle_demo.rs` is a complete example.
 
-Prefer composing built-in elements when they can express the content. `Renderable::build` is still required while the Legacy renderer exists; it must paint the same as the retained hook and goes away with Legacy.
+Prefer composing built-in elements when they can express the content.
 
 ## Rendering
 

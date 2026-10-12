@@ -50,11 +50,10 @@ Check these current capability groups:
 - `trace_compile_detail` / `trace_execute_detail` (`RFGUI_TRACE_COMPILE_DETAIL` / `RFGUI_TRACE_EXECUTE_DETAIL`): frame-graph compile and execution detail, under `trace_render_time`.
 - `RFGUI_TRACE_BATCH=1`: rect pass order and batch keys at frame-graph compile.
 - `geometry_overlay` (`RFGUI_DEBUG_GEOMETRY_OVERLAY`): geometry visualization.
-- `retained_auto_overlay` (`RFGUI_DEBUG_RETAINED_AUTO`): marks the frame roots (`retained_auto_authority`) and, on a frame that fell back to Legacy, the nodes and reasons that caused it (`retained_auto_fallback_reasons`). `retained_auto_reuse_actions` is accepted but not drawn yet.
-- `retained_auto_census` (`RFGUI_DEBUG_RETAINED_AUTO_CENSUS`) with `Viewport::capture_retained_auto_census()`: fallback reasons aggregated by element type, stage, and category, without the overlay. Its recording pass does not use the production surface plan, so per-node attribution can name nodes production admits.
-- `RFGUI_RETAINED_FALLBACK_LEDGER=<path>`: one JSONL line per frame that fell back to Legacy, with stages and reasons; summarize with `python3 -I scripts/retained-fallback-ledger-summary.py <path>`. Temporary; removed with Legacy.
+- `retained_auto_overlay` (`RFGUI_DEBUG_RETAINED_AUTO`): outlines each surface and GPU source on its owner node, green for reuse, orange for reraster (drawn again and kept), red for transient (drawn into a frame-local texture and not kept), labelled `Element transform reuse 32x40 @2x` (owner type, surface kind, action, physical size, raster scale). `retained_auto_show_reuse` / `retained_auto_show_reraster` / `retained_auto_show_transient` filter by action; the inspector panel exposes all four.
+- `Viewport::request_retained_auto_report()` (F9 in the example runner): prints the next frame's chunk and op counts, action totals, and one line per surface with its owner's `stable_id` and bounds. `capture_debug` with `include_retained_auto` returns the same data as `DebugRetainedAutoSnapshot` for any frame that recorded it (overlay, `trace_render_time`, or a pending report).
+- `trace_render_time` also prints one `retained-raster` line per surface and GPU source: kind, texture key, extent, planned action, and whether its backing is resident.
 - `Viewport::gpu_paint_observations()`: whether each `GpuPaintSource` was rendered or reused in the last frame.
-- `RFGUI_TRACE_LAYOUT`: Element geometry printed from Legacy `Element::build`. It prints nothing under `RetainedAuto` and is removed with Legacy.
 
 Do not force an unrelated flag to carry different semantics merely to avoid adding a new one.
 
