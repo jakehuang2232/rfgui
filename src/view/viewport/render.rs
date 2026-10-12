@@ -521,140 +521,158 @@ impl Viewport {
         }
     }
 
-    fn push_retained_auto_debug_overlay(&mut self, roots: &[crate::view::node_arena::NodeKey]) {
-        if !self.debug_options.retained_auto_overlay || !self.debug_options.retained_auto_authority
-        {
+    /// Outlines each surface's owner node, colored by what the surface cache
+    /// did with it: green reuse, orange reraster, red transient. Labels stack
+    /// when one node owns several surfaces.
+    fn push_retained_auto_debug_overlay(&mut self) {
+        use crate::view::paint::RetainedSurfaceCompileAction as Action;
+        if !self.debug_options.retained_auto_overlay {
             return;
         }
         let scale = self.scale_factor.max(0.0001);
         let screen_w = self.gpu.surface_config.width.max(1) as f32;
         let screen_h = self.gpu.surface_config.height.max(1) as f32;
-        for &owner in roots {
-            let Some((snapshot, label)) = (|| {
-                let node = self.scene.node_arena.get(owner)?;
-                let element_type = node.element.element_type_name();
-                let element_type = element_type.rsplit("::").next().unwrap_or(element_type);
-                Some((
-                    node.element.box_model_snapshot(),
-                    format!("{element_type}#{}", node.element.stable_id()),
-                ))
-            })() else {
+        let mut labels_per_owner = FxHashMap::default();
+        let mut geometry = Vec::new();
+        for entry in &self.frame.surface_diagnostics {
+            let (shown, color) = match entry.action {
+                Action::Reuse => (
+                    self.debug_options.retained_auto_show_reuse,
+                    [38.0 / 255.0, 242.0 / 255.0, 90.0 / 255.0, 242.0 / 255.0],
+                ),
+                Action::Reraster => (
+                    self.debug_options.retained_auto_show_reraster,
+                    [1.0, 115.0 / 255.0, 26.0 / 255.0, 242.0 / 255.0],
+                ),
+                Action::Transient => (
+                    self.debug_options.retained_auto_show_transient,
+                    [1.0, 59.0 / 255.0, 48.0 / 255.0, 242.0 / 255.0],
+                ),
+            };
+            if !shown {
+                continue;
+            }
+            let Some(surface) = self.retained_auto_debug_surface(entry) else {
                 continue;
             };
+            let Some(node) = self.scene.node_arena.get(entry.owner) else {
+                continue;
+            };
+            let snapshot = node.element.box_model_snapshot();
             if !snapshot.should_render {
                 continue;
             }
-            let (vertices, indices) = build_debug_overlay_geometry(
+            let row = labels_per_owner.entry(entry.owner).or_insert(0_usize);
+            geometry.push(build_debug_overlay_geometry(
                 &snapshot,
                 scale,
                 screen_w,
                 screen_h,
-                [45.0 / 255.0, 140.0 / 255.0, 1.0, 242.0 / 255.0],
-                Some(&label),
-            );
+                color,
+                Some((&surface.label(), *row)),
+            ));
+            *row += 1;
+        }
+        for (vertices, indices) in geometry {
             self.push_debug_overlay_geometry(&vertices, &indices);
         }
     }
 
-    fn retained_auto_debug_identity(
+    /// One recorded surface resolved against its owner node.
+    fn retained_auto_debug_surface(
         &self,
-        owner: crate::view::node_arena::NodeKey,
-    ) -> Option<(u64, &'static str, crate::view::debug::DebugRect)> {
-        let node = self.scene.node_arena.get(owner)?;
+        entry: &SurfaceDiagnostic,
+    ) -> Option<crate::view::debug::DebugRetainedAutoSurfaceSnapshot> {
+        let input = self.retained_auto_debug_surface_input(entry)?;
+        Some(crate::view::debug::DebugRetainedAutoSurfaceSnapshot {
+            owner: None,
+            stable_id: input.stable_id,
+            element_type: input.element_type,
+            bounds: input.bounds,
+            kind: input.kind,
+            action: input.action,
+            size: input.size,
+            scale_factor: input.scale_factor,
+        })
+    }
+
+    fn retained_auto_debug_surface_input(
+        &self,
+        entry: &SurfaceDiagnostic,
+    ) -> Option<crate::view::debug::DebugRetainedAutoSurfaceCaptureInput> {
+        use crate::view::debug::DebugSurfaceAction;
+        use crate::view::paint::RetainedSurfaceCompileAction as Action;
+        let node = self.scene.node_arena.get(entry.owner)?;
         let bounds = node.element.box_model_snapshot();
-        Some((
-            node.element.stable_id(),
-            node.element.element_type_name(),
-            crate::view::debug::DebugRect {
+        Some(crate::view::debug::DebugRetainedAutoSurfaceCaptureInput {
+            owner: Some(entry.owner),
+            stable_id: Some(node.element.stable_id()),
+            element_type: node.element.element_type_name(),
+            bounds: Some(crate::view::debug::DebugRect {
                 x: bounds.x,
                 y: bounds.y,
                 width: bounds.width,
                 height: bounds.height,
+            }),
+            kind: entry.kind,
+            action: match entry.action {
+                Action::Reuse => DebugSurfaceAction::Reuse,
+                Action::Reraster => DebugSurfaceAction::Reraster,
+                Action::Transient => DebugSurfaceAction::Transient,
             },
-        ))
+            size: (entry.desc.width(), entry.desc.height()),
+            scale_factor: entry.scale_factor,
+        })
     }
 
     fn build_retained_auto_debug_capture(
         &self,
-        roots: &[crate::view::node_arena::NodeKey],
-        compiled: bool,
-        executed: bool,
+        presented: bool,
+        paint_chunks: usize,
+        paint_ops: usize,
     ) -> crate::view::debug::DebugRetainedAutoCaptureInput {
-        use crate::view::debug::{
-            DebugCoverageKind as Coverage, DebugFallbackCategory as Category,
-            DebugFallbackDetail as Detail, DebugFallbackStage as Stage,
-            DebugFrameDisposition as Disposition,
-        };
-
-        let disposition = if !compiled {
-            Disposition::Rejected
-        } else if !executed {
-            Disposition::Aborted
-        } else {
-            Disposition::Presented
-        };
-        let mut nodes = Vec::new();
-        for &root in roots {
-            if let Some((stable_id, element_type, bounds)) = self.retained_auto_debug_identity(root)
-            {
-                nodes.push(crate::view::debug::DebugRetainedAutoNodeCaptureInput {
-                    owner: Some(root),
-                    stable_id: Some(stable_id),
-                    element_type,
-                    bounds: Some(bounds),
-                    coverage: vec![Coverage::ArtifactChunk],
-                    resident_action: None,
-                    fallbacks: Vec::new(),
-                });
-            }
-        }
-        let mut failures = Vec::new();
-        if !compiled || !executed {
-            let (stage, category) = if compiled {
-                (Stage::Execution, Category::Runtime)
-            } else {
-                (Stage::Compilation, Category::Compiler)
+        use crate::view::debug::{DebugFrameDisposition, DebugSurfaceAction, DebugSurfaceKind};
+        let surfaces = self
+            .frame
+            .surface_diagnostics
+            .iter()
+            .filter_map(|entry| self.retained_auto_debug_surface_input(entry))
+            .collect::<Vec<_>>();
+        let count =
+            |keep: &dyn Fn(&crate::view::debug::DebugRetainedAutoSurfaceCaptureInput) -> bool| {
+                surfaces.iter().filter(|surface| keep(surface)).count() as u64
             };
-            failures.push(crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
-                stage,
-                category,
-                detail: Detail::Code {
-                    code: "terminal-frame-failure",
-                },
-                owner: None,
-                stable_id: None,
-                element_type: None,
-                bounds: None,
-            });
-        }
         let statistics = crate::view::debug::DebugRetainedAutoStatistics {
-            reachable_nodes: self.scene.node_arena.len() as u64,
-            covered_nodes: nodes.len() as u64,
-            artifact_chunks: 1,
-            property_surfaces: 0,
-            retained_surfaces: 0,
-            legacy_nodes: 0,
-            culled_nodes: 0,
-            fallback_count: failures.len() as u64,
-            resident_commits: 0,
-            resident_reuses: 0,
-            resident_rerasterizations: 0,
+            paint_chunks: paint_chunks as u64,
+            paint_ops: paint_ops as u64,
+            surfaces: count(&|surface| surface.kind != DebugSurfaceKind::GpuSource),
+            gpu_sources: count(&|surface| surface.kind == DebugSurfaceKind::GpuSource),
+            reuses: count(&|surface| surface.action == DebugSurfaceAction::Reuse),
+            rerasterizations: count(&|surface| surface.action == DebugSurfaceAction::Reraster),
+            transients: count(&|surface| surface.action == DebugSurfaceAction::Transient),
             transform_nodes: self.compositor.property_trees.transforms.len() as u64,
             effect_nodes: self.compositor.property_trees.effects.len() as u64,
             scroll_nodes: self.compositor.property_trees.scrolls.len() as u64,
         };
         crate::view::debug::DebugRetainedAutoCaptureInput {
-            frame: crate::view::debug::DebugRetainedAutoFrameCaptureInput {
-                attempt_id: self.frame.frame_number,
-                requested_mode: crate::view::debug::DebugPaintRequestedMode::RetainedAuto,
-                selected_authority: crate::view::debug::DebugFramePaintAuthority::Artifact,
-                disposition,
-                fallback_stages: failures,
+            frame: crate::view::debug::DebugRetainedAutoFrameSnapshot {
+                frame_number: self.frame.frame_number,
+                disposition: if presented {
+                    DebugFrameDisposition::Presented
+                } else {
+                    DebugFrameDisposition::Aborted
+                },
                 statistics,
             },
-            nodes,
-            surfaces: Vec::new(),
+            surfaces,
         }
+    }
+
+    /// Asks for a text report of the next frame's surfaces, printed once that
+    /// frame finishes. Bound to F9 by the example runner.
+    pub fn request_retained_auto_report(&mut self) {
+        self.frame.retained_auto_report_pending = true;
+        self.request_redraw();
     }
 
     /// Build the hierarchical trace tree from collected frame timings.
@@ -1031,6 +1049,7 @@ impl Viewport {
 
         #[cfg(test)]
         single_viewport_frame_test_support::run_after_resource_freeze(self);
+        self.frame.surface_diagnostics.clear();
         self.prune_gpu_paint_sources();
         timings.prepare_paint_ms = phase_clock.checkpoint_ms();
 
@@ -1120,7 +1139,7 @@ impl Viewport {
             &ctx,
         );
         ctx.set_state(state);
-        self.push_retained_auto_debug_overlay(&root_keys_for_build);
+        self.push_retained_auto_debug_overlay();
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
             let present_pass =
@@ -1263,12 +1282,21 @@ impl Viewport {
             retained_surface_frame_owner,
             compiled && executed,
         );
-        if self.debug_options.trace_render_time || self.debug_options.retained_auto_overlay {
+        if self.surface_diagnostics_requested() {
             self.frame.last_retained_auto_debug = Some(self.build_retained_auto_debug_capture(
-                &root_keys_for_build,
-                compiled,
-                executed,
+                compiled && executed,
+                recorded_chunks,
+                recorded_ops,
             ));
+        }
+        if std::mem::take(&mut self.frame.retained_auto_report_pending) {
+            let capture = self.capture_debug(crate::view::debug::DebugCaptureOptions {
+                include_retained_auto: true,
+                ..Default::default()
+            });
+            if let Some(report) = &capture.document().viewport.retained_auto {
+                print!("{report}");
+            }
         }
 
         // Never retain topology from a terminal frame. In particular, an
@@ -1344,8 +1372,8 @@ impl Viewport {
                     frame_number,
                     self.gpu_paint_observations()
                 );
-                self.print_retained_raster_diagnostics(frame_number);
             }
+            self.print_retained_raster_diagnostics(frame_number);
             let trace_root = Self::build_frame_trace_tree(&timings, &self.debug_options);
             println!("{}", format_trace_render_tree(&trace_root));
         }
@@ -1921,11 +1949,14 @@ impl Viewport {
                 crate::ui::ViewportAction::SetDebugRetainedAutoOverlay(on) => {
                     options.retained_auto_overlay = on;
                 }
-                crate::ui::ViewportAction::SetDebugRetainedAutoAuthority(on) => {
-                    options.retained_auto_authority = on;
+                crate::ui::ViewportAction::SetDebugRetainedAutoShowReuse(on) => {
+                    options.retained_auto_show_reuse = on;
                 }
-                crate::ui::ViewportAction::SetDebugRetainedAutoReuseActions(on) => {
-                    options.retained_auto_reuse_actions = on;
+                crate::ui::ViewportAction::SetDebugRetainedAutoShowReraster(on) => {
+                    options.retained_auto_show_reraster = on;
+                }
+                crate::ui::ViewportAction::SetDebugRetainedAutoShowTransient(on) => {
+                    options.retained_auto_show_transient = on;
                 }
                 crate::ui::ViewportAction::SetClearColor(color) => {
                     self.set_clear_color(Box::new(color));

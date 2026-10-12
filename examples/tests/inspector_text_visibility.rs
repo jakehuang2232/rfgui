@@ -110,7 +110,7 @@ fn inspector_labels_survive_enabling_scroll_in_complete_demo() -> Result<(), Str
             }
             if frame >= 7 {
                 assert!(viewport.debug_options().retained_auto_overlay);
-                assert!(text_bounds(&viewport, "Authority").unwrap().should_render);
+                assert!(text_bounds(&viewport, "Transient").unwrap().should_render);
             }
             // The default 360x240 Inspector must remain unresized: enabling
             // both sections activates its content scroll target. Enlarging

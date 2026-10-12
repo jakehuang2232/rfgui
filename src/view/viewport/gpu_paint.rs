@@ -19,25 +19,73 @@ pub(super) struct CachedSource {
     written: bool,
     work: Option<GpuPaintWork>,
 }
-pub(super) type RasterDiagnostic = (
-    crate::view::frame_graph::PersistentTextureKey,
-    crate::view::frame_graph::texture_resource::TextureDesc,
-    crate::view::paint::RetainedSurfaceCompileAction,
-);
+/// What the surface cache did with one surface or GPU source this frame.
+/// Recorded only while the debug overlay, the render-time trace or an F9
+/// report needs it.
+#[derive(Clone, Debug)]
+pub(crate) struct SurfaceDiagnostic {
+    pub(crate) owner: crate::view::node_arena::NodeKey,
+    pub(crate) kind: crate::view::debug::DebugSurfaceKind,
+    pub(crate) action: crate::view::paint::RetainedSurfaceCompileAction,
+    pub(crate) key: crate::view::frame_graph::PersistentTextureKey,
+    pub(crate) desc: crate::view::frame_graph::texture_resource::TextureDesc,
+    pub(crate) scale_factor: f32,
+}
+
 impl Viewport {
-    pub(crate) fn record_retained_raster_diagnostics(&mut self, entries: Vec<RasterDiagnostic>) {
-        self.frame.retained_raster_diagnostics = entries;
+    pub(crate) fn surface_diagnostics_requested(&self) -> bool {
+        self.debug_options.trace_render_time
+            || self.debug_options.retained_auto_overlay
+            || self.frame.retained_auto_report_pending
     }
+
+    pub(crate) fn record_surface_diagnostics(&mut self, entries: Vec<SurfaceDiagnostic>) {
+        self.frame.surface_diagnostics = entries;
+    }
+
     // These are planner decisions. A parent Reuse or a clipped composite can
     // leave a candidate unexecuted; Reraster alone is not a GPU-write witness.
     pub(super) fn print_retained_raster_diagnostics(&self, frame: u64) {
-        for (key, desc, action) in &self.frame.retained_raster_diagnostics {
+        for entry in &self.frame.surface_diagnostics {
             println!(
-                "retained-raster frame={frame} key={key:?} extent={}x{} planned_action={action:?} resident={}",
-                desc.width(),
-                desc.height(),
-                self.has_compatible_persistent_render_target(*key, desc)
+                "retained-raster frame={frame} kind={:?} key={:?} extent={}x{} planned_action={:?} resident={}",
+                entry.kind,
+                entry.key,
+                entry.desc.width(),
+                entry.desc.height(),
+                entry.action,
+                self.has_compatible_persistent_render_target(entry.key, &entry.desc)
             );
+        }
+    }
+
+    /// Whether `source`'s kept output is still valid and resident, so a
+    /// retained source can be reused instead of produced.
+    fn gpu_paint_source_reusable(&self, source: &GpuPaintSource) -> bool {
+        // A stable key is insufficient: the physical backing must still exist.
+        let resident = self.has_compatible_persistent_render_target(
+            source.key(),
+            &source.descriptor(self.max_texture_dimension_2d()),
+        );
+        self.frame
+            .gpu_paint_sources
+            .get(&source.id.get())
+            .is_some_and(|entry| entry.valid && resident && entry.source == *source)
+    }
+
+    /// The action `prepare_gpu_paint_source` will take for `source`.
+    pub(crate) fn planned_gpu_paint_source_action(
+        &self,
+        source: &GpuPaintSource,
+        retain: bool,
+    ) -> crate::view::paint::RetainedSurfaceCompileAction {
+        use crate::view::paint::RetainedSurfaceCompileAction as Action;
+        if !retain {
+            Action::Transient
+        } else if self.gpu_paint_source_reusable(source) {
+            Action::Reuse
+        } else {
+            Action::Reraster
         }
     }
 
@@ -48,16 +96,12 @@ impl Viewport {
         source: &GpuPaintSource,
         retain: bool,
     ) -> (bool, Arc<SourceResources>) {
-        // Prepare runs before this source's output attachment is acquired. A
-        // stable key is insufficient: the physical backing must still exist.
-        let resident = self.has_compatible_persistent_render_target(
-            source.key(),
-            &source.descriptor(self.max_texture_dimension_2d()),
-        );
-        if let Some(entry) = self.frame.gpu_paint_sources.get(&source.id.get()) {
-            if retain && entry.valid && resident && entry.source == *source {
-                return (true, entry.resources.clone());
-            }
+        // Prepare runs before this source's output attachment is acquired.
+        if retain
+            && self.gpu_paint_source_reusable(source)
+            && let Some(entry) = self.frame.gpu_paint_sources.get(&source.id.get())
+        {
+            return (true, entry.resources.clone());
         }
         let resources = self
             .frame
@@ -188,7 +232,6 @@ impl Viewport {
     }
 
     pub(super) fn prune_gpu_paint_sources(&mut self) {
-        self.frame.retained_raster_diagnostics.clear();
         if self.frame.gpu_paint_sources.is_empty() {
             return;
         }

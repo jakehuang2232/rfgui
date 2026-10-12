@@ -33,14 +33,16 @@ fn retained_auto_debug_setters_enqueue_explicit_actions() {
     let _ = drain_viewport_actions();
     let h = use_viewport();
     h.set_debug_retained_auto_overlay(true);
-    h.set_debug_retained_auto_authority(false);
-    h.set_debug_retained_auto_reuse_actions(true);
+    h.set_debug_retained_auto_show_reuse(false);
+    h.set_debug_retained_auto_show_reraster(true);
+    h.set_debug_retained_auto_show_transient(false);
     assert_eq!(
         drain_viewport_actions(),
         vec![
             ViewportAction::SetDebugRetainedAutoOverlay(true),
-            ViewportAction::SetDebugRetainedAutoAuthority(false),
-            ViewportAction::SetDebugRetainedAutoReuseActions(true),
+            ViewportAction::SetDebugRetainedAutoShowReuse(false),
+            ViewportAction::SetDebugRetainedAutoShowReraster(true),
+            ViewportAction::SetDebugRetainedAutoShowTransient(false),
         ]
     );
 }

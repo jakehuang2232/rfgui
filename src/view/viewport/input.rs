@@ -10,9 +10,12 @@ pub struct ViewportDebugOptions {
     pub trace_compile_detail: bool,
     pub trace_execute_detail: bool,
     pub geometry_overlay: bool,
+    /// Outline every retained surface, colored by what the cache did with it.
     pub retained_auto_overlay: bool,
-    pub retained_auto_authority: bool,
-    pub retained_auto_reuse_actions: bool,
+    /// Which surface actions the overlay shows.
+    pub retained_auto_show_reuse: bool,
+    pub retained_auto_show_reraster: bool,
+    pub retained_auto_show_transient: bool,
 }
 
 impl Default for ViewportDebugOptions {
@@ -25,8 +28,9 @@ impl Default for ViewportDebugOptions {
             trace_execute_detail: false,
             geometry_overlay: false,
             retained_auto_overlay: false,
-            retained_auto_authority: true,
-            retained_auto_reuse_actions: true,
+            retained_auto_show_reuse: true,
+            retained_auto_show_reraster: true,
+            retained_auto_show_transient: true,
         }
     }
 }

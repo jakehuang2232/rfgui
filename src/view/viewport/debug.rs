@@ -717,92 +717,40 @@ fn append_overlay_rect_quad(
     indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
-fn digit_segments(digit: char) -> Option<&'static [usize]> {
-    match digit {
-        '0' => Some(&[0, 1, 2, 4, 5, 6]),
-        '1' => Some(&[2, 5]),
-        '2' => Some(&[0, 2, 3, 4, 6]),
-        '3' => Some(&[0, 2, 3, 5, 6]),
-        '4' => Some(&[1, 2, 3, 5]),
-        '5' => Some(&[0, 1, 3, 5, 6]),
-        '6' => Some(&[0, 1, 3, 4, 5, 6]),
-        '7' => Some(&[0, 2, 5]),
-        '8' => Some(&[0, 1, 2, 3, 4, 5, 6]),
-        '9' => Some(&[0, 1, 2, 3, 5, 6]),
-        _ => None,
-    }
-}
-
-fn append_overlay_digit(
-    vertices: &mut Vec<super::super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
-    indices: &mut Vec<u32>,
-    digit: char,
-    x: f32,
-    y: f32,
-    scale: f32,
-    color: [f32; 4],
-    screen_w: f32,
-    screen_h: f32,
-) {
-    let Some(segments) = digit_segments(digit) else {
-        return;
-    };
-    let thickness = 1.5 * scale;
-    let width = 7.0 * scale;
-    let height = 12.0 * scale;
-    let mid = y + height * 0.5;
-    let horizontal_width = (width - thickness).max(thickness);
-    let vertical_height = (height * 0.5 - thickness).max(thickness);
-    let segment_rects = [
-        (x, y, x + horizontal_width, y + thickness),
-        (x, y, x + thickness, y + vertical_height),
-        (x + width - thickness, y, x + width, y + vertical_height),
-        (
-            x,
-            mid - thickness * 0.5,
-            x + horizontal_width,
-            mid + thickness * 0.5,
-        ),
-        (x, mid, x + thickness, y + height),
-        (x + width - thickness, mid, x + width, y + height),
-        (x, y + height - thickness, x + horizontal_width, y + height),
-    ];
-
-    for segment in segments {
-        let (left, top, right, bottom) = segment_rects[*segment];
-        append_overlay_rect_quad(
-            vertices, indices, left, top, right, bottom, color, screen_w, screen_h,
-        );
-    }
-}
-
+/// Draws `label` in the overlay font on an `accent_color` tab above the box,
+/// the `row`-th label upward. A tab that would leave the top of the screen
+/// goes inside the box instead.
 pub(super) fn append_overlay_label_geometry(
     vertices: &mut Vec<super::super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
     indices: &mut Vec<u32>,
     snapshot: &super::super::base_component::BoxModelSnapshot,
     label: &str,
+    row: usize,
     accent_color: [f32; 4],
     scale_factor: f32,
     screen_w: f32,
     screen_h: f32,
 ) {
+    use overlay_font::{GLYPH_COLUMNS, GLYPH_ROWS, glyph_rows, row_runs};
     if label.is_empty() {
         return;
     }
 
     let scale = scale_factor.max(0.0001);
-    let digit_scale = 0.8 * scale;
-    let digit_width = 7.0 * digit_scale;
-    let digit_height = 12.0 * digit_scale;
-    let digit_gap = 1.5 * scale;
+    let pixel = 1.25 * scale;
+    let advance = (GLYPH_COLUMNS + 1) as f32 * pixel;
     let padding_x = 3.0 * scale;
     let padding_y = 2.5 * scale;
-    let text_width = label.chars().count() as f32 * digit_width
-        + label.chars().count().saturating_sub(1) as f32 * digit_gap;
-    let label_width = text_width + padding_x * 2.0;
-    let label_height = digit_height + padding_y * 2.0;
+    let glyph_count = label.chars().count() as f32;
+    let label_width = glyph_count * advance - pixel + padding_x * 2.0;
+    let label_height = GLYPH_ROWS as f32 * pixel + padding_y * 2.0;
     let left = (snapshot.x * scale).max(0.0);
-    let top = (snapshot.y * scale).sub(label_height).max(0.0);
+    let above = snapshot.y * scale - label_height * (row + 1) as f32;
+    let top = if above >= 0.0 {
+        above
+    } else {
+        (snapshot.y * scale).max(0.0) + label_height * row as f32
+    };
     let right = (left + label_width).min(screen_w);
     let bottom = (top + label_height).min(screen_h);
 
@@ -818,21 +766,29 @@ pub(super) fn append_overlay_label_geometry(
         screen_h,
     );
 
-    let mut cursor_x = left + padding_x;
     let text_top = top + padding_y;
-    for digit in label.chars() {
-        append_overlay_digit(
-            vertices,
-            indices,
-            digit,
-            cursor_x,
-            text_top,
-            digit_scale,
-            [0.0, 0.0, 0.0, 0.9],
-            screen_w,
-            screen_h,
-        );
-        cursor_x += digit_width + digit_gap;
+    for (index, ch) in label.chars().enumerate() {
+        let Some(rows) = glyph_rows(ch) else {
+            continue;
+        };
+        let glyph_left = left + padding_x + index as f32 * advance;
+        for (row_index, bits) in rows.into_iter().enumerate() {
+            let row_top = text_top + row_index as f32 * pixel;
+            for (column, length) in row_runs(bits) {
+                let run_left = glyph_left + column as f32 * pixel;
+                append_overlay_rect_quad(
+                    vertices,
+                    indices,
+                    run_left,
+                    row_top,
+                    run_left + length as f32 * pixel,
+                    row_top + pixel,
+                    [0.0, 0.0, 0.0, 0.9],
+                    screen_w,
+                    screen_h,
+                );
+            }
+        }
     }
 }
 
@@ -842,7 +798,7 @@ pub(super) fn build_debug_overlay_geometry(
     screen_w: f32,
     screen_h: f32,
     color: [f32; 4],
-    label: Option<&str>,
+    label: Option<(&str, usize)>,
 ) -> (
     Vec<super::super::render_pass::debug_overlay_pass::DebugOverlayVertex>,
     Vec<u32>,
@@ -871,12 +827,13 @@ pub(super) fn build_debug_overlay_geometry(
             screen_h,
         );
     }
-    if let Some(label) = label {
+    if let Some((label, row)) = label {
         append_overlay_label_geometry(
             &mut vertices,
             &mut indices,
             snapshot,
             label,
+            row,
             color,
             scale,
             screen_w,
@@ -886,5 +843,6 @@ pub(super) fn build_debug_overlay_geometry(
     (vertices, indices)
 }
 
+mod overlay_font;
 #[cfg(test)]
 mod tests;

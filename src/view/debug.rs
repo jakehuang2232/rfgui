@@ -48,9 +48,8 @@ pub struct DebugCaptureOptions {
     pub include_interaction: bool,
     pub include_dirty: bool,
     pub include_render: bool,
-    /// Captures the last RetainedAuto authority attempt supplied by the
-    /// viewport. Callers should avoid constructing the integration input when
-    /// this is false; debug capture performs no RetainedAuto-only traversal.
+    /// Captures the viewport's last RetainedAuto frame: its statistics and
+    /// what the surface cache did with each surface.
     pub include_retained_auto: bool,
     pub include_component: bool,
 }
@@ -125,179 +124,56 @@ pub struct DebugViewportSnapshot {
     pub keyboard_capture_node: Option<DebugNodeId>,
     pub pointer_position: Option<(f32, f32)>,
     pub pressed_pointer_buttons: Vec<PointerButton>,
-    /// Last completed or rejected RetainedAuto attempt known to the viewport.
+    /// The last RetainedAuto frame the viewport recorded diagnostics for.
     /// This is independent from the frame currently visible on screen.
     pub retained_auto: Option<DebugRetainedAutoSnapshot>,
 }
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DebugPaintRequestedMode {
-    Legacy,
-    RetainedAuto,
-}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DebugFramePaintAuthority {
-    /// Selection failed before any paint authority was committed.
-    Unselected,
-    Legacy,
-    Artifact,
-}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DebugFrameDisposition {
     Presented,
-    FellBackToLegacy,
-    Rejected,
+    /// Compilation or execution failed; the frame was discarded and the next
+    /// frame paints again.
     Aborted,
 }
 
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DebugFallbackStage {
-    Selection,
-    Planning,
-    Recording,
-    Preparation,
-    Compilation,
-    Execution,
-    Terminal,
-}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DebugFallbackCategory {
-    UnsupportedHost,
-    PropertyTopology,
-    DeferredPaint,
-    LayoutTransition,
-    Coverage,
-    Validation,
-    Resource,
-    Capacity,
-    Compiler,
-    Runtime,
-    ForcedFailure,
-    Unknown,
-}
-
-#[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DebugFallbackDetail {
-    None,
-    Code {
-        code: &'static str,
-    },
-    /// A code produced by one named authority candidate.
-    ///
-    /// `RetainedAuto` tries several candidates and each may reject for its own
-    /// reason. Without the candidate name, two grammars rejecting for the same
-    /// reason are indistinguishable, and a reason that names no node cannot be
-    /// traced back to the grammar that raised it.
-    CandidateCode {
-        candidate: &'static str,
-        code: &'static str,
-    },
-    Boundary {
-        reason: &'static str,
-    },
-    Validation {
-        invariant: &'static str,
-    },
-    Resource {
-        resource: &'static str,
-    },
-    Capacity {
-        resource: &'static str,
-        requested: u64,
-        limit: u64,
-    },
-}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DebugCoverageKind {
-    ArtifactChunk,
-    PropertySurface,
-    RetainedSurface,
-    LegacyBoundary,
-    Transparent,
-    Culled,
-    Uncovered,
-}
-
+/// What a retained surface rasters.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DebugSurfaceKind {
     Transform,
     Effect,
-    Isolation,
-    ScrollHost,
     ScrollContent,
-    RootOpacityGroup,
+    /// Output of a custom GPU paint source.
+    GpuSource,
 }
 
+/// What the surface cache did with a surface this frame.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DebugResidentAction {
-    None,
-    Commit,
+pub enum DebugSurfaceAction {
+    /// Kept pixels from an earlier frame were composited unchanged.
     Reuse,
+    /// The surface was drawn again and kept for later frames.
     Reraster,
-    Clear,
-}
-
-#[non_exhaustive]
-#[derive(Clone, Debug, PartialEq)]
-pub struct DebugRetainedAutoFallbackSnapshot {
-    pub stage: DebugFallbackStage,
-    pub category: DebugFallbackCategory,
-    pub detail: DebugFallbackDetail,
-    pub node: Option<DebugNodeId>,
-    pub stable_id: Option<u64>,
-    pub element_type: Option<&'static str>,
-    pub bounds: Option<DebugRect>,
+    /// The surface was drawn into a frame-local target and not kept.
+    Transient,
 }
 
 #[non_exhaustive]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DebugRetainedAutoStatistics {
-    pub reachable_nodes: u64,
-    pub covered_nodes: u64,
-    pub artifact_chunks: u64,
-    pub property_surfaces: u64,
-    pub retained_surfaces: u64,
-    pub legacy_nodes: u64,
-    pub culled_nodes: u64,
-    pub fallback_count: u64,
-    pub resident_commits: u64,
-    pub resident_reuses: u64,
-    pub resident_rerasterizations: u64,
-    /// Property-tree node counts for the attempt.
-    ///
-    /// These select which authority candidates are attempted at all, so they
-    /// explain candidate rejections that name no node. They count property
-    /// nodes, not styled hosts: an element carrying a scroll style that
-    /// produced no scroll property node is absent from `scroll_nodes` while
-    /// still reporting a `scroll-container` paint boundary.
+    pub paint_chunks: u64,
+    pub paint_ops: u64,
+    pub surfaces: u64,
+    pub gpu_sources: u64,
+    pub reuses: u64,
+    pub rerasterizations: u64,
+    pub transients: u64,
     pub transform_nodes: u64,
     pub effect_nodes: u64,
     pub scroll_nodes: u64,
-}
-
-#[non_exhaustive]
-#[derive(Clone, Debug, PartialEq)]
-pub struct DebugRetainedAutoNodeSnapshot {
-    pub node: Option<DebugNodeId>,
-    pub stable_id: Option<u64>,
-    pub element_type: &'static str,
-    pub bounds: Option<DebugRect>,
-    pub coverage: Vec<DebugCoverageKind>,
-    pub resident_action: Option<DebugResidentAction>,
-    pub fallbacks: Vec<DebugRetainedAutoFallbackSnapshot>,
 }
 
 #[non_exhaustive]
@@ -306,20 +182,21 @@ pub struct DebugRetainedAutoSurfaceSnapshot {
     pub owner: Option<DebugNodeId>,
     pub stable_id: Option<u64>,
     pub element_type: &'static str,
+    /// The owner node's logical bounds.
     pub bounds: Option<DebugRect>,
     pub kind: DebugSurfaceKind,
-    pub coverage: DebugCoverageKind,
-    pub resident_action: DebugResidentAction,
+    pub action: DebugSurfaceAction,
+    /// Physical texture size.
+    pub size: (u32, u32),
+    /// Device pixels per logical pixel of the raster.
+    pub scale_factor: f32,
 }
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DebugRetainedAutoFrameSnapshot {
-    pub attempt_id: u64,
-    pub requested_mode: DebugPaintRequestedMode,
-    pub selected_authority: DebugFramePaintAuthority,
+    pub frame_number: u64,
     pub disposition: DebugFrameDisposition,
-    pub fallback_stages: Vec<DebugRetainedAutoFallbackSnapshot>,
     pub statistics: DebugRetainedAutoStatistics,
 }
 
@@ -327,8 +204,104 @@ pub struct DebugRetainedAutoFrameSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DebugRetainedAutoSnapshot {
     pub frame: DebugRetainedAutoFrameSnapshot,
-    pub nodes: Vec<DebugRetainedAutoNodeSnapshot>,
     pub surfaces: Vec<DebugRetainedAutoSurfaceSnapshot>,
+}
+
+impl DebugSurfaceKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Transform => "transform",
+            Self::Effect => "effect",
+            Self::ScrollContent => "scroll",
+            Self::GpuSource => "gpu",
+        }
+    }
+}
+
+impl DebugSurfaceAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Reuse => "reuse",
+            Self::Reraster => "reraster",
+            Self::Transient => "transient",
+        }
+    }
+}
+
+impl DebugRetainedAutoSurfaceSnapshot {
+    /// One-line description, e.g. `Element transform reraster 400x300 @2x`.
+    pub fn label(&self) -> String {
+        let element_type = self
+            .element_type
+            .rsplit("::")
+            .next()
+            .unwrap_or(self.element_type);
+        format!(
+            "{element_type} {} {} {}x{} @{}x",
+            self.kind.label(),
+            self.action.label(),
+            self.size.0,
+            self.size.1,
+            format_scale_factor(self.scale_factor)
+        )
+    }
+}
+
+/// `2` for an integral scale, otherwise up to two decimals (`1.5`).
+pub(crate) fn format_scale_factor(scale: f32) -> String {
+    if scale.fract() == 0.0 {
+        format!("{scale:.0}")
+    } else {
+        format!("{scale:.2}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+    }
+}
+
+impl std::fmt::Display for DebugRetainedAutoSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let frame = &self.frame;
+        let stats = &frame.statistics;
+        let disposition = match frame.disposition {
+            DebugFrameDisposition::Presented => "presented",
+            DebugFrameDisposition::Aborted => "aborted",
+        };
+        writeln!(
+            f,
+            "retained-auto frame {}: {disposition}, {} chunks, {} ops",
+            frame.frame_number, stats.paint_chunks, stats.paint_ops
+        )?;
+        writeln!(
+            f,
+            "  {} surfaces, {} gpu sources: {} reuse, {} reraster, {} transient",
+            stats.surfaces,
+            stats.gpu_sources,
+            stats.reuses,
+            stats.rerasterizations,
+            stats.transients
+        )?;
+        writeln!(
+            f,
+            "  property nodes: {} transform, {} effect, {} scroll",
+            stats.transform_nodes, stats.effect_nodes, stats.scroll_nodes
+        )?;
+        for surface in &self.surfaces {
+            write!(f, "  {}", surface.label())?;
+            if let Some(id) = surface.stable_id {
+                write!(f, " #{id}")?;
+            }
+            if let Some(bounds) = surface.bounds {
+                write!(
+                    f,
+                    " at ({}, {}) {}x{}",
+                    bounds.x, bounds.y, bounds.width, bounds.height
+                )?;
+            }
+            writeln!(f)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -463,7 +436,6 @@ impl DebugDirtyFlags {
 #[derive(Clone, Debug)]
 pub struct DebugRenderState {
     pub should_render: bool,
-    pub retained_auto: Option<DebugRetainedAutoNodeSnapshot>,
 }
 
 #[derive(Clone, Debug)]
@@ -559,46 +531,12 @@ pub(crate) struct DebugViewportCaptureInput {
     pub pressed_pointer_buttons: Vec<PointerButton>,
 }
 
-/// Single handoff object produced by the viewport's retained paint telemetry.
-/// The viewport should construct this only when
-/// [`DebugCaptureOptions::include_retained_auto`] is enabled.
+/// The viewport's record of its last RetainedAuto frame, resolved into a
+/// [`DebugRetainedAutoSnapshot`] at capture time.
 #[derive(Clone, Debug)]
 pub(crate) struct DebugRetainedAutoCaptureInput {
-    pub frame: DebugRetainedAutoFrameCaptureInput,
-    pub nodes: Vec<DebugRetainedAutoNodeCaptureInput>,
+    pub frame: DebugRetainedAutoFrameSnapshot,
     pub surfaces: Vec<DebugRetainedAutoSurfaceCaptureInput>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct DebugRetainedAutoFrameCaptureInput {
-    pub attempt_id: u64,
-    pub requested_mode: DebugPaintRequestedMode,
-    pub selected_authority: DebugFramePaintAuthority,
-    pub disposition: DebugFrameDisposition,
-    pub fallback_stages: Vec<DebugRetainedAutoFallbackCaptureInput>,
-    pub statistics: DebugRetainedAutoStatistics,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct DebugRetainedAutoFallbackCaptureInput {
-    pub stage: DebugFallbackStage,
-    pub category: DebugFallbackCategory,
-    pub detail: DebugFallbackDetail,
-    pub owner: Option<NodeKey>,
-    pub stable_id: Option<u64>,
-    pub element_type: Option<&'static str>,
-    pub bounds: Option<DebugRect>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct DebugRetainedAutoNodeCaptureInput {
-    pub owner: Option<NodeKey>,
-    pub stable_id: Option<u64>,
-    pub element_type: &'static str,
-    pub bounds: Option<DebugRect>,
-    pub coverage: Vec<DebugCoverageKind>,
-    pub resident_action: Option<DebugResidentAction>,
-    pub fallbacks: Vec<DebugRetainedAutoFallbackCaptureInput>,
 }
 
 #[derive(Clone, Debug)]
@@ -608,8 +546,9 @@ pub(crate) struct DebugRetainedAutoSurfaceCaptureInput {
     pub element_type: &'static str,
     pub bounds: Option<DebugRect>,
     pub kind: DebugSurfaceKind,
-    pub coverage: DebugCoverageKind,
-    pub resident_action: DebugResidentAction,
+    pub action: DebugSurfaceAction,
+    pub size: (u32, u32),
+    pub scale_factor: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -849,46 +788,6 @@ impl DebugCaptureBuilder {
 
     fn finish(mut self) -> DebugCapture {
         let retained_auto = self.retained_auto.take().map(|input| {
-            let frame = DebugRetainedAutoFrameSnapshot {
-                attempt_id: input.frame.attempt_id,
-                requested_mode: input.frame.requested_mode,
-                selected_authority: input.frame.selected_authority,
-                disposition: input.frame.disposition,
-                fallback_stages: input
-                    .frame
-                    .fallback_stages
-                    .into_iter()
-                    .map(|fallback| self.resolve_retained_auto_fallback(fallback))
-                    .collect(),
-                statistics: input.frame.statistics,
-            };
-            let mut nodes = Vec::with_capacity(input.nodes.len());
-            for node in input.nodes {
-                let owner = node.owner;
-                let snapshot = DebugRetainedAutoNodeSnapshot {
-                    node: owner.and_then(|owner| self.key_to_node.get(&owner).cloned()),
-                    stable_id: node.stable_id,
-                    element_type: node.element_type,
-                    bounds: node.bounds,
-                    coverage: node.coverage,
-                    resident_action: node.resident_action,
-                    fallbacks: node
-                        .fallbacks
-                        .into_iter()
-                        .map(|fallback| self.resolve_retained_auto_fallback(fallback))
-                        .collect(),
-                };
-                if let Some(id) = snapshot.node.as_ref()
-                    && let Some(render) = self
-                        .index
-                        .nodes
-                        .get_mut(id)
-                        .and_then(|captured| captured.render.as_mut())
-                {
-                    render.retained_auto = Some(snapshot.clone());
-                }
-                nodes.push(snapshot);
-            }
             let surfaces = input
                 .surfaces
                 .into_iter()
@@ -900,13 +799,13 @@ impl DebugCaptureBuilder {
                     element_type: surface.element_type,
                     bounds: surface.bounds,
                     kind: surface.kind,
-                    coverage: surface.coverage,
-                    resident_action: surface.resident_action,
+                    action: surface.action,
+                    size: surface.size,
+                    scale_factor: surface.scale_factor,
                 })
                 .collect();
             DebugRetainedAutoSnapshot {
-                frame,
-                nodes,
+                frame: input.frame,
                 surfaces,
             }
         });
@@ -934,23 +833,6 @@ impl DebugCaptureBuilder {
                 nodes: self.arena_nodes,
             }),
             index: self.index,
-        }
-    }
-
-    fn resolve_retained_auto_fallback(
-        &self,
-        input: DebugRetainedAutoFallbackCaptureInput,
-    ) -> DebugRetainedAutoFallbackSnapshot {
-        DebugRetainedAutoFallbackSnapshot {
-            stage: input.stage,
-            category: input.category,
-            detail: input.detail,
-            node: input
-                .owner
-                .and_then(|owner| self.key_to_node.get(&owner).cloned()),
-            stable_id: input.stable_id,
-            element_type: input.element_type,
-            bounds: input.bounds,
         }
     }
 
@@ -1005,7 +887,6 @@ impl DebugCaptureBuilder {
         });
         let render = self.options.include_render.then_some(DebugRenderState {
             should_render: snapshot.should_render,
-            retained_auto: None,
         });
 
         let summary = DebugNodeSummary {

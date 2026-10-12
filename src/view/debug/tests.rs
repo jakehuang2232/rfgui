@@ -124,52 +124,23 @@ fn missing_node_returns_stable_error() {
     );
 }
 
-fn retained_auto_input(root: NodeKey, child: NodeKey) -> DebugRetainedAutoCaptureInput {
-    let child_bounds = DebugRect {
-        x: 10.0,
-        y: 12.0,
-        width: 20.0,
-        height: 16.0,
-    };
-    let fallback = DebugRetainedAutoFallbackCaptureInput {
-        stage: DebugFallbackStage::Planning,
-        category: DebugFallbackCategory::PropertyTopology,
-        detail: DebugFallbackDetail::Boundary {
-            reason: "nested-effect",
-        },
-        owner: Some(child),
-        stable_id: Some(20),
-        element_type: Some("Element"),
-        bounds: Some(child_bounds),
-    };
+fn retained_auto_input(root: NodeKey) -> DebugRetainedAutoCaptureInput {
     DebugRetainedAutoCaptureInput {
-        frame: DebugRetainedAutoFrameCaptureInput {
-            attempt_id: 42,
-            requested_mode: DebugPaintRequestedMode::RetainedAuto,
-            selected_authority: DebugFramePaintAuthority::Legacy,
-            disposition: DebugFrameDisposition::FellBackToLegacy,
-            fallback_stages: vec![fallback.clone()],
+        frame: DebugRetainedAutoFrameSnapshot {
+            frame_number: 42,
+            disposition: DebugFrameDisposition::Presented,
             statistics: DebugRetainedAutoStatistics {
-                reachable_nodes: 2,
-                covered_nodes: 1,
-                legacy_nodes: 1,
-                fallback_count: 1,
+                paint_chunks: 3,
+                paint_ops: 5,
+                surfaces: 1,
+                reuses: 1,
                 ..Default::default()
             },
         },
-        nodes: vec![DebugRetainedAutoNodeCaptureInput {
-            owner: Some(child),
-            stable_id: Some(20),
-            element_type: "Element",
-            bounds: Some(child_bounds),
-            coverage: vec![DebugCoverageKind::LegacyBoundary],
-            resident_action: Some(DebugResidentAction::None),
-            fallbacks: vec![fallback],
-        }],
         surfaces: vec![DebugRetainedAutoSurfaceCaptureInput {
             owner: Some(root),
             stable_id: Some(10),
-            element_type: "Element",
+            element_type: "rfgui::view::Element",
             bounds: Some(DebugRect {
                 x: 0.0,
                 y: 0.0,
@@ -177,23 +148,19 @@ fn retained_auto_input(root: NodeKey, child: NodeKey) -> DebugRetainedAutoCaptur
                 height: 80.0,
             }),
             kind: DebugSurfaceKind::Effect,
-            coverage: DebugCoverageKind::PropertySurface,
-            resident_action: DebugResidentAction::Reuse,
+            action: DebugSurfaceAction::Reuse,
+            size: (200, 160),
+            scale_factor: 2.0,
         }],
     }
 }
 
 #[test]
-fn retained_auto_capture_maps_existing_node_ids_and_structured_reasons() {
+fn retained_auto_capture_maps_surface_owners_and_prints_a_report() {
     let mut arena = NodeArena::new();
     let root = arena.insert(Node::new(Box::new(Element::new_with_id(
         10, 0.0, 0.0, 100.0, 80.0,
     ))));
-    let child = arena.insert(Node::with_parent(
-        Box::new(Element::new_with_id(20, 10.0, 12.0, 20.0, 16.0)),
-        Some(root),
-    ));
-    arena.push_child(root, child);
     arena.set_roots(vec![root]);
     let mut options = DebugCaptureOptions::default();
     options.include_retained_auto = true;
@@ -211,7 +178,7 @@ fn retained_auto_capture_maps_existing_node_ids_and_structured_reasons() {
             pointer_position: None,
             pressed_pointer_buttons: Vec::new(),
         },
-        Some(retained_auto_input(root, child)),
+        Some(retained_auto_input(root)),
     );
 
     let retained = capture
@@ -219,32 +186,22 @@ fn retained_auto_capture_maps_existing_node_ids_and_structured_reasons() {
         .viewport
         .retained_auto
         .as_ref()
-        .expect("last attempt is captured");
-    assert_eq!(retained.frame.attempt_id, 42);
-    assert_eq!(retained.frame.fallback_stages.len(), 1);
-    assert!(matches!(
-        retained.frame.fallback_stages[0].detail,
-        DebugFallbackDetail::Boundary {
-            reason: "nested-effect"
-        }
-    ));
-    assert_eq!(retained.nodes[0].stable_id, Some(20));
-    assert!(retained.nodes[0].node.is_some());
+        .expect("last frame is captured");
+    assert_eq!(retained.frame.frame_number, 42);
     assert_eq!(
-        retained.surfaces[0].resident_action,
-        DebugResidentAction::Reuse
+        retained.surfaces[0].owner,
+        Some(capture.document().roots[0].clone())
     );
-
-    let child_id = retained.nodes[0].node.clone().unwrap();
-    let DebugResponse::RenderState(Some(render)) = capture
-        .query(DebugQuery::GetRenderState { node: child_id })
-        .unwrap()
-    else {
-        panic!("node render state must exist")
-    };
     assert_eq!(
-        render.retained_auto.unwrap().coverage,
-        vec![DebugCoverageKind::LegacyBoundary]
+        retained.surfaces[0].label(),
+        "Element effect reuse 200x160 @2x"
+    );
+    assert_eq!(
+        retained.to_string(),
+        "retained-auto frame 42: presented, 3 chunks, 5 ops\n\
+         \x20 1 surfaces, 0 gpu sources: 1 reuse, 0 reraster, 0 transient\n\
+         \x20 property nodes: 0 transform, 0 effect, 0 scroll\n\
+         \x20 Element effect reuse 200x160 @2x #10 at (0, 0) 100x80\n"
     );
 }
 
@@ -254,11 +211,6 @@ fn retained_auto_input_is_ignored_when_capture_option_is_off() {
     let root = arena.insert(Node::new(Box::new(Element::new_with_id(
         10, 0.0, 0.0, 100.0, 80.0,
     ))));
-    let child = arena.insert(Node::with_parent(
-        Box::new(Element::new_with_id(20, 10.0, 12.0, 20.0, 16.0)),
-        Some(root),
-    ));
-    arena.push_child(root, child);
     let capture = DebugCapture::from_arena_with_retained_auto(
         DebugCaptureOptions::default(),
         &arena,
@@ -273,7 +225,7 @@ fn retained_auto_input_is_ignored_when_capture_option_is_off() {
             pointer_position: None,
             pressed_pointer_buttons: Vec::new(),
         },
-        Some(retained_auto_input(root, child)),
+        Some(retained_auto_input(root)),
     );
     assert!(capture.document().viewport.retained_auto.is_none());
 }

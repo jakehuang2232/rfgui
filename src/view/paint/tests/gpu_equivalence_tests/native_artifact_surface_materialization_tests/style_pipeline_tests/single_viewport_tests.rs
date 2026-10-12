@@ -1,5 +1,6 @@
 use super::*;
 
+mod debug_capture_tests;
 mod execution_failure_tests;
 mod invalidation_tests;
 mod residency_tests;

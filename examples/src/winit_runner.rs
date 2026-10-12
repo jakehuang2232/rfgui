@@ -180,6 +180,15 @@ impl Runner {
             pressed,
             timestamp,
         };
+        // F9 prints what the surface cache did with each surface in the next
+        // frame. Purely observational; it never changes what is painted.
+        if pressed
+            && !self.ime_composing
+            && rf_key == rfgui::platform::input::Key::F9
+            && let Some(viewport) = self.viewport.as_mut()
+        {
+            viewport.request_retained_auto_report();
+        }
         let app_event = AppEvent::Key(platform_event.clone());
         if let Some(viewport) = self.viewport.as_mut() {
             viewport.dispatch_app_event(

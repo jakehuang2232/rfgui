@@ -35,8 +35,9 @@ pub enum ViewportAction {
     SetDebugTraceExecuteDetail(bool),
     SetDebugGeometryOverlay(bool),
     SetDebugRetainedAutoOverlay(bool),
-    SetDebugRetainedAutoAuthority(bool),
-    SetDebugRetainedAutoReuseActions(bool),
+    SetDebugRetainedAutoShowReuse(bool),
+    SetDebugRetainedAutoShowReraster(bool),
+    SetDebugRetainedAutoShowTransient(bool),
     SetClearColor(Color),
     SetCursor(Option<Cursor>),
     RequestRedraw,
@@ -81,12 +82,16 @@ impl ViewportHandle {
         Self::push(ViewportAction::SetDebugRetainedAutoOverlay(enabled));
     }
 
-    pub fn set_debug_retained_auto_authority(&self, enabled: bool) {
-        Self::push(ViewportAction::SetDebugRetainedAutoAuthority(enabled));
+    pub fn set_debug_retained_auto_show_reuse(&self, enabled: bool) {
+        Self::push(ViewportAction::SetDebugRetainedAutoShowReuse(enabled));
     }
 
-    pub fn set_debug_retained_auto_reuse_actions(&self, enabled: bool) {
-        Self::push(ViewportAction::SetDebugRetainedAutoReuseActions(enabled));
+    pub fn set_debug_retained_auto_show_reraster(&self, enabled: bool) {
+        Self::push(ViewportAction::SetDebugRetainedAutoShowReraster(enabled));
+    }
+
+    pub fn set_debug_retained_auto_show_transient(&self, enabled: bool) {
+        Self::push(ViewportAction::SetDebugRetainedAutoShowTransient(enabled));
     }
 
     pub fn set_clear_color(&self, color: Color) {

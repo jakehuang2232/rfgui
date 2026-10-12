@@ -1,5 +1,5 @@
 use crate::rfgui::style::{
-    Border, ClipMode, Color, Layout, Length, Padding, Position, Transition, TransitionProperty,
+    ClipMode, Color, Layout, Length, Padding, Position, Transition, TransitionProperty,
 };
 use crate::rfgui::ui::{Binding, RsxNode, rsx, use_state, use_viewport};
 use crate::rfgui_components::{Checkbox, Switch, Theme, use_theme};
@@ -14,8 +14,9 @@ pub fn build(theme: &Theme, animation_on: Binding<bool>) -> RsxNode {
     let detail_compile = use_state(|| false);
     let detail_execute = use_state(|| false);
     let debug_retained_auto = use_state(|| false);
-    let retained_auto_authority = use_state(|| true);
-    let retained_auto_reuse_actions = use_state(|| true);
+    let show_reuse = use_state(|| true);
+    let show_reraster = use_state(|| true);
+    let show_transient = use_state(|| true);
 
     let show_render_detail = debug_render_time.get();
     let show_retained_auto_detail = debug_retained_auto.get();
@@ -60,13 +61,26 @@ pub fn build(theme: &Theme, animation_on: Binding<bool>) -> RsxNode {
         let vp = viewport;
         Rc::new(move |on: bool| vp.set_debug_retained_auto_overlay(on)) as Rc<dyn Fn(bool)>
     };
-    let on_retained_auto_authority = {
+    let on_show_reuse = {
         let vp = viewport;
-        Rc::new(move |on: bool| vp.set_debug_retained_auto_authority(on)) as Rc<dyn Fn(bool)>
+        Rc::new(move |on: bool| vp.set_debug_retained_auto_show_reuse(on)) as Rc<dyn Fn(bool)>
     };
-    let on_retained_auto_reuse_actions = {
+    let on_show_reraster = {
         let vp = viewport;
-        Rc::new(move |on: bool| vp.set_debug_retained_auto_reuse_actions(on)) as Rc<dyn Fn(bool)>
+        Rc::new(move |on: bool| vp.set_debug_retained_auto_show_reraster(on)) as Rc<dyn Fn(bool)>
+    };
+    let on_show_transient = {
+        let vp = viewport;
+        Rc::new(move |on: bool| vp.set_debug_retained_auto_show_transient(on)) as Rc<dyn Fn(bool)>
+    };
+    let swatch = |color: &str| {
+        rsx! {
+            <Element style={{
+                width: Length::px(12.0),
+                height: Length::px(12.0),
+                background: Color::hex(color),
+            }} />
+        }
     };
 
     rsx! {
@@ -146,48 +160,29 @@ pub fn build(theme: &Theme, animation_on: Binding<bool>) -> RsxNode {
                         .ease_in_out(),
                     ],
                 }}>
-                    <Checkbox
-                        label="Authority"
-                        binding={retained_auto_authority.binding()}
-                        on_change={on_retained_auto_authority}
-                    />
-                    <Checkbox
-                        label="Reuse Actions"
-                        binding={retained_auto_reuse_actions.binding()}
-                        on_change={on_retained_auto_reuse_actions}
-                    />
-                    <Element style={{
-                        layout: Layout::flow().column().no_wrap(),
-                        gap: theme.spacing.xs,
-                        padding: Padding::uniform(theme.spacing.xs),
-                        border: Border::uniform(Length::px(1.0), theme.color.border.as_ref()),
-                        width: Length::percent(100.0),
-                    }}>
-                        <Element>"RetainedAuto Overlay Colors"</Element>
-                        <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
-                            <Element style={{
-                                width: Length::px(12.0),
-                                height: Length::px(12.0),
-                                background: Color::hex("#2d8cff"),
-                            }} />
-                            <Element>"Blue: selected authority"</Element>
-                        </Element>
-                        <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
-                            <Element style={{
-                                width: Length::px(12.0),
-                                height: Length::px(12.0),
-                                background: Color::hex("#26f25a"),
-                            }} />
-                            <Element>"Green: reuse action"</Element>
-                        </Element>
-                        <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
-                            <Element style={{
-                                width: Length::px(12.0),
-                                height: Length::px(12.0),
-                                background: Color::hex("#ff731a"),
-                            }} />
-                            <Element>"Orange: reraster action"</Element>
-                        </Element>
+                    <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs }}>
+                        {swatch("#26f25a")}
+                        <Checkbox
+                            label="Reuse"
+                            binding={show_reuse.binding()}
+                            on_change={on_show_reuse}
+                        />
+                    </Element>
+                    <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs }}>
+                        {swatch("#ff731a")}
+                        <Checkbox
+                            label="Reraster"
+                            binding={show_reraster.binding()}
+                            on_change={on_show_reraster}
+                        />
+                    </Element>
+                    <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs }}>
+                        {swatch("#ff3b30")}
+                        <Checkbox
+                            label="Transient"
+                            binding={show_transient.binding()}
+                            on_change={on_show_transient}
+                        />
                     </Element>
                 </Element>
             </Element>

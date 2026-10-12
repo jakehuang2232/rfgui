@@ -81,3 +81,43 @@ fn layout_place_trace_nests_overlapping_place_timings() {
     assert!(trace.contains("child_place (calls=6) \u{1b}[32m7.000ms\u{1b}[0m"));
     assert!(trace.contains("absolute_child_place (calls=2) \u{1b}[32m2.000ms\u{1b}[0m"));
 }
+
+#[test]
+fn overlay_labels_draw_letters_and_stack_rows_upward() {
+    let snapshot = crate::view::base_component::BoxModelSnapshot {
+        node_id: 7,
+        parent_id: None,
+        x: 0.0,
+        y: 60.0,
+        width: 20.0,
+        height: 20.0,
+        border_radius: 0.0,
+        should_render: true,
+    };
+    let label = |text: &str, row: usize| {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        append_overlay_label_geometry(
+            &mut vertices,
+            &mut indices,
+            &snapshot,
+            text,
+            row,
+            [0.0, 1.0, 0.0, 1.0],
+            1.0,
+            100.0,
+            100.0,
+        );
+        vertices
+    };
+    // The background tab is one quad; every glyph adds at least one run.
+    assert_eq!(label("  ", 0).len(), 4);
+    assert!(label("Element#7", 0).len() > 4 * "Element#7".len());
+    let top = |vertices: Vec<crate::view::render_pass::debug_overlay_pass::DebugOverlayVertex>| {
+        vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::NEG_INFINITY, f32::max)
+    };
+    assert!(top(label("x", 1)) > top(label("x", 0)));
+}

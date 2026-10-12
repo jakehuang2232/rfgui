@@ -54,7 +54,6 @@ use crate::view::frame_graph::texture_resource::TextureDesc;
 use crate::view::frame_graph::{AllocationId, BufferDesc, FrameGraph};
 use crate::view::render_pass::render_target::{OffscreenRenderTargetPool, RenderTargetBundle};
 
-use std::ops::Sub;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wgpu::util::StagingBelt;
@@ -307,7 +306,9 @@ struct FrameRuntime {
         crate::view::render_pass::shadow_module::ShadowTemplateKey,
         gpu_paint::ShadowTemplateResidency,
     >,
-    retained_raster_diagnostics: Vec<gpu_paint::RasterDiagnostic>,
+    surface_diagnostics: Vec<gpu_paint::SurfaceDiagnostic>,
+    /// F9 asked for a text report of the next RetainedAuto frame.
+    retained_auto_report_pending: bool,
     frame_state: Option<FrameState>,
     offscreen_render_target_pool: OffscreenRenderTargetPool,
     sampled_texture_cache:
@@ -364,7 +365,8 @@ impl FrameRuntime {
             sampled_texture_upload_count: 0,
             gpu_paint_sources: FxHashMap::default(),
             shadow_templates: FxHashMap::default(),
-            retained_raster_diagnostics: Vec::new(),
+            surface_diagnostics: Vec::new(),
+            retained_auto_report_pending: false,
             frame_buffer_pool: FxHashMap::default(),
             rect_instances: rect_instances::RectInstanceFrame::default(),
             frame_stats: FrameStats::new(trace_fps),
@@ -989,3 +991,4 @@ pub(crate) use render::SingleViewportFrameObservation;
 pub use render::downstream_test_support::{RendererTestDiagnostics, RendererTestFrame};
 
 mod gpu_paint;
+pub(crate) use gpu_paint::SurfaceDiagnostic;

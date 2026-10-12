@@ -870,20 +870,9 @@ fn emit_prepared_artifact_surface_frame(
     let residents = pool_emission
         .into_residents()
         .retaining(|_| !transient.next().expect("one action per resident"));
-    if viewport.debug_options().trace_render_time {
-        viewport.record_retained_raster_diagnostics(
-            plan.nodes()
-                .iter()
-                .zip(&actions)
-                .map(|(node, action)| {
-                    (
-                        node.identity().color_key,
-                        node.target().color.clone(),
-                        *action,
-                    )
-                })
-                .collect(),
-        );
+    if viewport.surface_diagnostics_requested() {
+        let diagnostics = surface_diagnostics(viewport, &plan, &actions);
+        viewport.record_surface_diagnostics(diagnostics);
     }
 
     if let Some(owner) = owner {
@@ -893,6 +882,73 @@ fn emit_prepared_artifact_surface_frame(
         );
     }
     (ctx.into_state(), actions)
+}
+
+/// Each surface with its action, then each GPU source that paints this frame
+/// with the action its preparation will take. Sources inside a reused surface
+/// do not run and are left out.
+fn surface_diagnostics(
+    viewport: &Viewport,
+    plan: &PreparedArtifactSurfaceRasterPlan,
+    actions: &[RetainedSurfaceCompileAction],
+) -> Vec<crate::view::viewport::SurfaceDiagnostic> {
+    use crate::view::debug::DebugSurfaceKind;
+    let mut diagnostics = plan
+        .nodes()
+        .iter()
+        .zip(actions)
+        .map(|(node, action)| {
+            let identity = node.identity();
+            crate::view::viewport::SurfaceDiagnostic {
+                owner: identity.boundary_root,
+                kind: match identity.role {
+                    super::RetainedSurfaceRasterRole::Transform => DebugSurfaceKind::Transform,
+                    super::RetainedSurfaceRasterRole::PropertyEffect => DebugSurfaceKind::Effect,
+                    super::RetainedSurfaceRasterRole::ScrollContent => {
+                        DebugSurfaceKind::ScrollContent
+                    }
+                },
+                action: *action,
+                key: identity.color_key,
+                desc: node.target().color.clone(),
+                scale_factor: f32::from_bits(node.target().scale_factor_bits),
+            }
+        })
+        .collect::<Vec<_>>();
+    let painted_steps = plan.roots().iter().map(|root| root.steps()).chain(
+        plan.nodes()
+            .iter()
+            .zip(actions)
+            .filter(|(_, action)| **action != RetainedSurfaceCompileAction::Reuse)
+            .map(|(node, _)| node.steps()),
+    );
+    let mut seen = FxHashSet::default();
+    for step in painted_steps.flatten() {
+        let PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) = step else {
+            continue;
+        };
+        for chunk in span.chunks() {
+            for op in chunk.localized_ops() {
+                let super::super::PaintOp::PreparedGpu(op) = op else {
+                    continue;
+                };
+                let id = op.source.id.get();
+                if !seen.insert(id) {
+                    continue;
+                }
+                let retain = !plan.transient_gpu_sources().contains(&id);
+                diagnostics.push(crate::view::viewport::SurfaceDiagnostic {
+                    owner: chunk.source().owner,
+                    kind: DebugSurfaceKind::GpuSource,
+                    action: viewport.planned_gpu_paint_source_action(&op.source, retain),
+                    key: op.source.key(),
+                    desc: op.source.descriptor(viewport.max_texture_dimension_2d()),
+                    scale_factor: viewport.scale_factor(),
+                });
+            }
+        }
+    }
+    diagnostics
 }
 
 #[cfg(test)]
