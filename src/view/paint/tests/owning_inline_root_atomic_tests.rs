@@ -4,8 +4,7 @@ use super::*;
 fn fixed_inline_root_with_atomic_records_standard_chunks() {
     let (arena, roots, root, before, atomic, after) = prepared_owning_inline_root_with_atomic();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -29,8 +28,7 @@ fn owning_inline_root_atomic_move_and_paint_refresh_preserve_authority_and_order
         roots: &[NodeKey],
     ) -> (PaintArtifact, Vec<(NodeKey, PaintChunkRole)>) {
         let (properties, generations) = sync_identity(arena, roots);
-        let (artifact, eligibility) = whole_frame_artifact(arena, roots, &properties, &generations);
-        assert!(eligibility.eligible, "{eligibility:?}");
+        let artifact = whole_frame_artifact(arena, roots, &properties, &generations);
         let order = artifact
             .chunks
             .iter()
@@ -102,8 +100,7 @@ fn mixed_wrapping_inline_root_uses_live_dom_dfs() {
         "fixture must allocate the atomic before its earlier DOM sibling"
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -127,8 +124,7 @@ fn owning_inline_root_with_image_atomic_keeps_image_chunk() {
     let (arena, roots, root, before, image, after) =
         prepared_owning_inline_root_with_image_atomic();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -149,8 +145,7 @@ fn owning_inline_root_with_image_atomic_keeps_image_chunk() {
 fn owning_inline_root_with_svg_atomic_keeps_svg_chunk() {
     let (arena, roots, root, before, svg, after) = prepared_owning_inline_root_with_svg_atomic();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -164,171 +159,6 @@ fn owning_inline_root_with_svg_atomic_keeps_svg_chunk() {
             (after, PaintChunkRole::TextGlyphs),
         ]
     );
-}
-
-#[test]
-fn owning_inline_root_atomic_child_participates_in_root_opacity_group_once() {
-    fn set_root_opacity(arena: &NodeArena, root: NodeKey) {
-        let mut node = arena.get_mut(root).unwrap();
-        let element = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
-        let mut style = Style::new();
-        style.insert(PropertyId::Opacity, ParsedValue::Opacity(Opacity::new(0.5)));
-        element.apply_style(style);
-        element.clear_local_dirty_flags(DirtyFlags::ALL);
-        drop(node);
-        arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    }
-
-    let (arena, roots, root, _, atomic, _) = prepared_owning_inline_root_with_atomic();
-    set_root_opacity(&arena, root);
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = root_group_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
-    assert!(matches!(
-        artifact.target,
-        PaintArtifactTarget::RootOpacityGroup { root: owner, .. } if owner == root
-    ));
-    assert!(
-        artifact.chunks.iter().any(|chunk| {
-            chunk.owner == atomic && chunk.id.role == PaintChunkRole::SelfDecoration
-        })
-    );
-    artifact.ops.iter().for_each(assert_neutral_opacity);
-
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact)
-            .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
-            .len(),
-        1
-    );
-}
-
-#[test]
-fn owning_inline_root_with_prepared_text_area_atomic_records_without_fallback() {
-    let mut arena = new_test_arena();
-    let mut root = Element::new_with_id(0x7d20, 0.0, 0.0, 160.0, 40.0);
-    let mut root_style = Style::new();
-    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
-    root_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
-    root_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
-    root.apply_style(root_style);
-    let root = commit_element(&mut arena, Box::new(root));
-    let text_area = commit_child(&mut arena, root, Box::new(TextArea::with_stable_id(0x7d21)));
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    for key in [root, text_area] {
-        arena
-            .get_mut(key)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    let roots = [root];
-    let (properties, generations) = sync_identity(&arena, &roots);
-    take_full_artifact_record_count();
-    let outcome = record_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .unwrap();
-    // Keep the former rejection scene: TextArea now supplies the exact
-    // measured proposal, vertical alignment and installed placement.
-    let FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = outcome
-    else {
-        panic!("prepared TextArea atomic host must be recordable: {outcome:?}")
-    };
-    assert!(eligibility.eligible);
-    assert_eq!(
-        artifact
-            .chunks
-            .iter()
-            .filter(|chunk| chunk.owner == root)
-            .count(),
-        1
-    );
-    assert!(
-        artifact.ops.is_empty(),
-        "this fixture is an empty undecorated editor"
-    );
-    assert!(take_full_artifact_record_count() > 0);
-}
-
-#[test]
-fn owning_inline_root_package_drift_falls_back_before_full_hooks() {
-    let (arena, roots, _, span, _, _) = prepared_owning_wrapping_inline_span_tree_with_opacity(1.0);
-    let mut node = arena.get_mut(span).unwrap();
-    node.element
-        .as_any_mut()
-        .downcast_mut::<Element>()
-        .unwrap()
-        .inline_ifc_decoration_package_for_test()
-        .expect("fixture must install a decoration package")
-        .fragments
-        .clear();
-    drop(node);
-
-    let (properties, generations) = sync_identity(&arena, &roots);
-    take_full_artifact_record_count();
-    let outcome = record_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .unwrap();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
-        panic!("owning IFC package drift must fail closed")
-    };
-    assert!(
-        eligibility
-            .reasons
-            .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                LegacyPaintReason::MissingPreparedInlineRoot
-            ))
-    );
-    assert_eq!(take_full_artifact_record_count(), 0);
-}
-
-#[test]
-fn owning_inline_root_span_live_shift_drift_falls_back_before_full_hooks() {
-    let (arena, roots, _, span, _, _) = prepared_owning_wrapping_inline_span_tree_with_opacity(1.0);
-    arena
-        .get_mut(span)
-        .unwrap()
-        .element
-        .as_any_mut()
-        .downcast_mut::<Element>()
-        .unwrap()
-        .offset_inline_ifc_owned_geometry_for_test(1.0, 0.0);
-    let (properties, generations) = sync_identity(&arena, &roots);
-    take_full_artifact_record_count();
-    let outcome = record_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .unwrap();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
-        panic!("live Span geometry not bound to the current plan must fail closed")
-    };
-    assert!(
-        eligibility
-            .reasons
-            .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                LegacyPaintReason::MissingPreparedInlineRoot
-            ))
-    );
-    assert_eq!(take_full_artifact_record_count(), 0);
 }
 
 #[test]
@@ -399,8 +229,7 @@ fn owning_inline_root_paint_refresh_preserves_auto_wrap_geometry() {
         "paint-only same-constraints refresh must preserve root size and build authority"
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     let refreshed = artifact
         .ops
         .iter()
@@ -470,8 +299,7 @@ fn owning_inline_root_move_and_paint_preserve_dual_width_authority() {
             .collect::<Vec<_>>()
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     let refreshed = artifact
         .ops
         .iter()
@@ -542,33 +370,5 @@ fn owning_inline_root_assigned_width_change_reshapes_current_install() {
     assert_ne!(
         after.1, before.1,
         "the assigned width change must reshape text geometry"
-    );
-}
-
-#[test]
-fn owning_inline_root_opacity_group_neutralizes_root_span_and_text_once() {
-    let (arena, roots, root, span, text, _) =
-        prepared_owning_wrapping_inline_span_tree_with_opacity(0.5);
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = root_group_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
-    assert!(matches!(
-        artifact.target,
-        PaintArtifactTarget::RootOpacityGroup { root: target, .. } if target == root
-    ));
-    assert_eq!(
-        artifact
-            .chunks
-            .iter()
-            .map(|chunk| chunk.owner)
-            .collect::<Vec<_>>(),
-        vec![root, span, text]
-    );
-    artifact.ops.iter().for_each(assert_neutral_opacity);
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact)
-            .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
-            .len(),
-        1
     );
 }

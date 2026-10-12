@@ -1,5 +1,5 @@
 use super::*;
-use crate::view::paint::{FrameArtifactRecordOutcome, record_surface_dag_frame_artifact_cached};
+use crate::view::paint::record_surface_dag_frame_artifact_cached;
 
 #[test]
 fn effect_store_patch_requires_consistent_values_at_every_occurrence() {
@@ -11,18 +11,13 @@ fn effect_store_patch_requires_consistent_values_at_every_occurrence() {
             false,
         );
         let mut cache = RecordingCache::default();
-        let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                &mut cache,
-            )
-            .unwrap()
-        else {
-            panic!("fixture must record an artifact");
-        };
+        let artifact = record_surface_dag_frame_artifact_cached(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            &mut cache,
+        );
         let old = cache.scope_store.as_ref().unwrap().key.0[0].clone();
         // Duplicate observations model an owner's before/after paint phases.
         // The same owner key is insufficient proof that both values agree.

@@ -339,11 +339,7 @@ fn assert_complete_artifact_store_profile(
 
 fn record_artifact(arena: &NodeArena, roots: &[NodeKey]) -> (PaintArtifact, PropertyTrees) {
     let (properties, generations) = sync_identity(arena, roots);
-    let (artifact, eligibility) = whole_frame_artifact(arena, roots, &properties, &generations);
-    assert!(
-        eligibility.eligible,
-        "Stage A corpus must record completely"
-    );
+    let artifact = whole_frame_artifact(arena, roots, &properties, &generations);
     (artifact, properties)
 }
 

@@ -38,10 +38,6 @@ impl PreparedArtifactSurfaceFrame {
     pub(crate) fn residents(&self) -> &SealedArtifactSurfaceResidentSet {
         &self.residents
     }
-
-    pub(crate) fn is_canonical(&self) -> bool {
-        artifact_surface_frame_is_canonical(&self.raster_plan, &self.residents)
-    }
 }
 
 pub(super) fn artifact_surface_op_identity_eq(left: &PaintOp, right: &PaintOp) -> bool {
@@ -105,17 +101,9 @@ pub(super) fn artifact_surface_op_corresponds_to_source(
 ) -> bool {
     let expected = localize_artifact_surface_op(source, delta).and_then(|localized| {
         match neutralized_opacity_bits {
-            Some(opacity_bits) => neutralize_artifact_surface_opacity(localized, opacity_bits),
+            Some(_) => neutralize_artifact_surface_opacity(localized),
             None => Ok(localized),
         }
     });
     expected.is_ok_and(|expected| artifact_surface_op_identity_eq(&expected, raster))
-}
-
-pub(super) fn validate_artifact_store_with_policy(
-    artifact: &PaintArtifact,
-    policy: ArtifactStoreValidationPolicy,
-) -> Option<ValidatedArtifact> {
-    let artifact = super::direct_command_test_support::with_placed_geometry(artifact, 1.0)?;
-    validate_artifact_store_with_cache(&artifact, policy, None)
 }

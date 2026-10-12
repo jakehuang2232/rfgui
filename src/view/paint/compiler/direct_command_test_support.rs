@@ -3,22 +3,13 @@
 //! Retirement acceptance must use the production Viewport and independent
 //! expected pixels, never this direct compiler as its geometry/pixel oracle.
 use super::*;
-use crate::view::base_component::{AncestorClipContext, BuildState};
-use crate::view::render_pass::ClearPass;
-use crate::view::render_pass::composite_layer_pass::{
-    CompositeLayerInput, CompositeLayerOutput, CompositeLayerParams, CompositeLayerPass, LayerIn,
-};
+use crate::view::base_component::BuildState;
 
 pub(crate) struct ArtifactCompileError {
-    kind: ArtifactCompileErrorKind,
     state: BuildState,
 }
 
 impl ArtifactCompileError {
-    pub(crate) fn kind(&self) -> ArtifactCompileErrorKind {
-        self.kind
-    }
-
     fn into_state(self) -> BuildState {
         self.state
     }
@@ -89,102 +80,19 @@ pub(crate) fn try_compile_artifact(
 ) -> Result<BuildState, ArtifactCompileError> {
     let Some(artifact) = with_placed_geometry(artifact, ctx.viewport().scale_factor()) else {
         return Err(ArtifactCompileError {
-            kind: ArtifactCompileErrorKind::InvalidStore,
             state: ctx.into_state(),
         });
     };
     let artifact = artifact.as_ref();
-    let Some(validated) = validate_artifact_store(artifact) else {
+    let Some(resolved_clips) = try_resolve_clip_values(artifact) else {
         return Err(ArtifactCompileError {
-            kind: ArtifactCompileErrorKind::InvalidStore,
             state: ctx.into_state(),
         });
     };
     #[cfg(test)]
     ARTIFACT_COMPILE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
-    match validated.target {
-        ValidatedArtifactTarget::CurrentTarget => {
-            compile_validated_artifact(artifact, validated.resolved_clips, graph, &mut ctx)
-        }
-        ValidatedArtifactTarget::RootOpacityGroup { root, effect } => compile_root_opacity_group(
-            artifact,
-            validated.resolved_clips,
-            root,
-            effect,
-            graph,
-            &mut ctx,
-        ),
-    }
+    compile_validated_artifact(artifact, resolved_clips, graph, &mut ctx);
     Ok(ctx.into_state())
-}
-
-fn compile_root_opacity_group(
-    artifact: &PaintArtifact,
-    resolved_clips: Vec<ResolvedClip>,
-    root: crate::view::node_arena::NodeKey,
-    effect: EffectNodeSnapshot,
-    graph: &mut FrameGraph,
-    ctx: &mut UiBuildContext,
-) {
-    let parent_target = ctx.current_target().unwrap_or_else(|| {
-        let target = ctx.allocate_target(graph);
-        ctx.set_current_target(target);
-        target
-    });
-    let mut layer_ctx = UiBuildContext::from_parts(
-        ctx.viewport(),
-        ctx.layer_subtree_state_with_ancestor_clip(AncestorClipContext::default()),
-    );
-    let layer_target = layer_ctx.allocate_persistent_full_viewport_target(
-        graph,
-        crate::view::base_component::root_effect_stable_key(root),
-    );
-    layer_ctx.set_current_target(layer_target);
-    {
-        graph.add_graphics_pass(ClearPass::new(
-            crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-            crate::view::render_pass::clear_pass::ClearInput {
-                pass_context: layer_ctx.graphics_pass_context(),
-                clear_depth_stencil: true,
-            },
-            crate::view::render_pass::clear_pass::ClearOutput {
-                render_target: layer_target,
-            },
-        ));
-        compile_validated_artifact(artifact, resolved_clips, graph, &mut layer_ctx);
-    }
-    let layer_state = layer_ctx.into_state();
-    ctx.merge_child_render_state(&layer_state);
-    ctx.set_current_target(parent_target);
-
-    let viewport = ctx.viewport();
-    let scale = viewport.scale_factor().max(0.0001);
-    graph.add_graphics_pass(CompositeLayerPass::new(
-        CompositeLayerParams {
-            rect_pos: [0.0, 0.0],
-            rect_size: [
-                viewport.target_width() as f32 / scale,
-                viewport.target_height() as f32 / scale,
-            ],
-            corner_radii: [0.0; 4],
-            opacity: effect.opacity,
-            scissor_rect: None,
-            clear_target: false,
-        },
-        CompositeLayerInput {
-            layer: LayerIn::with_handle(
-                layer_target
-                    .handle()
-                    .expect("persistent root opacity target must have a texture handle"),
-            ),
-            pass_context: ctx.graphics_pass_context(),
-            source_physical_origin: None,
-        },
-        CompositeLayerOutput {
-            render_target: parent_target,
-        },
-    ));
-    ctx.set_current_target(parent_target);
 }
 
 #[cfg(test)]
@@ -307,10 +215,6 @@ fn compile_validated_artifact_segment(
             ctx.restore_scissor_rect(previous);
         }
     }
-}
-
-fn validate_artifact_store(artifact: &PaintArtifact) -> Option<ValidatedArtifact> {
-    validate_artifact_store_with_policy(artifact, ArtifactStoreValidationPolicy::General)
 }
 
 /// The deepest child-mask nesting one ordered chunk-id stream reaches.

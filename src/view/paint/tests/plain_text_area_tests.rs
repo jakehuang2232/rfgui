@@ -6,8 +6,7 @@ fn plain_text_area_records_one_contents_glyph_chunk_and_transparent_runs() {
         prepared_plain_text_area_tree("plain TextArea wraps across a deliberately narrow viewport");
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks.len(), 1);
     assert_eq!(artifact.chunks[0].owner, root);
     assert_eq!(artifact.chunks[0].id.scope, PaintPropertyScope::Contents);
@@ -49,9 +48,7 @@ fn plain_text_area_selection_orders_underlay_before_slot_one_glyphs() {
             focus,
         );
         let (properties, generations) = sync_identity(&arena, &roots);
-        let (artifact, eligibility) =
-            whole_frame_artifact(&arena, &roots, &properties, &generations);
-        assert!(eligibility.eligible);
+        let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert_eq!(
             artifact
                 .chunks
@@ -122,9 +119,7 @@ fn focused_plain_text_area_records_contents_caret_after_children() {
     for selection in [None, Some((1, 8))] {
         let (arena, roots, root) = focused_fixture("focused caret artifact", selection);
         let (properties, generations) = sync_identity(&arena, &roots);
-        let (artifact, eligibility) =
-            whole_frame_artifact(&arena, &roots, &properties, &generations);
-        assert!(eligibility.eligible);
+        let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
         let expected_roles = if selection.is_some() {
             vec![
                 PaintChunkRole::SelectionUnderlay,
@@ -217,8 +212,7 @@ fn empty_focused_plain_text_area_is_caret_only_and_contents_clip_can_cull_it() {
 
     let (arena, roots, root) = make(false);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks.len(), 1);
     assert_eq!(artifact.chunks[0].id.role, PaintChunkRole::Caret);
     assert_eq!(artifact.chunks[0].id.phase, PaintNodePhase::AfterChildren);
@@ -233,8 +227,7 @@ fn empty_focused_plain_text_area_is_caret_only_and_contents_clip_can_cull_it() {
 
     let (arena, roots, _) = make(true);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks.len(), 1);
     assert!(
         artifact
@@ -306,52 +299,6 @@ fn retained_caret_phase_flip_changes_only_self_paint_generation() {
 }
 
 #[test]
-fn retained_caret_metadata_full_visibility_drift_is_not_canonical() {
-    let (arena, roots, root) = prepared_plain_text_area_tree("caret drift");
-    {
-        let mut node = arena.get_mut(root).unwrap();
-        let text_area = node
-            .element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .unwrap();
-        text_area.is_focused = true;
-        text_area.caret_visible = true;
-    }
-    settle_plain_text_area(&arena, root);
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let metadata = record_coverage_manifest(
-        &arena,
-        &roots,
-        false,
-        true,
-        CoverageRecordingMode::MetadataOnly,
-        &properties,
-        &generations,
-    );
-    arena
-        .get_mut(root)
-        .unwrap()
-        .element
-        .as_any_mut()
-        .downcast_mut::<TextArea>()
-        .unwrap()
-        .caret_visible = false;
-    let full = record_coverage_manifest(
-        &arena,
-        &roots,
-        false,
-        true,
-        CoverageRecordingMode::FullArtifact,
-        &properties,
-        &generations,
-    );
-    assert!(!super::super::frame_recorder::canonical_manifest_matches(
-        &metadata, &full
-    ));
-}
-
-#[test]
 fn plain_caret_artifact_honours_soft_wrap_affinity() {
     fn fixture(upstream: bool) -> (NodeArena, Vec<NodeKey>, NodeKey) {
         let content = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥";
@@ -396,9 +343,7 @@ fn plain_caret_artifact_honours_soft_wrap_affinity() {
     let caret_position = |upstream| {
         let (arena, roots, _) = fixture(upstream);
         let (properties, generations) = sync_identity(&arena, &roots);
-        let (artifact, eligibility) =
-            whole_frame_artifact(&arena, &roots, &properties, &generations);
-        assert!(eligibility.eligible);
+        let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
         let caret = artifact
             .chunks
             .iter()
@@ -452,9 +397,7 @@ fn plain_text_area_selection_multiline_wrapped_and_clamped_cases_are_recordable(
         let (arena, roots, _) =
             prepared_plain_text_area_selection_tree(content, width, anchor, focus);
         let (properties, generations) = sync_identity(&arena, &roots);
-        let (artifact, eligibility) =
-            whole_frame_artifact(&arena, &roots, &properties, &generations);
-        assert!(eligibility.eligible);
+        let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert_eq!(
             artifact.chunks[0].id.role,
             PaintChunkRole::SelectionUnderlay
@@ -468,9 +411,7 @@ fn plain_text_area_selection_multiline_wrapped_and_clamped_cases_are_recordable(
         let (arena, roots, _) =
             prepared_plain_text_area_selection_tree("collapsed selection", 108.0, anchor, focus);
         let (properties, generations) = sync_identity(&arena, &roots);
-        let (artifact, eligibility) =
-            whole_frame_artifact(&arena, &roots, &properties, &generations);
-        assert!(eligibility.eligible);
+        let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert_eq!(artifact.chunks.len(), 1);
         assert_eq!(artifact.chunks[0].id.role, PaintChunkRole::TextGlyphs);
         assert_eq!(artifact.chunks[0].id.slot, 1);
@@ -491,8 +432,7 @@ fn plain_text_area_selection_contents_clip_handles_explicit_empty_viewport() {
         .viewport_size
         .height = 0.0;
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks.len(), 2);
     assert!(
         artifact

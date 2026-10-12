@@ -1146,7 +1146,7 @@ pub struct CompileProfile {
 }
 
 impl CompiledGraph {
-    #[cfg(any(test, feature = "renderer-test-support"))]
+    #[cfg(feature = "renderer-test-support")]
     pub(crate) fn uses_persistent_texture(&self, key: PersistentTextureKey) -> bool {
         self.texture_stable_keys.values().any(|used| *used == key)
     }

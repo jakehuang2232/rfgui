@@ -25,7 +25,7 @@ fn prepared_text_artifact_compiles_after_arena_is_dropped() {
     let artifact = {
         let (arena, roots, _) = prepared_text_tree(true);
         let (properties, generations) = sync_identity(&arena, &roots);
-        whole_frame_artifact(&arena, &roots, &properties, &generations).0
+        whole_frame_artifact(&arena, &roots, &properties, &generations)
     };
     assert!(
         artifact
@@ -56,7 +56,7 @@ fn text_color_only_change_reuses_shaping_and_changes_retained_payload() {
         .shaped_context_for_test()
         .unwrap()
         .clone();
-    let before = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
+    let before = whole_frame_artifact(&arena, &roots, &properties, &generations);
 
     arena
         .get_mut(text_key)
@@ -78,7 +78,7 @@ fn text_color_only_change_reuses_shaping_and_changes_retained_payload() {
         .shaped_context_for_test()
         .unwrap()
         .clone();
-    let after = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
+    let after = whole_frame_artifact(&arena, &roots, &properties, &generations);
 
     assert!(Arc::ptr_eq(&before_context, &after_context));
     assert_ne!(
@@ -91,8 +91,8 @@ fn text_color_only_change_reuses_shaping_and_changes_retained_payload() {
 fn unchanged_text_records_identical_strict_snapshots_across_frames() {
     let (arena, roots, _) = prepared_text_tree(true);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let first = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
-    let second = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
+    let first = whole_frame_artifact(&arena, &roots, &properties, &generations);
+    let second = whole_frame_artifact(&arena, &roots, &properties, &generations);
     let mut first_graph = compiled_whole_frame_graph(&first);
     let mut second_graph = compiled_whole_frame_graph(&second);
     assert_eq!(
@@ -121,9 +121,8 @@ fn hidden_empty_and_zero_opacity_text_are_transparent_without_chunks() {
         measure_and_place(&mut arena, root, measure, place);
         let roots = [root];
         let (properties, generations) = sync_identity(&arena, &roots);
-        let manifest = |mode| {
-            record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
-        };
+        let manifest =
+            |mode| record_coverage_manifest(&arena, &roots, true, mode, &properties, &generations);
         let metadata = manifest(CoverageRecordingMode::MetadataOnly);
         let full = manifest(CoverageRecordingMode::FullArtifact);
         assert!(matches!(
@@ -132,11 +131,7 @@ fn hidden_empty_and_zero_opacity_text_are_transparent_without_chunks() {
         ));
         assert!(canonical_manifest_matches_for_test(&metadata, &full));
 
-        let (artifact, eligibility) =
-            whole_frame_artifact(&arena, &roots, &properties, &generations);
-        assert!(eligibility.eligible);
-        assert_eq!(eligibility.chunk_count, 0);
-        assert_eq!(eligibility.op_count, 0);
+        let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert!(artifact.chunks.is_empty());
         assert!(artifact.ops.is_empty());
     }
@@ -144,11 +139,10 @@ fn hidden_empty_and_zero_opacity_text_are_transparent_without_chunks() {
 
 #[test]
 fn inline_owned_text_records_source_owned_glyphs_in_one_pass() {
-    let (arena, roots, text_key) = prepared_inline_owned_text_tree(InlineOwnedTextDamage::None);
+    let (arena, roots, text_key) = prepared_inline_owned_text_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks.len(), 1);
     assert_eq!(artifact.chunks[0].owner, text_key);
     assert!(
@@ -167,76 +161,6 @@ fn inline_owned_text_records_source_owned_glyphs_in_one_pass() {
 }
 
 #[test]
-fn missing_or_malformed_inline_owned_text_falls_back_before_every_full_hook() {
-    for damage in [
-        InlineOwnedTextDamage::MissingGlyphs,
-        InlineOwnedTextDamage::MissingFont,
-    ] {
-        let (arena, roots, _) = prepared_inline_owned_text_tree(damage);
-        let (properties, generations) = sync_identity(&arena, &roots);
-        take_full_artifact_record_count();
-        let outcome = record_frame_artifact(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
-        let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
-            panic!("invalid installed text input must keep the whole frame on legacy")
-        };
-        assert!(
-            eligibility
-                .reasons
-                .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                    LegacyPaintReason::MissingPreparedText
-                ))
-        );
-        assert_eq!(take_full_artifact_record_count(), 0);
-    }
-}
-
-#[test]
-fn compiler_rejects_empty_or_tampered_prepared_text_before_emit() {
-    let (arena, roots, _) = prepared_inline_owned_text_tree(InlineOwnedTextDamage::None);
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
-
-    let mut empty = artifact.clone();
-    let PaintOp::PreparedText(op) = &mut empty.ops[0] else {
-        panic!("fixture must contain prepared text")
-    };
-    Arc::make_mut(&mut op.params).staging_input.glyphs.clear();
-    assert_compiler_rejects_before_emit(&empty, "empty prepared text op");
-
-    let mut op_scissor = artifact.clone();
-    let PaintOp::PreparedText(op) = &op_scissor.ops[0] else {
-        panic!("fixture must contain prepared text")
-    };
-    let mut params = op.params.as_ref().clone();
-    params.scissor_rect = Some([0, 0, 10, 10]);
-    op_scissor.ops[0] = PaintOp::PreparedText(
-        PreparedTextOp::new(params).expect("non-empty op scissor remains canonical payload"),
-    );
-    let range = op_scissor.chunks[0].op_range.clone();
-    op_scissor.chunks[0].payload_identity = PaintPayloadIdentity::prepared_texts(
-        op_scissor.ops[range].iter().filter_map(|op| match op {
-            PaintOp::PreparedText(prepared) => Some(prepared),
-            _ => None,
-        }),
-    );
-    assert_compiler_rejects_before_emit(&op_scissor, "prepared text op scissor");
-
-    let mut tampered = artifact;
-    let PaintOp::PreparedText(op) = &mut tampered.ops[0] else {
-        panic!("fixture must contain prepared text")
-    };
-    Arc::make_mut(&mut op.params).fragments[0].origin[0] += 1.0;
-    assert_compiler_rejects_before_emit(&tampered, "tampered prepared text fragment");
-}
-
-#[test]
 fn empty_text_records_canonical_transparent_node_without_payload() {
     let mut arena = new_test_arena();
     let text_key = commit_element(
@@ -247,9 +171,8 @@ fn empty_text_records_canonical_transparent_node_without_payload() {
     measure_and_place(&mut arena, text_key, measure, place);
     let roots = [text_key];
     let (properties, generations) = sync_identity(&arena, &roots);
-    let manifest = |mode| {
-        record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
-    };
+    let manifest =
+        |mode| record_coverage_manifest(&arena, &roots, true, mode, &properties, &generations);
     let metadata = manifest(CoverageRecordingMode::MetadataOnly);
     let full = manifest(CoverageRecordingMode::FullArtifact);
     assert!(matches!(
@@ -258,10 +181,7 @@ fn empty_text_records_canonical_transparent_node_without_payload() {
     ));
     assert!(canonical_manifest_matches_for_test(&metadata, &full));
 
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
-    assert_eq!(eligibility.chunk_count, 0);
-    assert_eq!(eligibility.op_count, 0);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(artifact.chunks.is_empty());
     assert!(artifact.ops.is_empty());
     take_artifact_compile_count();

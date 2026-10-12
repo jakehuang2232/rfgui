@@ -5,8 +5,7 @@ use crate::style::{Layout, ScrollDirection};
 use crate::view::ImageSource;
 use crate::view::base_component::{
     ComputedStyleConsumer, DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, ShadowPaintBlocker, ShadowPaintRecordingCapability, Size,
-    UiBuildContext,
+    LayoutPlacement, Layoutable, ShadowPaintRecordingCapability, Size, UiBuildContext,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::frame_graph::FrameGraph;
@@ -148,31 +147,6 @@ fn record_image_metadata_and_artifact(
         .record_shadow_paint_artifact(root, Default::default(), revision, arena, &context)
         .expect("ready Image artifact");
     (metadata, artifact)
-}
-
-fn assert_missing_prepared_image_fallback(arena: &NodeArena, root: NodeKey) {
-    let context = image_recording_context(arena, root);
-    let revision = crate::view::paint::PaintContentRevision {
-        self_paint_revision: 1,
-        composite_revision: 1,
-        topology_revision: 1,
-    };
-    let node = arena.get(root).unwrap();
-    assert_eq!(
-        node.element
-            .shadow_paint_recording_capability(arena, false, &context),
-        ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedImage)
-    );
-    assert!(
-        node.element
-            .record_shadow_paint_metadata(root, Default::default(), revision, arena, &context)
-            .is_none()
-    );
-    assert!(
-        node.element
-            .record_shadow_paint_artifact(root, Default::default(), revision, arena, &context)
-            .is_none()
-    );
 }
 
 fn prepared_ready_image_with_inactive_slots(

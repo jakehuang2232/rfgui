@@ -1,12 +1,5 @@
 use super::*;
 
-fn artifact(outcome: FrameArtifactRecordOutcome) -> PaintArtifact {
-    match outcome {
-        FrameArtifactRecordOutcome::Artifact { artifact, .. } => artifact,
-        other => panic!("expected artifact: {other:?}"),
-    }
-}
-
 #[test]
 fn replay_preserves_full_recording_and_planning_across_content_and_geometry_edits() {
     let (arena, root, mut properties, mut generations) =
@@ -54,26 +47,14 @@ fn replay_preserves_full_recording_and_planning_across_content_and_geometry_edit
         }
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
-        let cached = artifact(
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                &mut recording,
-            )
-            .unwrap(),
+        let cached = record_surface_dag_frame_artifact_cached(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            &mut recording,
         );
-        let fresh = artifact(
-            record_surface_dag_frame_artifact(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .unwrap(),
-        );
+        let fresh = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         // Full structured debug includes all fields and operations; this fixture
         // has deterministic native rectangle payloads, no pointer debug values.
         assert_eq!(
@@ -145,46 +126,16 @@ fn replay_preserves_full_recording_and_planning_across_content_and_geometry_edit
 }
 
 #[test]
-fn invalid_metadata_still_rejects_before_full_recording_with_cache() {
-    let (arena, root, records, properties, generations) =
-        malformed_host(MalformedChunk::MetadataProperties);
+fn valid_unknown_host_always_runs_its_full_hook() {
+    let (arena, root, records, properties, generations) = malformed_host(MalformedChunk::Valid);
     let mut cache = RecordingCache::default();
-    for _ in 0..2 {
-        let outcome = record_surface_dag_frame_artifact_cached(
+    for frame in 1..=3 {
+        let _ = record_surface_dag_frame_artifact_cached(
             &arena,
             &[root],
             &properties,
             &generations,
             &mut cache,
-        )
-        .unwrap();
-        assert!(matches!(
-            outcome,
-            FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-        ));
-        assert_eq!(cache.hits, 0);
-        assert_eq!(
-            records.load(Ordering::Relaxed),
-            0,
-            "preflight rejection precedes full hook"
-        );
-    }
-}
-
-#[test]
-fn valid_unknown_host_always_runs_its_full_hook() {
-    let (arena, root, records, properties, generations) = malformed_host(MalformedChunk::Valid);
-    let mut cache = RecordingCache::default();
-    for frame in 1..=3 {
-        let _ = artifact(
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                &mut cache,
-            )
-            .unwrap(),
         );
         assert_eq!(records.load(Ordering::Relaxed), frame);
         assert_eq!(
@@ -200,15 +151,12 @@ fn absent_owners_release_recorded_commands_before_reentry() {
         prepared_leaf(0xfeed_9002, Color::rgb(255, 0, 0), 0.5, false);
     let mut cache = RecordingCache::default();
     for roots in [&[root][..], &[root][..], &[][..], &[root][..]] {
-        let _ = artifact(
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                roots,
-                &properties,
-                &generations,
-                &mut cache,
-            )
-            .unwrap(),
+        let _ = record_surface_dag_frame_artifact_cached(
+            &arena,
+            roots,
+            &properties,
+            &generations,
+            &mut cache,
         );
     }
     assert_eq!(cache.hits, 0, "reentry cannot replay an evicted owner");
@@ -242,56 +190,16 @@ fn large_optional_payload_does_not_set_every_command_storage_size() {
 }
 
 #[test]
-fn warm_geometry_never_skips_current_command_identity_validation() {
-    let (arena, root, properties, generations) =
-        prepared_leaf(0xfeed_9003, Color::rgb(255, 0, 0), 0.5, false);
-    let source = artifact(
-        record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap(),
-    );
-    let context = ArtifactSurfaceRasterContext::new(
-        1.,
-        wgpu::TextureFormat::Rgba8Unorm,
-        [0., 0.],
-        None,
-        [4096, 4096],
-        8192,
-        128 * 1024 * 1024,
-    )
-    .unwrap();
-    let mut cache = PlanningCache::default();
-    prepare_artifact_surface_raster_plan_cached(source.clone(), context, &mut cache).unwrap();
-    let mut changed = source;
-    let PaintOp::DrawRect(rect) = &mut changed.ops[0] else {
-        panic!("rectangle fixture");
-    };
-    rect.params.fill_color[0] = 0.99;
-    assert!(
-        prepare_artifact_surface_raster_plan_cached(changed, context, &mut cache).is_err(),
-        "unchanged geometry and stale payload identity cannot certify changed commands"
-    );
-}
-
-#[test]
 fn unknown_transparent_hosts_keep_the_second_capability_walk() {
     let (arena, root, _, properties, generations) = malformed_host(MalformedChunk::Transparent);
     let mut cache = RecordingCache::default();
     for frame in 1..=2 {
-        let _ = artifact(
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                &mut cache,
-            )
-            .unwrap(),
+        let _ = record_surface_dag_frame_artifact_cached(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            &mut cache,
         );
         let node = arena.get(root).unwrap();
         let host = node
@@ -323,103 +231,16 @@ fn unknown_hooks_disable_native_replay_during_the_second_walk() {
     let (properties, generations) = sync_identity(&arena, &roots);
     let mut cache = RecordingCache::default();
     for _ in 0..3 {
-        let _ = artifact(
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                &roots,
-                &properties,
-                &generations,
-                &mut cache,
-            )
-            .unwrap(),
+        let _ = record_surface_dag_frame_artifact_cached(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            &mut cache,
         );
         assert_eq!(
             cache.hits, 0,
             "full walk must not substitute a preflight context for a current hook context"
-        );
-    }
-}
-
-#[test]
-fn native_ifc_preflight_reuses_versioned_install_and_rejects_unnotified_edits() {
-    let (arena, roots, root, text) = prepared_fixed_owning_inline_text_root();
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let mut cache = RecordingCache::default();
-    let record = |cache: &mut RecordingCache| {
-        record_surface_dag_frame_artifact_cached(&arena, &roots, &properties, &generations, cache)
-            .unwrap()
-    };
-    let _ = artifact(record(&mut cache));
-    for _ in 0..2 {
-        let before = Element::inline_root_witness_checks_for_test();
-        let _ = artifact(record(&mut cache));
-        assert_eq!(
-            Element::inline_root_witness_checks_for_test() - before,
-            0,
-            "unchanged native inputs reuse the full install proof; volatile inputs are still polled"
-        );
-        assert!(cache.hits > 0);
-    }
-    // Deliberately clear dirty notification: a prior invocation's proof must
-    // not authorize changed live text that no longer matches the IFC install.
-    {
-        let mut node = arena.get_mut(text).unwrap();
-        let text = node.element.as_any_mut().downcast_mut::<Text>().unwrap();
-        text.set_text("changed after preparation");
-        text.clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    assert!(matches!(
-        record(&mut cache),
-        FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-    ));
-    assert_eq!(
-        cache.hits, 0,
-        "invalid preflight cannot replay old native commands"
-    );
-    assert!(arena.get(root).is_some());
-}
-
-#[test]
-fn relationship_replay_still_checks_current_effect_values_and_command_opacity() {
-    let (arena, root, properties, generations) =
-        prepared_leaf(0xfeed_9061, Color::rgb(255, 0, 0), 0.5, false);
-    let source = artifact(
-        record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap(),
-    );
-    let context = ArtifactSurfaceRasterContext::new(
-        1.,
-        wgpu::TextureFormat::Rgba8Unorm,
-        [0., 0.],
-        None,
-        [4096, 4096],
-        8192,
-        128 * 1024 * 1024,
-    )
-    .unwrap();
-    for invalid_generation in [false, true] {
-        let mut cache = PlanningCache::default();
-        prepare_artifact_surface_raster_plan_cached(source.clone(), context, &mut cache).unwrap();
-        let mut changed = source.clone();
-        if invalid_generation {
-            changed.effect_nodes[0].generation = 0;
-        } else {
-            changed.effect_nodes[0].opacity = 0.25;
-        }
-        assert!(prepare_artifact_surface_raster_plan(changed.clone(), context).is_err());
-        assert!(
-            prepare_artifact_surface_raster_plan_cached(changed, context, &mut cache).is_err(),
-            "topology equality cannot certify a zero generation or stale baked opacity"
-        );
-        assert_eq!(
-            cache.relation_hits, 1,
-            "fixture must exercise the cached relationship branch"
         );
     }
 }
@@ -446,16 +267,7 @@ fn local_content_edit_reuses_unaffected_raster_span_and_matches_fresh_planning()
             properties.sync(&arena, &roots);
             generations.sync(&arena, &roots, &properties);
         }
-        let source = artifact(
-            record_surface_dag_frame_artifact(
-                &arena,
-                &roots,
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .unwrap(),
-        );
+        let source = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
         let fresh = prepare_artifact_surface_raster_plan(source.clone(), context).unwrap();
         let cached =
             prepare_artifact_surface_raster_plan_cached(source, context, &mut cache).unwrap();
@@ -475,72 +287,6 @@ fn local_content_edit_reuses_unaffected_raster_span_and_matches_fresh_planning()
             );
             assert_eq!(cache.localized_misses, 1);
         }
-    }
-}
-
-#[test]
-fn parent_graph_replay_keeps_current_transform_validation_and_composition() {
-    let (mut arena, root, mut properties, mut generations) =
-        prepared_leaf(0xfeed_9071, Color::rgb(21, 43, 65), 0.5, false);
-    let context = ArtifactSurfaceRasterContext::new(
-        1.,
-        wgpu::TextureFormat::Rgba8Unorm,
-        [0., 0.],
-        None,
-        [4096, 4096],
-        8192,
-        128 * 1024 * 1024,
-    )
-    .unwrap();
-    let mut cache = PlanningCache::default();
-    let mut baseline = None;
-    for x in [3.0, 11.0] {
-        crate::view::test_support::get_element_mut::<Element>(&arena, root).set_transform_value(
-            Transform::new([Translate::xy(Length::px(x), Length::px(4.0))]),
-        );
-        let (measure, place) = constraints();
-        measure_and_place(&mut arena, root, measure, place);
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let source = artifact(
-            record_surface_dag_frame_artifact(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .unwrap(),
-        );
-        assert_eq!(source.transform_nodes.len(), 1);
-        let fresh = prepare_artifact_surface_raster_plan(source.clone(), context).unwrap();
-        let cached =
-            prepare_artifact_surface_raster_plan_cached(source.clone(), context, &mut cache)
-                .unwrap();
-        assert_eq!(format!("{cached:?}"), format!("{fresh:?}"));
-        if x == 11.0 {
-            assert_eq!(cache.graph_hits, 1);
-        }
-        baseline = Some(source);
-    }
-    let baseline = baseline.unwrap();
-    for damage in 0..3 {
-        let mut cache = PlanningCache::default();
-        prepare_artifact_surface_raster_plan_cached(baseline.clone(), context, &mut cache).unwrap();
-        let mut invalid = baseline.clone();
-        match damage {
-            0 => invalid.transform_nodes[0].local_matrix.x_axis.x = f32::NAN,
-            1 => invalid.transform_nodes[0].local_generation = 0,
-            _ => invalid.transform_nodes[0].parent = Some(TransformNodeId(root)),
-        }
-        let fresh = prepare_artifact_surface_raster_plan(invalid.clone(), context).unwrap_err();
-        let cached =
-            prepare_artifact_surface_raster_plan_cached(invalid, context, &mut cache).unwrap_err();
-        assert_eq!(
-            format!("{cached:?}"),
-            format!("{fresh:?}"),
-            "damage {damage}"
-        );
     }
 }
 
@@ -580,16 +326,7 @@ fn parent_graph_replay_uses_live_spatial_and_clip_values() {
         [320.0, 240.0],
     );
     let (properties, generations) = sync_identity(&arena, &[root]);
-    let baseline = artifact(
-        record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap(),
-    );
+    let baseline = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     assert!(!baseline.layout_position_nodes.is_empty());
     assert!(!baseline.visual_offset_nodes.is_empty());
     assert!(!baseline.scroll_nodes.is_empty());
@@ -648,22 +385,13 @@ fn parent_graph_replay_uses_live_spatial_and_clip_values() {
 }
 
 #[test]
-fn property_closure_replay_reads_live_values_and_rechecks_changed_edges() {
-    use crate::view::compositor::property_tree::{LayoutPositionNodeId, SpatialPositionReference};
-    for change in 0..5 {
+fn property_closure_replay_reads_live_values() {
+    use crate::view::compositor::property_tree::LayoutPositionNodeId;
+    for change in 0..3 {
         let (arena, root, mut trees, generations) =
             prepared_leaf(0xfeed_90a0 + change, Color::rgb(17, 43, 61), 0.5, false);
         let mut cache = RecordingCache::default();
-        artifact(
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                &[root],
-                &trees,
-                &generations,
-                &mut cache,
-            )
-            .unwrap(),
-        );
+        record_surface_dag_frame_artifact_cached(&arena, &[root], &trees, &generations, &mut cache);
         let position = LayoutPositionNodeId(root);
         assert!(trees.layout_positions.contains_key(&position));
         match change {
@@ -692,13 +420,6 @@ fn property_closure_replay_reads_live_values_and_rechecks_changed_edges() {
                     .expect("effect fixture")
                     .opacity = 0.25
             }
-            3 => {
-                trees.layout_positions.remove(&position);
-            }
-            4 => {
-                trees.layout_positions.get_mut(&position).unwrap().reference =
-                    SpatialPositionReference::LayoutParent(Some(root))
-            }
             _ => unreachable!(),
         }
         let cached = record_surface_dag_frame_artifact_cached(
@@ -708,34 +429,16 @@ fn property_closure_replay_reads_live_values_and_rechecks_changed_edges() {
             &generations,
             &mut cache,
         );
-        let fresh = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &trees,
-            &generations,
-            RendererMode::Auto,
-        );
+        let fresh = record_surface_dag_frame_artifact(&arena, &[root], &trees, &generations);
         assert_eq!(
             format!("{cached:?}"),
             format!("{fresh:?}"),
             "change {change}"
         );
-        if change < 3 {
-            assert!(matches!(
-                cached,
-                Ok(FrameArtifactRecordOutcome::Artifact { .. })
-            ));
-            assert_eq!(
-                cache.property_closure_hits, 1,
-                "values are fetched through the prior closure"
-            );
-        } else {
-            assert!(matches!(
-                cached,
-                Ok(FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_))
-            ));
-            assert_eq!(cache.property_closure_hits, 0);
-        }
+        assert_eq!(
+            cache.property_closure_hits, 1,
+            "values are fetched through the prior closure"
+        );
     }
 }
 
@@ -751,5 +454,3 @@ mod topology_history_tests;
 mod surface_structure_tests;
 
 mod clip_value_refresh_tests;
-
-mod command_block_tests;

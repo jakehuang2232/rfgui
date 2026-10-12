@@ -2,7 +2,6 @@ use super::*;
 use crate::view::paint::composite_edge::{
     emit_paint_composite_edges, paint_composite_edge_opaque_delta,
 };
-use crate::view::viewport::Viewport;
 
 fn synthetic_generic_resident_stamp(topology_revision: u64) -> RetainedSurfaceRasterStamp {
     let mut arena = new_test_arena();
@@ -13,18 +12,8 @@ fn synthetic_generic_resident_stamp(topology_revision: u64) -> RetainedSurfaceRa
     ))));
     let root = commit_element(&mut arena, Box::new(element));
     let (properties, generations) = sync_identity(&arena, &[root]);
-    let FrameArtifactRecordOutcome::Artifact { mut artifact, .. } =
-        record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .unwrap()
-    else {
-        panic!("synthetic complete recording")
-    };
+    let mut artifact =
+        record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     for chunk in &mut artifact.chunks {
         chunk.content_revision.topology_revision = topology_revision;
     }
@@ -40,7 +29,6 @@ fn synthetic_generic_resident_stamp(topology_revision: u64) -> RetainedSurfaceRa
     .unwrap();
     let plan = prepare_artifact_surface_raster_plan(artifact, context).unwrap();
     let frame = seal_prepared_artifact_surface_frame(plan).unwrap();
-    assert!(frame.residents().is_canonical());
     frame.residents().ordered_entries()[0].stamp().clone()
 }
 
@@ -99,8 +87,7 @@ fn generic_preedit_edge_survives_absent_caret_edge() {
         text_area.caret_visible = false;
     }
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(
         artifact
             .chunks
@@ -206,113 +193,4 @@ fn generic_composite_edges_do_not_enter_resident_raster_identity() {
         content_changed_stamp, baseline_stamp,
         "resident content still participates in raster identity",
     );
-}
-
-#[test]
-fn generic_composite_edge_tampers_are_typed_owner_attributed_and_mutation_free() {
-    let mut arena = new_test_arena();
-    let owner = commit_element(
-        &mut arena,
-        Box::new(Element::new_with_id(0xa2_4310, 0.0, 0.0, 64.0, 32.0)),
-    );
-    let other_owner = commit_element(
-        &mut arena,
-        Box::new(Element::new_with_id(0xa2_4311, 0.0, 0.0, 64.0, 32.0)),
-    );
-    let edge = synthetic_composite_edge(owner, PaintChunkRole::Caret, [8.0, 4.0]);
-    let mut viewport = Viewport::new();
-    let (_, residents) =
-        crate::view::paint::prepared_depth_four_surface_frame_for_test().into_parts();
-    let residents = viewport
-        .prepare_artifact_surface_pool_emission_for_forced_test(residents)
-        .unwrap()
-        .into_canonical_residents();
-    let original_owner = viewport.begin_retained_surface_frame_stage().unwrap();
-    assert!(viewport.stage_artifact_surface_resident_set(original_owner, residents));
-    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(original_owner), true));
-    let frame_owner = viewport.begin_retained_surface_frame_stage().unwrap();
-    let graph = FrameGraph::new();
-    let graph_before = graph.build_state_snapshot_for_test();
-    let pool_before = viewport.retained_surface_transaction_shape_for_test();
-
-    let mut wrong_owner = edge.clone();
-    wrong_owner.id.owner = other_owner;
-    assert_eq!(
-        wrong_owner.validate(),
-        Err(PaintArtifactContractRejection {
-            owner,
-            violation: PaintArtifactContractViolation::CompositeOwner,
-        })
-    );
-
-    let mut bounds = edge.clone();
-    bounds.bounds_bits[0] ^= 1;
-    assert_eq!(
-        bounds.validate(),
-        Err(PaintArtifactContractRejection {
-            owner,
-            violation: PaintArtifactContractViolation::CompositeBounds,
-        })
-    );
-
-    let mut payload = edge.clone();
-    payload.payload_identity = PaintPayloadIdentity::None;
-    assert_eq!(
-        payload.validate(),
-        Err(PaintArtifactContractRejection {
-            owner,
-            violation: PaintArtifactContractViolation::CompositePayload,
-        })
-    );
-
-    let mut clip = edge.clone();
-    clip.logical_scissor = Some([0, 0, 0, 10]);
-    assert_eq!(
-        clip.validate(),
-        Err(PaintArtifactContractRejection {
-            owner,
-            violation: PaintArtifactContractViolation::CompositeClip,
-        })
-    );
-
-    let mut phase = edge.clone();
-    phase.id.phase = PaintNodePhase::BeforeChildren;
-    let mut order = edge.clone();
-    order.id.slot ^= 1;
-    for phase_or_order in [phase, order] {
-        assert_eq!(
-            phase_or_order.validate_schedule(
-                owner,
-                PaintNodePhase::AfterChildren,
-                1,
-                PaintChunkRole::Caret,
-            ),
-            Err(PaintArtifactContractRejection {
-                owner,
-                violation: PaintArtifactContractViolation::CompositePhaseOrder,
-            })
-        );
-    }
-
-    let mut synchronized = edge.clone();
-    synchronized.op.params.position[0] += 1.0;
-    synchronized.bounds_bits[0] = synchronized.op.params.position[0].to_bits();
-    synchronized.payload_identity =
-        PaintPayloadIdentity::prepared_rects([&synchronized.op]).unwrap();
-    assert!(synchronized.validate().is_ok());
-    assert_eq!(
-        synchronized.validate_source_parity(&edge),
-        Err(PaintArtifactContractRejection {
-            owner,
-            violation: PaintArtifactContractViolation::CompositeSourceParity,
-        })
-    );
-
-    assert_eq!(graph.build_state_snapshot_for_test(), graph_before);
-    assert_eq!(
-        viewport.retained_surface_transaction_shape_for_test(),
-        pool_before
-    );
-    assert!(viewport.retained_surface_frame_stage_owner_is_active(frame_owner));
-    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), false));
 }

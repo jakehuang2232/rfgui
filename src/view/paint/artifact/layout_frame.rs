@@ -176,11 +176,8 @@ impl PreparedTextOp {
         {
             glyph.final_paint_pos = translated.final_paint_pos_bits.map(f32::from_bits);
         }
-        let params = Arc::new(params);
         Some(Self {
-            validated_params: params.clone(),
-            params,
-            uniform_opacity_bits: self.uniform_opacity_bits,
+            params: Arc::new(params),
             identity,
         })
     }

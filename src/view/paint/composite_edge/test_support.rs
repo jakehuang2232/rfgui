@@ -3,42 +3,6 @@
 use super::*;
 
 impl PaintCompositeEdge {
-    pub(crate) fn validate_schedule(
-        &self,
-        owner: NodeKey,
-        phase: super::super::PaintNodePhase,
-        slot: u16,
-        role: super::super::PaintChunkRole,
-    ) -> Result<(), PaintArtifactContractRejection> {
-        self.validate()?;
-        if self.owner != owner
-            || self.id.owner != owner
-            || self.id.phase != phase
-            || self.id.slot != slot
-            || self.id.role != role
-        {
-            return Err(PaintArtifactContractRejection {
-                owner,
-                violation: PaintArtifactContractViolation::CompositePhaseOrder,
-            });
-        }
-        Ok(())
-    }
-
-    pub(crate) fn validate_source_parity(
-        &self,
-        expected: &Self,
-    ) -> Result<(), PaintArtifactContractRejection> {
-        self.validate()?;
-        expected.validate()?;
-        (self == expected)
-            .then_some(())
-            .ok_or(PaintArtifactContractRejection {
-                owner: expected.owner,
-                violation: PaintArtifactContractViolation::CompositeSourceParity,
-            })
-    }
-
     pub(super) fn draw_pass(&self) -> Option<DrawRectPass> {
         self.is_canonical().then(|| {
             let mut pass = DrawRectPass::new(

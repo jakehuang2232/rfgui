@@ -13,196 +13,109 @@ use crate::view::compositor::property_tree::{
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
-use super::coverage_manifest::exact_deferred_viewport_self_clip_witness;
+use super::{CoverageRecordingMode, PaintArtifact, PaintCoverageItem, PaintRecordingContext};
 
-use super::{
-    CoverageRecordingMode, LegacyPaintReason, PaintArtifact, PaintArtifactTarget,
-    PaintCoverageItem, PaintCoverageValidationError, PaintOpacityAuthority, PaintRecordingContext,
-};
+/// Synced property trees hold every node a recorded state references.
+const REFERENCED: &str = "synced property trees hold every referenced node";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RendererMode {
-    Legacy,
-    Auto,
-    #[cfg(test)]
-    StrictPlan,
-    #[cfg(test)]
-    ForcedForTests,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum FrameArtifactFallbackReason {
-    RendererLegacy,
-    LegacyBoundary(LegacyPaintReason),
-    /// M6A production authority accepts only chunks whose property-tree
-    /// identity is completely neutral. Later milestones will make each
-    /// property family authoritative one at a time.
-    PropertyBoundary(NodeKey),
-    #[cfg(test)]
-    RootCount(usize),
-    #[cfg(test)]
-    MissingRootEffect(NodeKey),
-    #[cfg(test)]
-    InvalidRootEffect(NodeKey),
-    #[cfg(test)]
-    NestedEffect(NodeKey),
-    #[cfg(test)]
-    NonEffectProperty(NodeKey),
-    #[cfg(test)]
-    DeferredBoundary(NodeKey),
-    Validation(PaintCoverageValidationError),
-}
-
-/// Generic current-target Surface DAG producer.
-///
-/// This policy carries no exact-shape witness, closes the same transitive
-/// artifact snapshot store as the zero-surface C3a producer, and already has
-/// a production caller for transform/effect surfaces. Scroll contracts are
-/// admitted here, but remain unwired in the production scroll selector until
-/// its pixel/reuse cutover lands.
+/// Records the complete frame: what every node draws, with every property
+/// snapshot the compiler needs.
 pub(crate) fn record_surface_dag_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
-    mode: RendererMode,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+) -> PaintArtifact {
     let _profile = crate::view::paint::work_profile::scope("record_surface_dag_frame_artifact");
-    let outcome = record_frame_artifact_with_policy(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        mode,
-        FrameArtifactAuthorityPolicy::SurfaceDag,
-        None,
-    )?;
-    close_recorded_artifact_property_snapshots(outcome, property_trees, mode, None)
+    let manifest = record_full_manifest(arena, roots, property_trees, paint_generations, None);
+    let mut artifact = materialize_frame_artifact_with_cache(manifest, None);
+    populate_referenced_property_snapshots(&mut artifact, property_trees);
+    artifact
 }
 
+/// [`record_surface_dag_frame_artifact`] reusing what `cache` recorded in
+/// earlier frames.
 pub(crate) fn record_surface_dag_frame_artifact_cached(
     arena: &NodeArena,
     roots: &[NodeKey],
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     cache: &mut super::RecordingCache,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+) -> PaintArtifact {
     cache.begin();
-    let outcome = record_frame_artifact_with_policy_and_stack(
+    // A metadata pass finds the owners whose commands the cache still holds;
+    // when it holds them all, their recorded commands complete the frame.
+    let mut preflight = super::coverage_manifest::record_cached_coverage_manifest(
         arena,
         roots,
+        true,
+        CoverageRecordingMode::MetadataOnly,
         property_trees,
         paint_generations,
-        RendererMode::Auto,
-        FrameArtifactAuthorityPolicy::SurfaceDag,
-        None,
-        None,
-        None,
-        Some(cache),
-    )
-    .and_then(|outcome| {
-        close_recorded_artifact_property_snapshots(
-            outcome,
+        recording_context(),
+        Some(&mut *cache),
+    );
+    let manifest = if cache.materialize(arena, &mut preflight).is_some() {
+        preflight
+    } else {
+        record_full_manifest(
+            arena,
+            roots,
             property_trees,
-            RendererMode::Auto,
-            Some(cache),
+            paint_generations,
+            Some(&mut *cache),
         )
-    });
-    cache.finish(matches!(
-        &outcome,
-        Ok(FrameArtifactRecordOutcome::Artifact { .. })
-    ));
-    outcome
+    };
+    let mut artifact = materialize_frame_artifact_with_cache(manifest, Some(&mut *cache));
+    property_closure_cache::populate(&mut artifact, property_trees, cache);
+    cache.finish(true);
+    artifact
 }
 
-fn close_recorded_artifact_property_snapshots(
-    outcome: FrameArtifactRecordOutcome,
+fn recording_context() -> PaintRecordingContext {
+    PaintRecordingContext::default()
+}
+
+fn record_full_manifest(
+    arena: &NodeArena,
+    roots: &[NodeKey],
     property_trees: &PropertyTrees,
-    mode: RendererMode,
+    paint_generations: &PaintGenerationTracker,
     cache: Option<&mut super::RecordingCache>,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    let FrameArtifactRecordOutcome::Artifact {
-        mut artifact,
-        mut eligibility,
-    } = outcome
-    else {
-        return Ok(outcome);
-    };
-    let closed = match cache {
-        Some(cache) => property_closure_cache::populate(&mut artifact, property_trees, cache),
-        None => populate_referenced_property_snapshots(&mut artifact, property_trees),
-    };
-    if let Err(reasons) = closed {
-        eligibility.eligible = false;
-        for reason in reasons {
-            if !eligibility.reasons.contains(&reason) {
-                eligibility.reasons.push(reason);
-            }
-        }
-        return fallback_or_forced(mode, eligibility);
-    }
-    Ok(FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    })
+) -> super::PaintCoverageManifest {
+    super::coverage_manifest::record_cached_coverage_manifest(
+        arena,
+        roots,
+        true,
+        CoverageRecordingMode::FullArtifact,
+        property_trees,
+        paint_generations,
+        recording_context(),
+        cache,
+    )
 }
 
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RootOpacityGroupPlan {
-    root: NodeKey,
-    effect: EffectNodeId,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// Historical recorder policies remain available to regression fixtures;
-// production recording enters through the generic SurfaceDag policy.
-enum FrameArtifactAuthorityPolicy {
-    #[cfg(test)]
-    ExistingBakedProperties,
-    PropertyNeutral,
-    ClipEnabled,
-    PropertyScene,
-    /// Complete recording for the production generic Surface DAG.
-    SurfaceDag,
-    #[cfg(test)]
-    RootOpacityGroup(RootOpacityGroupPlan),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SnapshotMerge {
-    Inserted,
-    Identical,
-    Conflict,
-}
-
-fn merge_snapshot<K, V>(store: &mut FxHashMap<K, V>, key: K, snapshot: V) -> SnapshotMerge
+/// Adds `snapshot` under `key` unless the store already holds that node.
+fn insert_snapshot<K, V>(store: &mut FxHashMap<K, V>, key: K, snapshot: V) -> bool
 where
     K: Copy + Eq + std::hash::Hash,
-    V: Copy + PartialEq,
 {
     match store.entry(key) {
         Entry::Vacant(entry) => {
             entry.insert(snapshot);
-            SnapshotMerge::Inserted
+            true
         }
-        Entry::Occupied(entry) if *entry.get() == snapshot => SnapshotMerge::Identical,
-        Entry::Occupied(_) => SnapshotMerge::Conflict,
+        Entry::Occupied(_) => false,
     }
 }
 
-/// V2 candidate preflight. Before cutover it is called only by
-/// [`record_closed_single_target_frame_artifact`]; existing retained and
-/// ArtifactCanary recorder paths must not call it or change their frozen
-/// artifact stores.
-/// On success the artifact owns every transitive property snapshot needed by
+/// On return the artifact owns every transitive property snapshot needed by
 /// its chunk states and recorded owner endpoints, and no later stage needs the
-/// arena. This closure is complete only for the artifact's admitted owner set;
-/// it is not a global property-tree completeness claim.
+/// arena.
 pub(super) fn populate_referenced_property_snapshots(
     artifact: &mut PaintArtifact,
     property_trees: &PropertyTrees,
-) -> Result<(), Vec<FrameArtifactFallbackReason>> {
+) {
     let _profile =
         crate::view::paint::work_profile::scope("populate_referenced_property_snapshots");
     artifact.transform_nodes.clear();
@@ -240,19 +153,11 @@ pub(super) fn populate_referenced_property_snapshots(
 
     let mut clips = FxHashMap::default();
     for snapshot in artifact.clip_nodes.iter().copied() {
-        if merge_snapshot(&mut clips, snapshot.id, snapshot) == SnapshotMerge::Conflict {
-            return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-                snapshot.owner,
-            )]);
-        }
+        insert_snapshot(&mut clips, snapshot.id, snapshot);
     }
     let mut effects = FxHashMap::default();
     for snapshot in artifact.effect_nodes.iter().copied() {
-        if merge_snapshot(&mut effects, snapshot.id, snapshot) == SnapshotMerge::Conflict {
-            return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-                snapshot.owner,
-            )]);
-        }
+        insert_snapshot(&mut effects, snapshot.id, snapshot);
     }
     // The property trees are immutable for this call. After one complete
     // chain has been checked against the artifact's supplied observations,
@@ -271,33 +176,26 @@ pub(super) fn populate_referenced_property_snapshots(
     let mut scroll_scratch = snapshot_closure::ChainScratch::default();
     let mut anchor_visual_roots = Vec::new();
     let mut next_state = 0;
-    while let Some(&(owner, state)) = referenced_states.get(next_state) {
+    while let Some(&(_, state)) = referenced_states.get(next_state) {
         next_state += 1;
-        let invalid = || vec![FrameArtifactFallbackReason::PropertyBoundary(owner)];
         if checked_clip_leaves.insert(state.clip) {
             for snapshot in property_trees
                 .clip_snapshot_for(state.clip)
-                .ok_or_else(invalid)?
+                .expect(REFERENCED)
             {
-                match merge_snapshot(&mut clips, snapshot.id, snapshot) {
-                    SnapshotMerge::Inserted => {
-                        artifact.clip_nodes.push(snapshot);
-                        referenced_states.extend(clip_frame(&snapshot));
-                    }
-                    SnapshotMerge::Identical => {}
-                    SnapshotMerge::Conflict => return Err(invalid()),
+                if insert_snapshot(&mut clips, snapshot.id, snapshot) {
+                    artifact.clip_nodes.push(snapshot);
+                    referenced_states.extend(clip_frame(&snapshot));
                 }
             }
         }
         if checked_effect_leaves.insert(state.effect) {
             for snapshot in property_trees
                 .effect_snapshot_for(state.effect)
-                .ok_or_else(invalid)?
+                .expect(REFERENCED)
             {
-                match merge_snapshot(&mut effects, snapshot.id, snapshot) {
-                    SnapshotMerge::Inserted => artifact.effect_nodes.push(snapshot),
-                    SnapshotMerge::Identical => {}
-                    SnapshotMerge::Conflict => return Err(invalid()),
+                if insert_snapshot(&mut effects, snapshot.id, snapshot) {
+                    artifact.effect_nodes.push(snapshot);
                 }
             }
         }
@@ -309,12 +207,10 @@ pub(super) fn populate_referenced_property_snapshots(
                 |id| property_trees.transform_snapshot_for(id),
                 |s| s.parent,
             )
-            .ok_or_else(invalid)?
+            .expect(REFERENCED)
         {
-            match merge_snapshot(&mut transforms, snapshot.id, snapshot) {
-                SnapshotMerge::Inserted => artifact.transform_nodes.push(snapshot),
-                SnapshotMerge::Identical => {}
-                SnapshotMerge::Conflict => return Err(invalid()),
+            if insert_snapshot(&mut transforms, snapshot.id, snapshot) {
+                artifact.transform_nodes.push(snapshot);
             }
         }
         for snapshot in position_scratch
@@ -331,7 +227,7 @@ pub(super) fn populate_referenced_property_snapshots(
                     }
                 },
             )
-            .ok_or_else(invalid)?
+            .expect(REFERENCED)
         {
             if let SpatialPositionReference::Anchor(anchor) = snapshot.reference {
                 anchor_visual_roots.push(VisualOffsetNodeId(anchor));
@@ -344,19 +240,15 @@ pub(super) fn populate_referenced_property_snapshots(
                         |id| property_trees.scroll_snapshot_for(id),
                         |s| s.parent,
                     )
-                    .ok_or_else(invalid)?
+                    .expect(REFERENCED)
                 {
-                    match merge_snapshot(&mut scrolls, scroll_snapshot.id, scroll_snapshot) {
-                        SnapshotMerge::Inserted => artifact.scroll_nodes.push(scroll_snapshot),
-                        SnapshotMerge::Identical => {}
-                        SnapshotMerge::Conflict => return Err(invalid()),
+                    if insert_snapshot(&mut scrolls, scroll_snapshot.id, scroll_snapshot) {
+                        artifact.scroll_nodes.push(scroll_snapshot);
                     }
                 }
             }
-            match merge_snapshot(&mut positions, snapshot.id, snapshot) {
-                SnapshotMerge::Inserted => artifact.layout_position_nodes.push(snapshot),
-                SnapshotMerge::Identical => {}
-                SnapshotMerge::Conflict => return Err(invalid()),
+            if insert_snapshot(&mut positions, snapshot.id, snapshot) {
+                artifact.layout_position_nodes.push(snapshot);
             }
         }
         for snapshot in visual_scratch
@@ -366,12 +258,10 @@ pub(super) fn populate_referenced_property_snapshots(
                 |id| property_trees.visual_offset_snapshot_for(id),
                 |s| s.parent,
             )
-            .ok_or_else(invalid)?
+            .expect(REFERENCED)
         {
-            match merge_snapshot(&mut visuals, snapshot.id, snapshot) {
-                SnapshotMerge::Inserted => artifact.visual_offset_nodes.push(snapshot),
-                SnapshotMerge::Identical => {}
-                SnapshotMerge::Conflict => return Err(invalid()),
+            if insert_snapshot(&mut visuals, snapshot.id, snapshot) {
+                artifact.visual_offset_nodes.push(snapshot);
             }
         }
         for anchor in anchor_visual_roots.drain(..) {
@@ -382,12 +272,10 @@ pub(super) fn populate_referenced_property_snapshots(
                     |id| property_trees.visual_offset_snapshot_for(id),
                     |s| s.parent,
                 )
-                .ok_or_else(invalid)?
+                .expect(REFERENCED)
             {
-                match merge_snapshot(&mut visuals, snapshot.id, snapshot) {
-                    SnapshotMerge::Inserted => artifact.visual_offset_nodes.push(snapshot),
-                    SnapshotMerge::Identical => {}
-                    SnapshotMerge::Conflict => return Err(invalid()),
+                if insert_snapshot(&mut visuals, snapshot.id, snapshot) {
+                    artifact.visual_offset_nodes.push(snapshot);
                 }
             }
         }
@@ -398,194 +286,32 @@ pub(super) fn populate_referenced_property_snapshots(
                 |id| property_trees.scroll_snapshot_for(id),
                 |s| s.parent,
             )
-            .ok_or_else(invalid)?
+            .expect(REFERENCED)
         {
-            match merge_snapshot(&mut scrolls, snapshot.id, snapshot) {
-                SnapshotMerge::Inserted => artifact.scroll_nodes.push(snapshot),
-                SnapshotMerge::Identical => {}
-                SnapshotMerge::Conflict => return Err(invalid()),
+            if insert_snapshot(&mut scrolls, snapshot.id, snapshot) {
+                artifact.scroll_nodes.push(snapshot);
             }
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
 pub(crate) fn populate_referenced_property_snapshots_for_test(
     artifact: &mut PaintArtifact,
     property_trees: &PropertyTrees,
-) -> Result<(), Vec<FrameArtifactFallbackReason>> {
+) {
     populate_referenced_property_snapshots(artifact, property_trees)
-}
-
-fn record_frame_artifact_with_policy(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    mode: RendererMode,
-    policy: FrameArtifactAuthorityPolicy,
-    consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    record_frame_artifact_with_policy_and_stack(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        mode,
-        policy,
-        consumed_ancestor_property,
-        None,
-        None,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_frame_artifact_with_policy_and_stack(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    mode: RendererMode,
-    policy: FrameArtifactAuthorityPolicy,
-    consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
-    consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
-    neutral_effect_authority: Option<EffectNodeId>,
-    mut recording_cache: Option<&mut super::RecordingCache>,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    let _profile =
-        crate::view::paint::work_profile::scope("record_frame_artifact_with_policy_and_stack");
-    if mode == RendererMode::Legacy {
-        return Ok(FrameArtifactRecordOutcome::WholeFrameLegacyFallback(
-            FrameArtifactEligibility {
-                eligible: false,
-                reasons: vec![FrameArtifactFallbackReason::RendererLegacy],
-                ..FrameArtifactEligibility::default()
-            },
-        ));
-    }
-    let initial_recording_context = PaintRecordingContext {
-        consumed_ancestor_property: consumed_ancestor_property.map(std::sync::Arc::new),
-        consumed_ancestor_property_stack: consumed_ancestor_property_stack.map(std::sync::Arc::new),
-        opacity_authority: match (neutral_effect_authority, policy) {
-            (Some(effect), _) => PaintOpacityAuthority::NeutralRootEffect(effect),
-            #[cfg(test)]
-            (_, FrameArtifactAuthorityPolicy::RootOpacityGroup(plan)) => {
-                PaintOpacityAuthority::NeutralRootEffect(plan.effect)
-            }
-            _ => PaintOpacityAuthority::Baked,
-        },
-        surface_dag: policy == FrameArtifactAuthorityPolicy::SurfaceDag,
-        ..PaintRecordingContext::default()
-    };
-    let planned_boundary_cutouts = super::PlannedBoundaryCutoutSet::default();
-    let mut preflight = super::coverage_manifest::record_cached_coverage_manifest(
-        arena,
-        roots,
-        false,
-        true,
-        CoverageRecordingMode::MetadataOnly,
-        property_trees,
-        paint_generations,
-        initial_recording_context.clone(),
-        None,
-        &planned_boundary_cutouts,
-        recording_cache.as_deref_mut(),
-    );
-    let mut preflight_eligibility = assess_manifest(&preflight, policy);
-    if matches!(
-        policy,
-        FrameArtifactAuthorityPolicy::PropertyNeutral
-            | FrameArtifactAuthorityPolicy::ClipEnabled
-            | FrameArtifactAuthorityPolicy::SurfaceDag
-    ) {
-        for reason in production_property_boundary_reasons(
-            arena,
-            roots,
-            property_trees,
-            policy,
-            recording_cache.as_deref_mut(),
-        ) {
-            if !preflight_eligibility.reasons.contains(&reason) {
-                preflight_eligibility.reasons.push(reason);
-            }
-        }
-        preflight_eligibility.eligible = preflight_eligibility.reasons.is_empty();
-    }
-    if !preflight_eligibility.eligible {
-        return fallback_or_forced(mode, preflight_eligibility);
-    }
-
-    let filled_preflight = recording_cache
-        .as_deref_mut()
-        .and_then(|cache| cache.materialize(arena, &mut preflight))
-        .is_some();
-    let (manifest, eligibility) = if filled_preflight {
-        // The cache replaces ops only, after matching every native hook's exact
-        // metadata. Metadata/ordering equality is guaranteed by construction.
-        let eligibility = assess_manifest(&preflight, policy);
-        (preflight, eligibility)
-    } else {
-        let manifest = super::coverage_manifest::record_cached_coverage_manifest(
-            arena,
-            roots,
-            false,
-            true,
-            CoverageRecordingMode::FullArtifact,
-            property_trees,
-            paint_generations,
-            initial_recording_context,
-            None,
-            &planned_boundary_cutouts,
-            recording_cache.as_deref_mut(),
-        );
-        let mut eligibility = assess_manifest(&manifest, policy);
-        if eligibility.eligible && !canonical_manifest_matches(&preflight, &manifest) {
-            eligibility.eligible = false;
-            eligibility
-                .reasons
-                .push(FrameArtifactFallbackReason::Validation(
-                    PaintCoverageValidationError::RecordingPassMismatch,
-                ));
-        }
-        (manifest, eligibility)
-    };
-    if !eligibility.eligible {
-        return fallback_or_forced(mode, eligibility);
-    }
-
-    let target = match policy {
-        #[cfg(test)]
-        FrameArtifactAuthorityPolicy::RootOpacityGroup(plan) => {
-            PaintArtifactTarget::RootOpacityGroup {
-                root: plan.root,
-                effect: plan.effect,
-            }
-        }
-        #[cfg(test)]
-        FrameArtifactAuthorityPolicy::ExistingBakedProperties => PaintArtifactTarget::CurrentTarget,
-        FrameArtifactAuthorityPolicy::PropertyNeutral
-        | FrameArtifactAuthorityPolicy::ClipEnabled
-        | FrameArtifactAuthorityPolicy::PropertyScene
-        | FrameArtifactAuthorityPolicy::SurfaceDag => PaintArtifactTarget::CurrentTarget,
-    };
-    materialize_frame_artifact_with_cache(manifest, target, mode, eligibility, recording_cache)
 }
 
 fn materialize_frame_artifact_with_cache(
     mut manifest: super::PaintCoverageManifest,
-    target: PaintArtifactTarget,
-    mode: RendererMode,
-    mut eligibility: FrameArtifactEligibility,
     mut cache: Option<&mut super::RecordingCache>,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
+) -> PaintArtifact {
     let _profile = crate::view::paint::work_profile::scope("materialize_frame_artifact");
     // The manifest length is a safe capacity hint. Commands stay in their
     // existing immutable blocks, so no flat payload allocation/count pass is needed.
     let chunk_count = manifest.items.len();
     let mut artifact = PaintArtifact {
-        target,
         chunks: super::shared_sequence::SharedSequence::with_shared_capacity(chunk_count),
         ops: super::shared_sequence::SharedSequence::with_shared_capacity(chunk_count),
         ..PaintArtifact::default()
@@ -599,10 +325,7 @@ fn materialize_frame_artifact_with_cache(
         super::RecordingCache::default().assemble_artifact_blocks(&mut manifest, &mut artifact);
     }
     if replayed_store {
-        return Ok(FrameArtifactRecordOutcome::Artifact {
-            artifact,
-            eligibility,
-        });
+        return artifact;
     }
     let pending_key = (!replayed_store && cache.is_some())
         .then(|| super::RecordingCache::scope_store_key(&manifest));
@@ -622,23 +345,14 @@ fn materialize_frame_artifact_with_cache(
             ..
         } = item
         else {
-            if matches!(
-                item,
-                PaintCoverageItem::TransparentNode { .. }
-                    | PaintCoverageItem::CulledSubtree { .. }
-                    | PaintCoverageItem::PlannedBoundary { .. }
-            ) {
-                continue;
-            }
-            unreachable!("eligibility rejects all paint boundaries")
+            continue;
         };
         let mut scopes = Vec::new();
         let mut cursor = Some(owner_scope);
         while let Some(scope) = cursor {
             // Pointer identity is used only for the same immutable allocation
             // in this manifest, never as a cross-frame content identity. A
-            // separately allocated observation of the same owner is merged and
-            // compared, so conflicting snapshots still fail closed.
+            // separately allocated observation of the same owner merges by id.
             if !merged_scopes.insert(std::sync::Arc::as_ptr(scope)) {
                 break;
             }
@@ -650,20 +364,8 @@ fn materialize_frame_artifact_with_cache(
             .filter(|chain| merged_clip_chains.insert(std::sync::Arc::as_ptr(chain)))
             .flat_map(|chain| chain.iter().copied())
         {
-            match merge_snapshot(&mut seen_clip_nodes, snapshot.id, snapshot) {
-                SnapshotMerge::Inserted => {
-                    artifact.clip_nodes.push(snapshot);
-                }
-                SnapshotMerge::Conflict => {
-                    eligibility.eligible = false;
-                    eligibility
-                        .reasons
-                        .push(FrameArtifactFallbackReason::Validation(
-                            PaintCoverageValidationError::ConflictingClipSnapshot(snapshot.id),
-                        ));
-                    return fallback_or_forced(mode, eligibility);
-                }
-                SnapshotMerge::Identical => {}
+            if insert_snapshot(&mut seen_clip_nodes, snapshot.id, snapshot) {
+                artifact.clip_nodes.push(snapshot);
             }
         }
         for snapshot in std::iter::once(effect_snapshot)
@@ -671,488 +373,33 @@ fn materialize_frame_artifact_with_cache(
             .filter(|chain| merged_effect_chains.insert(std::sync::Arc::as_ptr(chain)))
             .flat_map(|chain| chain.iter().copied())
         {
-            match merge_snapshot(&mut seen_effect_nodes, snapshot.id, snapshot) {
-                SnapshotMerge::Inserted => {
-                    artifact.effect_nodes.push(snapshot);
-                }
-                SnapshotMerge::Conflict => {
-                    eligibility.eligible = false;
-                    eligibility
-                        .reasons
-                        .push(FrameArtifactFallbackReason::Validation(
-                            PaintCoverageValidationError::ConflictingEffectSnapshot(snapshot.id),
-                        ));
-                    return fallback_or_forced(mode, eligibility);
-                }
-                SnapshotMerge::Identical => {}
+            if insert_snapshot(&mut seen_effect_nodes, snapshot.id, snapshot) {
+                artifact.effect_nodes.push(snapshot);
             }
         }
         for snapshot in scopes.iter().map(|scope| scope.topology) {
-            match merge_snapshot(&mut seen_owner_nodes, snapshot.owner, snapshot) {
-                SnapshotMerge::Inserted => {
-                    artifact.owner_nodes.push(snapshot);
-                }
-                SnapshotMerge::Conflict => {
-                    eligibility.eligible = false;
-                    eligibility
-                        .reasons
-                        .push(FrameArtifactFallbackReason::Validation(
-                            PaintCoverageValidationError::ConflictingOwnerSnapshot(snapshot.owner),
-                        ));
-                    return fallback_or_forced(mode, eligibility);
-                }
-                SnapshotMerge::Identical => {}
+            if insert_snapshot(&mut seen_owner_nodes, snapshot.owner, snapshot) {
+                artifact.owner_nodes.push(snapshot);
             }
         }
         for snapshot in scopes.iter().map(|scope| scope.state) {
-            match merge_snapshot(&mut seen_owner_property_states, snapshot.owner, snapshot) {
-                SnapshotMerge::Inserted => {
-                    artifact.owner_property_states.push(snapshot);
-                }
-                SnapshotMerge::Conflict => {
-                    eligibility.eligible = false;
-                    eligibility
-                        .reasons
-                        .push(FrameArtifactFallbackReason::Validation(
-                            PaintCoverageValidationError::ConflictingOwnerPropertyState(
-                                snapshot.owner,
-                            ),
-                        ));
-                    return fallback_or_forced(mode, eligibility);
-                }
-                SnapshotMerge::Identical => {}
+            if insert_snapshot(&mut seen_owner_property_states, snapshot.owner, snapshot) {
+                artifact.owner_property_states.push(snapshot);
             }
         }
     }
     if let (Some(cache), Some(key)) = (cache, pending_key) {
         cache.remember_scope_store(key, &artifact);
     }
-    Ok(FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    })
+    artifact
 }
 
 #[cfg(test)]
 mod snapshot_merge_tests;
-
-fn assess_manifest(
-    manifest: &super::PaintCoverageManifest,
-    policy: FrameArtifactAuthorityPolicy,
-) -> FrameArtifactEligibility {
-    let _profile = super::work_profile::scope("assess_manifest");
-    let mut reasons = manifest
-        .validation_errors
-        .iter()
-        .cloned()
-        .map(FrameArtifactFallbackReason::Validation)
-        .collect::<Vec<_>>();
-    let mut chunk_count = 0usize;
-    let mut op_count = 0usize;
-    let mut debug_boundaries = Vec::new();
-    for item in &manifest.items {
-        match item {
-            PaintCoverageItem::ArtifactChunk { chunk, ops, .. } => {
-                chunk_count = chunk_count.saturating_add(1);
-                op_count = op_count.saturating_add(ops.as_ref().map_or(0, |ops| ops.len()));
-                if policy == FrameArtifactAuthorityPolicy::PropertyNeutral
-                    && chunk.properties.legacy_boundary_dimensions() != Default::default()
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-                if policy == FrameArtifactAuthorityPolicy::ClipEnabled
-                    && (chunk.properties.transform.is_some()
-                        || chunk.properties.effect.is_some()
-                        || chunk.properties.scroll.is_some())
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-                if policy == FrameArtifactAuthorityPolicy::PropertyScene
-                    && (chunk.properties.transform.is_some()
-                        || chunk.properties.effect.is_some()
-                        || chunk.properties.scroll.is_some())
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(chunk.owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-                #[cfg(test)]
-                if let FrameArtifactAuthorityPolicy::RootOpacityGroup(plan) = policy {
-                    if chunk.properties.effect != Some(plan.effect) {
-                        let reason = FrameArtifactFallbackReason::NestedEffect(chunk.owner);
-                        if !reasons.contains(&reason) {
-                            reasons.push(reason);
-                        }
-                    }
-                    if chunk.properties.transform.is_some() || chunk.properties.scroll.is_some() {
-                        let reason = FrameArtifactFallbackReason::NonEffectProperty(chunk.owner);
-                        if !reasons.contains(&reason) {
-                            reasons.push(reason);
-                        }
-                    }
-                }
-            }
-            PaintCoverageItem::TransparentNode {
-                owner, properties, ..
-            } => {
-                if policy == FrameArtifactAuthorityPolicy::PropertyScene
-                    && (properties.transform.is_some()
-                        || properties.effect.is_some()
-                        || properties.scroll.is_some())
-                {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-            }
-            PaintCoverageItem::CulledSubtree {
-                owner, properties, ..
-            } => {
-                let invalid = if policy == FrameArtifactAuthorityPolicy::SurfaceDag {
-                    // Culling is the absence of paint, not a property-family
-                    // restriction. Generic recording validates the complete
-                    // live property graph before assessing this manifest.
-                    // Re-entry creates chunks again and invalidates their
-                    // raster coverage; an inherited scroll is not a fallback.
-                    false
-                } else {
-                    properties.transform.is_some()
-                        || properties.effect.is_some()
-                        || properties.scroll.is_some()
-                };
-                if invalid {
-                    let reason = FrameArtifactFallbackReason::PropertyBoundary(*owner);
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-            }
-            PaintCoverageItem::LegacyBoundary { root, reason, .. } => {
-                let boundary = FrameArtifactDebugBoundary {
-                    owner: *root,
-                    kind: FrameArtifactDebugBoundaryKind::Legacy(*reason),
-                };
-                if !debug_boundaries.contains(&boundary) {
-                    debug_boundaries.push(boundary);
-                }
-                let reason = FrameArtifactFallbackReason::LegacyBoundary(*reason);
-                if !reasons.contains(&reason) {
-                    reasons.push(reason);
-                }
-            }
-            PaintCoverageItem::PlannedBoundary { .. } => {
-                if policy != FrameArtifactAuthorityPolicy::PropertyScene {
-                    let reason = FrameArtifactFallbackReason::Validation(
-                        PaintCoverageValidationError::RecordingPassMismatch,
-                    );
-                    if !reasons.contains(&reason) {
-                        reasons.push(reason);
-                    }
-                }
-            }
-            PaintCoverageItem::NativeScrollContentReceiver { .. } => {
-                let reason = FrameArtifactFallbackReason::Validation(
-                    PaintCoverageValidationError::RecordingPassMismatch,
-                );
-                if !reasons.contains(&reason) {
-                    reasons.push(reason);
-                }
-            }
-        }
-    }
-    FrameArtifactEligibility {
-        eligible: reasons.is_empty(),
-        reasons: reasons.clone(),
-        chunk_count,
-        op_count,
-        debug_boundaries,
-    }
-}
-
-fn production_property_boundary_reasons(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    property_trees: &PropertyTrees,
-    policy: FrameArtifactAuthorityPolicy,
-    recording_cache: Option<&mut super::RecordingCache>,
-) -> Vec<FrameArtifactFallbackReason> {
-    let _profile = crate::view::paint::work_profile::scope("production_property_boundary_reasons");
-    let certified_nodes = recording_cache
-        .filter(|_| policy == FrameArtifactAuthorityPolicy::SurfaceDag)
-        .and_then(|cache| cache.topology.boundary_nodes(arena, roots));
-    let certified = certified_nodes.is_some();
-    let mut reasons = Vec::new();
-    let mut stack = certified_nodes.unwrap_or_else(|| roots.to_vec());
-    let mut seen = FxHashSet::default();
-    while let Some(key) = stack.pop() {
-        if !seen.insert(key) {
-            continue;
-        }
-        let Some(node) = arena.get(key) else {
-            continue;
-        };
-        if policy == FrameArtifactAuthorityPolicy::SurfaceDag
-            && (node.element.children() != node.children()
-                || node
-                    .children()
-                    .iter()
-                    .any(|child| arena.parent_of(*child) != Some(key)))
-        {
-            reasons.push(FrameArtifactFallbackReason::Validation(
-                PaintCoverageValidationError::InvalidOwnerSnapshot(key),
-            ));
-        }
-        let exact_deferred_viewport_root = exact_deferred_viewport_self_clip_witness(
-            arena,
-            key,
-            property_trees,
-            policy == FrameArtifactAuthorityPolicy::SurfaceDag,
-        )
-        .is_some();
-        if node.element.is_deferred_to_root_viewport_render() && !exact_deferred_viewport_root {
-            let reason = FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::Deferred);
-            if !reasons.contains(&reason) {
-                reasons.push(reason);
-            }
-        }
-        let property_boundary = property_trees.states.get(&key).is_some_and(|state| {
-            [state.paint, state.descendants]
-                .into_iter()
-                .any(|properties| match policy {
-                    FrameArtifactAuthorityPolicy::PropertyNeutral => {
-                        properties.legacy_boundary_dimensions() != Default::default()
-                    }
-                    FrameArtifactAuthorityPolicy::ClipEnabled => {
-                        properties.transform.is_some()
-                            || properties.effect.is_some()
-                            || properties.scroll.is_some()
-                    }
-                    FrameArtifactAuthorityPolicy::PropertyScene => {
-                        properties.transform.is_some()
-                            || properties.effect.is_some()
-                            || properties.scroll.is_some()
-                    }
-                    FrameArtifactAuthorityPolicy::SurfaceDag => false,
-                    #[cfg(test)]
-                    FrameArtifactAuthorityPolicy::ExistingBakedProperties
-                    | FrameArtifactAuthorityPolicy::RootOpacityGroup(_) => false,
-                })
-        });
-        if property_boundary {
-            reasons.push(FrameArtifactFallbackReason::PropertyBoundary(key));
-        }
-        if !certified {
-            stack.extend(node.element.children().iter().copied());
-        }
-    }
-    reasons
-}
-
-fn fallback_or_forced(
-    mode: RendererMode,
-    eligibility: FrameArtifactEligibility,
-) -> Result<FrameArtifactRecordOutcome, ForcedFrameArtifactError> {
-    match mode {
-        #[cfg(test)]
-        RendererMode::StrictPlan => Err(ForcedFrameArtifactError {
-            reasons: eligibility.reasons,
-        }),
-        #[cfg(test)]
-        RendererMode::ForcedForTests => Err(ForcedFrameArtifactError {
-            reasons: eligibility.reasons,
-        }),
-        RendererMode::Auto | RendererMode::Legacy => Ok(
-            FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility),
-        ),
-    }
-}
-
-pub(super) fn canonical_manifest_matches(
-    metadata: &super::PaintCoverageManifest,
-    full: &super::PaintCoverageManifest,
-) -> bool {
-    if metadata.validation_errors != full.validation_errors
-        || metadata.items.len() != full.items.len()
-    {
-        return false;
-    }
-    metadata
-        .items
-        .iter()
-        .zip(&full.items)
-        .all(|(left, right)| match (left, right) {
-            (
-                PaintCoverageItem::ArtifactChunk {
-                    order: left_order,
-                    chunk: left_chunk,
-                    clip_snapshot: left_clip_snapshot,
-                    effect_snapshot: left_effect_snapshot,
-                    owner_scope: left_owner_scope,
-                    ops: None,
-                },
-                PaintCoverageItem::ArtifactChunk {
-                    order: right_order,
-                    chunk: right_chunk,
-                    clip_snapshot: right_clip_snapshot,
-                    effect_snapshot: right_effect_snapshot,
-                    owner_scope: right_owner_scope,
-                    ops: Some(_),
-                },
-            ) => {
-                left_order == right_order
-                    && left_chunk.id == right_chunk.id
-                    && left_chunk.owner == right_chunk.owner
-                    && left_chunk.bounds.x.to_bits() == right_chunk.bounds.x.to_bits()
-                    && left_chunk.bounds.y.to_bits() == right_chunk.bounds.y.to_bits()
-                    && left_chunk.bounds.width.to_bits() == right_chunk.bounds.width.to_bits()
-                    && left_chunk.bounds.height.to_bits() == right_chunk.bounds.height.to_bits()
-                    && left_chunk.properties == right_chunk.properties
-                    && left_chunk.content_revision == right_chunk.content_revision
-                    && left_chunk.payload_identity == right_chunk.payload_identity
-                    && left_clip_snapshot == right_clip_snapshot
-                    && left_effect_snapshot == right_effect_snapshot
-                    && left_owner_scope == right_owner_scope
-            }
-            (
-                PaintCoverageItem::TransparentNode {
-                    order: left_order,
-                    owner: left_owner,
-                    stable_id: left_stable_id,
-                    properties: left_properties,
-                    content_revision: left_revision,
-                },
-                PaintCoverageItem::TransparentNode {
-                    order: right_order,
-                    owner: right_owner,
-                    stable_id: right_stable_id,
-                    properties: right_properties,
-                    content_revision: right_revision,
-                },
-            ) => {
-                left_order == right_order
-                    && left_owner == right_owner
-                    && left_stable_id == right_stable_id
-                    && left_properties == right_properties
-                    && left_revision == right_revision
-            }
-            (
-                PaintCoverageItem::CulledSubtree {
-                    order: left_order,
-                    owner: left_owner,
-                    stable_id: left_stable_id,
-                    properties: left_properties,
-                    content_revision: left_revision,
-                },
-                PaintCoverageItem::CulledSubtree {
-                    order: right_order,
-                    owner: right_owner,
-                    stable_id: right_stable_id,
-                    properties: right_properties,
-                    content_revision: right_revision,
-                },
-            ) => {
-                left_order == right_order
-                    && left_owner == right_owner
-                    && left_stable_id == right_stable_id
-                    && left_properties == right_properties
-                    && left_revision == right_revision
-            }
-            (
-                PaintCoverageItem::LegacyBoundary {
-                    order: lo,
-                    root: lr,
-                    stable_id: ls,
-                    reason: lreason,
-                },
-                PaintCoverageItem::LegacyBoundary {
-                    order: ro,
-                    root: rr,
-                    stable_id: rs,
-                    reason: rreason,
-                },
-            ) => lo == ro && lr == rr && ls == rs && lreason == rreason,
-            (
-                PaintCoverageItem::PlannedBoundary {
-                    order: left_order,
-                    boundary: left_boundary,
-                },
-                PaintCoverageItem::PlannedBoundary {
-                    order: right_order,
-                    boundary: right_boundary,
-                },
-            ) => left_order == right_order && left_boundary == right_boundary,
-            (
-                PaintCoverageItem::NativeScrollContentReceiver {
-                    order: left_order,
-                    cutout: left_cutout,
-                },
-                PaintCoverageItem::NativeScrollContentReceiver {
-                    order: right_order,
-                    cutout: right_cutout,
-                },
-            ) => left_order == right_order && left_cutout == right_cutout,
-            _ => false,
-        })
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct FrameArtifactEligibility {
-    pub(crate) eligible: bool,
-    pub(crate) reasons: Vec<FrameArtifactFallbackReason>,
-    pub(crate) chunk_count: usize,
-    pub(crate) op_count: usize,
-    /// Exact coverage boundaries retained for diagnostics. Authority selection
-    /// continues to use `reasons`; this witness only preserves the owner that
-    /// would otherwise be lost when a `LegacyBoundary` is collapsed by kind.
-    pub(crate) debug_boundaries: Vec<FrameArtifactDebugBoundary>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FrameArtifactDebugBoundary {
-    pub(crate) owner: NodeKey,
-    pub(crate) kind: FrameArtifactDebugBoundaryKind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FrameArtifactDebugBoundaryKind {
-    Legacy(LegacyPaintReason),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum FrameArtifactRecordOutcome {
-    Artifact {
-        artifact: PaintArtifact,
-        eligibility: FrameArtifactEligibility,
-    },
-    WholeFrameLegacyFallback(FrameArtifactEligibility),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ForcedFrameArtifactError {
-    pub(crate) reasons: Vec<FrameArtifactFallbackReason>,
-}
 
 mod snapshot_closure;
 
 #[cfg(test)]
 mod recording_test_support;
 #[cfg(test)]
-pub(super) use recording_test_support::materialize_frame_artifact;
-#[cfg(test)]
-pub(crate) use recording_test_support::record_clip_enabled_frame_artifact;
-#[cfg(test)]
-pub(crate) use recording_test_support::record_closed_single_target_frame_artifact;
-#[cfg(test)]
-pub(crate) use recording_test_support::record_frame_artifact;
-#[cfg(test)]
-pub(crate) use recording_test_support::record_property_neutral_frame_artifact;
-#[cfg(test)]
-pub(crate) use recording_test_support::record_root_group_opacity_frame_artifact;
+pub(crate) use recording_test_support::canonical_manifest_matches;

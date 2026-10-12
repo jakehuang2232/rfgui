@@ -39,26 +39,9 @@ fn prepared_zero_surface_three_chunk_frame() -> (NodeArena, Vec<NodeKey>, NodeKe
 fn recorded_zero_surface_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
-) -> (
-    crate::view::paint::PaintArtifact,
-    crate::view::paint::FrameArtifactEligibility,
-) {
+) -> crate::view::paint::PaintArtifact {
     let (properties, generations) = synced_paint_state(arena, roots);
-    let crate::view::paint::FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = crate::view::paint::record_closed_single_target_frame_artifact(
-        arena,
-        roots,
-        &properties,
-        &generations,
-        crate::view::paint::RendererMode::ForcedForTests,
-    )
-    .expect("zero-surface fixture must be fully recordable")
-    else {
-        panic!("forced recording cannot silently fall back")
-    };
-    (artifact, eligibility)
+    crate::view::paint::record_surface_dag_frame_artifact(arena, roots, &properties, &generations)
 }
 
 fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
@@ -82,7 +65,8 @@ fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
     );
     let (measure, place) = constraints();
     measure_and_place(&mut arena, root, measure, place);
-    let (artifact, eligibility) = recorded_zero_surface_artifact(&arena, &[root]);
+    let artifact = recorded_zero_surface_artifact(&arena, &[root]);
+    let (chunk_count, op_count) = (artifact.chunks.len(), artifact.ops.len());
     assert_eq!(
         artifact
             .chunks
@@ -106,28 +90,17 @@ fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
         .expect("zero-surface child-mask resident set must seal");
     RecordedArtifactCandidate {
         payload: RecordedArtifactPayload::ArtifactSurface(frame),
-        eligibility,
-    }
-}
-
-fn prepare_error_label(
-    error: crate::view::paint::SingleTargetSurfaceDagPrepareError,
-) -> &'static str {
-    use crate::view::paint::SingleTargetSurfaceDagPrepareError;
-    match error {
-        SingleTargetSurfaceDagPrepareError::InvalidArtifactStore => "invalid-artifact-store",
-        SingleTargetSurfaceDagPrepareError::UnsupportedTarget(_) => "unsupported-target",
-        SingleTargetSurfaceDagPrepareError::SurfaceDag(_) => "surface-dag",
+        chunk_count,
+        op_count,
     }
 }
 
 #[test]
 fn stage_c_zero_surface_prepare_seals_exact_multi_root_artifact_order() {
     let (arena, roots, child) = prepared_zero_surface_three_chunk_frame();
-    let (artifact, eligibility) = recorded_zero_surface_artifact(&arena, &roots);
-    assert!(eligibility.eligible);
+    let artifact = recorded_zero_surface_artifact(&arena, &roots);
     assert_eq!(
-        (eligibility.chunk_count, eligibility.op_count),
+        (artifact.chunks.len(), artifact.ops.len()),
         (3, 3),
         "chunks={:?}",
         artifact
@@ -171,120 +144,6 @@ fn stage_c_zero_surface_prepare_seals_exact_multi_root_artifact_order() {
     .expect("current-target zero-surface artifact must seal through the generic raster plan");
     assert_eq!(plan.roots().len(), 2);
     assert!(plan.nodes().is_empty());
-}
-
-#[test]
-fn stage_c_retained_auto_zero_resident_gate_rejects_a_detached_surface_plan() {
-    let frame = crate::view::paint::prepared_depth_four_surface_frame_for_test();
-    let plan = frame.raster_plan().clone();
-    assert_eq!(plan.nodes().len(), 4);
-    assert_eq!(
-        require_zero_resident_artifact_surface_plan(plan)
-            .expect_err("RetainedAuto must not expand detached authority in C3b3c0"),
-        RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported { candidates: 4 },
-    );
-    let trace = AutoAuthorityTrace {
-        artifact_prepare_rejected: true,
-        capture_rejections: true,
-        rejections: vec![AutoAuthorityRejection::ArtifactPrepare {
-            error: RecordedArtifactSurfacePrepareError::DetachedSurfacesUnsupported {
-                candidates: 4,
-            },
-        }],
-    };
-    assert_eq!(
-        auto_artifact_legacy_fallback_stage(&trace),
-        PaintAuthorityFallbackStage::Prepare,
-    );
-}
-
-#[test]
-fn stage_c_detached_gate_accepts_scroll_and_rejects_empty() {
-    let (scroll_arena, scroll_roots, scroll_properties, scroll_generations) =
-        prepared_exact_scroll_scene();
-    let crate::view::paint::FrameArtifactRecordOutcome::Artifact {
-        artifact: scroll_artifact,
-        ..
-    } = crate::view::paint::record_surface_dag_frame_artifact(
-        &scroll_arena,
-        &scroll_roots,
-        &scroll_properties,
-        &scroll_generations,
-        crate::view::paint::RendererMode::ForcedForTests,
-    )
-    .expect("real scroll scene must record")
-    else {
-        panic!("forced real scroll scene cannot silently fall back")
-    };
-    let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let scroll_plan = crate::view::paint::prepare_artifact_surface_raster_plan(
-        scroll_artifact,
-        artifact_surface_raster_context(
-            &context,
-            wgpu::Limits::default().max_texture_dimension_2d,
-            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
-        ),
-    )
-    .expect("real scroll scene must prepare");
-    assert_eq!(
-        scroll_plan
-            .nodes()
-            .iter()
-            .map(|node| node.identity().role)
-            .collect::<Vec<_>>(),
-        [crate::view::paint::RetainedSurfaceRasterRole::ScrollContent],
-    );
-    require_detached_artifact_surface_plan(scroll_plan)
-        .expect("the generic detached boundary must accept a real ScrollContent plan");
-
-    let (arena, roots, _) = prepared_zero_surface_three_chunk_frame();
-    let (artifact, _) = recorded_zero_surface_artifact(&arena, &roots);
-    let empty = crate::view::paint::prepare_artifact_surface_raster_plan(
-        artifact,
-        artifact_surface_raster_context(
-            &context,
-            wgpu::Limits::default().max_texture_dimension_2d,
-            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
-        ),
-    )
-    .expect("zero-surface plan");
-    assert_eq!(
-        require_detached_artifact_surface_plan(empty)
-            .expect_err("detached authority must not accept an empty plan"),
-        RecordedArtifactSurfacePrepareError::MissingDetachedSurface,
-    );
-}
-
-#[test]
-fn stage_c_zero_surface_prepare_rejects_invalid_store_without_graph_mutation() {
-    let (arena, roots, _) = prepared_zero_surface_three_chunk_frame();
-    let (mut artifact, _) = recorded_zero_surface_artifact(&arena, &roots);
-    artifact.chunks[1].op_range.end = artifact.ops.len() + 1;
-
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    let before = graph.build_state_snapshot_for_test();
-    let context = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let error = crate::view::paint::prepare_artifact_surface_raster_plan(
-        artifact,
-        artifact_surface_raster_context(
-            &context,
-            wgpu::Limits::default().max_texture_dimension_2d,
-            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
-        ),
-    )
-    .expect_err("invalid store must reject before generic raster-plan preparation");
-    let crate::view::paint::ArtifactSurfaceRasterPlanError::ArtifactProgram(error) = error else {
-        panic!("invalid store must reject at artifact-program validation: {error:?}")
-    };
-    assert_eq!(prepare_error_label(error), "invalid-artifact-store");
-    assert_eq!(
-        error,
-        crate::view::paint::SingleTargetSurfaceDagPrepareError::InvalidArtifactStore,
-    );
-    assert_eq!(graph.build_state_snapshot_for_test(), before);
 }
 
 #[test]
@@ -362,13 +221,7 @@ fn stage_c_zero_surface_retained_auto_emits_the_leaf_fill_once() {
         panic!("property-neutral frame must select artifact authority")
     };
     assert!(trace.rejections.is_empty());
-    assert_eq!(
-        (
-            candidate.eligibility.chunk_count,
-            candidate.eligibility.op_count
-        ),
-        (1, 1),
-    );
+    assert_eq!((candidate.chunk_count, candidate.op_count), (1, 1),);
     let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
     assert!(frame.raster_plan().nodes().is_empty());
     assert!(frame.residents().is_empty());

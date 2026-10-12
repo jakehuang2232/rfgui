@@ -566,7 +566,7 @@ fn stage_c_classification_artifact_fixture(
     roots: &[NodeKey],
     properties: &PropertyTrees,
     generations: &PaintGenerationTracker,
-) -> Result<PaintArtifact, Vec<FrameArtifactFallbackReason>> {
+) -> PaintArtifact {
     let mut artifact = PaintArtifact::default();
     let mut seen = FxHashSet::default();
     let mut stack = roots
@@ -576,18 +576,16 @@ fn stage_c_classification_artifact_fixture(
         .map(|root| (root, None))
         .collect::<Vec<_>>();
     while let Some((owner, parent)) = stack.pop() {
-        if !seen.insert(owner) {
-            return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(owner)]);
-        }
+        assert!(seen.insert(owner), "fixture owners are a forest");
         let node = arena
             .get(owner)
-            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?;
+            .expect("fixture owner has property and paint state");
         let state = properties
             .node_state_for(owner)
-            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?;
+            .expect("fixture owner has property and paint state");
         let generation = generations
             .local_generations_for(owner)
-            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?;
+            .expect("fixture owner has property and paint state");
         artifact.owner_nodes.push(PaintOwnerSnapshot {
             owner,
             parent,
@@ -595,8 +593,7 @@ fn stage_c_classification_artifact_fixture(
                 node.element.as_ref(),
                 arena,
                 state.paint.layout_position,
-            )
-            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(owner)])?,
+            ),
         });
         artifact
             .owner_property_states
@@ -646,14 +643,10 @@ fn stage_c_classification_artifact_fixture(
     for chunk in &artifact.chunks {
         for snapshot in properties
             .clip_snapshot_for(chunk.properties.clip)
-            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(chunk.owner)])?
+            .expect("fixture owner has property and paint state")
         {
             if let Some(existing) = clips.get(&snapshot.id) {
-                if *existing != snapshot {
-                    return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-                        chunk.owner,
-                    )]);
-                }
+                assert_eq!(*existing, snapshot);
             } else {
                 clips.insert(snapshot.id, snapshot);
                 artifact.clip_nodes.push(snapshot);
@@ -661,14 +654,10 @@ fn stage_c_classification_artifact_fixture(
         }
         for snapshot in properties
             .effect_snapshot_for(chunk.properties.effect)
-            .ok_or_else(|| vec![FrameArtifactFallbackReason::PropertyBoundary(chunk.owner)])?
+            .expect("fixture owner has property and paint state")
         {
             if let Some(existing) = effects.get(&snapshot.id) {
-                if *existing != snapshot {
-                    return Err(vec![FrameArtifactFallbackReason::PropertyBoundary(
-                        chunk.owner,
-                    )]);
-                }
+                assert_eq!(*existing, snapshot);
             } else {
                 effects.insert(snapshot.id, snapshot);
                 artifact.effect_nodes.push(snapshot);
@@ -678,8 +667,8 @@ fn stage_c_classification_artifact_fixture(
     super::frame_recorder::populate_referenced_property_snapshots_for_test(
         &mut artifact,
         properties,
-    )?;
-    Ok(artifact)
+    );
+    artifact
 }
 
 fn stage_c_owner_is_within(arena: &NodeArena, owner: NodeKey, target: NodeKey) -> bool {
@@ -1857,8 +1846,7 @@ fn stage_c_transform_effect_transform_artifact_fixture() -> PaintArtifact {
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("T -> E -> T artifact fixture");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let kinds = derive_artifact_surface_candidates(
         &artifact,
         LayerizationPolicy::ResolveMaterializedTargets,
@@ -1969,5 +1957,3 @@ fn scrollbar_overlays_bitwise_equal(
         && lhs.sampled_alpha.to_bits() == rhs.sampled_alpha.to_bits()
         && lhs.shadow_blur_radius.to_bits() == rhs.shadow_blur_radius.to_bits()
 }
-
-mod shared_recording_guard_tests;

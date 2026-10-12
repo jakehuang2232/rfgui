@@ -52,8 +52,7 @@ fn production_transition_derivation_matches_all_eight_accepted_scroll_oracles() 
     for (name, shape) in ACCEPTED_REGRESSION_SHAPES {
         let (arena, root, properties, generations) = property_scroll_interleave_fixture(shape);
         let artifact =
-            stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-                .expect("C3b1a regression artifact");
+            stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
         assert_eq!(
             production_requests(&artifact).expect("production consumption requests"),
             stage_c_artifact_surface_transition_requests(&artifact),
@@ -67,8 +66,7 @@ fn production_transition_derivation_closes_the_legacy_scroll_transform_rejection
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("scroll-transform artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let requests = production_requests(&artifact).expect("scroll-transform production requests");
     let events = classify_artifact_transition_sequence(&artifact, &requests)
         .expect("scroll-transform production transitions");
@@ -130,8 +128,7 @@ fn deepest_referencing_witness_wins_across_two_surface_levels() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformEffectScroll);
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("three-level surface witness artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let requests = production_requests(&artifact).expect("three-level production requests");
     let events = classify_artifact_transition_sequence(&artifact, &requests)
         .expect("three-level production transitions");
@@ -162,8 +159,7 @@ fn deeper_witness_rejects_a_consumed_dimension_disagreement() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::ScrollTransform);
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("scroll-transform disagreement artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let self_clip = ClipNodeId {
         owner: root,
         role: ClipNodeRole::SelfClip,
@@ -204,8 +200,7 @@ fn deeper_witness_rejects_a_consumed_dimension_disagreement() {
 fn transform_and_effect_only_artifacts_derive_closed_surface_dags() {
     let (arena, root, properties, generations) = exact_transform_fixture();
     let transform_artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("transform-only artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let transform_requests =
         production_requests(&transform_artifact).expect("transform-only requests");
     let transform_events =
@@ -227,8 +222,7 @@ fn transform_and_effect_only_artifacts_derive_closed_surface_dags() {
 
     let (arena, root, _, _, properties, generations) = planning_only_nested_effect_fixture();
     let effect_artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("effect-only artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let effect_requests = production_requests(&effect_artifact).expect("effect-only requests");
     let effect_events = classify_artifact_transition_sequence(&effect_artifact, &effect_requests)
         .expect("effect-only transitions");
@@ -251,8 +245,7 @@ fn transform_and_effect_only_artifacts_derive_closed_surface_dags() {
 fn owners_without_surface_candidates_emit_no_transition_requests() {
     let (arena, roots, _, fourth, properties, generations) = stage_c_depth_four_scroll_fixture();
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
-            .expect("mixed surface and inline owner artifact");
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations);
     artifact.transform_nodes.clear();
     artifact.effect_nodes.clear();
     artifact.scroll_nodes.clear();
@@ -279,8 +272,7 @@ fn scroll_terminal_closure_carries_a_self_clip_without_minting_a_surface() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("frame-root scroll artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let self_clip = ClipNodeId {
         owner: root,
         role: ClipNodeRole::SelfClip,
@@ -315,8 +307,7 @@ fn scroll_terminal_closure_carries_a_self_clip_without_minting_a_surface() {
 fn derivation_rejections_cover_stalled_terminal_and_missing_edges() {
     let (arena, root, properties, generations) = exact_transform_fixture();
     let mut stalled =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("transform artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     stalled
         .owner_property_states
         .iter_mut()
@@ -335,8 +326,7 @@ fn derivation_rejections_cover_stalled_terminal_and_missing_edges() {
     let child = arena.children_of(root)[0];
     let child_effect = EffectNodeId(child);
     let mut terminal =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("second transform artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     terminal.effect_nodes.push(EffectNodeSnapshot {
         id: child_effect,
         owner: child,
@@ -362,8 +352,7 @@ fn derivation_rejections_cover_stalled_terminal_and_missing_edges() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
     let mut missing =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("transform-scroll artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let scroll_owner = arena.children_of(root)[0];
     let endpoints = missing
         .owner_property_states
@@ -384,8 +373,7 @@ fn derivation_rejections_cover_stalled_terminal_and_missing_edges() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
     let mut conflicting =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("branching transform-scroll artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let first_scroll_owner = arena.children_of(root)[0];
     let sibling_scroll_owner = arena.children_of(first_scroll_owner)[0];
     conflicting
@@ -468,8 +456,7 @@ fn incomparable_sibling_witnesses_still_reject_a_consumed_clip_disagreement() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("branching scroll disagreement artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let first_owner = arena.children_of(root)[0];
     let sibling_owner = arena.children_of(first_owner)[0];
     artifact

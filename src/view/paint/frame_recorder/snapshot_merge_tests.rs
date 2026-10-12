@@ -21,21 +21,6 @@ use crate::view::test_support::{
 };
 
 #[test]
-fn snapshot_merge_rejects_conflicting_duplicate_identity() {
-    let mut store = FxHashMap::default();
-    assert_eq!(
-        merge_snapshot(&mut store, 7_u64, 11_u64),
-        SnapshotMerge::Inserted
-    );
-    assert_eq!(merge_snapshot(&mut store, 7, 11), SnapshotMerge::Identical);
-    assert_eq!(merge_snapshot(&mut store, 7, 12), SnapshotMerge::Conflict);
-    assert_eq!(
-        store[&7], 11,
-        "conflict must not replace the canonical first snapshot"
-    );
-}
-
-#[test]
 fn artifact_snapshots_complete_spatial_ancestor_graphs_without_arena_queries() {
     let mut root_element = Element::new_with_id(0xb1f0, 0.0, 0.0, 180.0, 100.0);
     let mut root_style = Style::new();
@@ -174,7 +159,7 @@ fn artifact_snapshots_complete_spatial_ancestor_graphs_without_arena_queries() {
             .is_some(),
         "visual-offset snapshot chain"
     );
-    populate_referenced_property_snapshots(&mut artifact, &trees).expect("snapshot graph");
+    populate_referenced_property_snapshots(&mut artifact, &trees);
 
     assert_eq!(
         artifact
@@ -309,8 +294,7 @@ fn artifact_snapshot_closure_includes_named_anchor_visual_chain() {
         .into(),
         ..PaintArtifact::default()
     };
-    populate_referenced_property_snapshots(&mut artifact, &trees)
-        .expect("named-anchor artifact snapshot closure");
+    populate_referenced_property_snapshots(&mut artifact, &trees);
 
     assert_eq!(
         artifact

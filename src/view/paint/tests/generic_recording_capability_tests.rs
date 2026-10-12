@@ -60,7 +60,6 @@ fn generic_recording_deferred_phase_and_scrollbar_overlay_keep_canonical_order()
             let context = PaintRecordingContext {
                 recording_owner: Some(root),
                 recording_owner_stable_id: Some(0xc1_4300),
-                surface_dag: true,
                 surface_dag_scroll: Some(snapshot.id),
                 surface_dag_scroll_snapshot: Some(std::sync::Arc::new(snapshot)),
                 ..Default::default()
@@ -71,19 +70,10 @@ fn generic_recording_deferred_phase_and_scrollbar_overlay_keep_canonical_order()
             );
             assert!(
                 context
-                    .baked_scroll_host_snapshot_for_root(0xc1_4300)
-                    .is_none()
-            );
-            assert!(
-                context
                     .recorded_scroll_host_snapshot_for_root(0xc1_4301)
                     .is_none()
             );
             for invalid in [
-                PaintRecordingContext {
-                    surface_dag: false,
-                    ..context.clone()
-                },
                 PaintRecordingContext {
                     recording_owner: Some(normal),
                     ..context.clone()
@@ -123,17 +113,8 @@ fn generic_recording_deferred_phase_and_scrollbar_overlay_keep_canonical_order()
                 );
             }
         }
-        let outcome = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .unwrap_or_else(|error| panic!("deferred={deferred}: {error:?}"));
-        let FrameArtifactRecordOutcome::Artifact { artifact, .. } = outcome else {
-            panic!("fallback")
-        };
+        let outcome = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
+        let artifact = outcome;
         if let Some(late) = late {
             assert_eq!(
                 artifact
@@ -265,17 +246,9 @@ fn generic_recording_transparent_resource_slots_preserve_only_active_children() 
                     [64.0, 64.0],
                 );
                 let (properties, generations) = sync_identity(&arena, &[owner]);
-                let outcome = record_surface_dag_frame_artifact(
-                    &arena,
-                    &[owner],
-                    &properties,
-                    &generations,
-                    RendererMode::ForcedForTests,
-                )
-                .unwrap_or_else(|error| panic!("svg={svg} child={child_present}: {error:?}"));
-                let FrameArtifactRecordOutcome::Artifact { artifact, .. } = outcome else {
-                    panic!("fallback")
-                };
+                let outcome =
+                    record_surface_dag_frame_artifact(&arena, &[owner], &properties, &generations);
+                let artifact = outcome;
                 // The recorder preserves a canonical empty owner chunk; it
                 // must neither invent paint nor skip the active descendants.
                 for chunk in artifact.chunks.iter().filter(|chunk| chunk.owner == owner) {
@@ -326,22 +299,8 @@ fn generic_recording_capability_matrix_closes_and_compiles_native_commands() {
     cases.push(("culled and visible roots", arena, roots));
     for (name, arena, roots) in cases {
         let (properties, generations) = sync_identity(&arena, &roots);
-        let result = record_surface_dag_frame_artifact(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .unwrap_or_else(|error| panic!("{name}: {error:?}"));
-        let FrameArtifactRecordOutcome::Artifact {
-            artifact,
-            eligibility,
-        } = result
-        else {
-            panic!("{name} fallback")
-        };
-        assert!(eligibility.eligible && !artifact.ops.is_empty(), "{name}");
+        let result = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
+        let artifact = result;
         let present = artifact.ops.iter().any(|op| match name {
             "shadow" => matches!(op, PaintOp::PreparedShadow(_)),
             "text" => matches!(op, PaintOp::PreparedText(_)),

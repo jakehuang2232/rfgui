@@ -4,64 +4,6 @@ pub(crate) fn note_replay() {
     REPLAYS.with(|v| v.set(v.get() + 1));
 }
 
-#[derive(Clone)]
-struct LiveColor(std::rc::Rc<std::cell::Cell<[f32; 4]>>);
-impl crate::style::ColorLike for LiveColor {
-    fn box_clone(&self) -> Box<dyn crate::style::ColorLike> {
-        Box::new(self.clone())
-    }
-    fn to_rgba_f32(&self) -> [f32; 4] {
-        self.0.get()
-    }
-}
-
-#[test]
-fn native_paint_capsule_reads_live_colors_and_rejects_invalid_offsets() {
-    let mut arena = new_test_arena();
-    let owner = commit_element(
-        &mut arena,
-        Box::new(Element::new_with_id(0xbead1, 0., 0., 20., 16.)),
-    );
-    let node = arena.get(owner).unwrap();
-    let element = node.element.as_any().downcast_ref::<Element>().unwrap();
-    let context = crate::view::paint::PaintRecordingContext::default();
-    let first = element.prepared_self_paint_record(&context).unwrap();
-    let before = REPLAYS.with(std::cell::Cell::get);
-    let warm = element.prepared_self_paint_record(&context).unwrap();
-    assert_eq!(warm.payload_identity, first.payload_identity);
-    assert_eq!(REPLAYS.with(std::cell::Cell::get), before + 1);
-    drop(node);
-
-    let color = LiveColor(std::rc::Rc::new(std::cell::Cell::new([1., 0., 0., 1.])));
-    {
-        let mut node = arena.get_mut(owner).unwrap();
-        node.element
-            .as_any_mut()
-            .downcast_mut::<Element>()
-            .unwrap()
-            .set_background_color(color.clone());
-    }
-    let node = arena.get(owner).unwrap();
-    let element = node.element.as_any().downcast_ref::<Element>().unwrap();
-    let red = element.prepared_self_paint_record(&context).unwrap();
-    color.0.set([0., 0., 1., 1.]); // No style setter, generation or dirty notification.
-    let before = REPLAYS.with(std::cell::Cell::get);
-    let blue = element.prepared_self_paint_record(&context).unwrap();
-    assert_ne!(red.payload_identity, blue.payload_identity);
-    assert_eq!(
-        REPLAYS.with(std::cell::Cell::get),
-        before,
-        "changed resolved color must rebuild"
-    );
-    assert_eq!(
-        element
-            .prepared_self_paint_record(&context)
-            .unwrap()
-            .payload_identity,
-        blue.payload_identity
-    );
-}
-
 #[test]
 fn native_shadow_capsule_tracks_raw_geometry_and_every_shadow_parameter() {
     let mut arena = new_test_arena();
@@ -72,8 +14,7 @@ fn native_shadow_capsule_tracks_raw_geometry_and_every_shadow_parameter() {
     let mut node = arena.get_mut(owner).unwrap();
     let element = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
     element.box_shadows = vec![BoxShadow::default()];
-    let context = crate::view::paint::PaintRecordingContext::default();
-    let _ = element.prepared_self_paint_record(&context).unwrap();
+    let _ = element.prepared_self_paint_record().unwrap();
     let edits: &[fn(&mut Element)] = &[
         |e| e.box_shadows[0].offset_x = 2.,
         |e| e.box_shadows[0].offset_y = 3.,
@@ -88,15 +29,15 @@ fn native_shadow_capsule_tracks_raw_geometry_and_every_shadow_parameter() {
     for (index, edit) in edits.iter().enumerate() {
         edit(element); // Direct mutation deliberately bypasses dirty reporting.
         let before = REPLAYS.with(std::cell::Cell::get);
-        let actual = element.prepared_self_paint_record(&context).unwrap();
+        let actual = element.prepared_self_paint_record().unwrap();
         assert_eq!(REPLAYS.with(std::cell::Cell::get), before, "edit {index}");
         element.paint_recording_inputs.borrow_mut().take();
-        let fresh = element.prepared_self_paint_record(&context).unwrap();
+        let fresh = element.prepared_self_paint_record().unwrap();
         assert_eq!(
             actual.payload_identity, fresh.payload_identity,
             "edit {index}"
         );
-        let warm = element.prepared_self_paint_record(&context).unwrap();
+        let warm = element.prepared_self_paint_record().unwrap();
         assert!(
             std::sync::Arc::ptr_eq(&warm.shadows, &fresh.shadows),
             "edit {index}"

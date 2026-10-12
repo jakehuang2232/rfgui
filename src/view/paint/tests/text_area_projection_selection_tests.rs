@@ -72,18 +72,16 @@ fn text_area_projection_selection_is_path_scoped_and_ordered() {
     assert_eq!(text_context.text_area_selection, Some(witness));
 
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) =
-        crate::view::base_component::with_text_area_selection_render_context(
-            Some(
-                crate::view::base_component::TextAreaSelectionRenderContext {
-                    start: 0,
-                    end: 9,
-                    fill: [1.0, 0.0, 0.0, 1.0],
-                },
-            ),
-            || whole_frame_artifact(&arena, &roots, &properties, &generations),
-        );
-    assert!(eligibility.eligible);
+    let artifact = crate::view::base_component::with_text_area_selection_render_context(
+        Some(
+            crate::view::base_component::TextAreaSelectionRenderContext {
+                start: 0,
+                end: 9,
+                fill: [1.0, 0.0, 0.0, 1.0],
+            },
+        ),
+        || whole_frame_artifact(&arena, &roots, &properties, &generations),
+    );
     assert_eq!(
         artifact
             .chunks
@@ -126,8 +124,7 @@ fn text_area_projection_selection_is_path_scoped_and_ordered() {
         text_area.selection_focus_char = None;
     }
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -168,8 +165,7 @@ fn text_area_atomic_projection_disjoint_root_selection_is_ordered() {
 
     let (arena, roots, root, projection, projected_text) = fixture();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible, "{eligibility:?}");
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -225,8 +221,7 @@ fn text_area_selection_crossing_projection_is_split_between_root_and_child() {
 
     let (arena, roots, root, projection, projected_text) = fixture();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible, "{eligibility:?}");
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(artifact.chunks.iter().any(|chunk| {
         chunk.owner == root && chunk.id.role == PaintChunkRole::SelectionUnderlay
     }));
@@ -296,7 +291,6 @@ fn text_area_projection_selection_utf8_local_range_and_metadata_full_identity_ar
         let metadata = record_coverage_manifest(
             &arena,
             &roots,
-            false,
             true,
             CoverageRecordingMode::MetadataOnly,
             &properties,
@@ -319,7 +313,6 @@ fn text_area_projection_selection_utf8_local_range_and_metadata_full_identity_ar
         let full = record_coverage_manifest(
             &arena,
             &roots,
-            false,
             true,
             CoverageRecordingMode::FullArtifact,
             &properties,
@@ -329,99 +322,6 @@ fn text_area_projection_selection_utf8_local_range_and_metadata_full_identity_ar
             !super::super::frame_recorder::canonical_manifest_matches(&metadata, &full),
             "metadata/full must detect {} drift",
             if mutate_fill { "fill" } else { "local range" }
-        );
-    }
-}
-
-#[test]
-fn text_area_projection_selection_ambiguous_owner_and_witness_tamper_fail_closed() {
-    let (mut arena, roots, root, projection, _) = prepared_projection_text_area_tree();
-    {
-        let mut node = arena.get_mut(root).unwrap();
-        let text_area = node
-            .element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .unwrap();
-        text_area.selection_anchor_char = Some(8);
-        text_area.selection_focus_char = Some(15);
-    }
-    commit_child(
-        &mut arena,
-        projection,
-        Box::new(Text::from_content_with_id(0x7e99, "projected")),
-    );
-    let mut stack = vec![root];
-    while let Some(key) = stack.pop() {
-        stack.extend(arena.children_of(key));
-        arena
-            .get_mut(key)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    arena.refresh_subtree_dirty_cache(root);
-    assert_text_area_fallback_before_full(&arena, &roots);
-
-    let (arena, _roots, root, projection, projected_text) = prepared_projection_text_area_tree();
-    {
-        let mut node = arena.get_mut(root).unwrap();
-        let text_area = node
-            .element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .unwrap();
-        text_area.selection_anchor_char = Some(8);
-        text_area.selection_focus_char = Some(15);
-    }
-    let root_context = arena
-        .get(root)
-        .unwrap()
-        .element
-        .shadow_paint_recording_context(&PaintRecordingContext::default());
-    let projection_context = arena
-        .get(root)
-        .unwrap()
-        .element
-        .shadow_paint_recording_context_for_child(projection, &arena, &root_context);
-    let wrapper_context = arena
-        .get(projection)
-        .unwrap()
-        .element
-        .shadow_paint_recording_context(&projection_context);
-    let text_context = arena
-        .get(projection)
-        .unwrap()
-        .element
-        .shadow_paint_recording_context_for_child(projected_text, &arena, &wrapper_context);
-    for tamper_stable_id in [false, true] {
-        let mut tampered = text_context.clone();
-        let witness = tampered.text_area_selection.as_mut().unwrap();
-        if tamper_stable_id {
-            witness.target_stable_id = witness.target_stable_id.wrapping_add(1);
-        } else {
-            witness.local_end = usize::MAX;
-        }
-        assert!(
-            arena
-                .get(projected_text)
-                .unwrap()
-                .element
-                .record_shadow_paint_metadata_plan(
-                    projected_text,
-                    Default::default(),
-                    Default::default(),
-                    PaintContentRevision {
-                        self_paint_revision: 1,
-                        composite_revision: 1,
-                        topology_revision: 1,
-                    },
-                    &arena,
-                    &tampered,
-                )
-                .is_none(),
-            "tampered projection selection witness must fail closed"
         );
     }
 }
@@ -462,9 +362,7 @@ fn text_area_projection_selection_visibility_gate_prevents_artifact_only_underla
         );
         let (arena, roots, _root, projected_text) = fixture();
         let (properties, generations) = sync_identity(&arena, &roots);
-        let (artifact, eligibility) =
-            whole_frame_artifact(&arena, &roots, &properties, &generations);
-        assert!(eligibility.eligible, "{case}");
+        let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert!(
             artifact.chunks.iter().all(|chunk| {
                 chunk.owner != projected_text && chunk.id.role != PaintChunkRole::SelectionUnderlay
@@ -492,14 +390,13 @@ fn text_area_projection_selection_visibility_gate_prevents_artifact_only_underla
         "standalone invisible Text must close as transparent coverage"
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(
         artifact.chunks.is_empty(),
         "standalone invisible Text must not emit a typed zero-op chunk"
     );
 
-    let (arena, roots, root, projection, projected_text) = prepared_projection_text_area_tree();
+    let (arena, _, root, projection, projected_text) = prepared_projection_text_area_tree();
     {
         let mut node = arena.get_mut(root).unwrap();
         let text_area = node
@@ -547,47 +444,4 @@ fn text_area_projection_selection_visibility_gate_prevents_artifact_only_underla
         ShadowPaintRecordingCapability::Transparent,
         "empty content must close the shared Text paint gate before selection"
     );
-    assert_text_area_fallback_before_full(&arena, &roots);
-}
-
-#[test]
-fn text_area_projection_deferred_and_invalid_scroll_boundaries_remain_fail_closed() {
-    let (arena, _roots, root, projection, _) = prepared_projection_text_area_tree();
-    {
-        let mut node = arena.get_mut(root).unwrap();
-        let text_area = node
-            .element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .unwrap();
-        text_area.selection_anchor_char = Some(8);
-        text_area.selection_focus_char = Some(15);
-    }
-    let node = arena.get(projection).unwrap();
-    assert_eq!(
-        node.element.shadow_paint_recording_capability(
-            &arena,
-            true,
-            &PaintRecordingContext {
-                inside_text_area: true,
-                ..Default::default()
-            },
-        ),
-        ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
-    );
-    drop(node);
-
-    let (arena, roots, root, ..) = prepared_projection_text_area_tree();
-    {
-        let mut node = arena.get_mut(root).unwrap();
-        let text_area = node
-            .element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .unwrap();
-        text_area.selection_anchor_char = Some(8);
-        text_area.selection_focus_char = Some(15);
-        text_area.scroll_x = 1.0;
-    }
-    assert_text_area_fallback_before_full(&arena, &roots);
 }

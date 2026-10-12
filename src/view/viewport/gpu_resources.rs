@@ -6,40 +6,12 @@
 
 use super::*;
 
-/// Pool-canonical artifact residents whose validity depends only on their
-/// sealed values. Unlike compile actions, this proof remains valid while it is
-/// staged and committed because it contains no observation of pool residency.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct PoolCanonicalArtifactSurfaceResidents {
-    residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
-}
-
-impl PoolCanonicalArtifactSurfaceResidents {
-    pub(crate) fn residents(&self) -> &crate::view::paint::SealedArtifactSurfaceResidentSet {
-        &self.residents
-    }
-
-    fn into_ordered_entries(self) -> Vec<crate::view::paint::SealedArtifactSurfaceResidentEntry> {
-        self.residents.into_ordered_entries()
-    }
-
-    /// A subset of pool-canonical residents is still pool canonical.
-    pub(crate) fn retaining(
-        self,
-        keep: impl FnMut(&crate::view::paint::SealedArtifactSurfaceResidentEntry) -> bool,
-    ) -> Self {
-        Self {
-            residents: self.residents.retaining(keep),
-        }
-    }
-}
-
-/// One emission-scoped binding between pool-canonical residents and actions
-/// derived from the pool's current state. It is consumed before staging so an
-/// action snapshot can never masquerade as a persistent validity proof.
+/// One emission-scoped binding between sealed residents and actions derived
+/// from the pool's current state. It is consumed before staging so an action
+/// snapshot never outlives the emission it was derived for.
 #[derive(Debug)]
 pub(crate) struct PreparedArtifactSurfacePoolEmission<'pool> {
-    residents: PoolCanonicalArtifactSurfaceResidents,
+    residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
     ordered_actions: Vec<(
         crate::view::paint::RetainedSurfaceResidentKey,
         crate::view::paint::RetainedSurfaceCompileAction,
@@ -49,7 +21,7 @@ pub(crate) struct PreparedArtifactSurfacePoolEmission<'pool> {
 
 impl PreparedArtifactSurfacePoolEmission<'_> {
     pub(crate) fn residents(&self) -> &crate::view::paint::SealedArtifactSurfaceResidentSet {
-        self.residents.residents()
+        &self.residents
     }
 
     pub(crate) fn ordered_actions(
@@ -61,48 +33,9 @@ impl PreparedArtifactSurfacePoolEmission<'_> {
         &self.ordered_actions
     }
 
-    pub(crate) fn into_canonical_residents(self) -> PoolCanonicalArtifactSurfaceResidents {
+    pub(crate) fn into_residents(self) -> crate::view::paint::SealedArtifactSurfaceResidentSet {
         self.residents
     }
-}
-
-fn canonical_retained_surface_pair_bytes(
-    stamp: &crate::view::paint::RetainedSurfaceRasterStamp,
-) -> Option<u64> {
-    if !stamp
-        .target
-        .has_canonical_descriptor_pair_for(stamp.identity)
-    {
-        return None;
-    }
-    let color = crate::view::raster_cost::texture_desc_payload_bytes(&stamp.target.color);
-    let depth = crate::view::raster_cost::texture_desc_payload_bytes(&stamp.target.depth);
-    if !color.confidence.budget_usable() || !depth.confidence.budget_usable() {
-        return None;
-    }
-    color.bytes.checked_add(depth.bytes)
-}
-
-fn artifact_surface_resident_set_is_pool_canonical(
-    residents: &crate::view::paint::SealedArtifactSurfaceResidentSet,
-) -> bool {
-    if !residents.is_canonical() {
-        return false;
-    }
-    // An empty set intentionally passes the empty validation below: it owns
-    // no resident or persistent keys and represents an exact empty replacement.
-    let mut resident_keys = FxHashSet::default();
-    let mut persistent_keys = FxHashSet::default();
-    residents.ordered_entries().iter().all(|entry| {
-        let stamp = entry.stamp();
-        let Some(depth_key) = stamp.identity.color_key.depth_stencil() else {
-            return false;
-        };
-        canonical_retained_surface_pair_bytes(stamp).is_some()
-            && resident_keys.insert(entry.resident_key())
-            && persistent_keys.insert(stamp.identity.color_key)
-            && persistent_keys.insert(depth_key)
-    })
 }
 
 impl Viewport {
@@ -123,7 +56,7 @@ impl Viewport {
                 .map(|pending| match pending {
                     PendingRetainedSurfaceTransaction::Clear => 0,
                     PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents } => {
-                        residents.residents().len()
+                        residents.len()
                     }
                 }),
         )
@@ -140,7 +73,6 @@ impl Viewport {
         };
         Some(
             residents
-                .residents()
                 .ordered_entries()
                 .iter()
                 .map(crate::view::paint::SealedArtifactSurfaceResidentEntry::resident_key)
@@ -171,12 +103,9 @@ impl Viewport {
         &self,
         residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
         allow_forced_pair_witness: bool,
-    ) -> Option<PreparedArtifactSurfacePoolEmission<'_>> {
+    ) -> PreparedArtifactSurfacePoolEmission<'_> {
         let _profile =
             crate::view::paint::work_profile::scope("prepare_artifact_surface_pool_emission");
-        if !artifact_surface_resident_set_is_pool_canonical(&residents) {
-            return None;
-        }
         let ordered_actions = residents
             .ordered_entries()
             .iter()
@@ -193,20 +122,20 @@ impl Viewport {
                 )
             })
             .collect::<Vec<_>>();
-        Some(PreparedArtifactSurfacePoolEmission {
-            residents: PoolCanonicalArtifactSurfaceResidents { residents },
+        PreparedArtifactSurfacePoolEmission {
+            residents,
             ordered_actions,
             pool: std::marker::PhantomData,
-        })
+        }
     }
 
-    /// Validates compiler-sealed artifact residents once, then binds them to
-    /// actions derived from the pool's current state. Only the pure resident
-    /// capability may survive past emission; the action snapshot may not.
+    /// Binds compiler-sealed artifact residents to actions derived from the
+    /// pool's current state. Only the residents survive past emission; the
+    /// action snapshot does not.
     pub(crate) fn prepare_artifact_surface_pool_emission_from_pool(
         &self,
         residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
-    ) -> Option<PreparedArtifactSurfacePoolEmission<'_>> {
+    ) -> PreparedArtifactSurfacePoolEmission<'_> {
         self.prepare_artifact_surface_pool_emission(residents, false)
     }
 
@@ -214,7 +143,7 @@ impl Viewport {
     pub(crate) fn prepare_artifact_surface_pool_emission_for_forced_test(
         &self,
         residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
-    ) -> Option<PreparedArtifactSurfacePoolEmission<'_>> {
+    ) -> PreparedArtifactSurfacePoolEmission<'_> {
         self.prepare_artifact_surface_pool_emission(residents, true)
     }
 
@@ -278,14 +207,12 @@ impl Viewport {
             .release_persistent_pair(color_key);
     }
 
-    /// Stages only pool-canonical artifact `(resident key, stamp)` pairs for
-    /// this exact frame owner. Unlike legacy staging, this entry point accepts
-    /// only the linear capability and therefore cannot revalidate, substitute,
-    /// or re-derive a different key.
+    /// Stages compiler-sealed artifact `(resident key, stamp)` pairs for this
+    /// exact frame owner.
     pub(crate) fn stage_artifact_surface_resident_set(
         &mut self,
         owner: RetainedSurfaceFrameStageOwner,
-        residents: PoolCanonicalArtifactSurfaceResidents,
+        residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
     ) -> bool {
         if !self.retained_surface_frame_stage_owner_is_active(owner) {
             return false;
@@ -365,9 +292,6 @@ impl Viewport {
         }
         match self.compositor.pending_retained_surfaces.take() {
             Some(PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents }) => {
-                // This pending variant is constructible only from a
-                // pool-canonical linear capability. The former revalidation
-                // and duplicate-key fallback were therefore unreachable.
                 let ordered_entries = residents.into_ordered_entries();
                 let next_color_keys = ordered_entries
                     .iter()
@@ -438,7 +362,6 @@ impl Viewport {
         {
             color_keys.extend(
                 residents
-                    .residents()
                     .ordered_entries()
                     .iter()
                     .map(|entry| entry.stamp().identity.color_key),

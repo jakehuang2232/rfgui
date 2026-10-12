@@ -8,29 +8,7 @@ pub(super) struct RasterWindow {
     pub(super) content_bounds_bits: [u32; 4],
     pub(super) raster_bounds_bits: [u32; 4],
 }
-impl RasterWindow {
-    pub(super) fn matches_target(self, target: &RetainedSurfaceRasterInputs) -> bool {
-        let full = self.content_bounds_bits.map(f32::from_bits);
-        let part = self.raster_bounds_bits.map(f32::from_bits);
-        full.into_iter().chain(part).all(f32::is_finite)
-            && full[2] > 0.
-            && full[3] > 0.
-            && part[2] > 0.
-            && part[3] > 0.
-            && part[0] >= full[0]
-            && part[1] >= full[1]
-            && part[0] + part[2] <= full[0] + full[2]
-            && part[1] + part[3] <= full[1] + full[3]
-            && ArtifactSurfaceRasterOriginProjection::new(
-                self.raster_bounds_bits,
-                target.scale_factor_bits,
-            )
-            .is_some_and(|origin| {
-                origin.target_size == [target.color.width(), target.color.height()]
-                    && origin.normalized_source_bounds_bits == target.source_bounds_bits
-            })
-    }
-}
+impl RasterWindow {}
 
 /// A finite receiver clip is a proof that pixels outside its inverse image
 /// cannot contribute. The predicate consumes geometry, never property families.

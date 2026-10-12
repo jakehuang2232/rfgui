@@ -1,5 +1,4 @@
 //! Complete paint recording, generic surface planning, and retained execution.
-//! Unsupported recording falls back to the whole-frame Legacy renderer.
 
 mod artifact;
 mod compiler;
@@ -22,28 +21,18 @@ mod surface_dag;
 
 #[allow(unused_imports)]
 pub(crate) use artifact::{
-    ConsumedAncestorEffectWitness, ConsumedAncestorProperty, ConsumedAncestorPropertyStackWitness,
-    ConsumedAncestorScrollContentsWitness, ConsumedAncestorTransformWitness,
-    ConsumedPropertyForestAncestorChainWitness, ConsumedSameOwnerEffectBoundaryWitness,
-    ConsumedSameOwnerTransformBoundaryWitness, DrawRectOp, EffectPropertyContentWitness,
-    EffectPropertySurfaceArtifactContract, PaintArtifact, PaintArtifactContractRejection,
-    PaintArtifactContractViolation, PaintArtifactSpaceTransition,
-    PaintArtifactSpaceTranslationBits, PaintArtifactTarget, PaintAtomicProjectionArtifactSource,
-    PaintBakedScrollHostWitness, PaintChunk, PaintChunkFrame, PaintChunkId, PaintChunkMetadata,
-    PaintChunkRasterIdentity, PaintChunkRole, PaintContentRevision,
-    PaintDeferredViewportEffectWitness, PaintDeferredViewportSelfClipWitness, PaintNodePhase,
-    PaintNodePlan, PaintOp, PaintOpacityAuthority, PaintOwnerPropertyStateSnapshot, PaintOwnerSnap,
-    PaintOwnerSnapshot, PaintPayloadIdentity, PaintPropertyScope, PaintScrollContentWitness,
-    PaintScrollForestEdgeWitness, PaintTextContentSource, PaintTextPreeditWitness,
-    PaintTextSelectionSource, PaintTextSelectionWitness, PaintTransformSurfaceWitness,
-    PreparedImageIdentity, PreparedImageOp, PreparedInlineIfcDecorationDescriptor,
-    PreparedInlineIfcDecorationIdentity, PreparedInlineIfcDecorationOp,
-    PreparedScrollbarOverlayIdentity, PreparedScrollbarOverlayOp, PreparedShadowIdentity,
-    PreparedShadowOp, PreparedSvgIdentity, PreparedSvgOp, PreparedTextIdentity, PreparedTextOp,
-    PropertyForestBoundarySnapshot, RETAINED_CHILD_MASK_SLOT, RetainedChildMaskPlan,
-    TextPayloadNodeIdentity, TextPayloadNodeKind, TextPreeditPayloadIdentity,
-    has_canonical_paint_bounds, preedit_glyph_identity_is_exact,
-    preedit_underline_identity_is_exact,
+    DrawRectOp, PaintArtifact, PaintArtifactContractRejection, PaintArtifactContractViolation,
+    PaintArtifactSpaceTransition, PaintAtomicProjectionArtifactSource, PaintChunk, PaintChunkFrame,
+    PaintChunkId, PaintChunkMetadata, PaintChunkRasterIdentity, PaintChunkRole,
+    PaintContentRevision, PaintDeferredViewportSelfClipWitness, PaintNodePhase, PaintNodePlan,
+    PaintOp, PaintOwnerPropertyStateSnapshot, PaintOwnerSnap, PaintOwnerSnapshot,
+    PaintPayloadIdentity, PaintPropertyScope, PaintTextContentSource, PaintTextPreeditWitness,
+    PaintTextSelectionSource, PaintTextSelectionWitness, PreparedImageIdentity, PreparedImageOp,
+    PreparedInlineIfcDecorationDescriptor, PreparedInlineIfcDecorationIdentity,
+    PreparedInlineIfcDecorationOp, PreparedScrollbarOverlayIdentity, PreparedScrollbarOverlayOp,
+    PreparedShadowIdentity, PreparedShadowOp, PreparedSvgIdentity, PreparedSvgOp,
+    PreparedTextIdentity, PreparedTextOp, RETAINED_CHILD_MASK_SLOT, RetainedChildMaskPlan,
+    preedit_glyph_identity_is_exact, preedit_underline_identity_is_exact,
 };
 #[cfg(any(test, feature = "renderer-test-support"))]
 pub(crate) use compiler::take_last_production_actions_for_test;
@@ -67,24 +56,21 @@ pub(crate) use compiler::{
 pub(crate) use compiler::{
     artifact_surface_op_corresponds_to_source_for_test,
     artifact_surface_op_has_baked_opacity_for_test, neutralize_artifact_surface_opacity_for_test,
-    resolve_artifact_surface_clip_for_test, validate_media_content_artifact_for_test,
+    resolve_artifact_surface_clip_for_test,
 };
 #[cfg(test)]
 pub(crate) use compiler::{compile_artifact, take_artifact_compile_count, try_compile_artifact};
 #[cfg(test)]
 pub(crate) use composite_edge::PaintCompositeEdge;
+#[cfg(test)]
+pub(crate) use coverage_manifest::record_coverage_manifest;
 #[allow(unused_imports)]
 pub(crate) use coverage_manifest::{
     CoverageOrder, CoverageRecordingMode, PaintCoverageItem, PaintCoverageManifest,
-    PaintCoverageStats, PaintCoverageValidationError, PlannedBoundary, PlannedBoundaryCutoutSet,
-    PlannedBoundaryKind, record_coverage_manifest,
 };
 
-#[allow(unused_imports)]
 pub(crate) use frame_recorder::{
-    ForcedFrameArtifactError, FrameArtifactDebugBoundary, FrameArtifactDebugBoundaryKind,
-    FrameArtifactEligibility, FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
-    RendererMode, record_surface_dag_frame_artifact, record_surface_dag_frame_artifact_cached,
+    record_surface_dag_frame_artifact, record_surface_dag_frame_artifact_cached,
 };
 
 #[allow(unused_imports)]
@@ -114,8 +100,6 @@ pub(crate) fn canonical_manifest_matches_for_test(
 ) -> bool {
     frame_recorder::canonical_manifest_matches(metadata, full)
 }
-#[allow(unused_imports)]
-pub(crate) use recorder::{LegacyPaintReason, PaintRecordOutcome, record_root};
 #[cfg(test)]
 pub(crate) use recorder::{note_full_artifact_record, take_full_artifact_record_count};
 
@@ -125,10 +109,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) mod planning_tests;
 #[cfg(test)]
-pub(crate) use planning_tests::{
-    native_scroll_forest_plan_fixture, nested_scroll_plan_fixture,
-    prepared_depth_four_surface_frame as prepared_depth_four_surface_frame_for_test,
-};
+pub(crate) use planning_tests::{native_scroll_forest_plan_fixture, nested_scroll_plan_fixture};
 
 pub(crate) use artifact::PreparedGpuOp;
 pub(crate) use artifact::{artifact_plan_in_layout_frame, metadata_plan_in_layout_frame};
@@ -137,21 +118,6 @@ pub(crate) mod work_profile;
 
 mod recording_cache;
 pub(crate) use recording_cache::RecordingCache;
-
-#[cfg(test)]
-pub(crate) use frame_recorder::record_clip_enabled_frame_artifact;
-
-#[cfg(test)]
-pub(crate) use frame_recorder::record_closed_single_target_frame_artifact;
-
-#[cfg(test)]
-pub(crate) use frame_recorder::record_frame_artifact;
-
-#[cfg(test)]
-pub(crate) use frame_recorder::record_property_neutral_frame_artifact;
-
-#[cfg(test)]
-pub(crate) use frame_recorder::record_root_group_opacity_frame_artifact;
 
 #[cfg(test)]
 pub(crate) use surface_dag::derive_artifact_surface_coverage_forest;

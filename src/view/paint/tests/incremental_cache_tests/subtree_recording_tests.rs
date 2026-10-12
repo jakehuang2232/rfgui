@@ -26,16 +26,8 @@ fn continuously_changing_subtree_rejoins_cache_after_its_inputs_settle() {
             &properties,
             &generations,
             &mut cache,
-        )
-        .unwrap();
-        let fresh = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
+        );
+        let fresh = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
         if [9, 11].contains(&frame) {
             assert!(cache.subtrees.hits > 0, "settled frame {frame}");
@@ -69,16 +61,8 @@ fn exact_ancestor_recordings_allow_noop_mutation_but_preserve_changed_effects() 
             &properties,
             &generations,
             &mut cache,
-        )
-        .unwrap();
-        let fresh = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
+        );
+        let fresh = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
         if [2, 3, 6].contains(&frame) {
             assert!(
@@ -120,16 +104,8 @@ fn changing_branch_keeps_replaying_unchanged_siblings() {
             &properties,
             &generations,
             &mut cache,
-        )
-        .unwrap();
-        let fresh = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
+        );
+        let fresh = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
         if frame >= 2 {
             assert!(
@@ -141,7 +117,7 @@ fn changing_branch_keeps_replaying_unchanged_siblings() {
 }
 
 #[test]
-fn retained_subtree_recording_matches_fresh_after_local_edits_and_snapshot_damage() {
+fn retained_subtree_recording_matches_fresh_after_local_edits() {
     let (arena, root, first, _, mut properties, mut generations) =
         prepared_shadow_owner_tree(0xfeed_9811, 0.5);
     let mut cache = RecordingCache::default();
@@ -158,7 +134,6 @@ fn retained_subtree_recording_matches_fresh_after_local_edits_and_snapshot_damag
             arena.clear_element_dirty_flags(first, DirtyFlags::ALL);
         }
         if frame == 6 {
-            // Re-observe the owning native storage after damaged derived state.
             arena
                 .get_mut(root)
                 .unwrap()
@@ -168,20 +143,8 @@ fn retained_subtree_recording_matches_fresh_after_local_edits_and_snapshot_damag
                 .unwrap()
                 .set_opacity(0.5);
         }
-        if frame != 5 {
-            properties.sync(&arena, &[root]);
-            generations.sync(&arena, &[root], &properties);
-        } else {
-            // No node mutation and no generation bump. Snapshot equality must
-            // still reject a formerly valid subtree when an endpoint disappears.
-            let id = properties
-                .node_state_for(root)
-                .unwrap()
-                .paint
-                .effect
-                .unwrap();
-            properties.effects.remove(&id);
-        }
+        properties.sync(&arena, &[root]);
+        generations.sync(&arena, &[root], &properties);
         if frame == 8 {
             cache.finish(false);
         }
@@ -191,32 +154,12 @@ fn retained_subtree_recording_matches_fresh_after_local_edits_and_snapshot_damag
             &properties,
             &generations,
             &mut cache,
-        )
-        .unwrap();
-        let fresh = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
+        );
+        let fresh = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
         // After a local edit, one settled frame coalesces the subtree before replay.
-        if [1, 4, 7].contains(&frame) {
+        if [1, 4, 5].contains(&frame) {
             assert!(cache.subtrees.hits > 0, "frame {frame}");
-        }
-        if frame == 5 {
-            assert!(matches!(
-                cached,
-                FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-            ));
-        }
-        if frame >= 6 {
-            assert!(matches!(
-                cached,
-                FrameArtifactRecordOutcome::Artifact { .. }
-            ));
         }
         if frame == 8 {
             assert_eq!(cache.subtrees.hits, 0);
@@ -229,15 +172,12 @@ fn recorded_commands_share_immutable_storage_and_detach_before_corruption() {
     let (arena, root, _, _, properties, generations) = prepared_shadow_owner_tree(0xfeed_9813, 0.5);
     let mut cache = RecordingCache::default();
     let mut record = || {
-        artifact(
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                &mut cache,
-            )
-            .unwrap(),
+        record_surface_dag_frame_artifact_cached(
+            &arena,
+            &[root],
+            &properties,
+            &generations,
+            &mut cache,
         )
     };
     // First materialization installs the shared command blocks. Subsequent
@@ -334,21 +274,9 @@ fn scroll_subtree_replay_matches_live_recording_after_offset_changes() {
             &properties,
             &generations,
             &mut cache,
-        )
-        .unwrap();
-        let fresh = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
+        );
+        let fresh = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
-        assert!(matches!(
-            cached,
-            FrameArtifactRecordOutcome::Artifact { .. }
-        ));
         if frame == 1 || frame == 6 {
             assert!(cache.subtrees.hits > 0);
         }
@@ -400,21 +328,9 @@ fn lazy_owner_inputs_preserve_deferred_descendant_recording_and_reentry() {
             &properties,
             &generations,
             &mut cache,
-        )
-        .unwrap();
-        let fresh = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
+        );
+        let fresh = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
-        assert!(matches!(
-            cached,
-            FrameArtifactRecordOutcome::Artifact { .. }
-        ));
         warm_hits += cache.subtrees.hits;
     }
     assert!(warm_hits > 0);

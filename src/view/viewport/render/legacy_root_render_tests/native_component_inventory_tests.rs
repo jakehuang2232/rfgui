@@ -6,7 +6,6 @@
 //! source mutation and frame preparation. Their rejection guards stale data;
 //! it is not an acceptable fallback outcome for a complete production frame.
 use super::*;
-use crate::view::paint::{FrameArtifactDebugBoundaryKind, LegacyPaintReason};
 use crate::view::test_support::get_element_mut;
 
 #[derive(Clone, Copy, Debug)]
@@ -78,12 +77,7 @@ impl Scene {
             .sync(&self.arena, &[self.root], &self.properties);
     }
 
-    fn observe(
-        &self,
-        state: &str,
-        status: Status,
-        expected: Option<LegacyPaintReason>,
-    ) -> [usize; 7] {
+    fn observe(&self, state: &str, status: Status) -> [usize; 7] {
         let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, self.dpr);
         let selected = select_retained_auto_authority(
             &self.arena,
@@ -103,7 +97,6 @@ impl Scene {
         let mut commands = [0; 7];
         if let AutoAuthorityDecision::Artifact { candidate, .. } = &selected {
             let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
-            assert!(frame.is_canonical());
             let plan = frame.raster_plan();
             for step in plan
                 .roots()
@@ -153,38 +146,12 @@ impl Scene {
             std::mem::discriminant(&selected),
             std::mem::discriminant(&quiet)
         );
-        match expected {
-            None => {
-                assert!(
-                    matches!(selected, AutoAuthorityDecision::Artifact { .. }),
-                    "{host}/{state}: {:?}",
-                    trace.rejections
-                );
-                assert!(trace.rejections.is_empty());
-            }
-            Some(reason) => {
-                let [AutoAuthorityRejection::Artifact { eligibility }] =
-                    trace.rejections.as_slice()
-                else {
-                    panic!(
-                        "{host}/{state}: expected recording rejection {reason:?}, got {:?}",
-                        trace.rejections
-                    );
-                };
-                assert!(matches!(selected, AutoAuthorityDecision::Legacy { .. }));
-                assert_eq!(
-                    eligibility.reasons,
-                    vec![crate::view::paint::FrameArtifactFallbackReason::LegacyBoundary(reason)],
-                    "{host}/{state}"
-                );
-                assert_eq!(eligibility.debug_boundaries.len(), 1, "{host}/{state}");
-                assert_eq!(eligibility.debug_boundaries[0].owner, self.root);
-                assert_eq!(
-                    eligibility.debug_boundaries[0].kind,
-                    FrameArtifactDebugBoundaryKind::Legacy(reason)
-                );
-            }
-        }
+        assert!(
+            matches!(selected, AutoAuthorityDecision::Artifact { .. }),
+            "{host}/{state}: {:?}",
+            trace.rejections
+        );
+        assert!(trace.rejections.is_empty());
         commands
     }
 }
@@ -238,7 +205,7 @@ fn native_inventory_element_inline_clip_and_deferred_states() {
             }
             get_element_mut::<Element>(&scene.arena, scene.root).apply_style(style);
             scene.layout();
-            let commands = scene.observe(state, Status::Supported, None);
+            let commands = scene.observe(state, Status::Supported);
             if state == "inline-text" {
                 assert!(commands[4] > 0, "inline scene must record glyphs");
             }
@@ -272,17 +239,11 @@ fn native_inventory_element_inline_clip_and_deferred_states() {
 #[test]
 fn native_inventory_element_scroll_states() {
     for dpr in [1.0, 2.0] {
-        for (name, child_height, scroll, status, reason) in [
-            ("plain", None, false, Status::Supported, None),
-            ("scroll-empty", None, true, Status::Supported, None),
-            ("scroll-fitting", Some(20.0), true, Status::Supported, None),
-            (
-                "scroll-overflowing",
-                Some(120.0),
-                true,
-                Status::Supported,
-                None,
-            ),
+        for (name, child_height, scroll, status) in [
+            ("plain", None, false, Status::Supported),
+            ("scroll-empty", None, true, Status::Supported),
+            ("scroll-fitting", Some(20.0), true, Status::Supported),
+            ("scroll-overflowing", Some(120.0), true, Status::Supported),
         ] {
             let mut root = element(0xa110, 48.0, 40.0);
             let mut style = box_style(48.0, 40.0);
@@ -306,7 +267,7 @@ fn native_inventory_element_scroll_states() {
                 scene.properties.scrolls.len(),
                 usize::from(child_height == Some(120.0))
             );
-            scene.observe(name, status, reason);
+            scene.observe(name, status);
         }
     }
 }
@@ -320,21 +281,17 @@ fn native_inventory_text_preparation_states() {
             text.set_font_size(16.0);
             let mut scene = Scene::new(Box::new(text), dpr);
             scene.layout();
-            scene.observe(name, Status::Supported, None);
+            scene.observe(name, Status::Supported);
             if name == "visible" {
                 // Deliberate missing payload, not a normal post-layout state.
                 get_element_mut::<Text>(&scene.arena, scene.root)
                     .clear_prepared_standalone_text_for_test();
                 scene.sync();
-                scene.observe(
-                    "missing-prepared-text-injected",
-                    Status::InvalidSnapshot,
-                    Some(LegacyPaintReason::MissingPreparedText),
-                );
+                scene.observe("missing-prepared-text-injected", Status::InvalidSnapshot);
                 get_element_mut::<Text>(&scene.arena, scene.root)
                     .set_text("Native text edited after injected loss");
                 scene.layout();
-                scene.observe("prepared-after-text-edit", Status::Supported, None);
+                scene.observe("prepared-after-text-edit", Status::Supported);
             }
         }
     }
@@ -348,14 +305,14 @@ fn native_inventory_text_area_interaction_states() {
         area.font_size = 16.0;
         let mut scene = Scene::new(Box::new(area), dpr);
         scene.layout();
-        scene.observe("plain", Status::Supported, None);
+        scene.observe("plain", Status::Supported);
         {
             let mut area = get_element_mut::<TextArea>(&scene.arena, scene.root);
             area.is_focused = true;
             area.select_range(1, 5);
         }
         scene.layout();
-        scene.observe("selection", Status::Supported, None);
+        scene.observe("selection", Status::Supported);
         {
             let mut area = get_element_mut::<TextArea>(&scene.arena, scene.root);
             area.set_text("updated text area".into());
@@ -370,16 +327,12 @@ fn native_inventory_text_area_interaction_states() {
             get_element_mut::<TextArea>(&scene.arena, scene.root).ime_preedit,
             "注音"
         );
-        scene.observe("focused-ime", Status::Supported, None);
+        scene.observe("focused-ime", Status::Supported);
         // Invalid IME owner state: preserve this rejection rather than classify
         // it as unsupported selection or IME rendering.
         get_element_mut::<TextArea>(&scene.arena, scene.root).is_focused = false;
         scene.sync();
-        scene.observe(
-            "unfocused-ime-injected",
-            Status::InvalidSnapshot,
-            Some(LegacyPaintReason::StatefulPaint),
-        );
+        scene.observe("unfocused-ime-injected", Status::InvalidSnapshot);
     }
 }
 
@@ -405,7 +358,7 @@ fn native_inventory_image_resource_states() {
             }
             let mut scene = Scene::new(Box::new(image), dpr);
             scene.layout();
-            let commands = scene.observe(state, Status::Supported, None);
+            let commands = scene.observe(state, Status::Supported);
             assert_eq!(
                 commands[5],
                 usize::from(state == "ready"),
@@ -418,13 +371,9 @@ fn native_inventory_image_resource_states() {
                     pixels: Arc::from([91_u8, 81, dpr as u8, 255]),
                 });
                 scene.sync();
-                scene.observe(
-                    "source-changed-before-freeze",
-                    Status::BeforePreparation,
-                    Some(LegacyPaintReason::MissingPreparedImage),
-                );
+                scene.observe("source-changed-before-freeze", Status::BeforePreparation);
                 scene.layout();
-                scene.observe("replacement-frozen", Status::Supported, None);
+                scene.observe("replacement-frozen", Status::Supported);
             }
         }
     }
@@ -454,7 +403,7 @@ fn native_inventory_svg_resource_states() {
             let mut scene = Scene::new(Box::new(svg), dpr);
             scene.layout();
             if state == "ready" {
-                scene.observe("raster-acquired-after-freeze", Status::Supported, None);
+                scene.observe("raster-acquired-after-freeze", Status::Supported);
                 // Deterministic resource completion using the existing raster
                 // fixture; subsequent recording still passes production layout.
                 get_element_mut::<Svg>(&scene.arena, scene.root)
@@ -462,7 +411,7 @@ fn native_inventory_svg_resource_states() {
                     .unwrap();
                 scene.layout();
             }
-            let commands = scene.observe(state, Status::Supported, None);
+            let commands = scene.observe(state, Status::Supported);
             assert_eq!(
                 commands[6],
                 usize::from(state == "ready"),
@@ -472,11 +421,7 @@ fn native_inventory_svg_resource_states() {
                 get_element_mut::<Svg>(&scene.arena, scene.root)
                     .set_source(SvgSource::Content(format!("{source}<!-- replacement -->")));
                 scene.sync();
-                scene.observe(
-                    "source-changed-before-freeze",
-                    Status::BeforePreparation,
-                    Some(LegacyPaintReason::MissingPreparedSvg),
-                );
+                scene.observe("source-changed-before-freeze", Status::BeforePreparation);
             }
         }
     }

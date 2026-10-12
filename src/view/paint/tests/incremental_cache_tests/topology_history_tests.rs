@@ -1,108 +1,6 @@
 use super::*;
 
 #[test]
-fn census_reuse_keeps_paint_edits_but_rejects_reordered_or_duplicate_topology() {
-    let (mut arena, root, first, second, mut properties, mut generations) =
-        prepared_shadow_owner_tree(0xfeed_9910, 0.5);
-    let mut recording = RecordingCache::default();
-    for frame in 0..4 {
-        if frame == 1 {
-            let before = recording.topology.replay(&arena, &[root]).unwrap();
-            crate::view::test_support::get_element_mut::<Element>(&arena, first)
-                .set_background_color(Color::rgb(90, 80, 70));
-            let after = recording.topology.replay(&arena, &[root]).unwrap();
-            assert!(
-                Arc::ptr_eq(&before, &after),
-                "paint changes do not rebuild topology"
-            );
-        }
-        if frame == 2 {
-            arena.set_children(root, vec![second, first]);
-            assert!(recording.topology.replay(&arena, &[root]).is_none());
-        }
-        if frame == 3 {
-            let duplicate_id = arena.get(second).unwrap().element.stable_id();
-            *arena.get_mut(first).unwrap().element =
-                Box::new(leaf_element(duplicate_id, Color::rgb(1, 2, 3), 1., false));
-            assert!(recording.topology.replay(&arena, &[root]).is_none());
-        }
-        properties.sync(&arena, &[root]);
-        generations.sync(&arena, &[root], &properties);
-        let cached = record_surface_dag_frame_artifact_cached(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            &mut recording,
-        )
-        .unwrap();
-        let fresh = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
-        assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
-        if frame == 3 {
-            assert!(matches!(
-                cached,
-                FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-            ));
-        }
-    }
-}
-
-#[test]
-fn census_rejects_lost_history_foreign_arena_removed_root_and_failed_attempt() {
-    let (mut arena, root, properties, generations) =
-        prepared_leaf(0xfeed_9920, Color::rgb(1, 2, 3), 1., false);
-    let mut recording = RecordingCache::default();
-    let _ = record_surface_dag_frame_artifact_cached(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        &mut recording,
-    )
-    .unwrap();
-    assert!(recording.topology.replay(&arena, &[root]).is_some());
-    let (foreign, foreign_root, _, _) = prepared_leaf(0xfeed_9920, Color::rgb(1, 2, 3), 1., false);
-    assert!(
-        recording
-            .topology
-            .replay(&foreign, &[foreign_root])
-            .is_none()
-    );
-    for _ in 0..5000 {
-        drop(arena.get_mut(root));
-    }
-    assert!(recording.topology.replay(&arena, &[root]).is_none());
-    let _ = record_surface_dag_frame_artifact_cached(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        &mut recording,
-    )
-    .unwrap();
-    assert!(recording.topology.replay(&arena, &[root]).is_some());
-    recording.finish(false);
-    assert!(recording.topology.replay(&arena, &[root]).is_none());
-    let _ = record_surface_dag_frame_artifact_cached(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        &mut recording,
-    )
-    .unwrap();
-    arena.remove_subtree(root);
-    assert!(recording.topology.replay(&arena, &[root]).is_none());
-}
-
-#[test]
 fn external_stable_id_alias_cannot_replay_an_inactive_scroll_observation() {
     let mut arena = new_test_arena();
     let stable = 0xfeed_9930;
@@ -164,21 +62,9 @@ fn external_stable_id_alias_cannot_replay_an_inactive_scroll_observation() {
             &properties,
             &generations,
             &mut recording,
-        )
-        .unwrap();
-        let fresh = record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
-        assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
-        assert_eq!(
-            matches!(fresh, FrameArtifactRecordOutcome::Artifact { .. }),
-            frame != 3
         );
+        let fresh = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
+        assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
         if frame == 2 {
             assert!(
                 recording.subtrees.hits > 0,

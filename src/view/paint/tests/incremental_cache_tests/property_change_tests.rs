@@ -38,16 +38,7 @@ fn planning_changes_survive_dirty_consumption_without_becoming_reuse_authority()
         properties.sync(&arena, &[root]);
         generations.sync(&arena, &[root], &properties);
         cache.observe_property_changes(&properties);
-        let input = artifact(
-            record_surface_dag_frame_artifact(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .unwrap(),
-        );
+        let input = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         let cached =
             prepare_artifact_surface_raster_plan_cached(input.clone(), context, &mut cache)
                 .unwrap();
@@ -66,16 +57,7 @@ fn planning_changes_survive_dirty_consumption_without_becoming_reuse_authority()
     }
     // A caller may omit change hints or corrupt an input after observation.
     // Neither empty dirty nor an unchanged property observation certifies it.
-    let mut invalid = artifact(
-        record_surface_dag_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap(),
-    );
+    let mut invalid = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     invalid.effect_nodes[0].generation = 0;
     assert!(prepare_artifact_surface_raster_plan_cached(invalid, context, &mut cache).is_err());
 }

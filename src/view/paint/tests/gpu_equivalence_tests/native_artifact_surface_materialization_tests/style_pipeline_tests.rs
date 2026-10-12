@@ -171,12 +171,8 @@ impl StyleFixture {
             &[self.root],
             &self.properties,
             &self.generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
-        let FrameArtifactRecordOutcome::Artifact { artifact, .. } = outcome else {
-            panic!("style pipeline artifact rejected: {outcome:?}");
-        };
+        );
+        let artifact = outcome;
         artifact
     }
 }

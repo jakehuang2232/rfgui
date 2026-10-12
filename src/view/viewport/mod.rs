@@ -12,7 +12,6 @@ mod debug;
 pub(crate) mod dispatch;
 mod frame;
 mod gpu_resources;
-pub(crate) use self::gpu_resources::PoolCanonicalArtifactSurfaceResidents;
 #[cfg(test)]
 mod incremental_tests;
 mod input;
@@ -573,7 +572,7 @@ pub(crate) fn retained_surface_compile_action_against_resident_for_test(
 enum PendingRetainedSurfaceTransaction {
     /// Compiler-sealed keys are preserved through pool staging and commit.
     CommitArtifactSurfaceSet {
-        residents: PoolCanonicalArtifactSurfaceResidents,
+        residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
     },
     Clear,
 }

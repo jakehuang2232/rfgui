@@ -123,15 +123,11 @@ fn rect_eq(a: &Option<DrawRectOp>, b: &Option<DrawRectOp>) -> bool {
     }
 }
 impl NativeSelfPaintInputs {
-    fn matches_shadow_inputs(
-        &self,
-        element: &Element,
-        context: &crate::view::paint::PaintRecordingContext,
-    ) -> bool {
+    fn matches_shadow_inputs(&self, element: &Element) -> bool {
         self.shadow_enabled
             && element.core.should_paint
             && !element.box_shadows.is_empty()
-            && self.opacity == context.paint_opacity(element.opacity).to_bits()
+            && self.opacity == element.opacity.clamp(0.0, 1.0).to_bits()
             && self.shadow_radii == element.border_radii.to_array().map(f32::to_bits)
             && self.shadow_rects.iter().copied().eq(shadow_rects(element))
             && self
@@ -142,24 +138,19 @@ impl NativeSelfPaintInputs {
     }
 }
 impl Element {
-    pub(super) fn replay_prepared_outer_shadow_ops(
-        &self,
-        context: &crate::view::paint::PaintRecordingContext,
-    ) -> Option<Vec<PreparedShadowOp>> {
+    pub(super) fn replay_prepared_outer_shadow_ops(&self) -> Option<Vec<PreparedShadowOp>> {
         let memo = self.paint_recording_inputs.borrow();
         let entry = memo
             .as_ref()
-            .filter(|entry| entry.matches_shadow_inputs(self, context))?;
+            .filter(|entry| entry.matches_shadow_inputs(self))?;
         Some(entry.shadows.iter().cloned().collect())
     }
 
     pub(super) fn prepared_self_paint_from_inputs(
         &self,
         geometry: SelfPaintRecordingGeometry,
-        context: &crate::view::paint::PaintRecordingContext,
-    ) -> Result<PreparedSelfPaintRecord, crate::view::paint::LegacyPaintReason> {
-        use crate::view::paint::LegacyPaintReason;
-        let opacity = context.paint_opacity(self.opacity);
+    ) -> Option<PreparedSelfPaintRecord> {
+        let opacity = self.opacity.clamp(0.0, 1.0);
         let decoration = self.self_decoration_paint_ops(opacity, [0.0, 0.0]);
         let enabled = self.core.should_paint && !self.box_shadows.is_empty();
         let radii = self.border_radii.to_array().map(f32::to_bits);
@@ -180,7 +171,7 @@ impl Element {
         }) {
             #[cfg(test)]
             tests::native_paint_input_tests::note_replay();
-            return Ok(PreparedSelfPaintRecord {
+            return Some(PreparedSelfPaintRecord {
                 geometry,
                 shadows: old.shadows.clone(),
                 decoration,
@@ -188,15 +179,11 @@ impl Element {
             });
         }
         drop(memo);
-        let shadows: Arc<[PreparedShadowOp]> = self
-            .prepared_outer_shadow_ops(context)
-            .ok_or(LegacyPaintReason::BoxShadow)?
-            .into();
+        let shadows: Arc<[PreparedShadowOp]> = self.prepared_outer_shadow_ops()?.into();
         let payload = PaintPayloadIdentity::prepared_shadows_with_decoration(
             shadows.iter(),
             decoration.fill.iter().chain(&decoration.border),
-        )
-        .ok_or(LegacyPaintReason::StatefulPaint)?;
+        )?;
         *self.paint_recording_inputs.borrow_mut() = Some(NativeSelfPaintInputs {
             decoration: decoration.clone(),
             shadow_rects: if enabled {
@@ -215,7 +202,7 @@ impl Element {
             shadows: shadows.clone(),
             payload: payload.clone(),
         });
-        Ok(PreparedSelfPaintRecord {
+        Some(PreparedSelfPaintRecord {
             geometry,
             shadows,
             decoration,

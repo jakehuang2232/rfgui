@@ -66,7 +66,6 @@ struct Entry {
     snapshot: Arc<TopologySnapshot>,
     observations: FxHashMap<NodeKey, Observation>,
     volatile: Vec<NodeKey>,
-    coherent_edges: bool,
 }
 #[derive(Default)]
 pub(crate) struct TopologyCache {
@@ -98,29 +97,6 @@ impl TopologyCache {
         entry.revision = arena.mutation_clock();
         super::super::work_profile::count("topology_census_replays", 1);
         Some(entry.snapshot.clone())
-    }
-    /// Reuse only the exact coherent census, rechecking changed and opaque
-    /// observations after recording hooks. Native non-deferred owners have no
-    /// other SurfaceDag boundary input; deferred/opaque owners stay live.
-    pub(crate) fn boundary_nodes(
-        &mut self,
-        arena: &NodeArena,
-        roots: &[NodeKey],
-    ) -> Option<Vec<NodeKey>> {
-        let snapshot = self.replay(arena, roots)?;
-        let entry = self.entry.as_ref()?;
-        if !entry.coherent_edges {
-            return None;
-        }
-        let mut nodes = snapshot.deferred_roots.clone();
-        nodes.extend(
-            entry
-                .volatile
-                .iter()
-                .copied()
-                .filter(|key| !snapshot.deferred.contains(key)),
-        );
-        Some(nodes)
     }
     pub(crate) fn remember(
         &mut self,
@@ -154,14 +130,6 @@ impl TopologyCache {
         if revision != arena.mutation_clock() {
             return;
         }
-        let coherent_edges = observations.iter().all(|(key, node)| {
-            node.children == node.arena_children
-                && node.children.iter().all(|child| {
-                    observations
-                        .get(child)
-                        .is_some_and(|child| child.parent == Some(*key))
-                })
-        });
         self.entry = Some(Entry {
             arena: arena.mutation_identity(),
             roots: roots.to_vec(),
@@ -169,7 +137,6 @@ impl TopologyCache {
             snapshot,
             observations,
             volatile,
-            coherent_edges,
         });
     }
     pub(super) fn finish(&mut self, accepted: bool) {

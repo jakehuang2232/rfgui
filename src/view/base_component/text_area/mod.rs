@@ -1255,31 +1255,14 @@ impl ElementTrait for TextArea {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,
-        arena: &crate::view::node_arena::NodeArena,
-        deferred_phase_root: bool,
+        _arena: &crate::view::node_arena::NodeArena,
+        _deferred_phase_root: bool,
         _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::base_component::ShadowPaintRecordingCapability {
-        let Some(owner) = self.self_node_key else {
-            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
-        };
-        match self.prepared_plain_shadow_text_payload(owner, arena, deferred_phase_root, [0.0, 0.0])
-        {
-            Ok(payload)
-                if payload.glyph_op.is_some()
-                    || payload.selection.is_some()
-                    || payload.decoration.is_some()
-                    || payload.caret.is_some() =>
-            {
-                crate::view::base_component::ShadowPaintRecordingCapability::Recordable
-            }
-            Ok(_) => crate::view::base_component::ShadowPaintRecordingCapability::Transparent,
-            Err(render::PlainTextAreaPaintFailure::Unsupported) => {
-                crate::view::base_component::ShadowPaintRecordingCapability::Unsupported
-            }
-            Err(render::PlainTextAreaPaintFailure::Legacy(blocker)) => {
-                crate::view::base_component::ShadowPaintRecordingCapability::Legacy(blocker)
-            }
+        if !self.layout_state.should_render {
+            return crate::view::base_component::ShadowPaintRecordingCapability::CulledSubtree;
         }
+        crate::view::base_component::ShadowPaintRecordingCapability::Recordable
     }
 
     #[allow(private_interfaces)]
@@ -1290,14 +1273,9 @@ impl ElementTrait for TextArea {
         contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintChunkMetadata>> {
-        let mut payload = self
-            .prepared_plain_shadow_text_payload(owner, arena, false, [0.0, 0.0])
-            .ok()?;
-        if recording_context.suppresses_resident_caret(owner) {
-            payload.caret = None;
-        }
+        let payload = self.prepared_plain_shadow_text_payload(arena, [0.0, 0.0]);
         let mut before_children = Vec::with_capacity(2);
         if let Some(selection) = payload.selection.as_ref() {
             before_children.push(crate::view::paint::PaintChunkMetadata {
@@ -1390,21 +1368,15 @@ impl ElementTrait for TextArea {
         contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintArtifact>> {
-        let mut payload = self
-            .prepared_plain_shadow_text_payload(owner, arena, false, [0.0, 0.0])
-            .ok()?;
-        if recording_context.suppresses_resident_caret(owner) {
-            payload.caret = None;
-        }
+        let payload = self.prepared_plain_shadow_text_payload(arena, [0.0, 0.0]);
         let mut before_children = Vec::with_capacity(2);
         if let Some(selection) = payload.selection {
             let payload_identity =
                 crate::view::paint::PaintPayloadIdentity::prepared_rects(selection.ops.iter())?;
             let op_count = selection.ops.len();
             before_children.push(crate::view::paint::PaintArtifact {
-                target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
                     frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
@@ -1437,15 +1409,13 @@ impl ElementTrait for TextArea {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
-                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
-                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None),
                 }],
             });
         }
         if let Some(op) = payload.glyph_op {
             let payload_identity = crate::view::paint::PaintPayloadIdentity::prepared_texts([&op]);
             before_children.push(crate::view::paint::PaintArtifact {
-                target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
                     frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
@@ -1474,8 +1444,7 @@ impl ElementTrait for TextArea {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
-                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
-                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None),
                 }],
             });
         }
@@ -1485,7 +1454,6 @@ impl ElementTrait for TextArea {
                 crate::view::paint::PaintPayloadIdentity::prepared_rects(decoration.ops.iter())?;
             let op_count = decoration.ops.len();
             after_children.push(crate::view::paint::PaintArtifact {
-                target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
                     frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
@@ -1518,8 +1486,7 @@ impl ElementTrait for TextArea {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
-                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
-                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None),
                 }],
             });
         }
@@ -1527,7 +1494,6 @@ impl ElementTrait for TextArea {
             let payload_identity =
                 crate::view::paint::PaintPayloadIdentity::prepared_rects([&caret.op])?;
             after_children.push(crate::view::paint::PaintArtifact {
-                target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
                     frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
@@ -1556,8 +1522,7 @@ impl ElementTrait for TextArea {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
-                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
-                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None),
                 }],
             });
         }

@@ -6,91 +6,17 @@
 //! property witness or a recorder-derived behavior flag that coverage
 //! recomputes for every node it walks.
 
-use crate::view::compositor::property_tree::{
-    ClipNodeId, ClipNodeRole, EffectNodeId, PropertyTreeState, ScrollNodeId, TransformNodeId,
-};
+use crate::view::compositor::property_tree::{ClipNodeId, ScrollNodeId};
 use crate::view::node_arena::NodeKey;
 use std::sync::Arc;
 
 use super::artifact::*;
-
-/// Exact nonempty self-clip proof from the live tree. Private fields prevent a
-/// component hook from manufacturing authority from a clip id alone.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PaintSubtreeSelfClipWitness {
-    owner: NodeKey,
-    stable_id: u64,
-    state: crate::view::compositor::property_tree::NodePropertyState,
-    geometry: crate::view::compositor::property_tree::ClipGeometry,
-}
-
-impl PaintSubtreeSelfClipWitness {
-    pub(crate) fn matches_recorded_scopes(
-        self,
-        paint: PropertyTreeState,
-        descendants: PropertyTreeState,
-    ) -> bool {
-        self.state.paint == paint && self.state.descendants == descendants
-    }
-
-    pub(crate) fn from_live_owner(
-        arena: &crate::view::node_arena::NodeArena,
-        owner: NodeKey,
-        trees: &crate::view::compositor::property_tree::PropertyTrees,
-        is_frame_root: bool,
-    ) -> Option<Self> {
-        use crate::view::compositor::property_tree::ClipBehavior;
-        let node = arena.get(owner)?;
-        let stable_id = node.element.stable_id();
-        if stable_id == 0 {
-            return None;
-        }
-        let geometry =
-            node.element
-                .exact_generic_subtree_self_clip_geometry(owner, arena, is_frame_root)?;
-        let state = trees.node_state_for(owner)?;
-        let id = trees.authoritative_self_clip_for_owner(owner, state.paint)?;
-        let paint_chain = trees.clip_snapshot_for(state.paint.clip)?;
-        let clip = paint_chain.first()?;
-        if clip.id != id || clip.geometry != geometry {
-            return None;
-        }
-        let descendants = trees.clip_snapshot_for(state.descendants.clip)?;
-        let position = descendants
-            .iter()
-            .position(|candidate| candidate.id == id)?;
-        // An optional contents scope may tighten this self clip; it may not
-        // replace it or substitute another owner's boundary. The complete
-        // frozen chains are validated again by artifact validation.
-        if descendants[position..] != paint_chain
-            || descendants[..position].iter().any(|clip| {
-                clip.owner != owner
-                    || clip.id.owner != owner
-                    || clip.id.role != ClipNodeRole::ContentsClip
-                    || clip.behavior != ClipBehavior::Intersect
-                    || clip.generation == 0
-            })
-        {
-            return None;
-        }
-        Some(Self {
-            owner,
-            stable_id,
-            state,
-            geometry,
-        })
-    }
-}
 
 /// Large witnesses that only special recorders or a few owners carry are
 /// shared behind `Arc`: the context is cloned for every walked node and every
 /// child edge, and most of those witnesses are absent on the hot path.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PaintRecordingContext {
-    /// Scoped to a fused native capability/metadata invocation. The walker
-    /// clears inherited values; cached/full recording never receives this token.
-    pub(crate) inline_root_recording:
-        Option<crate::view::base_component::InlineRootRecordingWitness>,
     pub(crate) inside_text_area: bool,
     /// Path-scoped authority for a single projection-owned Text selection.
     /// The coverage walker derives this independently for every child edge;
@@ -112,34 +38,10 @@ pub(crate) struct PaintRecordingContext {
     /// exact logical `SelfClip / Replace` boundary. It is cleared before every
     /// node and cannot act as ambient custom-host authority.
     pub(crate) authoritative_self_clip: Option<ClipNodeId>,
-    /// Rebuilt after hooks, only by the generic recorder. It binds both paint
-    /// and descendant clip scope to this owner, never an ambient permission.
-    pub(crate) subtree_self_clip: Option<Arc<PaintSubtreeSelfClipWitness>>,
     /// Recorder-minted proof for the one exact deferred viewport-clipped
     /// native root. Coverage clears and rebinds this frozen replace-scissor
     /// witness after every component context hook.
     pub(crate) deferred_viewport_self_clip: Option<Arc<PaintDeferredViewportSelfClipWitness>>,
-    /// Bound only for the deferred root's late-phase coverage invocation when
-    /// the same root owns the active effect-surface contract.
-    pub(crate) deferred_viewport_effect: Option<Arc<PaintDeferredViewportEffectWitness>>,
-    /// Owner-scoped proof that this coverage invocation belongs to one
-    /// canonically planned transform surface. The normal frame recorder never
-    /// installs this witness; the surface recorder clears and rebinds it for
-    /// every canonical traversal owner.
-    pub(crate) transform_surface: Option<PaintTransformSurfaceWitness>,
-    /// Generic C3b Surface DAG policy bit. Coverage copies it from the
-    /// recorder and rebinds its owner-scoped property authorities from the
-    /// current owner's state after every component hook. Artifact validation
-    /// remains responsible for proving the resulting snapshot store.
-    pub(crate) surface_dag: bool,
-    /// Exact post-projection paint state for this coverage invocation. Coverage
-    /// overwrites it after component hooks; it cannot authorize another owner
-    /// or property state copied from a neighboring node.
-    pub(crate) surface_dag_paint_state: Option<PropertyTreeState>,
-    /// Owner-scoped transform accepted by the generic Surface DAG
-    /// recorder. Coverage overwrites it before every node paints, so it cannot
-    /// become ambient authority inherited from a component context hook.
-    pub(crate) surface_dag_transform: Option<TransformNodeId>,
     /// Owner-scoped scroll root accepted by the generic Surface DAG recorder.
     /// Coverage binds it only when this owner's descendants state names the
     /// same owner-keyed scroll node, so foreign scroll authority cannot leak
@@ -147,88 +49,9 @@ pub(crate) struct PaintRecordingContext {
     pub(crate) surface_dag_scroll: Option<ScrollNodeId>,
     pub(crate) surface_dag_scroll_snapshot:
         Option<Arc<crate::view::compositor::property_tree::ScrollNodeSnapshot>>,
-    /// Recorder-owned authority for the one exact M10E1A root/child path.
-    /// Coverage clears and rebinds this after every component hook.
-    pub(crate) baked_scroll_host: Option<Arc<PaintBakedScrollHostWitness>>,
-    /// Narrow frame-root receiver authority to encode the scroll host's
-    /// retained child mask around a detached content marker. Older baked-host
-    /// recorders keep their established H/C/O grammar and leave this false.
-    pub(crate) frame_root_scroll_host_child_mask: bool,
-    /// Owner-bound proof that one ancestor property is already represented by
-    /// the parent retained surface.  Recording may project only that exact
-    /// property out of the artifact view; live property-tree state remains
-    /// untouched and every other property family is preserved verbatim.
-    pub(crate) consumed_ancestor_property: Option<Arc<ConsumedAncestorProperty>>,
-    /// B4 receiver recording may have to project more than one already-owned
-    /// ancestor boundary (for example transform + scroll contents).  This is
-    /// a fixed-capacity, planner-sealed stack so component hooks cannot append,
-    /// reorder, or retarget capabilities while coverage walks the subtree.
-    pub(crate) consumed_ancestor_property_stack: Option<Arc<ConsumedAncestorPropertyStackWitness>>,
-    /// Recorder-bound projection token minted from a complete, immutable
-    /// root-to-surface Transform/Effect boundary chain. The owning chain
-    /// witness remains with coverage; component hooks only receive this
-    /// target-scoped, Copy projection capability.
-    pub(crate) property_forest_projection: Option<PropertyForestProjectionToken>,
-    /// Boundary-local arbitrary-depth host projection. It projects the parent
-    /// S/C pair from host self paint while preserving this boundary's own S/C
-    /// pair on descendants.
-    pub(crate) scroll_forest_host: Option<Arc<PaintScrollForestEdgeWitness>>,
-    /// Recorder-derived proof that this exact node may keep one descendant
-    /// contents clip inside the recording. Like the flag above it is per-node
-    /// and never inherited: a child inherits the value by copy and coverage
-    /// overwrites it before the child paints.
-    pub(crate) descendant_contents_clip: bool,
-    /// Recorder-derived proof that a resident raster already owns this node's
-    /// caret, so the recording must not paint a second one. Same per-node
-    /// lifetime as the two flags above.
-    pub(crate) resident_caret_suppressed: bool,
-    pub(crate) opacity_authority: PaintOpacityAuthority,
 }
 
 impl PaintRecordingContext {
-    pub(crate) fn authorizes_surface_dag_paint_properties(
-        &self,
-        owner: NodeKey,
-        stable_id: u64,
-        properties: PropertyTreeState,
-    ) -> bool {
-        self.surface_dag
-            && self.recording_owner == Some(owner)
-            && self.recording_owner_stable_id == Some(stable_id)
-            && self.surface_dag_paint_state == Some(properties)
-    }
-
-    pub(crate) fn authorizes_subtree_self_clip_for(
-        &self,
-        stable_id: u64,
-        geometry: crate::view::compositor::property_tree::ClipGeometry,
-    ) -> bool {
-        self.subtree_self_clip.as_deref().is_some_and(|witness| {
-            witness.stable_id == stable_id
-                && witness.geometry == geometry
-                && self.authorizes_surface_dag_paint_properties(
-                    witness.owner,
-                    stable_id,
-                    witness.state.paint,
-                )
-                && self.authoritative_self_clip == witness.state.paint.clip
-        })
-    }
-
-    pub(crate) fn authorizes_self_clip_for(&self, stable_id: u64) -> bool {
-        matches!(
-            (
-                self.recording_owner,
-                self.recording_owner_stable_id,
-                self.authoritative_self_clip,
-            ),
-            (Some(owner), Some(recording_stable_id), Some(clip))
-                if recording_stable_id == stable_id
-                    && clip.owner == owner
-                    && clip.role == ClipNodeRole::SelfClip
-        )
-    }
-
     pub(crate) fn authorizes_deferred_viewport_self_clip_for(&self, stable_id: u64) -> bool {
         matches!(
             (
@@ -246,135 +69,30 @@ impl PaintRecordingContext {
         )
     }
 
-    pub(crate) fn authorizes_deferred_viewport_effect_for(
-        &self,
-        stable_id: u64,
-        effect: EffectNodeId,
-    ) -> bool {
-        matches!(
-            (
-                self.recording_owner,
-                self.recording_owner_stable_id,
-                self.deferred_viewport_effect.as_deref(),
-            ),
-            (Some(owner), Some(recording_stable_id), Some(witness))
-                if recording_stable_id == stable_id
-                    && witness.is_canonical_for(
-                        owner,
-                        stable_id,
-                        self.authoritative_self_clip,
-                        effect,
-                    )
-        )
-    }
-
-    pub(crate) fn authorizes_transform_surface_owner(
-        &self,
-        transform: Option<TransformNodeId>,
-    ) -> bool {
-        matches!(
-            (self.recording_owner, self.transform_surface, transform),
-            (Some(owner), Some(witness), Some(transform))
-                if witness.target_owner == owner
-                    && witness.transform == transform
-                    && witness.transform.0 == witness.boundary_owner
-        ) || matches!(
-            (
-                self.recording_owner,
-                self.surface_dag,
-                self.surface_dag_transform,
-                transform,
-            ),
-            (Some(_), true, Some(expected), Some(actual)) if expected == actual
-        )
-    }
-
-    pub(crate) fn authorizes_transform_surface_root(&self, stable_id: u64) -> bool {
-        matches!(
-            (
-                self.recording_owner,
-                self.recording_owner_stable_id,
-                self.transform_surface,
-            ),
-            (Some(owner), Some(recording_stable_id), Some(witness))
-                if recording_stable_id == stable_id
-                    && witness.target_owner == owner
-                    && witness.boundary_owner == owner
-                    && witness.transform == TransformNodeId(owner)
-        ) || matches!(
-            (
-                self.recording_owner,
-                self.recording_owner_stable_id,
-                self.surface_dag,
-                self.surface_dag_transform,
-            ),
-            (Some(owner), Some(recording_stable_id), true, Some(transform))
-                if recording_stable_id == stable_id && transform == TransformNodeId(owner)
-        )
-    }
-
-    pub(crate) fn authorizes_baked_scroll_host_root(&self, stable_id: u64) -> bool {
-        matches!(
-            (
-                self.recording_owner,
-                self.recording_owner_stable_id,
-                self.baked_scroll_host.as_deref(),
-            ),
-            (Some(owner), Some(recording_stable_id), Some(witness))
-                if recording_stable_id == stable_id
-                    && witness.boundary_root() == owner
-                    && witness.target_owner() == owner
-        )
-    }
-
-    /// Generic owner-scoped scroll authority. This is deliberately separate
-    /// from the exact baked-scroll witness: callers may admit the generic
-    /// Surface DAG path without making the infallible exact snapshot accessor
-    /// observe an authority that carries no witness.
+    /// Generic owner-scoped scroll authority.
     pub(crate) fn authorizes_generic_scroll_host_root(&self, stable_id: u64) -> bool {
         matches!(
             (
                 self.recording_owner,
                 self.recording_owner_stable_id,
-                self.surface_dag,
                 self.surface_dag_scroll,
             ),
-            (Some(owner), Some(recording_stable_id), true, Some(scroll))
+            (Some(owner), Some(recording_stable_id), Some(scroll))
                 if recording_stable_id == stable_id && scroll == ScrollNodeId(owner)
         )
     }
 
-    /// Complete frozen host state for command recording. The legacy accessor
-    /// remains exact-witness-only; generic recording binds this snapshot from
-    /// PropertyTrees after component hooks, for the canonical traversal owner.
+    /// Complete frozen host state for command recording, bound from
+    /// PropertyTrees after component hooks for the canonical traversal owner.
     pub(crate) fn recorded_scroll_host_snapshot_for_root(
         &self,
         stable_id: u64,
     ) -> Option<crate::view::compositor::property_tree::ScrollNodeSnapshot> {
-        self.baked_scroll_host_snapshot_for_root(stable_id)
-            .or_else(|| {
-                let snapshot = *self.surface_dag_scroll_snapshot.as_deref()?;
-                (self.authorizes_generic_scroll_host_root(stable_id)
-                    && Some(snapshot.id) == self.surface_dag_scroll
-                    && Some(snapshot.owner) == self.recording_owner)
-                    .then_some(snapshot)
-            })
-    }
-
-    pub(crate) fn authorizes_frame_root_scroll_host_child_mask(&self, stable_id: u64) -> bool {
-        self.frame_root_scroll_host_child_mask && self.authorizes_baked_scroll_host_root(stable_id)
-    }
-
-    pub(crate) fn baked_scroll_host_snapshot_for_root(
-        &self,
-        stable_id: u64,
-    ) -> Option<crate::view::compositor::property_tree::ScrollNodeSnapshot> {
-        self.authorizes_baked_scroll_host_root(stable_id).then(|| {
-            self.baked_scroll_host
-                .as_deref()
-                .expect("authority requires witness")
-                .scroll_snapshot()
-        })
+        let snapshot = *self.surface_dag_scroll_snapshot.as_deref()?;
+        (self.authorizes_generic_scroll_host_root(stable_id)
+            && Some(snapshot.id) == self.surface_dag_scroll
+            && Some(snapshot.owner) == self.recording_owner)
+            .then_some(snapshot)
     }
 
     pub(crate) fn without_text_area_child_authority(&self) -> Self {
@@ -384,111 +102,4 @@ impl PaintRecordingContext {
             ..self.clone()
         }
     }
-
-    pub(crate) fn paint_opacity(&self, baked_opacity: f32) -> f32 {
-        match self.opacity_authority {
-            PaintOpacityAuthority::Baked => baked_opacity.clamp(0.0, 1.0),
-            PaintOpacityAuthority::NeutralRootEffect(_) => 1.0,
-        }
-    }
-
-    pub(crate) fn project_consumed_ancestor_property(
-        &self,
-        live: PropertyTreeState,
-    ) -> Option<PropertyTreeState> {
-        if let Some(witness) = self.scroll_forest_host.as_deref() {
-            return witness.project_host_for(self.recording_owner?, live);
-        }
-        if let Some(stack) = self.consumed_ancestor_property_stack.as_deref() {
-            return stack.project_for(self.recording_owner?, live, self.opacity_authority);
-        }
-        if let Some(projection) = self.property_forest_projection {
-            return projection.project_for(self.recording_owner?, live, self.opacity_authority);
-        }
-        match self.consumed_ancestor_property.as_deref().copied() {
-            None => Some(live),
-            Some(ConsumedAncestorProperty::Transform(witness)) => {
-                if witness.is_canonical_for(self.recording_owner?)
-                    && live.transform == Some(witness.transform)
-                {
-                    Some(PropertyTreeState {
-                        transform: None,
-                        ..live
-                    })
-                } else {
-                    None
-                }
-            }
-            Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(witness)) => {
-                if witness.is_canonical_for(self.recording_owner?)
-                    && live.transform == Some(witness.transform)
-                {
-                    Some(PropertyTreeState {
-                        transform: None,
-                        ..live
-                    })
-                } else {
-                    None
-                }
-            }
-            Some(ConsumedAncestorProperty::SameOwnerEffectBoundary(witness)) => {
-                if witness.is_canonical_for(self.recording_owner?)
-                    && self.opacity_authority
-                        == PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
-                    && live.effect == witness.expected_before
-                {
-                    Some(PropertyTreeState {
-                        effect: witness.projected_after,
-                        ..live
-                    })
-                } else {
-                    None
-                }
-            }
-            Some(ConsumedAncestorProperty::ScrollContents(witness)) => {
-                if witness.is_canonical_for(self.recording_owner?)
-                    && live.scroll == Some(witness.scroll)
-                    && live.clip == Some(witness.contents_clip)
-                {
-                    Some(PropertyTreeState {
-                        clip: None,
-                        scroll: None,
-                        ..live
-                    })
-                } else {
-                    None
-                }
-            }
-            Some(ConsumedAncestorProperty::Effect(witness)) => {
-                if witness.is_canonical_for(self.recording_owner?)
-                    && self.opacity_authority
-                        == PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
-                    && live.effect == witness.expected_before
-                {
-                    Some(PropertyTreeState {
-                        effect: witness.projected_after,
-                        ..live
-                    })
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    /// One node inside a recording may keep a descendant contents clip. The
-    /// authority is minted per node by coverage, so a component hook cannot
-    /// carry it to a sibling or reuse it for an unrelated child-clip topology.
-    pub(crate) fn authorizes_descendant_contents_clip(&self, stable_id: u64) -> bool {
-        self.descendant_contents_clip
-            && self.recording_owner.is_some()
-            && self.recording_owner_stable_id == Some(stable_id)
-    }
-
-    pub(crate) fn suppresses_resident_caret(&self, owner: NodeKey) -> bool {
-        self.resident_caret_suppressed && self.recording_owner == Some(owner)
-    }
 }
-
-#[cfg(test)]
-mod resource_property_tests;

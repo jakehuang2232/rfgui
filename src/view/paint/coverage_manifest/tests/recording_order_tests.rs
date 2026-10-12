@@ -7,7 +7,7 @@ fn phase_plan_preserves_vector_order_around_dom_children() {
     let child = insert_plan(&mut arena, PlanHost::recordable(0x8f01, &[0], &[]));
     append(&mut arena, root, child);
 
-    let manifest = record(&arena, &[root], false);
+    let manifest = record(&arena, &[root]);
     let sequence = manifest
         .items
         .iter()
@@ -30,21 +30,12 @@ fn phase_plan_preserves_vector_order_around_dom_children() {
     );
 
     let (properties, generations) = identity(&arena, &[root]);
-    let crate::view::paint::FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = crate::view::paint::record_frame_artifact(
+    let artifact = crate::view::paint::record_surface_dag_frame_artifact(
         &arena,
         &[root],
         &properties,
         &generations,
-        crate::view::paint::RendererMode::Auto,
-    )
-    .expect("phase plan recording")
-    else {
-        panic!("phase plan must be whole-frame eligible")
-    };
-    assert!(eligibility.eligible);
+    );
     assert_eq!(artifact.chunks.len(), 5);
     assert_eq!(
         artifact
@@ -76,7 +67,6 @@ fn transparent_parent_and_leaf_are_canonical_coverage_without_chunks() {
     let metadata = record_coverage_manifest(
         &arena,
         &roots,
-        false,
         true,
         CoverageRecordingMode::MetadataOnly,
         &properties,
@@ -85,7 +75,6 @@ fn transparent_parent_and_leaf_are_canonical_coverage_without_chunks() {
     let full = record_coverage_manifest(
         &arena,
         &roots,
-        false,
         true,
         CoverageRecordingMode::FullArtifact,
         &properties,
@@ -125,18 +114,12 @@ fn contents_scope_uses_descendants_properties_and_compiles_intersect_clip() {
         }) if owner == root
     ));
 
-    let crate::view::paint::FrameArtifactRecordOutcome::Artifact { artifact, .. } =
-        crate::view::paint::record_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            crate::view::paint::RendererMode::Auto,
-        )
-        .expect("contents artifact")
-    else {
-        panic!("contents scope must be artifact eligible")
-    };
+    let artifact = crate::view::paint::record_surface_dag_frame_artifact(
+        &arena,
+        &[root],
+        &properties,
+        &generations,
+    );
     assert_eq!(artifact.chunks[0].id.scope, PaintPropertyScope::Contents);
     assert_eq!(artifact.chunks[0].properties, states.descendants);
     let mut graph = FrameGraph::new();
@@ -153,7 +136,7 @@ fn deferred_nodes_stay_in_the_late_phase() {
     let deferred = insert_plan(&mut arena, deferred_host);
     append(&mut arena, root, deferred);
     let normal_root = insert_plan(&mut arena, PlanHost::recordable(0x8f42, &[0], &[]));
-    let manifest = record(&arena, &[root, normal_root], false);
+    let manifest = record(&arena, &[root, normal_root]);
     let sequence = manifest
         .items
         .iter()
@@ -181,7 +164,7 @@ fn recursive_manifest_preserves_root_order_and_self_before_children() {
     let child = insert(&mut arena, 2);
     append(&mut arena, a, child);
     let b = insert(&mut arena, 3);
-    let manifest = record(&arena, &[a, b], false);
+    let manifest = record(&arena, &[a, b]);
     let owners = manifest
         .items
         .iter()
@@ -208,8 +191,7 @@ fn recursive_manifest_preserves_root_order_and_self_before_children() {
 fn recording_is_side_effect_free_and_deterministic() {
     let mut arena = NodeArena::new();
     let root = insert(&mut arena, 50);
-    let first = record(&arena, &[root], false);
-    let second = record(&arena, &[root], false);
+    let first = record(&arena, &[root]);
+    let second = record(&arena, &[root]);
     assert_eq!(format!("{:?}", first.items), format!("{:?}", second.items));
-    assert_eq!(first.validation_errors, second.validation_errors);
 }

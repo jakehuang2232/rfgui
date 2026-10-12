@@ -20,16 +20,7 @@ fn changed_command_geometry_reuses_relations_but_validates_current_bounds() {
         place.parent_x = frame as f32 * 9.0;
         measure_and_place(&mut arena, root, measure, place);
         let (properties, generations) = sync_identity(&arena, &[root]);
-        let input = artifact(
-            record_surface_dag_frame_artifact(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .unwrap(),
-        );
+        let input = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         // Recorded chunks are owner-local; the move changes where the
         // compiler places them.
         let bounds = crate::view::paint::compiler::with_placed_chunks(input.clone(), 1.0).chunks[0]
@@ -48,7 +39,6 @@ fn changed_command_geometry_reuses_relations_but_validates_current_bounds() {
                 .unwrap();
         let fresh = prepare_artifact_surface_raster_plan(input.clone(), context).unwrap();
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
-        assert_eq!(cache.relation_hits, usize::from(frame != 0));
         assert_eq!(
             cache.geometry_hits, 0,
             "new bounds still reach geometry planning"
@@ -63,7 +53,6 @@ fn changed_command_geometry_reuses_relations_but_validates_current_bounds() {
                 prepare_artifact_surface_raster_plan_cached(malformed, context, &mut cache)
                     .is_err()
             );
-            assert_eq!(cache.relation_hits, 0);
         }
     }
 }
@@ -82,26 +71,14 @@ fn ancestor_effect_updates_preserve_current_scope_store_and_recording() {
             .unwrap()
             .set_opacity(opacity);
         let (properties, generations) = sync_identity(&arena, &roots);
-        let cached = artifact(
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                &roots,
-                &properties,
-                &generations,
-                &mut cache,
-            )
-            .unwrap(),
+        let cached = record_surface_dag_frame_artifact_cached(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            &mut cache,
         );
-        let fresh = artifact(
-            record_surface_dag_frame_artifact(
-                &arena,
-                &roots,
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .unwrap(),
-        );
+        let fresh = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
         assert_eq!(cache.scope_store_hits, usize::from(frame != 0));
         assert_eq!(cache.scope_store_effect_updates, usize::from(frame != 0));

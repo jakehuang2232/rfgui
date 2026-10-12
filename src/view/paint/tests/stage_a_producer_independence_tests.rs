@@ -147,43 +147,6 @@ fn producers_are_component_independent() {
     }
 }
 
-/// A generic variant name is not proof of a generic variant.
-///
-/// `ScrollContentLocal` carried an `Option<PaintScrollTextAreaSubtreeWitness>`
-/// second field: a durable name smuggling grammar dispatch past a
-/// name-matching check. This reads the payload types out of the policy
-/// declaration itself, so the gate cannot be satisfied by renaming.
-#[test]
-fn durable_authority_policy_carries_no_component_payload() {
-    let source = include_str!("../frame_recorder.rs");
-    let body = source
-        .split_once("enum FrameArtifactAuthorityPolicy {")
-        .expect("the recorder declares its authority policy")
-        .1
-        .split_once("\n}")
-        .expect("the declaration is brace-terminated")
-        .0;
-    let payload_identifiers: Vec<&str> = body
-        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-        .filter(|token| !token.is_empty())
-        .collect();
-    let offenders: Vec<&&str> = payload_identifiers
-        .iter()
-        .filter(|token| {
-            token.contains("TextArea")
-                || LEGACY_ADMISSION_TYPE_NAMES.contains(token)
-                || (LEGACY_RECORDING_TYPE_NAMES.contains(token)
-                    && !LEGACY_RECORDING_PRIVATE_TYPE_NAMES.contains(token))
-                || LEGACY_REEXPORTED_SELECTOR_NAMES.contains(token)
-        })
-        .collect();
-    assert_eq!(
-        offenders,
-        Vec::<&&str>::new(),
-        "no durable authority variant may carry a component-specific payload, whatever the variant is called",
-    );
-}
-
 /// The recorder capability context holds capabilities, not grammars.
 ///
 /// Its six per-shape admission fields are gone; what replaced them are
@@ -236,7 +199,6 @@ fn recording_context_capabilities_are_behavior_named() {
             "inside_text_area",
             "text_area_selection",
             "text_area_preedit",
-            "baked_scroll_host"
         ]
         .map(str::to_string)
         .to_vec(),

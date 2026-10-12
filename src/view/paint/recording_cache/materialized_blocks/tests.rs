@@ -16,8 +16,7 @@ fn retained_metadata_requires_current_commands_and_failed_frames_release_blocks(
         &properties,
         &generations,
         &mut recording,
-    )
-    .unwrap();
+    );
     let scope = recording.scopes[&root].0.clone();
     let metadata = recording.entries[&root].metadata.before_children[0].clone();
     let observation = || PaintCoverageItem::ArtifactChunk {

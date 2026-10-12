@@ -3,7 +3,6 @@ use super::*;
 #[test]
 fn execution_seal_keeps_the_frame_and_one_child_mask_program_together() {
     let execution = seal_prepared_artifact_surface_execution(prepared_child_mask_surface_frame());
-    assert!(execution.frame.is_canonical());
     assert_eq!(
         execution.root_programs.len(),
         execution.frame.raster_plan().roots().len(),

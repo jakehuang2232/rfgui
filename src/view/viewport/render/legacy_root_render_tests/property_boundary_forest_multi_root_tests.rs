@@ -131,8 +131,6 @@ fn multi_root_debug_is_presented_retained_and_has_no_fallback_overlay() {
         trace,
     });
     assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Artifact);
-    assert!(telemetry.fallback_boundary_nodes().is_empty());
-    assert!(retained_auto_fallback_overlay_records(&telemetry, &fixture.roots).is_empty());
 
     let mut viewport = Viewport::new();
     assert_eq!(surface_count, 4);

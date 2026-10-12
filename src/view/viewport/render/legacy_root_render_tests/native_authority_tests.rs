@@ -80,67 +80,6 @@ fn retained_auto_final_authority_covers_native_transform_effect_and_root_opacity
     assert_native_root_opacity_artifact("root Svg opacity", &arena, &roots, 0.5);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn retained_auto_native_property_malformed_snapshots_still_select_legacy() {
-    let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-
-    let (arena, roots) = prepared_native_media_transform("Image", "ready");
-    let root = roots[0];
-    let (mut properties, generations) = synced_paint_state(&arena, &roots);
-    properties
-        .transforms
-        .get_mut(&crate::view::compositor::property_tree::TransformNodeId(
-            root,
-        ))
-        .expect("direct Image transform snapshot")
-        .generation = 0;
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
-
-    let (arena, roots, child) = prepared_nested_native_effect("Text", "ready");
-    let (mut properties, generations) = synced_paint_state(&arena, &roots);
-    properties
-        .effects
-        .get_mut(&crate::view::compositor::property_tree::EffectNodeId(child))
-        .expect("nested Text effect snapshot")
-        .opacity = f32::NAN;
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
-
-    let (arena, roots) = prepared_native_media_transform("Image", "ready");
-    let root = roots[0];
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    arena
-        .get_mut(root)
-        .expect("ready Image")
-        .element
-        .as_any_mut()
-        .downcast_mut::<Image>()
-        .expect("Image host")
-        .set_source(ImageSource::Rgba {
-            width: 1,
-            height: 1,
-            pixels: Arc::from([9_u8, 8, 7, 255]),
-        });
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
-
-    let (mut arena, roots, child) = prepared_nested_native_effect("Svg", "loading");
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    arena.set_parent(child, None);
-    assert!(matches!(
-        select_retained_auto_authority(&arena, &roots, &properties, &generations, &ctx, true,),
-        AutoAuthorityDecision::Legacy { .. }
-    ));
-}
-
 #[test]
 fn native_text_image_svg_root_opacity_selects_and_compiles_retained_auto() {
     for opacity in [0.0, 0.5, 1.0] {

@@ -13,8 +13,7 @@ mod planning_corpus_tests;
 // using these gates as production Transform admission evidence.
 
 use crate::view::paint::{
-    ArtifactSurfaceRasterContext, FrameArtifactRecordOutcome, RendererMode,
-    RetainedSurfaceCompileAction, SurfaceMaterializationOutcome,
+    ArtifactSurfaceRasterContext, RetainedSurfaceCompileAction, SurfaceMaterializationOutcome,
     emit_prepared_artifact_surface_frame_from_pool, prepare_artifact_surface_raster_plan,
     record_surface_dag_frame_artifact, seal_prepared_artifact_surface_frame,
     take_last_production_actions_for_test,
@@ -34,17 +33,7 @@ fn materialized_direct_scroll_transform_graph(
 > {
     let (arena, root, properties, generations) = direct_scroll_transform_gpu_fixture(case);
     let roots = [root];
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .map_err(|error| format!("materialized S->T record rejected: {:?}", error.reasons))?
-    else {
-        return Err("materialized S->T record fell back".to_owned());
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     materialized_two_boundary_graph(viewport, artifact, dpr)
 }
 
@@ -295,18 +284,8 @@ fn native_materialization_translation_effect_pixels_and_reuse() -> Result<(), St
             properties.sync(&arena, &[root]);
             let mut generations = PaintGenerationTracker::default();
             generations.sync(&arena, &[root], &properties);
-            let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
-                record_surface_dag_frame_artifact(
-                    &arena,
-                    &[root],
-                    &properties,
-                    &generations,
-                    RendererMode::ForcedForTests,
-                )
-                .map_err(|error| format!("T->E artifact: {error:?}"))?
-            else {
-                return Err("T->E fallback".into());
-            };
+            let artifact =
+                record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
             let (graph, owner, actions, bytes) =
                 materialized_two_boundary_graph(&mut viewport, artifact, dpr as f32)?;
             if actions != [action] || bytes != 20 * 16 * 12 * u64::from(dpr * dpr) {

@@ -31,9 +31,6 @@ enum AutoAuthorityKind {
 
 #[derive(Clone, Debug)]
 enum AutoAuthorityRejection {
-    Artifact {
-        eligibility: crate::view::paint::FrameArtifactEligibility,
-    },
     ArtifactPrepare {
         error: RecordedArtifactSurfacePrepareError,
     },
@@ -82,7 +79,6 @@ fn auto_artifact_legacy_fallback_stage(trace: &AutoAuthorityTrace) -> PaintAutho
 impl AutoAuthorityRejection {
     fn debug_label(&self) -> String {
         match self {
-            Self::Artifact { eligibility } => format!("artifact:{:?}", eligibility.reasons),
             Self::ArtifactPrepare { error } => format!("artifact-prepare:{error:?}"),
         }
     }
@@ -141,16 +137,12 @@ impl PaintAuthorityFallbackStage {
 #[derive(Clone, Debug)]
 enum PaintAuthoritySelectionRejection {
     Auto(AutoAuthorityRejection),
-    #[cfg(test)]
-    Artifact(crate::view::paint::FrameArtifactEligibility),
 }
 
 impl PaintAuthoritySelectionRejection {
     fn debug_label(&self) -> String {
         match self {
             Self::Auto(r) => r.debug_label(),
-            #[cfg(test)]
-            Self::Artifact(e) => format!("artifact:{:?}", e.reasons),
         }
     }
 }
@@ -162,8 +154,6 @@ struct PaintAuthorityTelemetry {
     selection_rejections: Vec<PaintAuthoritySelectionRejection>,
     legacy_fallback_stage: Option<PaintAuthorityFallbackStage>,
     terminal_failure_stage: Option<PaintAuthorityFallbackStage>,
-    legacy_debug_boundaries: Vec<crate::view::paint::FrameArtifactDebugBoundary>,
-    legacy_boundary_owners: Vec<crate::view::node_arena::NodeKey>,
     resident_release_count: Option<usize>,
     detail: String,
 }
@@ -174,40 +164,6 @@ impl PaintAuthorityTelemetry {
         _selection: &FramePaintSelection,
         auto: Option<(AutoAuthorityKind, AutoAuthorityTrace)>,
     ) -> Self {
-        let mut candidate_debug_boundaries = auto
-            .as_ref()
-            .into_iter()
-            .flat_map(|(_, trace)| &trace.rejections)
-            .filter_map(|rejection| match rejection {
-                AutoAuthorityRejection::Artifact { eligibility } => Some(eligibility),
-                _ => None,
-            })
-            .flat_map(|eligibility| eligibility.debug_boundaries.iter().copied())
-            .collect::<Vec<_>>();
-        candidate_debug_boundaries.sort_unstable_by_key(|boundary| boundary.owner);
-        candidate_debug_boundaries.dedup();
-        let mut candidate_boundary_owners = auto
-            .as_ref()
-            .into_iter()
-            .flat_map(|(_, trace)| &trace.rejections)
-            .filter_map(|rejection| match rejection {
-                AutoAuthorityRejection::Artifact { eligibility } => Some(eligibility),
-                _ => None,
-            })
-            .flat_map(|eligibility| {
-                eligibility
-                    .reasons
-                    .iter()
-                    .filter_map(artifact_fallback_reason_owner)
-            })
-            .chain(
-                candidate_debug_boundaries
-                    .iter()
-                    .map(|boundary| boundary.owner),
-            )
-            .collect::<Vec<_>>();
-        candidate_boundary_owners.sort_unstable();
-        candidate_boundary_owners.dedup();
         let (selected, selection_rejections) = if let Some((authority, trace)) = auto {
             (
                 PaintAuthorityKind::from_auto(authority),
@@ -221,28 +177,12 @@ impl PaintAuthorityTelemetry {
             let selected = PaintAuthorityKind::from_named_mode(requested_mode);
             (selected, Vec::new())
         };
-        let legacy_debug_boundaries = if requested_mode == ViewportPaintRendererMode::RetainedAuto
-            && selected == PaintAuthorityKind::Legacy
-        {
-            candidate_debug_boundaries.clone()
-        } else {
-            Vec::new()
-        };
-        let legacy_boundary_owners = if requested_mode == ViewportPaintRendererMode::RetainedAuto
-            && selected == PaintAuthorityKind::Legacy
-        {
-            candidate_boundary_owners.clone()
-        } else {
-            Vec::new()
-        };
         Self {
             requested_mode,
             selected,
             selection_rejections,
             legacy_fallback_stage: None,
             terminal_failure_stage: None,
-            legacy_debug_boundaries,
-            legacy_boundary_owners,
             resident_release_count: None,
             detail: String::new(),
         }
@@ -276,16 +216,6 @@ impl PaintAuthorityTelemetry {
             detail = detail.split_off(prefix_end + 1);
         }
         self.detail = detail;
-    }
-
-    fn fallback_boundary_nodes(&self) -> Vec<crate::view::node_arena::NodeKey> {
-        if !self.final_authority_is_legacy() {
-            return Vec::new();
-        }
-        let mut owners = self.legacy_boundary_owners.clone();
-        owners.sort_unstable();
-        owners.dedup();
-        owners
     }
 
     fn authority_label(&self) -> String {
@@ -343,57 +273,6 @@ impl PaintAuthorityTelemetry {
     }
 }
 
-fn artifact_fallback_reason_owner(
-    reason: &crate::view::paint::FrameArtifactFallbackReason,
-) -> Option<crate::view::node_arena::NodeKey> {
-    use crate::view::paint::FrameArtifactFallbackReason;
-
-    match reason {
-        FrameArtifactFallbackReason::PropertyBoundary(owner) => Some(*owner),
-        #[cfg(test)]
-        FrameArtifactFallbackReason::NestedEffect(owner)
-        | FrameArtifactFallbackReason::NonEffectProperty(owner)
-        | FrameArtifactFallbackReason::MissingRootEffect(owner)
-        | FrameArtifactFallbackReason::InvalidRootEffect(owner)
-        | FrameArtifactFallbackReason::DeferredBoundary(owner) => Some(*owner),
-        FrameArtifactFallbackReason::RendererLegacy
-        | FrameArtifactFallbackReason::LegacyBoundary(_)
-        | FrameArtifactFallbackReason::Validation(_) => None,
-        #[cfg(test)]
-        FrameArtifactFallbackReason::RootCount(_) => None,
-    }
-}
-
-fn debug_artifact_fallback(
-    reason: &crate::view::paint::FrameArtifactFallbackReason,
-) -> (
-    crate::view::debug::DebugFallbackCategory,
-    crate::view::debug::DebugFallbackDetail,
-) {
-    use crate::view::debug::{DebugFallbackCategory as Category, DebugFallbackDetail as Detail};
-    use crate::view::paint::FrameArtifactFallbackReason as Reason;
-
-    let code = |code: &'static str| Detail::Code { code };
-    match reason {
-        Reason::RendererLegacy => (Category::Coverage, code("renderer-legacy")),
-        Reason::LegacyBoundary(reason) => debug_legacy_fallback(*reason),
-        Reason::PropertyBoundary(_) => (Category::PropertyTopology, code("property-boundary")),
-        #[cfg(test)]
-        Reason::RootCount(_) => (Category::Coverage, code("root-count")),
-        #[cfg(test)]
-        Reason::MissingRootEffect(_) => (Category::PropertyTopology, code("missing-root-effect")),
-        #[cfg(test)]
-        Reason::InvalidRootEffect(_) => (Category::PropertyTopology, code("invalid-root-effect")),
-        #[cfg(test)]
-        Reason::NestedEffect(_) => (Category::PropertyTopology, code("nested-effect")),
-        #[cfg(test)]
-        Reason::NonEffectProperty(_) => (Category::PropertyTopology, code("non-effect-property")),
-        #[cfg(test)]
-        Reason::DeferredBoundary(_) => (Category::DeferredPaint, code("deferred-boundary")),
-        Reason::Validation(_) => (Category::Validation, code("coverage-validation")),
-    }
-}
-
 fn debug_requested_mode(
     mode: ViewportPaintRendererMode,
 ) -> crate::view::debug::DebugPaintRequestedMode {
@@ -427,44 +306,6 @@ fn debug_fallback_stage(
     }
 }
 
-fn debug_legacy_fallback(
-    reason: crate::view::paint::LegacyPaintReason,
-) -> (
-    crate::view::debug::DebugFallbackCategory,
-    crate::view::debug::DebugFallbackDetail,
-) {
-    use crate::view::debug::{DebugFallbackCategory as Category, DebugFallbackDetail as Detail};
-    use crate::view::paint::LegacyPaintReason;
-    let category = match reason {
-        LegacyPaintReason::UnknownHost | LegacyPaintReason::HasChildren => {
-            Category::UnsupportedHost
-        }
-        LegacyPaintReason::Transform
-        | LegacyPaintReason::BoxShadow
-        | LegacyPaintReason::SelfClip
-        | LegacyPaintReason::ChildClip
-        | LegacyPaintReason::ScrollContainer => Category::PropertyTopology,
-        LegacyPaintReason::InlineIfc => Category::Coverage,
-        LegacyPaintReason::Deferred => Category::DeferredPaint,
-        LegacyPaintReason::LayoutTransition => Category::LayoutTransition,
-        LegacyPaintReason::StatefulPaint | LegacyPaintReason::TextAreaSelection => {
-            Category::Coverage
-        }
-        LegacyPaintReason::MissingPaintIdentity => Category::Validation,
-        LegacyPaintReason::MissingPreparedInlineDecoration
-        | LegacyPaintReason::MissingPreparedInlineRoot
-        | LegacyPaintReason::MissingPreparedText
-        | LegacyPaintReason::MissingPreparedImage
-        | LegacyPaintReason::MissingPreparedSvg => Category::Resource,
-    };
-    (
-        category,
-        Detail::Boundary {
-            reason: legacy_fallback_reason_label(reason),
-        },
-    )
-}
-
 /// One un-staged fallback record derived from a rejection payload.
 ///
 /// `owner` is `None` for whole-scene rejections that name no node.
@@ -480,66 +321,6 @@ struct SelectionRejectionDebugRecord {
     owner: Option<crate::view::node_arena::NodeKey>,
     category: crate::view::debug::DebugFallbackCategory,
     detail: crate::view::debug::DebugFallbackDetail,
-}
-
-/// Fallback records the census coverage pass adds on top of what the artifact
-/// and planner paths already reported.
-///
-/// The artifact path reports its boundaries through `legacy_debug_boundaries`,
-/// and the coverage walk produces at most one boundary per node, so a node
-/// that already carries a record would otherwise be counted twice. Existing
-/// records win: they come from the authority that actually ran.
-fn census_coverage_fallback_additions(
-    items: &[crate::view::paint::PaintCoverageItem],
-    existing: &[crate::view::debug::DebugRetainedAutoFallbackCaptureInput],
-    identity: impl Fn(
-        crate::view::node_arena::NodeKey,
-    ) -> Option<(u64, &'static str, crate::view::debug::DebugRect)>,
-) -> Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> {
-    let mut additions: Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> = Vec::new();
-    for item in items {
-        let crate::view::paint::PaintCoverageItem::LegacyBoundary { root, reason, .. } = item
-        else {
-            continue;
-        };
-        let already_reported = existing
-            .iter()
-            .chain(additions.iter())
-            .any(|fallback| fallback.owner == Some(*root));
-        if already_reported {
-            continue;
-        }
-        let (category, detail) = debug_legacy_fallback(*reason);
-        let identity = identity(*root);
-        additions.push(crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
-            stage: crate::view::debug::DebugFallbackStage::Recording,
-            category,
-            detail,
-            owner: Some(*root),
-            stable_id: identity.map(|identity| identity.0),
-            element_type: identity.map(|identity| identity.1),
-            bounds: identity.map(|identity| identity.2),
-        });
-    }
-    additions
-}
-
-/// Artifact eligibility reasons that are not already represented by exact
-/// `legacy_debug_boundaries`.
-fn artifact_rejection_debug_records(
-    eligibility: &crate::view::paint::FrameArtifactEligibility,
-) -> Vec<RejectionDebugRecord> {
-    use crate::view::paint::FrameArtifactFallbackReason;
-
-    eligibility
-        .reasons
-        .iter()
-        .filter(|reason| !matches!(reason, FrameArtifactFallbackReason::LegacyBoundary(_)))
-        .map(|reason| {
-            let (category, detail) = debug_artifact_fallback(reason);
-            (artifact_fallback_reason_owner(reason), category, detail)
-        })
-        .collect()
 }
 
 /// The bare code inside a debug detail, ignoring which candidate raised it.
@@ -602,18 +383,7 @@ fn selection_rejection_debug_records(
     rejection: &PaintAuthoritySelectionRejection,
 ) -> Vec<SelectionRejectionDebugRecord> {
     use crate::view::debug::DebugFallbackStage;
-    let (stage, records) = match rejection {
-        #[cfg(test)]
-        PaintAuthoritySelectionRejection::Artifact(eligibility) => (
-            DebugFallbackStage::Selection,
-            artifact_rejection_debug_records(eligibility),
-        ),
-        PaintAuthoritySelectionRejection::Auto(AutoAuthorityRejection::Artifact {
-            eligibility,
-        }) => (
-            DebugFallbackStage::Selection,
-            artifact_rejection_debug_records(eligibility),
-        ),
+    let (stage, records): (_, Vec<RejectionDebugRecord>) = match rejection {
         PaintAuthoritySelectionRejection::Auto(AutoAuthorityRejection::ArtifactPrepare {
             ..
         }) => (DebugFallbackStage::Preparation, Vec::new()),
@@ -629,75 +399,9 @@ fn selection_rejection_debug_records(
         .collect()
 }
 
-fn legacy_fallback_reason_label(reason: crate::view::paint::LegacyPaintReason) -> &'static str {
-    use crate::view::paint::LegacyPaintReason;
-    match reason {
-        LegacyPaintReason::UnknownHost => "unknown-host",
-        LegacyPaintReason::HasChildren => "has-children",
-        LegacyPaintReason::Transform => "transform",
-        LegacyPaintReason::BoxShadow => "box-shadow",
-        LegacyPaintReason::SelfClip => "self-clip",
-        LegacyPaintReason::ChildClip => "child-clip",
-        LegacyPaintReason::ScrollContainer => "scroll-container",
-        LegacyPaintReason::InlineIfc => "inline-ifc",
-        LegacyPaintReason::Deferred => "deferred-paint",
-        LegacyPaintReason::LayoutTransition => "layout-transition",
-        LegacyPaintReason::StatefulPaint => "stateful-paint",
-        LegacyPaintReason::TextAreaSelection => "text-area-selection",
-        LegacyPaintReason::MissingPaintIdentity => "missing-paint-identity",
-        LegacyPaintReason::MissingPreparedInlineDecoration => "missing-inline-decoration",
-        LegacyPaintReason::MissingPreparedInlineRoot => "missing-inline-root",
-        LegacyPaintReason::MissingPreparedText => "missing-text",
-        LegacyPaintReason::MissingPreparedImage => "missing-image",
-        LegacyPaintReason::MissingPreparedSvg => "missing-svg",
-    }
-}
-
-fn retained_auto_overlay_label(
-    element_type: &'static str,
-    stable_id: u64,
-    fallback_reason: Option<crate::view::paint::LegacyPaintReason>,
-) -> String {
+fn retained_auto_overlay_label(element_type: &'static str, stable_id: u64) -> String {
     let element_type = element_type.rsplit("::").next().unwrap_or(element_type);
-    match fallback_reason {
-        Some(reason) => format!(
-            "{element_type}#{stable_id} fallback={}",
-            legacy_fallback_reason_label(reason)
-        ),
-        None => format!("{element_type}#{stable_id}"),
-    }
-}
-
-fn retained_auto_fallback_overlay_records(
-    telemetry: &PaintAuthorityTelemetry,
-    roots: &[crate::view::node_arena::NodeKey],
-) -> Vec<(
-    crate::view::node_arena::NodeKey,
-    Option<crate::view::paint::LegacyPaintReason>,
-)> {
-    if !telemetry.final_authority_is_legacy() {
-        return Vec::new();
-    }
-    let mut fallback_nodes = telemetry.fallback_boundary_nodes();
-    if fallback_nodes.is_empty() {
-        fallback_nodes.extend_from_slice(roots);
-    }
-    fallback_nodes
-        .into_iter()
-        .map(|owner| {
-            let reason = telemetry
-                .legacy_debug_boundaries
-                .iter()
-                .find_map(|boundary| {
-                    (boundary.owner == owner).then_some(match boundary.kind {
-                        crate::view::paint::FrameArtifactDebugBoundaryKind::Legacy(reason) => {
-                            reason
-                        }
-                    })
-                });
-            (owner, reason)
-        })
-        .collect()
+    format!("{element_type}#{stable_id}")
 }
 
 #[cfg(any(test, feature = "renderer-test-support"))]
@@ -788,23 +492,17 @@ enum RecordedArtifactPayload {
 
 struct RecordedArtifactCandidate {
     payload: RecordedArtifactPayload,
-    eligibility: crate::view::paint::FrameArtifactEligibility,
+    chunk_count: usize,
+    op_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RecordedArtifactSurfacePrepareError {
-    UnexpectedArtifactTarget,
     RasterPlan(crate::view::paint::ArtifactSurfaceRasterPlanError),
     ResidentSeal(crate::view::paint::ArtifactSurfaceResidentSealError),
-    #[cfg(test)]
-    DetachedSurfacesUnsupported {
-        candidates: usize,
-    },
-    MissingDetachedSurface,
 }
 
 enum RecordedArtifactCandidateRejection {
-    Eligibility(crate::view::paint::FrameArtifactEligibility),
     Prepare(RecordedArtifactSurfacePrepareError),
 }
 
@@ -897,85 +595,37 @@ fn artifact_surface_raster_context(
     .expect("production artifact surface raster context is canonical")
 }
 
-fn require_detached_artifact_surface_plan(
-    plan: crate::view::paint::PreparedArtifactSurfaceRasterPlan,
-) -> Result<
-    crate::view::paint::PreparedArtifactSurfaceRasterPlan,
-    RecordedArtifactSurfacePrepareError,
-> {
-    if plan.nodes().is_empty() {
-        return Err(RecordedArtifactSurfacePrepareError::MissingDetachedSurface);
-    }
-    // Keep the role domain exhaustive at compile time. All variants are
-    // produced by the generic sealer; there is no legacy role admission gate.
-    for node in plan.nodes() {
-        match node.identity().role {
-            crate::view::paint::RetainedSurfaceRasterRole::Transform
-            | crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
-            | crate::view::paint::RetainedSurfaceRasterRole::ScrollContent => {}
-        }
-    }
-    Ok(plan)
-}
-
 fn prepare_recorded_artifact_candidate(
-    outcome: crate::view::paint::FrameArtifactRecordOutcome,
+    artifact: crate::view::paint::PaintArtifact,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
     planning_cache: Option<&mut crate::view::paint::PlanningCache>,
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
-    match outcome {
-        crate::view::paint::FrameArtifactRecordOutcome::Artifact {
+    let chunk_count = artifact.chunks.len();
+    let op_count = artifact.ops.len();
+    #[cfg(test)]
+    attempts::record("raster-plan");
+    let plan = match planning_cache {
+        Some(cache) => crate::view::paint::prepare_artifact_surface_raster_plan_cached(
             artifact,
-            eligibility,
-        } => {
-            let payload = match artifact.target {
-                crate::view::paint::PaintArtifactTarget::CurrentTarget => {
-                    #[cfg(test)]
-                    attempts::record("raster-plan");
-                    let plan = match planning_cache {
-                        Some(cache) => {
-                            crate::view::paint::prepare_artifact_surface_raster_plan_cached(
-                                artifact,
-                                raster_context,
-                                cache,
-                            )
-                        }
-                        None => crate::view::paint::prepare_artifact_surface_raster_plan(
-                            artifact,
-                            raster_context,
-                        ),
-                    }
-                    .map_err(RecordedArtifactSurfacePrepareError::RasterPlan)
-                    .map_err(RecordedArtifactCandidateRejection::Prepare)?;
-                    let plan = if plan.nodes().is_empty() {
-                        Ok(plan)
-                    } else {
-                        require_detached_artifact_surface_plan(plan)
-                    }
-                    .map_err(RecordedArtifactCandidateRejection::Prepare)?;
-                    #[cfg(test)]
-                    attempts::record("resident-seal");
-                    RecordedArtifactPayload::ArtifactSurface(
-                        crate::view::paint::seal_prepared_artifact_surface_frame(plan)
-                            .map_err(RecordedArtifactSurfacePrepareError::ResidentSeal)
-                            .map_err(RecordedArtifactCandidateRejection::Prepare)?,
-                    )
-                }
-                crate::view::paint::PaintArtifactTarget::RootOpacityGroup { .. } => {
-                    return Err(RecordedArtifactCandidateRejection::Prepare(
-                        RecordedArtifactSurfacePrepareError::UnexpectedArtifactTarget,
-                    ));
-                }
-            };
-            Ok(RecordedArtifactCandidate {
-                payload,
-                eligibility,
-            })
-        }
-        crate::view::paint::FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) => {
-            Err(RecordedArtifactCandidateRejection::Eligibility(eligibility))
-        }
+            raster_context,
+            cache,
+        ),
+        None => crate::view::paint::prepare_artifact_surface_raster_plan(artifact, raster_context),
     }
+    .map_err(RecordedArtifactSurfacePrepareError::RasterPlan)
+    .map_err(RecordedArtifactCandidateRejection::Prepare)?;
+    #[cfg(test)]
+    attempts::record("resident-seal");
+    let payload = RecordedArtifactPayload::ArtifactSurface(
+        crate::view::paint::seal_prepared_artifact_surface_frame(plan)
+            .map_err(RecordedArtifactSurfacePrepareError::ResidentSeal)
+            .map_err(RecordedArtifactCandidateRejection::Prepare)?,
+    );
+    Ok(RecordedArtifactCandidate {
+        payload,
+        chunk_count,
+        op_count,
+    })
 }
 
 fn record_auto_detached_surface_candidate(
@@ -989,7 +639,7 @@ fn record_auto_detached_surface_candidate(
 ) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
     #[cfg(test)]
     attempts::record("generic-record");
-    let outcome = if let Some(cache) = recording_cache {
+    let artifact = if let Some(cache) = recording_cache {
         crate::view::paint::record_surface_dag_frame_artifact_cached(
             arena,
             roots,
@@ -1003,15 +653,13 @@ fn record_auto_detached_surface_candidate(
             roots,
             property_trees,
             paint_generations,
-            crate::view::paint::RendererMode::Auto,
         )
-    }
-    .expect("automatic production selection never forces artifact recording");
+    };
     if let Some(cache) = planning_cache.as_deref_mut() {
         cache.observe_property_changes(property_trees);
         cache.observe_recording_changes(arena);
     }
-    prepare_recorded_artifact_candidate(outcome, raster_context, planning_cache)
+    prepare_recorded_artifact_candidate(artifact, raster_context, planning_cache)
 }
 
 fn select_retained_auto_frame(
@@ -1045,9 +693,6 @@ fn select_retained_auto_frame(
         planning_cache,
     ) {
         Ok(candidate) => return RetainedAutoDecision::Artifact { candidate, trace },
-        Err(RecordedArtifactCandidateRejection::Eligibility(eligibility)) => {
-            trace.capture(|| AutoAuthorityRejection::Artifact { eligibility });
-        }
         Err(RecordedArtifactCandidateRejection::Prepare(error)) => {
             trace.reject_artifact_prepare(error);
         }
@@ -1086,25 +731,17 @@ fn compile_auto_artifact_frame(
     graph: &mut FrameGraph,
     candidate: RecordedArtifactCandidate,
     ctx: &crate::view::base_component::UiBuildContext,
-) -> (
-    crate::view::base_component::BuildState,
-    crate::view::paint::FrameArtifactEligibility,
-) {
-    let RecordedArtifactCandidate {
-        payload,
-        eligibility,
-    } = candidate;
-    let RecordedArtifactPayload::ArtifactSurface(frame) = payload;
+) -> crate::view::base_component::BuildState {
+    let RecordedArtifactPayload::ArtifactSurface(frame) = candidate.payload;
     let artifact_ctx =
         crate::view::base_component::UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let state = crate::view::paint::emit_prepared_artifact_surface_frame_from_pool(
+    crate::view::paint::emit_prepared_artifact_surface_frame_from_pool(
         viewport,
         owner,
         frame,
         graph,
         artifact_ctx,
-    );
-    (state, eligibility)
+    )
 }
 
 #[cfg(test)]
@@ -1149,7 +786,8 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
     };
     let RecordedArtifactCandidate {
         payload,
-        eligibility,
+        chunk_count,
+        op_count,
     } = candidate;
     let RecordedArtifactPayload::ArtifactSurface(frame) = payload;
     let surface_count = frame.raster_plan().nodes().len();
@@ -1190,7 +828,8 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
         graph,
         RecordedArtifactCandidate {
             payload: RecordedArtifactPayload::ArtifactSurface(frame),
-            eligibility,
+            chunk_count,
+            op_count,
         },
         ctx,
     );
@@ -1513,38 +1152,27 @@ impl Viewport {
         let scale = self.scale_factor.max(0.0001);
         let screen_w = self.gpu.surface_config.width.max(1) as f32;
         let screen_h = self.gpu.surface_config.height.max(1) as f32;
-        let mut records = Vec::<(
-            crate::view::node_arena::NodeKey,
-            [f32; 4],
-            Option<crate::view::paint::LegacyPaintReason>,
-        )>::new();
-
+        let mut records = Vec::<(crate::view::node_arena::NodeKey, [f32; 4])>::new();
         if self.debug_options.retained_auto_authority {
-            records.extend(roots.iter().copied().map(|root| {
-                (
-                    root,
-                    [45.0 / 255.0, 140.0 / 255.0, 1.0, 242.0 / 255.0],
-                    None,
-                )
-            }));
+            records.extend(
+                roots
+                    .iter()
+                    .copied()
+                    .map(|root| (root, [45.0 / 255.0, 140.0 / 255.0, 1.0, 242.0 / 255.0])),
+            );
         }
         if self.debug_options.retained_auto_fallback_reasons
             && telemetry.final_authority_is_legacy()
         {
             records.extend(
-                retained_auto_fallback_overlay_records(telemetry, roots)
-                    .into_iter()
-                    .map(|(owner, reason)| {
-                        (
-                            owner,
-                            [1.0, 51.0 / 255.0, 51.0 / 255.0, 242.0 / 255.0],
-                            reason,
-                        )
-                    }),
+                roots
+                    .iter()
+                    .copied()
+                    .map(|root| (root, [1.0, 51.0 / 255.0, 51.0 / 255.0, 242.0 / 255.0])),
             );
         }
 
-        for (owner, color, fallback_reason) in records {
+        for (owner, color) in records {
             let Some((snapshot, label)) = (|| {
                 let node = self.scene.node_arena.get(owner)?;
                 Some((
@@ -1552,7 +1180,6 @@ impl Viewport {
                     retained_auto_overlay_label(
                         node.element.element_type_name(),
                         node.element.stable_id(),
-                        fallback_reason,
                     ),
                 ))
             })() else {
@@ -1646,52 +1273,7 @@ impl Viewport {
             .map(debug_fallback_stage)
             .unwrap_or(crate::view::debug::DebugFallbackStage::Selection);
         let mut fallbacks = Vec::new();
-        if telemetry.final_authority_is_legacy() {
-            for boundary in &telemetry.legacy_debug_boundaries {
-                let (category, detail, coverage) = match boundary.kind {
-                    crate::view::paint::FrameArtifactDebugBoundaryKind::Legacy(reason) => {
-                        let (category, detail) = debug_legacy_fallback(reason);
-                        (category, detail, Coverage::LegacyBoundary)
-                    }
-                };
-                let identity = self.retained_auto_debug_identity(boundary.owner);
-                let fallback = crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
-                    stage: fallback_stage,
-                    category,
-                    detail,
-                    owner: Some(boundary.owner),
-                    stable_id: identity.map(|identity| identity.0),
-                    element_type: identity.map(|identity| identity.1),
-                    bounds: identity.map(|identity| identity.2),
-                };
-                if let Some(node) = nodes.get_mut(&boundary.owner) {
-                    if !node.coverage.contains(&coverage) {
-                        node.coverage.push(coverage);
-                    }
-                    node.fallbacks.push(fallback.clone());
-                } else if let Some((stable_id, element_type, bounds)) = identity {
-                    nodes.insert(
-                        boundary.owner,
-                        crate::view::debug::DebugRetainedAutoNodeCaptureInput {
-                            owner: Some(boundary.owner),
-                            stable_id: Some(stable_id),
-                            element_type,
-                            bounds: Some(bounds),
-                            coverage: vec![coverage],
-                            resident_action: None,
-                            fallbacks: vec![fallback.clone()],
-                        },
-                    );
-                }
-                fallbacks.push(fallback);
-            }
-        }
-        // Plan-level candidate rejections. Several ladder paths return Legacy
-        // without ever reaching the artifact candidate, so without these the
-        // whole frame collapses into one unattributed record even though the
-        // planner named the rejected node. Exact artifact LegacyBoundary
-        // reasons came through `legacy_debug_boundaries` above; the remaining
-        // artifact eligibility reasons are emitted here.
+        // Plan-level candidate rejections.
         if telemetry.final_authority_is_legacy() {
             for rejection in &telemetry.selection_rejections {
                 for record in selection_rejection_debug_records(rejection) {
@@ -1717,60 +1299,8 @@ impl Viewport {
                 }
             }
         }
-        // Preserve a generic property-boundary record only when neither an
-        // exact artifact boundary nor a candidate rejection named the owner.
-        for owner in telemetry.fallback_boundary_nodes() {
-            if fallbacks
-                .iter()
-                .any(|fallback| fallback.owner == Some(owner))
-            {
-                continue;
-            }
-            let identity = self.retained_auto_debug_identity(owner);
-            let fallback = crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
-                stage: fallback_stage,
-                category: Category::PropertyTopology,
-                detail: Detail::Code {
-                    code: "property-boundary",
-                },
-                owner: Some(owner),
-                stable_id: identity.map(|identity| identity.0),
-                element_type: identity.map(|identity| identity.1),
-                bounds: identity.map(|identity| identity.2),
-            };
-            if let Some(node) = nodes.get_mut(&owner) {
-                if !node.coverage.contains(&Coverage::LegacyBoundary) {
-                    node.coverage.push(Coverage::LegacyBoundary);
-                }
-                node.fallbacks.push(fallback.clone());
-            }
-            fallbacks.push(fallback);
-        }
-        // Census-only coverage pass.
-        //
-        // Per-node blockers are produced by the coverage manifest walk, which
-        // only runs inside a candidate that gets far enough to record. Several
-        // ladder paths return Legacy before any candidate records, so a
-        // scroll-heavy scene yields candidate rejections and no per-node data
-        // at all. Re-running the walk here is the only way to attribute
-        // blockers to components on those frames.
-        //
-        // This is the one debug path that costs an extra traversal, so it is
-        // gated on the census flag alone and never on the overlay or trace
-        // options. The walk reads `&` state and calls the recording hooks the
-        // contract already requires to be pure and repeatable, so it cannot
-        // change authority, resources, or pixels — see
-        // `coverage_manifest::tests::recording_is_side_effect_free_and_deterministic`.
+        // A census also names every node whose live snapshot drifted.
         if self.debug_options.retained_auto_census && telemetry.final_authority_is_legacy() {
-            let manifest = crate::view::paint::record_coverage_manifest(
-                &self.scene.node_arena,
-                roots,
-                false,
-                true,
-                crate::view::paint::CoverageRecordingMode::MetadataOnly,
-                &self.compositor.property_trees,
-                &self.compositor.paint_generations,
-            );
             let live_snapshot = census_live_snapshot_fallback_additions(
                 &self.compositor.paint_generations.live_snapshot_mismatches(
                     &self.scene.node_arena,
@@ -1780,11 +1310,7 @@ impl Viewport {
                 &fallbacks,
                 |owner| self.retained_auto_debug_identity(owner),
             );
-            let additions =
-                census_coverage_fallback_additions(&manifest.items, &fallbacks, |owner| {
-                    self.retained_auto_debug_identity(owner)
-                });
-            for fallback in live_snapshot.into_iter().chain(additions) {
+            for fallback in live_snapshot {
                 if let Some(owner) = fallback.owner
                     && let Some(node) = nodes.get_mut(&owner)
                 {
@@ -2393,7 +1919,11 @@ impl Viewport {
             FramePaintSelection::AutoArtifact(candidate) => {
                 // A missing owner means another transaction owns the slot:
                 // draw without the surface cache rather than staging Clear.
-                let (state, eligibility) = compile_auto_artifact_frame(
+                let detail = format!(
+                    "retained-auto authority=artifact chunks={} ops={}",
+                    candidate.chunk_count, candidate.op_count
+                );
+                let state = compile_auto_artifact_frame(
                     self,
                     retained_surface_frame_owner,
                     &mut graph,
@@ -2401,13 +1931,7 @@ impl Viewport {
                     &ctx,
                 );
                 ctx.set_state(state);
-                (
-                    false,
-                    format!(
-                        "retained-auto authority=artifact chunks={} ops={}",
-                        eligibility.chunk_count, eligibility.op_count
-                    ),
-                )
+                (false, detail)
             }
             FramePaintSelection::AutoLegacy => {
                 self.stage_retained_surface_clear();
@@ -2505,10 +2029,6 @@ impl Viewport {
         crate::view::paint::work_profile::count(
             "record_misses",
             self.compositor.recording_cache.misses,
-        );
-        crate::view::paint::work_profile::count(
-            "relation_replays",
-            self.compositor.planning_cache.relation_hits,
         );
         crate::view::paint::work_profile::count(
             "graph_replays",
@@ -3639,8 +3159,6 @@ mod frame_timing_tests;
 mod incremental_layout_tests;
 #[cfg(test)]
 mod legacy_root_render_tests;
-#[cfg(test)]
-mod selection_rejection_debug_tests;
 
 /// Flatten a Fragment-at-root into its children so multi-root reconcile
 /// sees the same arity as the arena (Fragment root → N arena roots).
@@ -3654,11 +3172,3 @@ fn unpack_root_set(root: &crate::ui::RsxNode) -> Vec<&crate::ui::RsxNode> {
 
 #[cfg(feature = "renderer-test-support")]
 pub(super) mod downstream_test_support;
-
-#[cfg(test)]
-mod telemetry_test_support;
-
-#[cfg(test)]
-mod surface_plan_test_support;
-#[cfg(test)]
-use surface_plan_test_support::require_zero_resident_artifact_surface_plan;

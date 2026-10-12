@@ -36,8 +36,7 @@ fn anchor_parent_leaf_self_clip_replaces_then_restores_ancestor_scissor_strictly
 fn exact_single_owner_self_clip_keeps_outer_shadow_outside_owner_clip() {
     let (arena, roots) = anchor_parent_self_clip_shadow_root();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks.len(), 1);
     assert!(matches!(
         artifact.ops.first(),
@@ -143,23 +142,12 @@ fn nested_anchor_parent_paints_after_its_normal_sibling_in_either_arena_order() 
             sync_identity(&production_arena, &production_roots);
         take_full_artifact_record_count();
         take_artifact_compile_count();
-        let FrameArtifactRecordOutcome::Artifact {
-            artifact,
-            eligibility,
-        } = record_clip_enabled_frame_artifact(
+        let artifact = record_surface_dag_frame_artifact(
             &production_arena,
             &production_roots,
             &production_properties,
             &production_generations,
-            RendererMode::Auto,
-        )
-        .unwrap()
-        else {
-            panic!(
-                "nested AnchorParent must enter production clip authority, anchor_first={anchor_first}"
-            )
-        };
-        assert!(eligibility.eligible);
+        );
         assert_eq!(take_full_artifact_record_count(), 3);
         let _ = compiled_whole_frame_graph(&artifact);
         assert_eq!(take_artifact_compile_count(), 1);
@@ -193,22 +181,8 @@ fn nested_and_multiple_deferred_viewport_roots_record_once_in_late_dfs_order() {
         "ordinary popup descendants inherit the deferred root Replace clip"
     );
 
-    let outcome = record_clip_enabled_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .expect("nested deferred native popup tree must pass metadata preflight");
-    let FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = outcome
-    else {
-        panic!("valid nested deferred tree must stay on retained authority: {outcome:?}")
-    };
-    assert!(eligibility.eligible, "{eligibility:?}");
+    let outcome = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
+    let artifact = outcome;
     assert_eq!(
         artifact
             .chunks
@@ -219,39 +193,6 @@ fn nested_and_multiple_deferred_viewport_roots_record_once_in_late_dfs_order() {
         "main phase precedes deferred roots; each deferred subtree remains DFS-ordered"
     );
     let _ = compiled_whole_frame_graph(&artifact);
-
-    let mut tampered = properties;
-    tampered
-        .clips
-        .get_mut(&ClipNodeId {
-            owner: first,
-            role: ClipNodeRole::SelfClip,
-        })
-        .expect("first popup clip")
-        .behavior = ClipBehavior::Intersect;
-    take_full_artifact_record_count();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) =
-        record_clip_enabled_frame_artifact(
-            &arena,
-            &roots,
-            &tampered,
-            &generations,
-            RendererMode::Auto,
-        )
-        .expect("tamper is a fail-closed selection, not a recorder error")
-    else {
-        panic!("non-Replace deferred clip must never compile as retained")
-    };
-    assert!(eligibility.reasons.iter().any(|reason| matches!(
-        reason,
-        FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::Deferred)
-            | FrameArtifactFallbackReason::Validation(_)
-    )));
-    assert_eq!(
-        take_full_artifact_record_count(),
-        0,
-        "deferred clip tamper must fail during metadata-only preflight"
-    );
 }
 
 #[test]
@@ -330,22 +271,8 @@ fn deferred_image_and_svg_descendants_use_the_same_late_phase_trait_contract() {
 
     let roots = [root];
     let (properties, generations) = sync_identity(&arena, &roots);
-    let outcome = record_clip_enabled_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .expect("deferred native media metadata preflight");
-    let FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = outcome
-    else {
-        panic!("deferred native media must remain on retained authority: {outcome:?}")
-    };
-    assert!(eligibility.eligible, "{eligibility:?}");
+    let outcome = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
+    let artifact = outcome;
     assert_eq!(
         artifact
             .chunks
@@ -357,63 +284,6 @@ fn deferred_image_and_svg_descendants_use_the_same_late_phase_trait_contract() {
     assert!(matches!(artifact.ops[1], PaintOp::PreparedImage(_)));
     assert!(matches!(artifact.ops[2], PaintOp::PreparedSvg(_)));
     let _ = compiled_whole_frame_graph(&artifact);
-}
-
-#[test]
-fn nested_self_clip_metadata_and_full_hooks_require_owner_bound_witness() {
-    let (arena, roots, anchor) = nested_anchor_parent_mixed_siblings(false);
-    let normal = arena
-        .children_of(roots[0])
-        .into_iter()
-        .find(|child| *child != anchor)
-        .unwrap();
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let state = properties.paint_state_for(anchor).unwrap();
-    let generation = generations.local_generations_for(anchor).unwrap();
-    let revision = PaintContentRevision {
-        self_paint_revision: generation.self_paint_revision,
-        composite_revision: generation.composite_revision,
-        topology_revision: generation.topology_revision,
-    };
-    let node = arena.get(anchor).unwrap();
-
-    assert!(
-        node.element
-            .record_shadow_paint_metadata(
-                anchor,
-                state,
-                revision,
-                &arena,
-                &PaintRecordingContext::default(),
-            )
-            .is_none()
-    );
-    assert!(
-        node.element
-            .record_shadow_paint_artifact(
-                anchor,
-                state,
-                revision,
-                &arena,
-                &PaintRecordingContext::default(),
-            )
-            .is_none()
-    );
-
-    let clip = state.clip.unwrap();
-    let normal_stable_id = arena.get(normal).unwrap().element.stable_id();
-    let leaked = PaintRecordingContext {
-        recording_owner: Some(normal),
-        recording_owner_stable_id: Some(normal_stable_id),
-        authoritative_self_clip: Some(clip),
-        ..Default::default()
-    };
-    assert!(!leaked.authorizes_self_clip_for(node.element.stable_id()));
-    assert_eq!(
-        node.element
-            .shadow_paint_recording_capability(&arena, false, &leaked),
-        ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::SelfClip)
-    );
 }
 
 #[test]
@@ -454,21 +324,7 @@ fn nested_anchor_parent_with_deferred_siblings_keeps_its_exact_clip() {
             .and_then(|state| state.clip),
         Some(self_clip(anchor))
     );
-    let FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = record_clip_enabled_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .unwrap()
-    else {
-        panic!("a deferred Viewport sibling must not reject the escaping anchor")
-    };
-    assert!(eligibility.eligible);
+    let artifact = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     let position = |owner| {
         artifact
             .chunks
@@ -492,7 +348,7 @@ fn nested_anchor_parent_with_deferred_siblings_keeps_its_exact_clip() {
     let deferred = arena.insert(Node::with_parent(Box::new(deferred), Some(roots[0])));
     arena.set_parent(normal, None);
     arena.set_children(roots[0], vec![deferred, anchor]);
-    let (properties, generations) = sync_identity(&arena, &roots);
+    let (properties, _) = sync_identity(&arena, &roots);
     assert_eq!(
         properties
             .paint_state_for(anchor)
@@ -500,26 +356,4 @@ fn nested_anchor_parent_with_deferred_siblings_keeps_its_exact_clip() {
         Some(self_clip(anchor)),
         "a non-Element deferred sibling must not withhold the anchor clip"
     );
-    take_full_artifact_record_count();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) =
-        record_clip_enabled_frame_artifact(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap()
-    else {
-        panic!("a deferred custom leaf still has no retained recording")
-    };
-    assert!(
-        !eligibility
-            .reasons
-            .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                LegacyPaintReason::SelfClip
-            )),
-        "only the deferred custom leaf rejects: {eligibility:?}"
-    );
-    assert_eq!(take_full_artifact_record_count(), 0);
 }

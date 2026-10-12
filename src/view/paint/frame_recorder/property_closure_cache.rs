@@ -44,9 +44,8 @@ impl Inputs {
 }
 
 /// Retain closure topology/order and exact values whose stores were not written.
-/// Changed or unproven stores are read again, including invalid generations and
-/// nonfinite values that the downstream planner must reject. Dirty flags are
-/// never an absence-of-write proof.
+/// Changed or unproven stores are read again. Dirty flags are never an
+/// absence-of-write proof.
 pub(in super::super) struct PropertyClosureCache {
     stamp: crate::view::compositor::property_tree::PropertyStoreStamp,
     inputs: Inputs,
@@ -102,8 +101,8 @@ impl PropertyClosureCache {
             |n| trees.effect_node_snapshot_for(n.id),
             |a, b| a.id == b.id && a.owner == b.owner && a.parent == b.parent,
         )?;
-        // Supplied observations still have to equal this frame's live values;
-        // old topology cannot hide a conflicting component-provided snapshot.
+        // Supplied observations must equal this frame's live values for the
+        // cached closure to describe them.
         if !self
             .supplied_clip_indices
             .iter()
@@ -151,9 +150,8 @@ impl PropertyClosureCache {
             |a, b| a.id == b.id && a.owner == b.owner && a.parent == b.parent,
         )?;
         // The same seeds plus every same parent/reference edge imply the same
-        // complete closure and bounded termination proven on the miss path.
-        // Publish only after all fetches/comparisons succeed; misses retain the
-        // original traversal and its exact owner-attributed rejection behavior.
+        // complete closure the miss path walked. Publish only after all
+        // fetches/comparisons succeed; a miss walks the closure again.
         self.clips.clone_from(&clips);
         self.effects.clone_from(&effects);
         self.transforms.clone_from(&transforms);
@@ -175,7 +173,7 @@ pub(super) fn populate(
     artifact: &mut PaintArtifact,
     trees: &PropertyTrees,
     cache: &mut crate::view::paint::RecordingCache,
-) -> Result<(), Vec<FrameArtifactFallbackReason>> {
+) {
     if cache
         .property_closure
         .as_mut()
@@ -183,10 +181,10 @@ pub(super) fn populate(
         .is_some()
     {
         cache.property_closure_hits += 1;
-        return Ok(());
+        return;
     }
     let inputs = Inputs::new(artifact);
-    populate_referenced_property_snapshots(artifact, trees)?;
+    populate_referenced_property_snapshots(artifact, trees);
     let supplied_clip_indices = inputs
         .clips
         .iter()
@@ -221,5 +219,4 @@ pub(super) fn populate(
         visuals: artifact.visual_offset_nodes.clone(),
         scrolls: artifact.scroll_nodes.clone(),
     });
-    Ok(())
 }

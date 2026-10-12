@@ -79,16 +79,7 @@ fn culled_scroll_descendant_and_deferred_scope_record_from_live_layout() {
     );
     let (properties, generations) = sync_identity(&arena, &[root]);
     assert!(properties.paint_state_for(hidden).unwrap().scroll.is_some());
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("culled inherited scroll and late Replace clip are supported") else {
-        panic!("fallback")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     assert!(!artifact.chunks.iter().any(|c| c.owner == hidden));
     assert_eq!(
         artifact

@@ -1,16 +1,13 @@
 use super::*;
 use std::any::Any;
 
-use crate::style::{
-    Angle, ClipMode, Layout, Length, ParsedValue, Position, PropertyId, Rotate, Style, Transform,
-};
+use crate::style::{Layout, ParsedValue, PropertyId, Style};
 use crate::view::base_component::{
     BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, Renderable, ShadowPaintRecordingCapability, Text, UiBuildContext,
+    LayoutPlacement, Layoutable, Renderable, ShadowPaintRecordingCapability, UiBuildContext,
 };
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::Node;
-use slotmap::Key;
 
 #[derive(Clone)]
 struct PlanShape {
@@ -41,12 +38,6 @@ enum PlanHostMode {
     Transparent,
 }
 
-#[derive(Clone, Copy)]
-enum ConsumedAuthorityAttack {
-    Clear,
-    Replace,
-}
-
 struct PlanHost {
     id: u64,
     mode: PlanHostMode,
@@ -57,10 +48,6 @@ struct PlanHost {
     children: Vec<NodeKey>,
     deferred: bool,
     contents_scissor: Option<[u32; 4]>,
-    consumed_authority_attack: Option<ConsumedAuthorityAttack>,
-    clear_opacity_authority_for_node: bool,
-    clear_opacity_authority_for_child: bool,
-    required_opacity_authority: Option<super::super::PaintOpacityAuthority>,
 }
 
 impl PlanHost {
@@ -76,10 +63,6 @@ impl PlanHost {
             children: Vec::new(),
             deferred: false,
             contents_scissor: None,
-            consumed_authority_attack: None,
-            clear_opacity_authority_for_node: false,
-            clear_opacity_authority_for_child: false,
-            required_opacity_authority: None,
         }
     }
 
@@ -94,10 +77,6 @@ impl PlanHost {
             children: Vec::new(),
             deferred: false,
             contents_scissor: None,
-            consumed_authority_attack: None,
-            clear_opacity_authority_for_node: false,
-            clear_opacity_authority_for_child: false,
-            required_opacity_authority: None,
         }
     }
 
@@ -180,7 +159,6 @@ impl PlanHost {
             scope,
         );
         let artifact = |chunk: PaintChunkMetadata| crate::view::paint::PaintArtifact {
-            target: Default::default(),
             chunks: vec![crate::view::paint::PaintChunk {
                 frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: chunk.id,
@@ -266,14 +244,8 @@ impl ElementTrait for PlanHost {
         &self,
         _arena: &NodeArena,
         _deferred_phase_root: bool,
-        recording_context: &PaintRecordingContext,
+        _recording_context: &PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
-        if self
-            .required_opacity_authority
-            .is_some_and(|required| recording_context.opacity_authority != required)
-        {
-            return ShadowPaintRecordingCapability::Unsupported;
-        }
         match self.mode {
             PlanHostMode::Recordable => ShadowPaintRecordingCapability::Recordable,
             PlanHostMode::Transparent => ShadowPaintRecordingCapability::Transparent,
@@ -335,53 +307,11 @@ impl ElementTrait for PlanHost {
         self.deferred
     }
 
-    fn shadow_paint_recording_context(
-        &self,
-        parent: &PaintRecordingContext,
-    ) -> PaintRecordingContext {
-        let mut parent = parent.clone();
-        if self.clear_opacity_authority_for_node {
-            parent.opacity_authority = super::super::PaintOpacityAuthority::Baked;
-        }
-        parent
-    }
-
     fn contents_clip_geometry(
         &self,
     ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
         self.contents_scissor
             .map(crate::view::compositor::property_tree::ClipGeometry::Viewport)
-    }
-
-    fn shadow_paint_recording_context_for_child(
-        &self,
-        child: NodeKey,
-        _arena: &NodeArena,
-        parent: &PaintRecordingContext,
-    ) -> PaintRecordingContext {
-        let mut parent = parent.clone();
-        match self.consumed_authority_attack {
-            None => {}
-            Some(ConsumedAuthorityAttack::Clear) => {
-                parent.consumed_ancestor_property = None;
-            }
-            Some(ConsumedAuthorityAttack::Replace) => {
-                parent.consumed_ancestor_property = Some(std::sync::Arc::new(
-                    super::super::ConsumedAncestorProperty::Transform(
-                        super::super::ConsumedAncestorTransformWitness {
-                            parent_boundary: child,
-                            child_boundary: child,
-                            transform: TransformNodeId(child),
-                            target_owner: child,
-                        },
-                    ),
-                ));
-            }
-        }
-        if self.clear_opacity_authority_for_child {
-            parent.opacity_authority = super::super::PaintOpacityAuthority::Baked;
-        }
-        parent
     }
 }
 
@@ -406,12 +336,11 @@ fn identity(arena: &NodeArena, roots: &[NodeKey]) -> (PropertyTrees, PaintGenera
     (properties, generations)
 }
 
-fn record(arena: &NodeArena, roots: &[NodeKey], force_legacy_roots: bool) -> PaintCoverageManifest {
+fn record(arena: &NodeArena, roots: &[NodeKey]) -> PaintCoverageManifest {
     let (properties, generations) = identity(arena, roots);
     record_coverage_manifest(
         arena,
         roots,
-        force_legacy_roots,
         true,
         CoverageRecordingMode::MetadataOnly,
         &properties,
@@ -423,23 +352,4 @@ fn insert_plan(arena: &mut NodeArena, host: PlanHost) -> NodeKey {
     arena.insert(Node::new(Box::new(host)))
 }
 
-fn deferred_element(id: u64) -> Element {
-    let mut element = Element::new_with_id(id, 0.0, 0.0, 10.0, 10.0);
-    let mut style = Style::new();
-    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    style.insert(
-        PropertyId::Position,
-        ParsedValue::Position(
-            Position::absolute()
-                .left(Length::px(0.0))
-                .clip(ClipMode::Viewport),
-        ),
-    );
-    element.apply_style(style);
-    element
-}
-
-mod fallback_boundary_tests;
-mod recording_authority_tests;
 mod recording_order_tests;
-mod validation_tests;

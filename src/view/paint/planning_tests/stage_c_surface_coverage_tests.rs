@@ -71,8 +71,7 @@ fn coverage_step_taxonomy_is_exactly_artifact_span_or_nested_surface() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("two-step coverage fixture");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let dag = reconstruct(&artifact);
     let forest = coverage(&artifact, &dag);
     let names = forest
@@ -92,8 +91,7 @@ fn coverage_step_taxonomy_is_exactly_artifact_span_or_nested_surface() {
 fn co_located_surfaces_nest_but_each_chunk_is_directly_owned_once() {
     let (arena, root, properties, generations) = same_owner_transform_effect_scroll_roles_fixture();
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("co-located coverage fixture");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let dag = reconstruct(&artifact);
     let forest = coverage(&artifact, &dag);
     assert_eq!(dag.nodes().len(), 3);
@@ -123,8 +121,7 @@ fn parent_coverage_preserves_before_nested_after_painter_order() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("before-after coverage fixture");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let mut after = artifact.chunks[0].clone();
     after.id.phase = PaintNodePhase::AfterChildren;
     after.id.slot = 1;
@@ -158,8 +155,7 @@ fn parent_coverage_preserves_before_nested_after_painter_order() {
 fn sibling_surfaces_follow_artifact_cursor_order_without_cross_ownership() {
     let (arena, roots, properties, generations) = native_scroll_forest_plan_fixture();
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
-            .expect("sibling coverage fixture");
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations);
     let dag = reconstruct(&artifact);
     let forest = coverage(&artifact, &dag);
     let mut siblings = FxHashMap::<SurfaceDagTargetId, Vec<SurfaceDagNodeId>>::default();
@@ -189,8 +185,7 @@ fn sibling_surfaces_follow_artifact_cursor_order_without_cross_ownership() {
 fn plain_roots_remain_direct_artifact_spans() {
     let (arena, roots, _, _, properties, generations) = stage_c_depth_four_scroll_fixture();
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
-            .expect("plain-root coverage fixture");
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations);
     artifact.transform_nodes.clear();
     artifact.effect_nodes.clear();
     artifact.scroll_nodes.clear();
@@ -221,8 +216,7 @@ fn forward_receiver_remap_does_not_replace_artifact_painter_order() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("forward receiver coverage fixture");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     super::stage_c_surface_dag_tests::reorder_artifact_leaf_first(&arena, &mut artifact);
     let dag = reconstruct(&artifact);
     assert!(dag.nodes().iter().any(|node| match node.receiver() {
@@ -305,8 +299,7 @@ fn scroll_clip_closure_keeps_empty_as_neither_and_unions_siblings_in_painter_ord
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("empty clip closure fixture");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let dag = reconstruct(&artifact);
     let empty = coverage(&artifact, &dag);
     let scroll = dag
@@ -365,8 +358,7 @@ fn clip_value_refresh_equals_fresh_rebased_coverage() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("clip closure fixture");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let scroll = reconstruct(&artifact)
         .nodes()
         .iter()
@@ -452,8 +444,7 @@ fn transform_effect_transform_ancestry_keeps_the_inner_transform_as_direct_owner
 fn coverage_rejects_a_receiver_chain_that_terminates_at_the_wrong_scene_root() {
     let (arena, roots, _, _, properties, generations) = stage_c_depth_four_scroll_fixture();
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
-            .expect("multi-root receiver-closure fixture");
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations);
     let mut dag = reconstruct(&artifact);
     let outer = dag
         .nodes()
@@ -529,8 +520,7 @@ fn coverage_rejects_matched_ancestry_omitted_from_the_receiver_chain() {
 fn receiver_gap_rejects_before_an_unrepresentable_chunk_is_forced_into_a_span() {
     let (arena, root, properties, generations) = same_owner_transform_effect_scroll_roles_fixture();
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("receiver-gap fixture");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let dag = reconstruct(&artifact);
     let effect = dag
         .nodes()

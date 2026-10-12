@@ -60,15 +60,12 @@ fn incremental_recording_and_planning_cost_with_unrelated_static_nodes() {
             generations.sync_arena(&arena, &[root, active], &properties);
             let sync_ms = start.elapsed().as_secs_f64() * 1000.;
             let start = crate::time::Instant::now();
-            let recorded = artifact(
-                record_surface_dag_frame_artifact_cached(
-                    &arena,
-                    &[root, active],
-                    &properties,
-                    &generations,
-                    &mut recording,
-                )
-                .unwrap(),
+            let recorded = record_surface_dag_frame_artifact_cached(
+                &arena,
+                &[root, active],
+                &properties,
+                &generations,
+                &mut recording,
             );
             assert!(
                 recorded.chunks.len() >= count as usize,
@@ -82,15 +79,6 @@ fn incremental_recording_and_planning_cost_with_unrelated_static_nodes() {
             let plan_ms = start.elapsed().as_secs_f64() * 1000.;
             std::hint::black_box(prepared);
             if frame >= 30 {
-                let (reused, validated) = planning.command_validation_counts();
-                assert!(
-                    reused >= count as usize,
-                    "unrelated static commands must retain their full proof"
-                );
-                assert!(
-                    validated <= 4,
-                    "only the changed owner needs command validation"
-                );
                 samples.push([sync_ms, record_ms, plan_ms]);
             }
         }

@@ -69,18 +69,8 @@ fn native_generic_and_legacy_frozen_scrollbar_absolute_alpha() -> Result<(), Str
                 None
             } else {
                 let (properties, generations) = sync_identity(&arena, &[root]);
-                let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
-                    record_surface_dag_frame_artifact(
-                        &arena,
-                        &[root],
-                        &properties,
-                        &generations,
-                        RendererMode::ForcedForTests,
-                    )
-                    .map_err(|error| format!("record: {error:?}"))?
-                else {
-                    panic!("fallback")
-                };
+                let artifact =
+                    record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
                 assert_eq!(
                     artifact.chunks.last().unwrap().id.role,
                     PaintChunkRole::ScrollbarOverlay

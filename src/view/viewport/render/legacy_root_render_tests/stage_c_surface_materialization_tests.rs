@@ -1,7 +1,6 @@
 use super::*;
 use crate::view::paint::{
-    ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterContext,
-    FrameArtifactRecordOutcome, RendererMode, RetainedSurfaceRasterRole,
+    ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterContext, RetainedSurfaceRasterRole,
     SurfaceMaterializationOutcome, prepare_artifact_surface_raster_plan,
     record_surface_dag_frame_artifact, seal_prepared_artifact_surface_frame,
 };
@@ -15,16 +14,7 @@ fn recorded_plan(
     generations: &PaintGenerationTracker,
     dpr: f32,
 ) -> crate::view::paint::PreparedArtifactSurfaceRasterPlan {
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        arena,
-        roots,
-        properties,
-        generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("materialization artifact must record") else {
-        panic!("materialization artifact must not fall back")
-    };
+    let artifact = record_surface_dag_frame_artifact(arena, roots, properties, generations);
     prepare_artifact_surface_raster_plan(
         artifact,
         ArtifactSurfaceRasterContext::new(
@@ -81,16 +71,7 @@ fn direct_scroll_transform_artifact(
     arena.refresh_subtree_dirty_cache(root);
     let roots = [root];
     let (properties, generations) = synced_paint_state(&arena, &roots);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("direct scroll/transform artifact must record") else {
-        panic!("direct scroll/transform artifact must not fall back")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     artifact
 }
 
@@ -123,16 +104,7 @@ fn scroll_effect_artifact() -> crate::view::paint::PaintArtifact {
     arena.refresh_subtree_dirty_cache(root);
     let roots = [root];
     let (properties, generations) = synced_paint_state(&arena, &roots);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("scroll/effect artifact must record") else {
-        panic!("scroll/effect artifact must not fall back")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     artifact
 }
 

@@ -227,12 +227,7 @@ fn add_present(graph: &mut FrameGraph, target: &RenderTargetOut) -> Result<(), S
 fn artifact_graph(with_border: bool) -> Result<FrameGraph, String> {
     let (arena, roots) = fixture(with_border);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    if !eligibility.eligible {
-        return Err(format!(
-            "pixel fixture is not artifact eligible: {eligibility:?}"
-        ));
-    }
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     let (mut graph, ctx, target) = graph_prelude();
     let _ = compile_artifact(&artifact, &mut graph, ctx);
     add_present(&mut graph, &target)?;
@@ -526,25 +521,6 @@ fn nested_scroll_gpu_leaf_fixture(
     (arena, outer, properties, generations)
 }
 
-fn root_group_overlap_rects() -> [RectPassParams; 2] {
-    [
-        RectPassParams {
-            position: [8.0, 8.0],
-            size: [30.0, 26.0],
-            fill_color: ROOT_GROUP_FIRST_COLOR,
-            opacity: 1.0,
-            ..Default::default()
-        },
-        RectPassParams {
-            position: [20.0, 16.0],
-            size: [30.0, 26.0],
-            fill_color: ROOT_GROUP_SECOND_COLOR,
-            opacity: 1.0,
-            ..Default::default()
-        },
-    ]
-}
-
 fn premultiply(color: [f32; 4]) -> [f32; 4] {
     [
         color[0] * color[3],
@@ -588,301 +564,6 @@ fn quantize_premultiplied_rgba8(color: [f32; 4]) -> [f32; 4] {
     color.map(|v| ((f64::from(v.clamp(0.0, 1.0)) * 255.0).round() / 255.0) as f32)
 }
 
-fn root_group_raster_readback(color: [f32; 4], opacity: f32) -> [u8; 4] {
-    // Both the reusable layer and the receiver are RGBA8 UNORM targets.
-    // Quantize at both writes before the final straight-alpha readback; a
-    // low-alpha unpremultiply can amplify a one-byte raster difference.
-    let layer = quantize_premultiplied_rgba8(color);
-    let receiver = quantize_premultiplied_rgba8(scale_premultiplied(layer, opacity));
-    premultiplied_to_readback_rgba8(receiver)
-}
-
-fn root_group_anchor_oracle(opacity: f32) -> [[u8; 4]; 3] {
-    let first = quantize_premultiplied_rgba8(premultiply(ROOT_GROUP_FIRST_COLOR));
-    let second = premultiply(ROOT_GROUP_SECOND_COLOR);
-    [
-        root_group_raster_readback(first, opacity),
-        root_group_raster_readback(source_over(second, first), opacity),
-        root_group_raster_readback(second, opacity),
-    ]
-}
-
-fn root_group_overlap_artifact(opacity: f32) -> PaintArtifact {
-    let mut arena = new_test_arena();
-    let root = commit_element(
-        &mut arena,
-        Box::new(Element::new_with_id(
-            0x6c50,
-            0.0,
-            0.0,
-            WIDTH as f32,
-            HEIGHT as f32,
-        )),
-    );
-    let first = commit_child(
-        &mut arena,
-        root,
-        Box::new(Element::new_with_id(0x6c51, 0.0, 0.0, 1.0, 1.0)),
-    );
-    let second = commit_child(
-        &mut arena,
-        root,
-        Box::new(Element::new_with_id(0x6c52, 0.0, 0.0, 1.0, 1.0)),
-    );
-    let effect = EffectNodeId(root);
-    let properties = PropertyTreeState {
-        effect: Some(effect),
-        ..Default::default()
-    };
-    let revision = PaintContentRevision {
-        self_paint_revision: 1,
-        composite_revision: 1,
-        topology_revision: 1,
-    };
-    let rects = root_group_overlap_rects();
-    // This hand-built fixture must carry the same exact payload identity the
-    // recorder now requires; a missing identity is deliberately rejected.
-    let identities = rects.each_ref().map(|params| {
-        PaintPayloadIdentity::prepared_shadows_with_decoration(
-            std::iter::empty(),
-            [&DrawRectOp {
-                params: params.clone(),
-                mode: crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
-            }],
-        )
-        .expect("canonical root-group rectangle")
-    });
-    PaintArtifact {
-        target: PaintArtifactTarget::RootOpacityGroup { root, effect },
-        chunks: vec![
-            PaintChunk {
-                frame: crate::view::paint::PaintChunkFrame::Viewport,
-                id: PaintChunkId {
-                    owner: first,
-                    scope: crate::view::paint::PaintPropertyScope::SelfPaint,
-                    phase: crate::view::paint::PaintNodePhase::BeforeChildren,
-                    slot: 0,
-                    role: PaintChunkRole::SelfDecoration,
-                },
-                owner: first,
-                op_range: 0..1,
-                bounds: Rect {
-                    x: rects[0].position[0],
-                    y: rects[0].position[1],
-                    width: rects[0].size[0],
-                    height: rects[0].size[1],
-                },
-                properties,
-                content_revision: revision,
-                payload_identity: identities[0].clone(),
-            },
-            PaintChunk {
-                frame: crate::view::paint::PaintChunkFrame::Viewport,
-                id: PaintChunkId {
-                    owner: second,
-                    scope: crate::view::paint::PaintPropertyScope::SelfPaint,
-                    phase: crate::view::paint::PaintNodePhase::BeforeChildren,
-                    slot: 0,
-                    role: PaintChunkRole::SelfDecoration,
-                },
-                owner: second,
-                op_range: 1..2,
-                bounds: Rect {
-                    x: rects[1].position[0],
-                    y: rects[1].position[1],
-                    width: rects[1].size[0],
-                    height: rects[1].size[1],
-                },
-                properties,
-                content_revision: revision,
-                payload_identity: identities[1].clone(),
-            },
-        ]
-        .into(),
-        ops: rects
-            .into_iter()
-            .map(|params| {
-                PaintOp::DrawRect(DrawRectOp {
-                    params,
-                    mode: crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
-                })
-            })
-            .collect(),
-        clip_nodes: Vec::new(),
-        effect_nodes: vec![EffectNodeSnapshot {
-            id: effect,
-            owner: root,
-            parent: None,
-            opacity,
-            generation: 1,
-        }],
-        transform_nodes: Vec::new(),
-        layout_position_nodes: Vec::new(),
-        visual_offset_nodes: Vec::new(),
-        scroll_nodes: Vec::new(),
-        owner_property_states: Vec::new(),
-        owner_nodes: vec![
-            PaintOwnerSnapshot {
-                owner: root,
-                parent: None,
-                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
-            },
-            PaintOwnerSnapshot {
-                owner: first,
-                parent: Some(root),
-                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
-            },
-            PaintOwnerSnapshot {
-                owner: second,
-                parent: Some(root),
-                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
-            },
-        ],
-    }
-}
-
-fn artifact_root_group_overlap_graph(opacity: f32) -> Result<FrameGraph, String> {
-    let artifact = root_group_overlap_artifact(opacity);
-    let (mut graph, ctx, target) = graph_prelude();
-    try_compile_artifact(&artifact, &mut graph, ctx).map_err(|error| {
-        format!(
-            "root opacity group artifact failed validation: {:?}",
-            error.kind()
-        )
-    })?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn explicit_root_group_overlap_graph(opacity: f32) -> Result<FrameGraph, String> {
-    use crate::view::render_pass::composite_layer_pass::{
-        CompositeLayerInput, CompositeLayerOutput, CompositeLayerParams, CompositeLayerPass,
-        LayerIn,
-    };
-
-    let (mut graph, mut ctx, parent_target) = graph_prelude();
-    let mut layer_ctx = UiBuildContext::from_parts(
-        ctx.viewport(),
-        ctx.layer_subtree_state_with_ancestor_clip(
-            crate::view::base_component::AncestorClipContext::default(),
-        ),
-    );
-    let layer_target = layer_ctx.allocate_target(&mut graph);
-    layer_ctx.set_current_target(layer_target);
-    graph.add_graphics_pass(crate::view::frame_graph::ClearPass::new(
-        crate::view::render_pass::clear_pass::ClearParams::new([0.0, 0.0, 0.0, 0.0]),
-        crate::view::render_pass::clear_pass::ClearInput {
-            pass_context: layer_ctx.graphics_pass_context(),
-            clear_depth_stencil: true,
-        },
-        crate::view::render_pass::clear_pass::ClearOutput {
-            render_target: layer_target,
-        },
-    ));
-    for params in root_group_overlap_rects() {
-        let mut pass =
-            DrawRectPass::new(params, DrawRectInput::default(), DrawRectOutput::default());
-        pass.set_render_mode(crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly);
-        layer_ctx.emit_draw_rect_pass(&mut graph, pass);
-    }
-    let layer_state = layer_ctx.into_state();
-    ctx.merge_child_render_state(&layer_state);
-    ctx.set_current_target(parent_target);
-    graph.add_graphics_pass(CompositeLayerPass::new(
-        CompositeLayerParams {
-            rect_pos: [0.0, 0.0],
-            rect_size: [WIDTH as f32, HEIGHT as f32],
-            corner_radii: [0.0; 4],
-            opacity,
-            scissor_rect: None,
-            clear_target: false,
-        },
-        CompositeLayerInput {
-            layer: LayerIn::with_handle(
-                layer_target
-                    .handle()
-                    .expect("explicit group layer target must have a texture handle"),
-            ),
-            pass_context: ctx.graphics_pass_context(),
-            source_physical_origin: None,
-        },
-        CompositeLayerOutput {
-            render_target: parent_target,
-        },
-    ));
-    ctx.set_current_target(parent_target);
-    add_present(&mut graph, &parent_target)?;
-    Ok(graph)
-}
-
-fn artifact_outer_shadow_graph(opacity: f32) -> Result<FrameGraph, String> {
-    let shadow_color = Color::rgba(51, 102, 204, 153);
-    let (arena, root, properties, generations) = prepared_shadow_leaf(
-        0x6d70,
-        opacity,
-        vec![BoxShadow::new().color(shadow_color).offset_x(-4.0)],
-        false,
-    );
-    let artifact = if opacity.to_bits() == 1.0_f32.to_bits() {
-        whole_frame_artifact(&arena, &[root], &properties, &generations).0
-    } else {
-        root_group_artifact(&arena, &[root], &properties, &generations).0
-    };
-    drop(arena);
-    let (mut graph, ctx, target) = graph_prelude();
-    try_compile_artifact(&artifact, &mut graph, ctx).map_err(|error| {
-        format!(
-            "outer shadow artifact failed validation: {:?}",
-            error.kind()
-        )
-    })?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
-fn outer_shadow_anchor_oracle(opacity: f32) -> [u8; 4] {
-    // Fixture colors are sRGB bytes. FORMAT is linear Rgba8Unorm, and
-    // PresentSurface divides its quantized premultiplied RGB by quantized
-    // alpha. Compute the conversion independently of ColorLike and readback.
-    let linear = [51.0_f32, 102.0, 204.0].map(|byte| {
-        let encoded = byte / 255.0;
-        if encoded <= 0.04045 {
-            encoded / 12.92
-        } else {
-            ((encoded + 0.055) / 1.055).powf(2.4)
-        }
-    });
-    let alpha = (153.0 / 255.0) * opacity;
-    let quantized_alpha = (alpha * 255.0).round();
-    if quantized_alpha == 0.0 {
-        return [0; 4];
-    }
-    let rgb = linear.map(|channel| {
-        let quantized_premultiplied = (channel * alpha * 255.0).round();
-        (quantized_premultiplied / quantized_alpha * 255.0).round() as u8
-    });
-    [rgb[0], rgb[1], rgb[2], quantized_alpha as u8]
-}
-
-fn legacy_outer_shadow_graph(opacity: f32) -> Result<FrameGraph, String> {
-    let (mut arena, root, _, _) = prepared_shadow_leaf(
-        0x6d70,
-        opacity,
-        vec![
-            BoxShadow::new()
-                .color(Color::rgba(51, 102, 204, 153))
-                .offset_x(-4.0),
-        ],
-        false,
-    );
-    let (mut graph, ctx, target) = graph_prelude();
-    arena
-        .with_element_taken(root, |element, arena| element.build(&mut graph, arena, ctx))
-        .ok_or_else(|| "legacy shadow root disappeared".to_string())?;
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
 fn artifact_image_graph(
     pixels: Arc<[u8]>,
     fit: crate::view::ImageFit,
@@ -896,19 +577,7 @@ fn artifact_image_graph(
         bare_image_fixture(pixels, fit, sampling, opacity)
     };
     let (properties, generations) = sync_identity(&arena, &roots);
-    // Overlapping decoration and image require a group contract. The flat
-    // WholeFrame target intentionally bakes opacity per op and is not a
-    // correct pixel oracle for this scene (it used to match Legacy's bug).
-    let (artifact, eligibility) = if decorated && opacity < 1.0 {
-        root_group_artifact(&arena, &roots, &properties, &generations)
-    } else {
-        whole_frame_artifact(&arena, &roots, &properties, &generations)
-    };
-    if !eligibility.eligible {
-        return Err(format!(
-            "image fixture is not artifact eligible: {eligibility:?}"
-        ));
-    }
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     let image_asset_id = artifact.ops.iter().find_map(|op| match op {
         PaintOp::PreparedImage(prepared) => match prepared.upload.id {
             crate::view::sampled_texture::SampledTextureId::Image(asset_id) => Some(asset_id),
@@ -932,41 +601,10 @@ fn artifact_image_graph(
     Ok(graph)
 }
 
-fn legacy_image_graph(
-    pixels: Arc<[u8]>,
-    fit: crate::view::ImageFit,
-    sampling: crate::view::ImageSampling,
-    opacity: f32,
-    decorated: bool,
-) -> Result<FrameGraph, String> {
-    let (mut arena, roots) = if decorated {
-        prepared_image_fixture(pixels, fit, sampling, opacity)
-    } else {
-        bare_image_fixture(pixels, fit, sampling, opacity)
-    };
-    let (mut graph, mut ctx, target) = graph_prelude();
-    for root in roots {
-        let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next = arena
-            .with_element_taken(root, |element, arena| {
-                element.build(&mut graph, arena, child_ctx)
-            })
-            .ok_or_else(|| "legacy image root disappeared".to_string())?;
-        ctx.set_state(next);
-    }
-    add_present(&mut graph, &target)?;
-    Ok(graph)
-}
-
 fn artifact_self_clip_graph() -> Result<FrameGraph, String> {
     let (arena, roots) = self_clip_fixture();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    if !eligibility.eligible {
-        return Err(format!(
-            "self-clip pixel fixture is not artifact eligible: {eligibility:?}"
-        ));
-    }
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     drop(arena);
     let (mut graph, ctx, target) = self_clip_graph_prelude();
     let _ = compile_artifact(&artifact, &mut graph, ctx);
@@ -1586,8 +1224,6 @@ mod artifact_scroll_content_contract_tests;
 mod native_artifact_scroll_content_tests;
 mod native_artifact_surface_materialization_tests;
 mod native_artifact_surface_tests;
-
-mod native_root_effect_tests;
 
 mod native_svg_pixel_tests;
 mod native_transform_surface_tests;

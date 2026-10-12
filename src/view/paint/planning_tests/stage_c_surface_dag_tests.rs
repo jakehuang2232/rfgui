@@ -137,8 +137,7 @@ fn mixed_property_inputs_reconstruct_complete_generic_receivers() {
     ] {
         let (arena, root, properties, generations) = property_scroll_interleave_fixture(shape);
         let artifact =
-            stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-                .unwrap();
+            stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
         let dag = reconstruct_artifact_surface_dag(&artifact);
         assert_eq!(
             dag.nodes().len(),
@@ -166,7 +165,7 @@ fn mixed_property_inputs_reconstruct_complete_generic_receivers() {
 fn stage_c_native_forest_reconstructs_branch_and_multi_root_receivers() {
     let (arena, roots, properties, generations) = native_scroll_forest_plan_fixture();
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations).unwrap();
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations);
     let dag = reconstruct_artifact_surface_dag(&artifact);
     assert_eq!(dag.nodes().len(), properties.scrolls.len());
     assert_eq!(dag.roots().len(), 2);
@@ -237,8 +236,7 @@ fn stage_c_surface_dag_rejects_misaligned_consumption_with_a_closed_taxonomy() {
 
     let (arena, root, properties, generations) = same_owner_transform_effect_scroll_roles_fixture();
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C2b co-located artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let requests = stage_c_artifact_surface_transition_requests(&artifact);
     let events = classify_artifact_transition_sequence(&artifact, &requests)
         .expect("C2b co-located transitions");
@@ -279,8 +277,7 @@ fn stage_c_execution_order_remaps_a_leaf_first_forward_receiver() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("leaf-first execution artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     reorder_artifact_leaf_first(&arena, &mut artifact);
     let surface_dag = reconstruct_artifact_surface_dag(&artifact);
     let execution = surface_dag
@@ -310,8 +307,7 @@ fn stage_c_execution_order_remaps_a_leaf_first_nested_scroll_chain() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::NestedScroll);
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("leaf-first nested execution artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     reorder_artifact_leaf_first(&arena, &mut artifact);
     let surface_dag = reconstruct_artifact_surface_dag(&artifact);
     let execution = surface_dag
@@ -340,8 +336,7 @@ fn stage_c_execution_order_remaps_a_leaf_first_nested_scroll_chain() {
 fn stage_c_execution_order_preserves_multi_root_preorder_and_sibling_tie_break() {
     let (arena, roots, properties, generations) = native_scroll_forest_plan_fixture();
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
-            .expect("native execution artifact");
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations);
     let surface_dag = reconstruct_artifact_surface_dag(&artifact);
     let execution = surface_dag
         .derive_execution_order()
@@ -402,8 +397,7 @@ fn stage_c_execution_order_retains_empty_plain_root_spans() {
     properties.sync(&arena, &roots);
     generations.sync(&arena, &roots, &properties);
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
-            .expect("plain-root execution artifact");
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations);
     let surface_dag = reconstruct_artifact_surface_dag(&artifact);
     let execution = surface_dag
         .derive_execution_order()
@@ -434,8 +428,7 @@ fn stage_c_surface_dag_retains_plain_roots_without_minting_surfaces() {
         &fixture.roots,
         &fixture.properties,
         &fixture.generations,
-    )
-    .expect("C3 identity graph fixture");
+    );
     let roots = SurfaceDag::roots_from_artifact_for_test(&artifact)
         .expect("C3 complete scene-root identity registry");
     let candidates = derive_artifact_surface_candidates(
@@ -483,8 +476,7 @@ fn stage_c_surface_dag_rejects_an_unknown_scene_root_receiver() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::FrameRootScroll);
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C3 scene-root fixture");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let requests = stage_c_artifact_surface_transition_requests(&artifact);
     let events = classify_artifact_transition_sequence(&artifact, &requests)
         .expect("C3 scene-root transitions");
@@ -510,8 +502,7 @@ fn stage_c_surface_dag_accepts_the_production_leaf_first_owner_order() {
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::TransformScroll);
     let scroll_owner = properties.scrolls.values().next().unwrap().owner;
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C2b transform-scroll artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     reorder_artifact_leaf_first(&arena, &mut artifact);
     let requests = stage_c_artifact_surface_transition_requests(&artifact);
     let events = classify_artifact_transition_sequence(&artifact, &requests)
@@ -550,8 +541,7 @@ fn stage_c_surface_dag_accepts_a_leaf_first_nested_scroll_chain() {
     let (arena, root, properties, generations) =
         property_scroll_interleave_fixture(ScrollInterleaveFixtureShape::NestedScroll);
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C2c nested-scroll artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     reorder_artifact_leaf_first(&arena, &mut artifact);
     let requests = stage_c_artifact_surface_transition_requests(&artifact);
     let events = classify_artifact_transition_sequence(&artifact, &requests)

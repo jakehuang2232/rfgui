@@ -5,8 +5,7 @@ fn wrapping_inline_span_owns_typed_decoration_before_text() {
     let (arena, roots, span_key, text_key, fragment_count) = prepared_wrapping_inline_span_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
     take_full_artifact_record_count();
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks.len(), 2);
     assert_eq!(artifact.chunks[0].owner, span_key);
     assert_eq!(artifact.chunks[0].id.role, PaintChunkRole::SelfDecoration);
@@ -72,13 +71,10 @@ fn wrapping_inline_span_shadows_preserve_fragment_order() {
         "fixture must wrap across multiple lines"
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let manifest = |mode| {
-        record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
-    };
+    let manifest =
+        |mode| record_coverage_manifest(&arena, &roots, true, mode, &properties, &generations);
     let metadata = manifest(CoverageRecordingMode::MetadataOnly);
     let full = manifest(CoverageRecordingMode::FullArtifact);
-    assert!(metadata.validation_errors.is_empty());
-    assert!(full.validation_errors.is_empty());
     assert!(canonical_manifest_matches_for_test(&metadata, &full));
     let span_identity = metadata
         .items
@@ -97,8 +93,7 @@ fn wrapping_inline_span_shadows_preserve_fragment_order() {
                 && decoration_ids.len() == fragment_count
     ));
 
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks[0].owner, span_key);
     assert_eq!(artifact.chunks[1].owner, text_key);
     let span_ops = &artifact.ops[artifact.chunks[0].op_range.clone()];
@@ -188,31 +183,20 @@ fn sampled_inline_span_layout_transition_keeps_metadata_full() {
     arena.clear_arena_dirty_subtree(span_key, DirtyFlags::ALL);
     arena.refresh_subtree_dirty_cache(span_key);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let manifest = |mode| {
-        record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
-    };
+    let manifest =
+        |mode| record_coverage_manifest(&arena, &roots, true, mode, &properties, &generations);
     let metadata = manifest(CoverageRecordingMode::MetadataOnly);
     let full = manifest(CoverageRecordingMode::FullArtifact);
-    assert!(metadata.validation_errors.is_empty());
-    assert!(full.validation_errors.is_empty());
-    assert!(
-        metadata
-            .items
-            .iter()
-            .all(|item| !matches!(item, PaintCoverageItem::LegacyBoundary { .. }))
-    );
     assert!(canonical_manifest_matches_for_test(&metadata, &full));
 
-    let (_, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let _ = whole_frame_artifact(&arena, &roots, &properties, &generations);
 }
 
 #[test]
 fn nested_inline_spans_preserve_source_owner_dfs() {
     let (arena, roots, expected_owners) = prepared_nested_inline_span_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -232,81 +216,6 @@ fn nested_inline_spans_preserve_source_owner_dfs() {
 }
 
 #[test]
-fn missing_or_malformed_inline_span_package_falls_back_before_full_hooks() {
-    for malformed in [false, true] {
-        let (arena, roots, span_key, _, _) = prepared_wrapping_inline_span_tree();
-        let mut node = arena.get_mut(span_key).unwrap();
-        let span = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
-        let package = span
-            .inline_ifc_decoration_package_for_test()
-            .expect("fixture must install a decoration package");
-        if malformed {
-            package.fragments[0].metadata.position[0] = f32::NAN;
-        } else {
-            package.fragments.clear();
-        }
-        drop(node);
-        let (properties, generations) = sync_identity(&arena, &roots);
-        take_full_artifact_record_count();
-        let outcome = record_frame_artifact(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
-        let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
-            panic!("invalid installed inline decoration must fail closed")
-        };
-        assert!(
-            eligibility
-                .reasons
-                .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                    LegacyPaintReason::MissingPreparedInlineDecoration
-                ))
-        );
-        assert_eq!(take_full_artifact_record_count(), 0);
-    }
-}
-
-#[test]
-fn cross_owner_inline_span_package_falls_back_before_full_hooks() {
-    let (arena, roots, span_key, _, _) = prepared_wrapping_inline_span_tree();
-    let mut node = arena.get_mut(span_key).unwrap();
-    let span = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
-    let package = span
-        .inline_ifc_decoration_package_for_test()
-        .expect("fixture must install a decoration package");
-    package.source.0 = package.source.0.wrapping_add(1000);
-    for fragment in &mut package.fragments {
-        fragment.source = package.source;
-    }
-    drop(node);
-    let (properties, generations) = sync_identity(&arena, &roots);
-    take_full_artifact_record_count();
-    let outcome = record_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .unwrap();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
-        panic!("a package from another source owner must fail closed")
-    };
-    assert!(
-        eligibility
-            .reasons
-            .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                LegacyPaintReason::MissingPreparedInlineDecoration
-            ))
-    );
-    assert_eq!(take_full_artifact_record_count(), 0);
-}
-
-#[test]
 fn inline_span_paint_mutation_refreshes_same_constraints_frame() {
     fn mutate_paint(arena: &NodeArena, span_key: NodeKey) {
         let mut node = arena.get_mut(span_key).unwrap();
@@ -318,33 +227,6 @@ fn inline_span_paint_mutation_refreshes_same_constraints_frame() {
         span.set_border_top_color(Color::rgb(126, 34, 206));
         span.set_border_bottom_color(Color::rgb(126, 34, 206));
     }
-
-    let (stale_arena, stale_roots, stale_span, stale_text, _) =
-        prepared_wrapping_inline_span_tree();
-    let stale_parent = stale_arena.parent_of(stale_span).unwrap();
-    settle_wrapping_inline_span_frame(&stale_arena, stale_parent, stale_span, stale_text);
-    mutate_paint(&stale_arena, stale_span);
-    let (stale_properties, stale_generations) = sync_identity(&stale_arena, &stale_roots);
-    take_full_artifact_record_count();
-    let stale = record_frame_artifact(
-        &stale_arena,
-        &stale_roots,
-        &stale_properties,
-        &stale_generations,
-        RendererMode::Auto,
-    )
-    .unwrap();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = stale else {
-        panic!("recording without layout must not consume stale paint packages")
-    };
-    assert!(
-        eligibility
-            .reasons
-            .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                LegacyPaintReason::MissingPreparedInlineDecoration
-            ))
-    );
-    assert_eq!(take_full_artifact_record_count(), 0);
 
     let (mut arena, roots, span_key, text_key, _) = prepared_wrapping_inline_span_tree();
     let parent_key = arena.parent_of(span_key).unwrap();
@@ -371,8 +253,7 @@ fn inline_span_paint_mutation_refreshes_same_constraints_frame() {
         "paint-only damage must rebuild the installed package in this frame"
     );
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     let PaintOp::PreparedInlineIfcDecoration(first) = &artifact.ops[0] else {
         panic!("refreshed span must record inline decoration")
     };
@@ -456,9 +337,7 @@ fn non_painting_inline_span_uses_only_typed_empty_decoration() {
         .clear();
     drop(node);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (mut artifact, eligibility) =
-        whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let mut artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     let span_chunk = artifact
         .chunks
         .iter()
@@ -475,220 +354,4 @@ fn non_painting_inline_span_uses_only_typed_empty_decoration() {
     take_artifact_compile_count();
     let _ = compiled_whole_frame_graph(&artifact);
     assert_eq!(take_artifact_compile_count(), 1);
-}
-
-#[test]
-fn inline_decoration_constructor_and_compiler_reject_link_or_identity_drift() {
-    let (arena, roots, _, _, _) = prepared_wrapping_inline_span_tree();
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
-    let PaintOp::PreparedInlineIfcDecoration(first) = &artifact.ops[0] else {
-        panic!("fixture must start with an inline decoration")
-    };
-    let mut mismatched_border = first.border.clone().expect("fixture must have a border");
-    mismatched_border.depth = 1.0;
-    assert!(
-        PreparedInlineIfcDecorationOp::new(
-            first.descriptor.clone(),
-            first.fill.clone(),
-            Some(mismatched_border),
-        )
-        .is_none(),
-        "constructor must reject linked-field mismatch"
-    );
-    let mut gradient_fill = first.fill.clone();
-    gradient_fill.gradient = Some(Default::default());
-    assert!(
-        PreparedInlineIfcDecorationOp::new(
-            first.descriptor.clone(),
-            gradient_fill,
-            first.border.clone(),
-        )
-        .is_none(),
-        "M7B explicitly excludes gradients"
-    );
-    let mut overflow_fill = first.fill.clone();
-    overflow_fill.position[0] = f32::MAX;
-    overflow_fill.size[0] = f32::MAX;
-    let mut overflow_border = first.border.clone().unwrap();
-    overflow_border.position[0] = f32::MAX;
-    overflow_border.size[0] = f32::MAX;
-    assert!(
-        PreparedInlineIfcDecorationOp::new(
-            first.descriptor.clone(),
-            overflow_fill,
-            Some(overflow_border),
-        )
-        .is_none(),
-        "large finite rect inputs whose edge overflows must fail closed"
-    );
-
-    let mut tampered_params = artifact.clone();
-    let PaintOp::PreparedInlineIfcDecoration(op) = &mut tampered_params.ops[0] else {
-        unreachable!()
-    };
-    Arc::make_mut(op).fill.position[0] += 1.0;
-    assert_compiler_rejects_before_emit(&tampered_params, "inline fill param drift");
-
-    let mut nan_bounds = artifact.clone();
-    nan_bounds.chunks[0].bounds.x = f32::NAN;
-    assert_compiler_rejects_before_emit(&nan_bounds, "NaN chunk bounds");
-    let mut negative_bounds = artifact.clone();
-    negative_bounds.chunks[0].bounds.width = -1.0;
-    assert_compiler_rejects_before_emit(&negative_bounds, "negative chunk bounds");
-
-    let mut tampered_descriptor = artifact.clone();
-    let PaintOp::PreparedInlineIfcDecoration(op) = &mut tampered_descriptor.ops[0] else {
-        unreachable!()
-    };
-    Arc::make_mut(op).descriptor.source = op.descriptor.source.wrapping_add(1);
-    assert_compiler_rejects_before_emit(&tampered_descriptor, "inline descriptor drift");
-
-    let mut missing_fragment = artifact;
-    missing_fragment.ops.remove(0);
-    missing_fragment.chunks[0].op_range.end -= 1;
-    for chunk in &mut missing_fragment.chunks[1..] {
-        chunk.op_range.start -= 1;
-        chunk.op_range.end -= 1;
-    }
-    assert_compiler_rejects_before_emit(&missing_fragment, "missing inline fragment");
-
-    let (arena, roots, _, _, _) = prepared_wrapping_inline_span_tree();
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
-    let mut swapped = artifact.clone();
-    swapped.ops.swap(0, 1);
-    refresh_inline_decoration_payload_identity(&mut swapped);
-    assert_compiler_rejects_before_emit(
-        &swapped,
-        "inline fragment order drift with rebuilt payload",
-    );
-
-    let mut endpoint_drift = artifact.clone();
-    let PaintOp::PreparedInlineIfcDecoration(op) = endpoint_drift.ops[0].clone() else {
-        unreachable!()
-    };
-    let op = Arc::unwrap_or_clone(op);
-    let mut descriptor = op.descriptor;
-    descriptor.is_first_for_source = false;
-    endpoint_drift.ops[0] = PaintOp::inline_decoration(
-        PreparedInlineIfcDecorationOp::new(descriptor, op.fill, op.border).unwrap(),
-    );
-    refresh_inline_decoration_payload_identity(&mut endpoint_drift);
-    assert_compiler_rejects_before_emit(
-        &endpoint_drift,
-        "inline endpoint drift with rebuilt op and payload",
-    );
-
-    let mut cross_source = artifact;
-    let PaintOp::PreparedInlineIfcDecoration(op) = cross_source.ops[1].clone() else {
-        unreachable!()
-    };
-    let op = Arc::unwrap_or_clone(op);
-    let mut descriptor = op.descriptor;
-    descriptor.source = descriptor.source.wrapping_add(1);
-    cross_source.ops[1] = PaintOp::inline_decoration(
-        PreparedInlineIfcDecorationOp::new(descriptor, op.fill, op.border).unwrap(),
-    );
-    refresh_inline_decoration_payload_identity(&mut cross_source);
-    assert_compiler_rejects_before_emit(
-        &cross_source,
-        "cross-source fragment with rebuilt op and payload",
-    );
-}
-
-#[test]
-fn root_opacity_group_neutralizes_inline_span_and_text_once() {
-    let (arena, roots, span_key, _, _) = prepared_wrapping_inline_span_tree_with_opacity(0.5);
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = root_group_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
-    assert!(matches!(
-        artifact.target,
-        PaintArtifactTarget::RootOpacityGroup { root, .. } if root == span_key
-    ));
-    assert!(matches!(
-        artifact.chunks[0].payload_identity,
-        PaintPayloadIdentity::InlineIfcDecorations(_, _)
-    ));
-    assert!(
-        artifact
-            .ops
-            .iter()
-            .any(|op| matches!(op, PaintOp::PreparedText(_)))
-    );
-    artifact.ops.iter().for_each(assert_neutral_opacity);
-    let graph = compiled_whole_frame_graph(&artifact);
-    assert_eq!(
-        graph
-            .test_graphics_passes::<crate::view::render_pass::composite_layer_pass::CompositeLayerPass>()
-            .len(),
-        1
-    );
-}
-
-#[test]
-fn deferred_inline_span_remains_fallback_before_full_hooks() {
-    let (arena, roots, span_key, _, _) = prepared_wrapping_inline_span_tree();
-    let mut node = arena.get_mut(span_key).unwrap();
-    let span = node.element.as_any_mut().downcast_mut::<Element>().unwrap();
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Position,
-        ParsedValue::Position(Position::absolute().clip(ClipMode::Viewport)),
-    );
-    span.apply_style(style);
-    drop(node);
-    let (properties, generations) = sync_identity(&arena, &roots);
-    take_full_artifact_record_count();
-    let outcome = record_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .unwrap();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
-        panic!("deferred inline span must remain on legacy")
-    };
-    assert!(eligibility.reasons.iter().any(|reason| matches!(
-        reason,
-        FrameArtifactFallbackReason::LegacyBoundary(LegacyPaintReason::Deferred)
-            | FrameArtifactFallbackReason::DeferredBoundary(_)
-    )));
-    assert_eq!(take_full_artifact_record_count(), 0);
-}
-
-#[test]
-fn atomic_inline_span_remains_fallback_before_full_hooks() {
-    let (arena, roots, span_key, _, _) = prepared_wrapping_inline_span_tree();
-    let mut node = arena.get_mut(span_key).unwrap();
-    node.element
-        .as_any_mut()
-        .downcast_mut::<Element>()
-        .unwrap()
-        .install_empty_inline_ifc_atomic_package_for_test();
-    drop(node);
-    let (properties, generations) = sync_identity(&arena, &roots);
-    take_full_artifact_record_count();
-    let outcome = record_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .unwrap();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
-        panic!("atomic placement stays outside M7B")
-    };
-    assert!(
-        eligibility
-            .reasons
-            .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                LegacyPaintReason::InlineIfc
-            ))
-    );
-    assert_eq!(take_full_artifact_record_count(), 0);
 }

@@ -600,33 +600,12 @@ impl ElementTrait for TextAreaTextRun {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,
-        arena: &crate::view::node_arena::NodeArena,
-        deferred_phase_root: bool,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _arena: &crate::view::node_arena::NodeArena,
+        _deferred_phase_root: bool,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
-        if !recording_context.inside_text_area {
-            return ShadowPaintRecordingCapability::Unsupported;
-        }
-        let Some(self_key) = unique_run_key(arena, self) else {
-            return ShadowPaintRecordingCapability::Unsupported;
-        };
-        let Some(parent_key) = arena.parent_of(self_key) else {
-            return ShadowPaintRecordingCapability::Unsupported;
-        };
-        let Some(parent) = arena.get(parent_key) else {
-            return ShadowPaintRecordingCapability::Unsupported;
-        };
-        let Some(text_area) = parent.element.as_any().downcast_ref::<super::TextArea>() else {
-            return ShadowPaintRecordingCapability::Unsupported;
-        };
-        text_area.plain_leaf_shadow_capability(
-            parent_key,
-            self_key,
-            self.node_id,
-            super::inline_ifc::TextAreaUnifiedIfcSourceKind::TextRun,
-            arena,
-            deferred_phase_root,
-        )
+        // The TextArea draws its runs and projections; their children record.
+        ShadowPaintRecordingCapability::Transparent
     }
 
     fn placement_eligibility_metadata(
@@ -760,33 +739,12 @@ impl ElementTrait for TextAreaLineBreak {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,
-        arena: &crate::view::node_arena::NodeArena,
-        deferred_phase_root: bool,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _arena: &crate::view::node_arena::NodeArena,
+        _deferred_phase_root: bool,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
-        if !recording_context.inside_text_area {
-            return ShadowPaintRecordingCapability::Unsupported;
-        }
-        let Some(self_key) = unique_line_break_key(arena, self) else {
-            return ShadowPaintRecordingCapability::Unsupported;
-        };
-        let Some(parent_key) = arena.parent_of(self_key) else {
-            return ShadowPaintRecordingCapability::Unsupported;
-        };
-        let Some(parent) = arena.get(parent_key) else {
-            return ShadowPaintRecordingCapability::Unsupported;
-        };
-        let Some(text_area) = parent.element.as_any().downcast_ref::<super::TextArea>() else {
-            return ShadowPaintRecordingCapability::Unsupported;
-        };
-        text_area.plain_leaf_shadow_capability(
-            parent_key,
-            self_key,
-            self.node_id,
-            super::inline_ifc::TextAreaUnifiedIfcSourceKind::LineBreak,
-            arena,
-            deferred_phase_root,
-        )
+        // The TextArea draws its runs and projections; their children record.
+        ShadowPaintRecordingCapability::Transparent
     }
 
     fn placement_eligibility_metadata(

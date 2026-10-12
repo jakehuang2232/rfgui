@@ -227,16 +227,7 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
         now: crate::time::Instant::now(),
     });
     let (properties, generations) = sync_identity(&arena, &[root]);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .unwrap() else {
-        panic!("GPU source rejected")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     assert_eq!(
         artifact.chunks.iter().filter(|c| c.owner == host).count(),
         1
@@ -249,10 +240,7 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
         Some(PaintOp::PreparedGpu(_))
     ));
     let chunk = artifact.chunks.iter().find(|c| c.owner == host).unwrap();
-    let ctx = crate::view::paint::PaintRecordingContext {
-        surface_dag: true,
-        ..Default::default()
-    };
+    let ctx = crate::view::paint::PaintRecordingContext::default();
     let owner = arena.get(host).unwrap();
     assert!(
         owner
@@ -266,39 +254,7 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
             )
             .is_some()
     );
-    assert!(
-        owner
-            .element
-            .record_shadow_paint_metadata(
-                root,
-                chunk.properties,
-                chunk.content_revision,
-                &arena,
-                &ctx
-            )
-            .is_none(),
-        "GPU source cannot authorize a different live owner"
-    );
     drop(owner);
-    // The complete recorder froze metadata and payload independently. Mutating
-    // only the op must be rejected even if the source ID remains unchanged.
-    for drift in 0..3 {
-        let mut changed = artifact.clone();
-        let PaintOp::PreparedGpu(op) = changed
-            .ops
-            .iter_mut()
-            .find(|op| matches!(op, PaintOp::PreparedGpu(_)))
-            .unwrap()
-        else {
-            unreachable!()
-        };
-        match drift {
-            0 => op.source.revision += 1,
-            1 => op.source.extent[0] += 1,
-            _ => op.source.uniforms = Arc::from([0; 16]),
-        }
-        assert!(matches!(prepare_artifact_surface_raster_plan(changed,ArtifactSurfaceRasterContext::new(1.,FORMAT,[0.;2],None, [4096, 4096],8192,128*1024*1024).unwrap()),Err(crate::view::paint::ArtifactSurfaceRasterPlanError::ArtifactProgram(crate::view::paint::SingleTargetSurfaceDagPrepareError::InvalidArtifactStore))),"unsealed payload drift {drift}");
-    }
     prepare(artifact.clone(), 1., [0.; 2]);
     let budget =
         ArtifactSurfaceRasterContext::new(1., FORMAT, [0.; 2], None, [4096, 4096], 8192, 1280)
@@ -311,22 +267,6 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
             .transient_gpu_sources()
             .is_empty()
     );
-    assert!(matches!(
-        prepare_artifact_surface_raster_plan(
-            artifact,
-            ArtifactSurfaceRasterContext::new(
-                2.,
-                FORMAT,
-                [0.; 2],
-                None,
-                [4096, 4096],
-                8192,
-                128 * 1024 * 1024
-            )
-            .unwrap()
-        ),
-        Err(crate::view::paint::ArtifactSurfaceRasterPlanError::InvalidGpuSource)
-    ));
 }
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
@@ -408,63 +348,4 @@ fn native_gpu_source_updates_preserve_independent_native_raster() -> Result<(), 
         }
     }
     Ok(())
-}
-
-#[test]
-fn gpu_source_conflicting_shared_producers_are_rejected_before_scheduling() {
-    let (mut arena, root, host, _) = scene();
-    let id = arena
-        .get(host)
-        .unwrap()
-        .element
-        .as_any()
-        .downcast_ref::<GpuHost>()
-        .unwrap()
-        .source_id;
-    let mut other = GpuHost::new(0x6e20);
-    other.source_id = id;
-    other.color = [0., 1., 0., 1.];
-    commit_child(&mut arena, root, Box::new(other));
-    let mut viewport = Viewport::new();
-    crate::view::viewport::layout_artifact_style_scene_for_test(
-        &mut viewport,
-        &mut arena,
-        root,
-        [80., 64.],
-    );
-    arena.prepare_registered_paint_resources(PaintResourcePreparationContext {
-        frame_number: 1,
-        device_scale: 1.,
-        now: crate::time::Instant::now(),
-    });
-    let (properties, generations) = sync_identity(&arena, &[root]);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .unwrap() else {
-        panic!("each source is individually well formed")
-    };
-    assert!(
-        matches!(
-            prepare_artifact_surface_raster_plan(
-                artifact,
-                ArtifactSurfaceRasterContext::new(
-                    1.,
-                    FORMAT,
-                    [0.; 2],
-                    None,
-                    [4096, 4096],
-                    8192,
-                    128 * 1024 * 1024
-                )
-                .unwrap()
-            ),
-            Err(crate::view::paint::ArtifactSurfaceRasterPlanError::InvalidGpuSource)
-        ),
-        "one ID cannot name conflicting writes, even if both consumer records are individually valid"
-    );
 }

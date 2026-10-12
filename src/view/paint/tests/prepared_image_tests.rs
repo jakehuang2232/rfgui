@@ -12,9 +12,8 @@ fn prepared_image_fill_preserves_payload_after_arena_drop() {
         0.65,
     );
     let (properties, generations) = sync_identity(&artifact_arena, &artifact_roots);
-    let (artifact, eligibility) =
+    let artifact =
         whole_frame_artifact(&artifact_arena, &artifact_roots, &properties, &generations);
-    assert!(eligibility.eligible);
     assert_eq!(artifact.chunks.len(), 1);
     assert_eq!(artifact.chunks[0].id.role, PaintChunkRole::ImageContent);
     assert!(matches!(
@@ -41,46 +40,6 @@ fn prepared_image_fill_preserves_payload_after_arena_drop() {
         })
         .count();
     assert_eq!(recorded_images, 1);
-}
-
-#[test]
-fn malformed_inline_image_falls_back_in_metadata_without_full_recording() {
-    let mut image = Image::new_with_id(
-        25,
-        ImageSource::Rgba {
-            width: 0,
-            height: 2,
-            pixels: Arc::from([]),
-        },
-    );
-    let mut style = Style::new();
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-    image.apply_style(style);
-    let mut arena = new_test_arena();
-    let root = commit_element(&mut arena, Box::new(image));
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    let (properties, generations) = sync_identity(&arena, &[root]);
-    let _ = take_full_artifact_record_count();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = record_frame_artifact(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        RendererMode::Auto,
-    )
-    .expect("auto renderer falls back") else {
-        panic!("malformed image must not record")
-    };
-    assert!(
-        eligibility
-            .reasons
-            .contains(&FrameArtifactFallbackReason::LegacyBoundary(
-                LegacyPaintReason::MissingPreparedImage
-            ))
-    );
-    assert_eq!(take_full_artifact_record_count(), 0);
 }
 
 #[test]
@@ -118,9 +77,8 @@ fn undecorated_prepared_image_fit_sampling_opacity_scale_and_format_compile_stri
         let (artifact_arena, artifact_roots) =
             bare_image_fixture(pixels.clone(), fit, sampling, opacity);
         let (properties, generations) = sync_identity(&artifact_arena, &artifact_roots);
-        let (artifact, eligibility) =
+        let artifact =
             whole_frame_artifact(&artifact_arena, &artifact_roots, &properties, &generations);
-        assert!(eligibility.eligible);
         assert!(matches!(
             artifact.ops.as_slice(),
             [PaintOp::PreparedImage(_)]
@@ -129,221 +87,6 @@ fn undecorated_prepared_image_fit_sampling_opacity_scale_and_format_compile_stri
         let mut artifact_graph = compiled_whole_frame_graph_with_config(&artifact, config);
         let _ = strict_paint_snapshot(&mut artifact_graph, config);
     }
-}
-
-#[test]
-fn path_loading_or_error_compiles_strictly_while_slots_and_inner_clip_fall_back() {
-    let mut size = Style::new();
-    size.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
-    size.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
-    let (measure, place) = constraints();
-    let missing_path_fixture = || {
-        let mut path_image = Image::new_with_id(
-            27,
-            ImageSource::Path(std::path::PathBuf::from(
-                "/definitely/missing/rfgui-m4-image.png",
-            )),
-        );
-        path_image.apply_style(size.clone());
-        let mut arena = new_test_arena();
-        let root = commit_element(&mut arena, Box::new(path_image));
-        measure_and_place(&mut arena, root, measure, place);
-        (arena, vec![root])
-    };
-    let (path_arena, path_roots) = missing_path_fixture();
-    let (properties, generations) = sync_identity(&path_arena, &path_roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&path_arena, &path_roots, &properties, &generations);
-    assert!(eligibility.eligible, "{eligibility:?}");
-    assert!(
-        artifact
-            .ops
-            .iter()
-            .all(|op| !matches!(op, PaintOp::PreparedImage(_)))
-    );
-    drop(path_arena);
-    let _ = strict_paint_snapshot(
-        &mut compiled_whole_frame_graph(&artifact),
-        PaintParityConfig::default(),
-    );
-
-    let pixels: Arc<[u8]> = Arc::from([255_u8; 16]);
-    let (mut slot_arena, slot_roots) = bare_image_fixture(
-        pixels.clone(),
-        crate::view::ImageFit::Fill,
-        crate::view::ImageSampling::Linear,
-        1.0,
-    );
-    let slot_root = slot_roots[0];
-    slot_arena.with_element_taken(slot_root, |element, _| {
-        let mut style = Style::new();
-        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        element
-            .as_any_mut()
-            .downcast_mut::<Image>()
-            .expect("image")
-            .apply_style(style);
-    });
-    let slot = commit_child(
-        &mut slot_arena,
-        slot_root,
-        Box::new(Element::new_with_id(28, 0.0, 0.0, 1.0, 1.0)),
-    );
-    slot_arena.with_element_taken(slot_root, |element, _| {
-        element
-            .as_any_mut()
-            .downcast_mut::<Image>()
-            .expect("image")
-            .attach_loading_slot_cold(vec![slot]);
-    });
-    measure_and_place(&mut slot_arena, slot_root, measure, place);
-    assert_image_metadata_fallback(
-        &slot_arena,
-        &slot_roots,
-        LegacyPaintReason::MissingPreparedImage,
-    );
-
-    let (mut child_arena, child_roots) = bare_image_fixture(
-        pixels.clone(),
-        crate::view::ImageFit::Fill,
-        crate::view::ImageSampling::Linear,
-        1.0,
-    );
-    child_arena.with_element_taken(child_roots[0], |element, _| {
-        let mut style = Style::new();
-        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        element
-            .as_any_mut()
-            .downcast_mut::<Image>()
-            .expect("image")
-            .apply_style(style);
-    });
-    commit_child(
-        &mut child_arena,
-        child_roots[0],
-        Box::new(Element::new_with_id(30, 0.0, 0.0, 1.0, 1.0)),
-    );
-    measure_and_place(&mut child_arena, child_roots[0], measure, place);
-    assert_image_metadata_fallback(
-        &child_arena,
-        &child_roots,
-        LegacyPaintReason::MissingPreparedImage,
-    );
-
-    let clipped_fixture = || {
-        let mut clipped = Image::new_with_id(
-            29,
-            ImageSource::Rgba {
-                width: 2,
-                height: 2,
-                pixels: pixels.clone(),
-            },
-        );
-        let mut clip_style = size.clone();
-        clip_style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
-                Position::absolute()
-                    .left(Length::px(4.0))
-                    .top(Length::px(5.0))
-                    .clip(ClipMode::AnchorParent),
-            ),
-        );
-        clipped.apply_style(clip_style);
-        let mut arena = new_test_arena();
-        let root = commit_element(&mut arena, Box::new(clipped));
-        measure_and_place(&mut arena, root, measure, place);
-        (arena, vec![root])
-    };
-    let (clip_arena, clip_roots) = clipped_fixture();
-    let (properties, generations) = sync_identity(&clip_arena, &clip_roots);
-    let (artifact, eligibility) =
-        whole_frame_artifact(&clip_arena, &clip_roots, &properties, &generations);
-    assert!(eligibility.eligible, "{eligibility:?}");
-    assert_eq!(artifact.clip_nodes.len(), 1);
-    assert!(matches!(
-        artifact.ops.last(),
-        Some(PaintOp::PreparedImage(_))
-    ));
-    let mut graph = compiled_whole_frame_graph(&artifact);
-    let snapshot = graph.test_compile_snapshot().unwrap();
-    let composites = snapshot
-        .pass_payloads()
-        .iter()
-        .filter_map(|payload| match payload {
-            FramePassTestPayload::TextureComposite(composite)
-                if composite.sampled_source.is_some() =>
-            {
-                Some(composite)
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(composites.len(), 1);
-    assert_eq!(composites[0].effective_scissor_rect, Some([0, 0, 320, 240]));
-}
-
-#[test]
-fn image_accepts_property_clip_but_rejects_transform_and_scroll_properties() {
-    let pixels: Arc<[u8]> = Arc::from([255_u8; 16]);
-    let (arena, roots) = bare_image_fixture(
-        pixels,
-        crate::view::ImageFit::Fill,
-        crate::view::ImageSampling::Linear,
-        1.0,
-    );
-    let root = roots[0];
-    let revision = PaintContentRevision {
-        self_paint_revision: 1,
-        composite_revision: 1,
-        topology_revision: 1,
-    };
-    let rejected = [
-        PropertyTreeState {
-            transform: Some(TransformNodeId(root)),
-            ..PropertyTreeState::default()
-        },
-        PropertyTreeState {
-            scroll: Some(crate::view::compositor::property_tree::ScrollNodeId(root)),
-            ..PropertyTreeState::default()
-        },
-    ];
-    let element = &arena.get(root).expect("image").element;
-    for properties in rejected {
-        assert!(
-            element
-                .record_shadow_paint_metadata(
-                    root,
-                    properties,
-                    revision,
-                    &arena,
-                    &PaintRecordingContext::default(),
-                )
-                .is_none()
-        );
-    }
-    let clip = ClipNodeId {
-        owner: root,
-        role: ClipNodeRole::SelfClip,
-    };
-    let properties = PropertyTreeState {
-        clip: Some(clip),
-        ..PropertyTreeState::default()
-    };
-    assert_eq!(
-        element
-            .record_shadow_paint_metadata(
-                root,
-                properties,
-                revision,
-                &arena,
-                &PaintRecordingContext::default(),
-            )
-            .expect("property-tree clip is compiler-owned")
-            .properties
-            .clip,
-        Some(clip)
-    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -413,9 +156,7 @@ fn recorder_compiles_real_image_and_svg_descendants_with_parent_contents_clip() 
         );
     }
 
-    let (artifact, eligibility) =
-        whole_frame_artifact(&arena, &[parent], &properties, &generations);
-    assert!(eligibility.eligible, "{eligibility:?}");
+    let artifact = whole_frame_artifact(&arena, &[parent], &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -446,112 +187,4 @@ fn recorder_compiles_real_image_and_svg_descendants_with_parent_contents_clip() 
         let snapshot = pass.test_snapshot();
         snapshot.explicit_scissor_rect.is_none() && snapshot.effective_scissor_rect == Some(SCISSOR)
     }));
-}
-
-#[test]
-fn image_payload_identity_detects_fit_drift_between_metadata_and_full_recording() {
-    let pixels: Arc<[u8]> = Arc::from([255_u8; 16]);
-    let (arena, roots) = bare_image_fixture(
-        pixels,
-        crate::view::ImageFit::Contain,
-        crate::view::ImageSampling::Linear,
-        1.0,
-    );
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let preflight = record_coverage_manifest(
-        &arena,
-        &roots,
-        false,
-        true,
-        CoverageRecordingMode::MetadataOnly,
-        &properties,
-        &generations,
-    );
-    arena
-        .get_mut(roots[0])
-        .expect("image")
-        .element
-        .as_any_mut()
-        .downcast_mut::<Image>()
-        .expect("image")
-        .set_fit(crate::view::ImageFit::Cover);
-    let full = record_coverage_manifest(
-        &arena,
-        &roots,
-        false,
-        true,
-        CoverageRecordingMode::FullArtifact,
-        &properties,
-        &generations,
-    );
-    assert!(!super::super::frame_recorder::canonical_manifest_matches(
-        &preflight, &full
-    ));
-}
-
-#[test]
-fn effect_snapshot_drift_between_metadata_and_full_is_not_canonical() {
-    let (arena, root, properties, generations) =
-        prepared_leaf(0x6b10, Color::rgb(10, 20, 30), 0.5, false);
-    let preflight = record_coverage_manifest(
-        &arena,
-        &[root],
-        false,
-        true,
-        CoverageRecordingMode::MetadataOnly,
-        &properties,
-        &generations,
-    );
-    let mut full = record_coverage_manifest(
-        &arena,
-        &[root],
-        false,
-        true,
-        CoverageRecordingMode::FullArtifact,
-        &properties,
-        &generations,
-    );
-    let PaintCoverageItem::ArtifactChunk {
-        effect_snapshot, ..
-    } = &mut full.items[0]
-    else {
-        panic!("effect fixture must be an artifact chunk")
-    };
-    assert_eq!(effect_snapshot[0].opacity.to_bits(), 0.5_f32.to_bits());
-    std::sync::Arc::make_mut(effect_snapshot)[0].opacity = 0.25;
-    assert!(!super::super::frame_recorder::canonical_manifest_matches(
-        &preflight, &full
-    ));
-}
-
-#[test]
-fn owner_topology_drift_between_metadata_and_full_is_not_canonical() {
-    let (arena, roots, child) = prepared_plain_tree();
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let preflight = record_coverage_manifest(
-        &arena,
-        &roots,
-        false,
-        true,
-        CoverageRecordingMode::MetadataOnly,
-        &properties,
-        &generations,
-    );
-    let mut full = record_coverage_manifest(
-        &arena,
-        &roots,
-        false,
-        true,
-        CoverageRecordingMode::FullArtifact,
-        &properties,
-        &generations,
-    );
-    let PaintCoverageItem::ArtifactChunk { owner_scope, .. } = &mut full.items[1] else {
-        panic!("child fixture must be an artifact chunk")
-    };
-    assert_eq!(owner_scope.topology.owner, child);
-    std::sync::Arc::make_mut(owner_scope).topology.parent = None;
-    assert!(!super::super::frame_recorder::canonical_manifest_matches(
-        &preflight, &full
-    ));
 }

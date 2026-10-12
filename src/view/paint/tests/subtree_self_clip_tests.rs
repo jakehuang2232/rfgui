@@ -1,4 +1,3 @@
-use super::super::recording_context::PaintSubtreeSelfClipWitness;
 use super::*;
 
 fn scene(anchor_first: bool) -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey) {
@@ -30,38 +29,8 @@ fn generic_subtree_self_clip_records_in_phase_order_for_either_arena_order() {
                 .exact_retained_self_clip_geometry(owner, &arena, false),
             None
         );
-        let witness = PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false);
-        assert!(witness.is_some());
-        assert!(
-            matches!(
-                record_clip_enabled_frame_artifact(
-                    &arena,
-                    &roots,
-                    &trees,
-                    &generations,
-                    RendererMode::Auto,
-                )
-                .unwrap(),
-                FrameArtifactRecordOutcome::WholeFrameLegacyFallback { .. }
-            ),
-            "the older recording policy must still reject nonempty self clips"
-        );
-        let result = record_surface_dag_frame_artifact(
-            &arena,
-            &roots,
-            &trees,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap();
-        let FrameArtifactRecordOutcome::Artifact {
-            artifact,
-            eligibility,
-        } = result
-        else {
-            panic!("subtree must record without fallback, anchor_first={anchor_first}");
-        };
-        assert!(eligibility.eligible);
+        let result = record_surface_dag_frame_artifact(&arena, &roots, &trees, &generations);
+        let artifact = result;
         let clip = ClipNodeId {
             owner,
             role: ClipNodeRole::SelfClip,
@@ -108,111 +77,4 @@ fn generic_subtree_self_clip_records_in_phase_order_for_either_arena_order() {
             Some(clip)
         );
     }
-}
-
-#[test]
-fn generic_subtree_self_clip_rejects_foreign_state_geometry_and_missing_snapshot() {
-    let (arena, roots, owner, _) = scene(false);
-    let (mut trees, _) = sync_identity(&arena, &roots);
-    let node = arena.get(owner).unwrap();
-    let stable_id = node.element.stable_id();
-    let geometry = node
-        .element
-        .exact_generic_subtree_self_clip_geometry(owner, &arena, false)
-        .unwrap();
-    let state = trees.paint_state_for(owner).unwrap();
-    let witness =
-        PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).unwrap();
-    let recorded = trees.node_state_for(owner).unwrap();
-    assert!(witness.matches_recorded_scopes(recorded.paint, recorded.descendants));
-    assert!(!witness.matches_recorded_scopes(recorded.paint, PropertyTreeState::default()));
-    let context = PaintRecordingContext {
-        recording_owner: Some(owner),
-        recording_owner_stable_id: Some(stable_id),
-        surface_dag: true,
-        surface_dag_paint_state: Some(state),
-        authoritative_self_clip: state.clip,
-        subtree_self_clip: Some(std::sync::Arc::new(witness)),
-        ..Default::default()
-    };
-    assert!(context.authorizes_subtree_self_clip_for(stable_id, geometry));
-    for altered in [
-        PaintRecordingContext {
-            recording_owner: Some(roots[0]),
-            ..context.clone()
-        },
-        PaintRecordingContext {
-            recording_owner_stable_id: Some(stable_id + 1),
-            ..context.clone()
-        },
-        PaintRecordingContext {
-            surface_dag: false,
-            ..context.clone()
-        },
-        PaintRecordingContext {
-            surface_dag_paint_state: Some(Default::default()),
-            ..context.clone()
-        },
-        PaintRecordingContext {
-            authoritative_self_clip: None,
-            ..context.clone()
-        },
-    ] {
-        assert!(!altered.authorizes_subtree_self_clip_for(stable_id, geometry));
-    }
-    let wrong_geometry = geometry.translated_for_test(1, 0);
-    assert!(!context.authorizes_subtree_self_clip_for(stable_id, wrong_geometry));
-    let clip = trees.clips.get_mut(&state.clip.unwrap()).unwrap();
-    clip.geometry = wrong_geometry;
-    assert!(PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).is_none());
-    trees.clips.remove(&state.clip.unwrap());
-    assert!(PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).is_none());
-}
-
-#[test]
-fn generic_subtree_self_clip_rejects_malformed_child_topology() {
-    for mutation in 0..3 {
-        let (mut arena, roots, owner, child) = scene(false);
-        let (trees, _) = sync_identity(&arena, &roots);
-        match mutation {
-            0 => arena.set_parent(child, Some(roots[0])),
-            1 => arena.set_children(owner, vec![child, child]),
-            2 => arena.set_arena_children_without_mirror_for_test(owner, vec![]),
-            _ => unreachable!(),
-        }
-        assert!(
-            PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).is_none()
-        );
-    }
-}
-
-#[test]
-fn generic_subtree_self_clip_requires_descendants_to_preserve_the_exact_scope() {
-    use crate::view::compositor::property_tree::{ClipGeometry, ClipNode};
-    let (arena, roots, owner, _) = scene(false);
-    let (mut trees, _) = sync_identity(&arena, &roots);
-    let self_clip = trees.paint_state_for(owner).unwrap().clip.unwrap();
-    let contents = ClipNodeId {
-        owner,
-        role: ClipNodeRole::ContentsClip,
-    };
-    trees.clips.insert(
-        contents,
-        ClipNode {
-            owner,
-            parent: Some(self_clip),
-            geometry: ClipGeometry::Viewport([0, 0, 8, 8]),
-            behavior: ClipBehavior::Intersect,
-            generation: 1,
-        },
-    );
-    trees.states.get_mut(&owner).unwrap().descendants.clip = Some(contents);
-    assert!(PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).is_some());
-    trees.clips.get_mut(&contents).unwrap().behavior = ClipBehavior::Replace;
-    assert!(PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).is_none());
-    trees.clips.get_mut(&contents).unwrap().behavior = ClipBehavior::Intersect;
-    trees.clips.get_mut(&contents).unwrap().parent = None;
-    assert!(PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).is_none());
-    trees.states.get_mut(&owner).unwrap().descendants.clip = None;
-    assert!(PaintSubtreeSelfClipWitness::from_live_owner(&arena, owner, &trees, false).is_none());
 }

@@ -177,9 +177,6 @@ fn seal_target_program(
 }
 
 /// Seals only execution facts absent from `PreparedArtifactSurfaceFrame`.
-/// Descriptor, resident, graph-key, and compile-action validation remain in
-/// their existing owners; graph declared-key collision is checked immediately
-/// before target allocation in C3b3b1.
 pub(super) fn seal_prepared_artifact_surface_execution(
     frame: PreparedArtifactSurfaceFrame,
 ) -> PreparedArtifactSurfaceExecution {
@@ -222,7 +219,6 @@ fn prepare_composite_geometry(
         ArtifactSurfaceCompositeGeometryStamp::Transform {
             source_bounds_bits,
             destination_bounds_bits,
-            resolved_receiver_clip,
             ..
         } => {
             let source = source_bounds_bits.map(f32::from_bits);
@@ -240,7 +236,7 @@ fn prepare_composite_geometry(
                     scissor_rect: None,
                     nine_patch: None,
                 },
-                resolved_clip: resolved_receiver_clip,
+                resolved_clip: geometry.resolved_receiver_clip(),
             })
         }
         ArtifactSurfaceCompositeGeometryStamp::Effect {
@@ -790,24 +786,16 @@ fn emit_prepared_artifact_surface_frame(
     } = execution;
     let (plan, residents) = frame.into_parts();
 
-    // This canonicalizer validates every color key's depth role before the
-    // infallible allocator reaches its depth-key `expect`.
     #[cfg(test)]
     let pool_emission = if allow_forced_pair_witness {
-        viewport
-            .prepare_artifact_surface_pool_emission_for_forced_test(residents)
-            .expect("compiler-sealed artifact residents are pool canonical")
+        viewport.prepare_artifact_surface_pool_emission_for_forced_test(residents)
     } else {
-        viewport
-            .prepare_artifact_surface_pool_emission_from_pool(residents)
-            .expect("compiler-sealed artifact residents are pool canonical")
+        viewport.prepare_artifact_surface_pool_emission_from_pool(residents)
     };
     #[cfg(not(test))]
     let pool_emission = {
         let _ = allow_forced_pair_witness;
-        viewport
-            .prepare_artifact_surface_pool_emission_from_pool(residents)
-            .expect("compiler-sealed artifact residents are pool canonical")
+        viewport.prepare_artifact_surface_pool_emission_from_pool(residents)
     };
     let residents = pool_emission.residents();
     let ordered_actions = pool_emission.ordered_actions();
@@ -824,7 +812,7 @@ fn emit_prepared_artifact_surface_frame(
             let color = resident.stamp().identity.color_key;
             let depth = color
                 .depth_stencil()
-                .expect("pool-canonical artifact color key owns a depth role");
+                .expect("artifact surface color keys own a depth role");
             let cached = owner.is_some()
                 && node.retained()
                 && !declared.contains(&color)
@@ -842,10 +830,8 @@ fn emit_prepared_artifact_surface_frame(
         .nodes()
         .iter()
         .map(|node| {
-            // The sealer validates this same frozen quad projection for
-            // Transform nodes. Do not re-evaluate a matrix against normalized
-            // source coordinates here. Layer source extents are checked by
-            // `has_canonical_descriptor_pair_for`.
+            // Transform nodes composite their frozen quad. Do not re-evaluate
+            // a matrix against normalized source coordinates here.
             prepare_composite_geometry(node.geometry(), node.raster_origin)
                 .expect("prepared artifact geometry has a typed render-pass projection")
         })
@@ -876,14 +862,13 @@ fn emit_prepared_artifact_surface_frame(
     }
 
     // `UiBuildContext` owns only a by-value `ViewportContext`; borrow checking
-    // does not protect the staging slot across emission. Pool canonicality is
-    // already carried by the linear capability, so this assertion now guards
-    // only that the owner stayed active and the pending slot stayed empty.
+    // does not protect the staging slot across emission. The owner must stay
+    // active and the pending slot empty.
     let mut transient = actions
         .iter()
         .map(|action| *action == RetainedSurfaceCompileAction::Transient);
     let residents = pool_emission
-        .into_canonical_residents()
+        .into_residents()
         .retaining(|_| !transient.next().expect("one action per resident"));
     if viewport.debug_options().trace_render_time {
         viewport.record_retained_raster_diagnostics(

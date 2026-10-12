@@ -80,6 +80,7 @@ impl NodeArena {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn translation_revision(&self, key: NodeKey) -> Option<u64> {
         self.slots
             .get(key)

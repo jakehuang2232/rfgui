@@ -759,7 +759,6 @@ impl Element {
             },
             background_color: Box::new(Color::hex("#FFFFFF")),
             paint_recording_inputs: RefCell::default(),
-            inline_witness_inputs: RefCell::default(),
             child_mask_recording_inputs: RefCell::default(),
             child_clip_memo: RefCell::default(),
             border_colors: EdgeColors {

@@ -323,9 +323,7 @@ fn check_recorded_slot_owners(
     ready: bool,
     error: bool,
 ) {
-    use crate::view::paint::{
-        FrameArtifactRecordOutcome, RendererMode, record_surface_dag_frame_artifact,
-    };
+    use crate::view::paint::record_surface_dag_frame_artifact;
     let arena = viewport.node_arena();
     let roots = [scene.root];
     let mut properties = PropertyTrees::default();
@@ -341,22 +339,8 @@ fn check_recorded_slot_owners(
     // happened to be occluded by the active content. Owner order/count does not
     // prove empty slot storage: classification enforces that invariant before
     // coverage traverses children, without traversing inactive slot storage.
-    let outcome = record_surface_dag_frame_artifact(
-        arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("slot metadata/full recording must agree");
-    let FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = outcome
-    else {
-        panic!("slot recording must not fall back");
-    };
-    assert!(eligibility.eligible);
+    let outcome = record_surface_dag_frame_artifact(arena, &roots, &properties, &generations);
+    let artifact = outcome;
     let expected = if ready {
         vec![scene.owner]
     } else if error {

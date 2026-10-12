@@ -19,13 +19,11 @@ use crate::view::base_component::text_area::{TextAreaProjectionSegment, TextArea
 use crate::view::base_component::{
     BoxModelSnapshot, BuildState, CustomLeafPaintContext, CustomLeafPaintRecorder,
     CustomWrapperPaintContext, CustomWrapperPaintRecorder, DirtyFlags, Element, ElementTrait,
-    EventTarget, Image, LayoutConstraints, LayoutPlacement, Layoutable,
-    OwningInlineIfcRootWitnessDamage, Rect, Renderable, ShadowPaintBlocker,
-    ShadowPaintRecordingCapability, Size, Svg, Text, TextArea, UiBuildContext,
+    EventTarget, Image, LayoutConstraints, LayoutPlacement, Layoutable, Rect, Renderable,
+    ShadowPaintRecordingCapability, Svg, Text, TextArea, UiBuildContext,
 };
 use crate::view::compositor::property_tree::{
-    ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
-    PropertyTreeState, TransformNodeId,
+    ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, PropertyTreeState,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::frame_graph::{FrameGraph, FrameGraphTestSnapshot, FramePassTestPayload};
@@ -537,28 +535,13 @@ fn artifact_graph(
     properties: &PropertyTrees,
     generations: &PaintGenerationTracker,
 ) -> FrameGraph {
-    let outcome = record_root(arena, root, properties, generations);
-    let PaintRecordOutcome::Artifact(artifact) = outcome else {
-        panic!("safe leaf should record an artifact: {outcome:?}");
-    };
+    let artifact = whole_frame_artifact(arena, &[root], properties, generations);
     let mut graph = FrameGraph::new();
     let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let target = ctx.allocate_target(&mut graph);
     ctx.set_current_target(target);
     let _ = compile_artifact(&artifact, &mut graph, ctx);
     graph
-}
-
-fn fallback_reason(element: Box<dyn ElementTrait>) -> LegacyPaintReason {
-    let mut arena = new_test_arena();
-    let root = commit_element(&mut arena, element);
-    let (properties, generations) = sync_identity(&arena, &[root]);
-    let PaintRecordOutcome::LegacySubtree(legacy) =
-        record_root(&arena, root, &properties, &generations)
-    else {
-        panic!("host should remain legacy");
-    };
-    legacy.reason
 }
 
 fn prepared_image_fixture(
@@ -707,36 +690,6 @@ impl ElementTrait for TransparentContentsClipParent {
     }
 }
 
-fn root_opacity_contents_clip_fixture(
-    scissor: [u32; 4],
-) -> (
-    NodeArena,
-    NodeKey,
-    NodeKey,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    let mut arena = new_test_arena();
-    let root = commit_element(
-        &mut arena,
-        Box::new(TransparentContentsClipParent {
-            id: 0x8c20,
-            opacity: 0.5,
-            scissor,
-            children: Vec::new(),
-        }),
-    );
-    let child = commit_child(
-        &mut arena,
-        root,
-        Box::new(leaf_element(0x8c21, Color::rgb(30, 180, 90), 1.0, false)),
-    );
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, child, measure, place);
-    let (properties, generations) = sync_identity(&arena, &[root]);
-    (arena, root, child, properties, generations)
-}
-
 fn bare_image_fixture(
     pixels: Arc<[u8]>,
     fit: crate::view::ImageFit,
@@ -768,28 +721,6 @@ fn bare_image_fixture(
     (arena, vec![root])
 }
 
-fn assert_image_metadata_fallback(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    expected: LegacyPaintReason,
-) {
-    let (properties, generations) = sync_identity(arena, roots);
-    let _ = take_full_artifact_record_count();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) =
-        record_frame_artifact(arena, roots, &properties, &generations, RendererMode::Auto)
-            .expect("auto fallback")
-    else {
-        panic!("image must remain legacy: expected {expected:?}")
-    };
-    assert!(
-        eligibility
-            .reasons
-            .contains(&FrameArtifactFallbackReason::LegacyBoundary(expected)),
-        "{eligibility:?}"
-    );
-    assert_eq!(take_full_artifact_record_count(), 0);
-}
-
 struct RecordingHost {
     id: u64,
     builds: Arc<AtomicUsize>,
@@ -798,9 +729,6 @@ struct RecordingHost {
 
 enum CustomLeafRecordMode {
     Fill { rgba: [f32; 4], opacity: f32 },
-    InvalidBounds,
-    DoubleFill,
-    Drift { calls: Arc<AtomicUsize> },
 }
 
 struct CustomLeafPaintHost {
@@ -816,10 +744,6 @@ struct CustomLeafPaintHost {
 
 enum CustomWrapperRecordMode {
     Canonical,
-    InvalidBounds,
-    Empty,
-    Overflow,
-    Drift { calls: Arc<AtomicUsize> },
 }
 
 struct CustomWrapperPaintHost {
@@ -948,28 +872,6 @@ impl ElementTrait for CustomWrapperPaintHost {
                 recorder.fill_rect_after_children(bounds, [0.0, 0.0, 0.8, 1.0], 1.0);
                 recorder.fill_rect_after_children(bounds, [0.8, 0.8, 0.0, 1.0], 0.25);
             }
-            CustomWrapperRecordMode::InvalidBounds => {
-                recorder.fill_rect_before_children(
-                    Rect {
-                        x: f32::NAN,
-                        ..bounds
-                    },
-                    [0.8, 0.0, 0.0, 1.0],
-                    1.0,
-                );
-            }
-            CustomWrapperRecordMode::Empty => {}
-            CustomWrapperRecordMode::Overflow => {
-                for _ in 0..=(u16::MAX as usize + 1) {
-                    recorder.fill_rect_before_children(bounds, [0.8, 0.0, 0.0, 1.0], 1.0);
-                }
-            }
-            CustomWrapperRecordMode::Drift { calls } => {
-                let call = calls.fetch_add(1, Ordering::Relaxed);
-                let green = if call < 2 { 0.2 } else { 0.7 };
-                recorder.fill_rect_before_children(bounds, [0.8, green, 0.0, 1.0], 1.0);
-                recorder.fill_rect_after_children(bounds, [0.0, 0.0, 0.8, 1.0], 1.0);
-            }
         }
     }
 
@@ -1029,20 +931,19 @@ impl Renderable for CustomLeafPaintHost {
         _arena: &mut NodeArena,
         mut ctx: UiBuildContext,
     ) -> BuildState {
-        if let CustomLeafRecordMode::Fill { rgba, opacity } = &self.mode {
-            let pass = DrawRectPass::new(
-                RectPassParams {
-                    position: [self.bounds.x, self.bounds.y],
-                    size: [self.bounds.width, self.bounds.height],
-                    fill_color: *rgba,
-                    opacity: *opacity,
-                    ..Default::default()
-                },
-                DrawRectInput::default(),
-                DrawRectOutput::default(),
-            );
-            ctx.emit_draw_rect_pass(graph, pass);
-        }
+        let CustomLeafRecordMode::Fill { rgba, opacity } = &self.mode;
+        let pass = DrawRectPass::new(
+            RectPassParams {
+                position: [self.bounds.x, self.bounds.y],
+                size: [self.bounds.width, self.bounds.height],
+                fill_color: *rgba,
+                opacity: *opacity,
+                ..Default::default()
+            },
+            DrawRectInput::default(),
+            DrawRectOutput::default(),
+        );
+        ctx.emit_draw_rect_pass(graph, pass);
         ctx.into_state()
     }
 }
@@ -1083,23 +984,6 @@ impl ElementTrait for CustomLeafPaintHost {
             CustomLeafRecordMode::Fill { rgba, opacity } => {
                 recorder.fill_rect(bounds, *rgba, *opacity);
             }
-            CustomLeafRecordMode::InvalidBounds => recorder.fill_rect(
-                Rect {
-                    x: f32::NAN,
-                    ..bounds
-                },
-                [0.1, 0.2, 0.3, 1.0],
-                1.0,
-            ),
-            CustomLeafRecordMode::DoubleFill => {
-                recorder.fill_rect(bounds, [0.1, 0.2, 0.3, 1.0], 1.0);
-                recorder.fill_rect(bounds, [0.4, 0.5, 0.6, 1.0], 1.0);
-            }
-            CustomLeafRecordMode::Drift { calls } => {
-                let call = calls.fetch_add(1, Ordering::Relaxed);
-                let green = if call < 2 { 0.2 } else { 0.8 };
-                recorder.fill_rect(bounds, [0.1, green, 0.3, 1.0], 1.0);
-            }
         }
     }
 
@@ -1133,16 +1017,6 @@ impl ElementTrait for CustomLeafPaintHost {
 enum MalformedChunk {
     Valid,
     Transparent,
-    MetadataNaNBounds,
-    MetadataNegativeBounds,
-    MetadataProperties,
-    MetadataRevision,
-    FullOwner,
-    FullChunkOwner,
-    FullProperties,
-    FullRevision,
-    FullRange,
-    FullBounds,
 }
 
 struct MalformedRecordingHost {
@@ -1182,28 +1056,11 @@ impl MalformedRecordingHost {
         properties: PropertyTreeState,
         revision: PaintContentRevision,
     ) -> PaintChunkMetadata {
-        let fake_owner = NodeKey::null();
-        let metadata_properties = matches!(self.malformed, MalformedChunk::MetadataProperties);
-        let metadata_revision = matches!(self.malformed, MalformedChunk::MetadataRevision);
-        let bounds = match self.malformed {
-            MalformedChunk::MetadataNaNBounds => Rect {
-                x: f32::NAN,
-                y: 0.0,
-                width: 10.0,
-                height: 10.0,
-            },
-            MalformedChunk::MetadataNegativeBounds => Rect {
-                x: 0.0,
-                y: 0.0,
-                width: -1.0,
-                height: 10.0,
-            },
-            _ => Rect {
-                x: 0.0,
-                y: 0.0,
-                width: 10.0,
-                height: 10.0,
-            },
+        let bounds = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
         };
         PaintChunkMetadata {
             frame: crate::view::paint::PaintChunkFrame::Viewport,
@@ -1216,22 +1073,8 @@ impl MalformedRecordingHost {
             },
             owner,
             bounds,
-            properties: if metadata_properties {
-                PropertyTreeState {
-                    transform: Some(TransformNodeId(fake_owner)),
-                    ..PropertyTreeState::default()
-                }
-            } else {
-                properties
-            },
-            content_revision: if metadata_revision {
-                PaintContentRevision {
-                    self_paint_revision: revision.self_paint_revision.wrapping_add(1),
-                    ..revision
-                }
-            } else {
-                revision
-            },
+            properties,
+            content_revision: revision,
             payload_identity: PaintPayloadIdentity::None,
         }
     }
@@ -1291,37 +1134,13 @@ impl ElementTrait for MalformedRecordingHost {
         _recording_context: &PaintRecordingContext,
     ) -> Option<PaintArtifact> {
         self.full_records.fetch_add(1, Ordering::Relaxed);
-        let mut chunk = self.metadata(owner, properties, revision);
-        let fake_owner = NodeKey::null();
-        match self.malformed {
-            MalformedChunk::FullOwner => {
-                chunk.id.owner = fake_owner;
-                chunk.owner = fake_owner;
-            }
-            MalformedChunk::FullChunkOwner => chunk.owner = fake_owner,
-            MalformedChunk::FullProperties => {
-                chunk.properties.transform = Some(TransformNodeId(fake_owner));
-            }
-            MalformedChunk::FullRevision => {
-                chunk.content_revision.self_paint_revision =
-                    chunk.content_revision.self_paint_revision.wrapping_add(1);
-            }
-            _ => {}
-        }
-        if matches!(self.malformed, MalformedChunk::FullBounds) {
-            chunk.bounds.width += 1.0;
-        }
+        let chunk = self.metadata(owner, properties, revision);
         Some(PaintArtifact {
-            target: Default::default(),
             chunks: vec![PaintChunk {
                 frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: chunk.id,
                 owner: chunk.owner,
-                op_range: if matches!(self.malformed, MalformedChunk::FullRange) {
-                    1..0
-                } else {
-                    0..0
-                },
+                op_range: 0..0,
                 bounds: chunk.bounds,
                 properties: chunk.properties,
                 content_revision: chunk.content_revision,
@@ -1456,11 +1275,7 @@ fn malformed_host(
 fn compiler_test_artifact() -> PaintArtifact {
     let (arena, root, properties, generations) =
         prepared_leaf(47, Color::rgb(20, 30, 40), 1.0, false);
-    let PaintRecordOutcome::Artifact(artifact) =
-        record_root(&arena, root, &properties, &generations)
-    else {
-        panic!("safe leaf must record")
-    };
+    let artifact = whole_frame_artifact(&arena, &[root], &properties, &generations);
     artifact
 }
 
@@ -1475,29 +1290,6 @@ fn rect_phase_op(x: f32, color: [f32; 4]) -> DrawRectOp {
         },
         mode: crate::view::render_pass::draw_rect_pass::RectRenderMode::FillOnly,
     }
-}
-
-fn compiler_rect_phase_artifact(role: PaintChunkRole, rects: Vec<DrawRectOp>) -> PaintArtifact {
-    let mut artifact = compiler_test_artifact();
-    let mut chunk = artifact.chunks[0].clone();
-    chunk.id.role = role;
-    chunk.op_range = 0..rects.len();
-    chunk.payload_identity = PaintPayloadIdentity::prepared_rects(rects.iter())
-        .expect("rect phase fixture must have canonical identity");
-    artifact.ops = rects.into_iter().map(PaintOp::DrawRect).collect();
-    artifact.chunks = vec![chunk].into();
-    artifact
-}
-
-fn refresh_rect_phase_identity(artifact: &mut PaintArtifact) {
-    let range = artifact.chunks[0].op_range.clone();
-    artifact.chunks[0].payload_identity = PaintPayloadIdentity::prepared_rects(
-        artifact.ops[range].iter().filter_map(|op| match op {
-            PaintOp::DrawRect(rect) => Some(rect),
-            _ => None,
-        }),
-    )
-    .expect("remaining rect parameters must stay canonical");
 }
 
 fn compiler_image_test_artifact(with_decoration: bool) -> PaintArtifact {
@@ -1520,7 +1312,7 @@ fn compiler_image_test_artifact(with_decoration: bool) -> PaintArtifact {
         )
     };
     let (properties, generations) = sync_identity(&arena, &roots);
-    whole_frame_artifact(&arena, &roots, &properties, &generations).0
+    whole_frame_artifact(&arena, &roots, &properties, &generations)
 }
 
 fn compiler_svg_test_artifact(with_decoration: bool) -> PaintArtifact {
@@ -1556,26 +1348,10 @@ fn compiler_svg_test_artifact(with_decoration: bool) -> PaintArtifact {
     artifact
 }
 
-fn refresh_svg_standard_draw_rect_identity(artifact: &mut PaintArtifact) {
-    let prepared = artifact.ops.iter().find_map(|op| match op {
-        PaintOp::PreparedSvg(prepared) => Some(prepared),
-        _ => None,
-    });
-    let identity = PreparedSvgIdentity::from_op(prepared.expect("prepared SVG")).unwrap();
-    artifact.chunks[0].payload_identity = PaintPayloadIdentity::svg_with_decoration(
-        identity,
-        artifact.ops.iter().filter_map(|op| match op {
-            PaintOp::DrawRect(rect) => Some(rect),
-            _ => None,
-        }),
-    )
-    .unwrap();
-}
-
 fn compiler_clip_test_artifact() -> PaintArtifact {
     let (arena, roots) = anchor_parent_self_clip_roots(1.0, false);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.clip_nodes.len(), 1);
     assert!(artifact.chunks[0].properties.clip.is_some());
     assert!(artifact.chunks[1].properties.clip.is_none());
@@ -1656,66 +1432,8 @@ fn compiler_effect_test_artifact(
     measure_and_place(&mut arena, parent, measure, place);
     let roots = [parent];
     let (properties, generations) = sync_identity(&arena, &roots);
-    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     (artifact, parent, child)
-}
-
-fn compiler_sibling_effect_artifact() -> (PaintArtifact, NodeKey, NodeKey, NodeKey) {
-    let mut arena = new_test_arena();
-    let first = commit_element(
-        &mut arena,
-        Box::new(leaf_element(0x6b21, Color::rgb(40, 50, 60), 0.5, false)),
-    );
-    let second = commit_element(
-        &mut arena,
-        Box::new(leaf_element(0x6b22, Color::rgb(70, 80, 90), 0.25, false)),
-    );
-    let synthetic_parent = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0x6b20, 0.0, 0.0, 1.0, 1.0,
-    ))));
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, first, measure, place);
-    measure_and_place(&mut arena, second, measure, place);
-    let roots = [first, second];
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let mut artifact = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
-    for snapshot in &mut artifact.owner_nodes {
-        snapshot.parent = Some(synthetic_parent);
-    }
-    artifact.owner_nodes.push(PaintOwnerSnapshot {
-        owner: synthetic_parent,
-        parent: None,
-        snap: crate::view::paint::PaintOwnerSnap::INHERIT,
-    });
-    // This compiler-only fixture models two canonical siblings without
-    // introducing Element child-clip eligibility concerns.
-    assert_eq!(
-        compiled_whole_frame_graph(&artifact)
-            .test_rect_pass_snapshots()
-            .len(),
-        2
-    );
-    (artifact, synthetic_parent, first, second)
-}
-
-fn compiler_three_level_effect_artifact() -> (PaintArtifact, NodeKey, NodeKey, NodeKey) {
-    let mut arena = new_test_arena();
-    let grandparent = commit_element(
-        &mut arena,
-        Box::new(leaf_element(0x6b30, Color::rgb(10, 20, 30), 0.5, false)),
-    );
-    let mut parent_element = leaf_element(0x6b31, Color::rgb(40, 50, 60), 0.25, false);
-    parent_element.set_position(0.0, 0.0);
-    let parent = commit_child(&mut arena, grandparent, Box::new(parent_element));
-    let mut child_element = leaf_element(0x6b32, Color::rgb(70, 80, 90), 1.0, false);
-    child_element.set_position(0.0, 0.0);
-    let child = commit_child(&mut arena, parent, Box::new(child_element));
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, grandparent, measure, place);
-    let roots = [grandparent];
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations).0;
-    (artifact, grandparent, parent, child)
 }
 
 fn assert_compiler_rejects_before_emit(artifact: &PaintArtifact, case: &str) {
@@ -1726,30 +1444,12 @@ fn assert_compiler_rejects_before_emit(artifact: &PaintArtifact, case: &str) {
     );
 }
 
-fn refresh_inline_decoration_payload_identity(artifact: &mut PaintArtifact) {
-    let range = artifact.chunks[0].op_range.clone();
-    let identity =
-        PaintPayloadIdentity::inline_ifc_decorations(artifact.ops[range].iter().filter_map(|op| {
-            match op {
-                PaintOp::PreparedInlineIfcDecoration(prepared) => Some(prepared.as_ref()),
-                _ => None,
-            }
-        }));
-    artifact.chunks[0].payload_identity = identity;
-}
-
-fn distinct_chunk(mut chunk: PaintChunk) -> PaintChunk {
-    chunk.id.owner = NodeKey::null();
-    chunk.owner = NodeKey::null();
-    chunk
-}
-
 fn whole_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
     properties: &PropertyTrees,
     generations: &PaintGenerationTracker,
-) -> (PaintArtifact, FrameArtifactEligibility) {
+) -> PaintArtifact {
     whole_frame_artifact_at(arena, roots, properties, generations, 1.0)
 }
 
@@ -1761,84 +1461,10 @@ fn whole_frame_artifact_at(
     properties: &PropertyTrees,
     generations: &PaintGenerationTracker,
     scale_factor: f32,
-) -> (PaintArtifact, FrameArtifactEligibility) {
-    let FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = record_frame_artifact(
-        arena,
-        roots,
-        properties,
-        generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("plain Element frame should be fully recordable")
-    else {
-        panic!("forced artifact recording cannot silently fall back")
-    };
+) -> PaintArtifact {
+    let artifact = record_surface_dag_frame_artifact(arena, roots, properties, generations);
     // Inspected in viewport space, as the compiler reads it.
-    (
-        super::compiler::with_placed_chunks(artifact, scale_factor),
-        eligibility,
-    )
-}
-
-fn root_group_artifact(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    properties: &PropertyTrees,
-    generations: &PaintGenerationTracker,
-) -> (PaintArtifact, FrameArtifactEligibility) {
-    let FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = record_root_group_opacity_frame_artifact(
-        arena,
-        roots,
-        properties,
-        generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("single root effect should be fully recordable")
-    else {
-        panic!("forced root group recording cannot silently fall back")
-    };
-    (
-        super::compiler::with_placed_chunks(artifact, 1.0),
-        eligibility,
-    )
-}
-
-fn assert_neutral_opacity(op: &PaintOp) {
-    match op {
-        PaintOp::PreparedGpu(op) => assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits()),
-        PaintOp::DrawRect(op) => assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits()),
-        PaintOp::PreparedInlineIfcDecoration(op) => {
-            assert_eq!(op.fill.opacity.to_bits(), 1.0_f32.to_bits());
-            if let Some(border) = &op.border {
-                assert_eq!(border.opacity.to_bits(), 1.0_f32.to_bits());
-            }
-        }
-        PaintOp::PreparedShadow(op) => {
-            assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits())
-        }
-        PaintOp::PreparedScrollbarOverlay(op) => {
-            assert!(op.has_baked_opacity(1.0_f32.to_bits()))
-        }
-        PaintOp::PreparedText(op) => assert!(
-            op.params
-                .staging_input
-                .glyphs
-                .iter()
-                .all(|glyph| glyph.paint.opacity.to_bits() == 1.0_f32.to_bits())
-        ),
-        PaintOp::PreparedImage(op) => {
-            assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits())
-        }
-        PaintOp::PreparedSvg(op) => {
-            assert_eq!(op.params.opacity.to_bits(), 1.0_f32.to_bits())
-        }
-    }
+    super::compiler::with_placed_chunks(artifact, scale_factor)
 }
 
 fn two_outer_shadows() -> Vec<BoxShadow> {
@@ -1961,14 +1587,13 @@ where
 {
     let (arena, roots) = fixture();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact_at(
+    let artifact = whole_frame_artifact_at(
         &arena,
         &roots,
         &properties,
         &generations,
         config.scale_factor,
     );
-    assert!(eligibility.eligible);
     drop(arena);
     let mut graph = compiled_whole_frame_graph_with_config(&artifact, config);
     let _ = strict_paint_snapshot(&mut graph, config);
@@ -2367,53 +1992,15 @@ fn place_text_area_with_baked_scroll(
     settle_plain_text_area(arena, root);
 }
 
-fn assert_text_area_fallback_before_full(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-) -> FrameArtifactEligibility {
-    let (properties, generations) = sync_identity(arena, roots);
-    take_full_artifact_record_count();
-    let outcome =
-        record_frame_artifact(arena, roots, &properties, &generations, RendererMode::Auto).unwrap();
-    let FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility) = outcome else {
-        panic!("unsafe TextArea state must fail metadata preflight")
-    };
-    assert_eq!(take_full_artifact_record_count(), 0);
-    eligibility
-}
-
-#[derive(Clone, Copy)]
-enum InlineOwnedTextDamage {
-    None,
-    MissingGlyphs,
-    MissingFont,
-}
-
-fn prepared_inline_owned_text_tree(
-    damage: InlineOwnedTextDamage,
-) -> (NodeArena, Vec<NodeKey>, NodeKey) {
+fn prepared_inline_owned_text_tree() -> (NodeArena, Vec<NodeKey>, NodeKey) {
     let (arena, roots, text_key) = prepared_text_tree(false);
-    let mut paint_input = {
+    let paint_input = {
         let node = arena.get(text_key).unwrap();
         let text = node.element.as_any().downcast_ref::<Text>().unwrap();
         text.shaped_context_for_test()
             .unwrap()
             .text_pass_paint_input()
     };
-    match damage {
-        InlineOwnedTextDamage::None => {}
-        InlineOwnedTextDamage::MissingGlyphs => {
-            paint_input.glyphs.clear();
-            paint_input.batches.clear();
-        }
-        InlineOwnedTextDamage::MissingFont => {
-            paint_input
-                .glyphs
-                .first_mut()
-                .expect("inline text fixture must contain a glyph")
-                .font_data = None;
-        }
-    }
     arena
         .get_mut(text_key)
         .unwrap()
@@ -2625,52 +2212,6 @@ fn prepared_owning_inline_text_root() -> (NodeArena, Vec<NodeKey>, NodeKey, Node
     (arena, vec![root], root, text)
 }
 
-fn prepared_owning_inline_two_text_root() -> (NodeArena, Vec<NodeKey>, NodeKey) {
-    let mut arena = new_test_arena();
-    let mut root = Element::new_with_id(0x7a18, 0.0, 0.0, 160.0, 40.0);
-    let mut style = Style::new();
-    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
-    style.insert(PropertyId::Width, ParsedValue::Auto);
-    style.insert(PropertyId::Height, ParsedValue::Auto);
-    root.apply_style(style);
-    let root = commit_element(&mut arena, Box::new(root));
-    let first = commit_child(
-        &mut arena,
-        root,
-        Box::new(Text::new_with_id(
-            0x7a19,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            "first payload ",
-        )),
-    );
-    let second = commit_child(
-        &mut arena,
-        root,
-        Box::new(Text::new_with_id(
-            0x7a1a,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            "second payload is different",
-        )),
-    );
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    for key in [root, first, second] {
-        arena
-            .get_mut(key)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    (arena, vec![root], root)
-}
-
 fn prepared_fixed_owning_inline_text_root() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey) {
     let mut arena = new_test_arena();
     let mut root = Element::new_with_id(0x7c10, 0.0, 0.0, 120.0, 40.0);
@@ -2776,99 +2317,6 @@ fn prepared_owning_inline_root_with_atomic()
     }
     arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
     (arena, vec![root], root, before, atomic, after)
-}
-
-fn prepared_owning_inline_root_with_two_atomics() -> (NodeArena, Vec<NodeKey>, NodeKey) {
-    let mut arena = new_test_arena();
-    let mut root = Element::new_with_id(0x7c28, 0.0, 0.0, 160.0, 40.0);
-    let mut root_style = Style::new();
-    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
-    root_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
-    root_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
-    root.apply_style(root_style);
-    let root = commit_element(&mut arena, Box::new(root));
-    let before = commit_child(
-        &mut arena,
-        root,
-        Box::new(Text::new_with_id(0x7c29, 0.0, 0.0, 0.0, 0.0, "before ")),
-    );
-    let mut first = Element::new_with_id(0x7c2a, 0.0, 0.0, 20.0, 16.0);
-    first.set_background_color_value(Color::rgb(34, 197, 94));
-    let first = commit_child(&mut arena, root, Box::new(first));
-    let mut second = Element::new_with_id(0x7c2b, 0.0, 0.0, 18.0, 14.0);
-    second.set_background_color_value(Color::rgb(59, 130, 246));
-    let second = commit_child(&mut arena, root, Box::new(second));
-    let after = commit_child(
-        &mut arena,
-        root,
-        Box::new(Text::new_with_id(0x7c2c, 0.0, 0.0, 0.0, 0.0, " after")),
-    );
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    for key in [root, before, first, second, after] {
-        arena
-            .get_mut(key)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    (arena, vec![root], root)
-}
-
-#[allow(clippy::type_complexity)]
-fn prepared_owning_inline_root_with_atomic_subtree() -> (
-    NodeArena,
-    Vec<NodeKey>,
-    NodeKey,
-    NodeKey,
-    NodeKey,
-    NodeKey,
-    NodeKey,
-) {
-    let mut arena = new_test_arena();
-    let mut root = Element::new_with_id(0x7c60, 0.0, 0.0, 160.0, 40.0);
-    let mut root_style = Style::new();
-    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Inline));
-    root_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(160.0)));
-    root_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(40.0)));
-    root.apply_style(root_style);
-    let root = commit_element(&mut arena, Box::new(root));
-    let before = commit_child(
-        &mut arena,
-        root,
-        Box::new(Text::new_with_id(0x7c61, 0.0, 0.0, 0.0, 0.0, "before ")),
-    );
-    let mut atomic = Element::new_with_id(0x7c62, 0.0, 0.0, 24.0, 18.0);
-    let mut atomic_style = Style::new();
-    atomic_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    atomic_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(24.0)));
-    atomic_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(18.0)));
-    atomic_style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::rgb(34, 197, 94)),
-    );
-    atomic.apply_style(atomic_style);
-    let atomic = commit_child(&mut arena, root, Box::new(atomic));
-    let mut grandchild = Element::new_with_id(0x7c63, 0.0, 0.0, 8.0, 8.0);
-    grandchild.set_background_color_value(Color::rgb(59, 130, 246));
-    let grandchild = commit_child(&mut arena, atomic, Box::new(grandchild));
-    let after = commit_child(
-        &mut arena,
-        root,
-        Box::new(Text::new_with_id(0x7c64, 0.0, 0.0, 0.0, 0.0, " after")),
-    );
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    for key in [root, before, atomic, grandchild, after] {
-        arena
-            .get_mut(key)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    (arena, vec![root], root, before, atomic, grandchild, after)
 }
 
 fn prepared_owning_inline_root_with_image_atomic()
@@ -3257,214 +2705,6 @@ fn prepared_zero_opacity_tree() -> (NodeArena, Vec<NodeKey>) {
     (arena, vec![empty, visible])
 }
 
-pub(crate) fn window_like_native_showcase_fixture() -> (NodeArena, Vec<NodeKey>) {
-    const SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' width='96' height='64'><rect width='96' height='64' rx='12' fill='#22c55e'/></svg>";
-
-    let positioned = |left: f32, top: f32, width: f32, height: f32| {
-        let mut style = Style::new();
-        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-        style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
-        style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
-                Position::absolute()
-                    .left(Length::px(left))
-                    .top(Length::px(top)),
-            ),
-        );
-        style
-    };
-
-    let mut arena = new_test_arena();
-    let mut window = Element::new_with_id(0x7f00, 0.0, 0.0, 480.0, 360.0);
-    let mut window_style = positioned(12.0, 16.0, 480.0, 360.0);
-    window_style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::rgb(248, 250, 252)),
-    );
-    window_style.set_border(Border::uniform(Length::px(2.0), &Color::rgb(100, 116, 139)));
-    window_style.set_border_radius(BorderRadius::uniform(Length::px(16.0)));
-    window_style.set_box_shadow(vec![
-        BoxShadow::new()
-            .color(Color::rgba(15, 23, 42, 96))
-            .offset_y(12.0)
-            .blur(24.0)
-            .spread(2.0),
-    ]);
-    window.apply_style(window_style);
-    let root = commit_element(&mut arena, Box::new(window));
-
-    let mut scroll = Element::new_with_id(0x7f01, 0.0, 0.0, 416.0, 260.0);
-    let mut scroll_style = positioned(32.0, 68.0, 416.0, 260.0);
-    scroll_style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(ScrollDirection::Both),
-    );
-    scroll_style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::rgb(241, 245, 249)),
-    );
-    scroll_style.set_border_radius(BorderRadius::uniform(Length::px(18.0)));
-    scroll.apply_style(scroll_style);
-    let scroll = commit_child(&mut arena, root, Box::new(scroll));
-
-    for (id, left, top, width, height) in [
-        (0x7f10, -6.0, 44.0, 12.0, 272.0),
-        (0x7f11, 474.0, 44.0, 12.0, 272.0),
-        (0x7f12, 44.0, -6.0, 392.0, 12.0),
-        (0x7f13, 436.0, 320.0, 52.0, 52.0),
-    ] {
-        let mut handle = Element::new_with_id(id, 0.0, 0.0, width, height);
-        let mut handle_style = Style::new();
-        handle_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        handle_style.insert(PropertyId::Width, ParsedValue::Length(Length::px(width)));
-        handle_style.insert(PropertyId::Height, ParsedValue::Length(Length::px(height)));
-        handle_style.insert(
-            PropertyId::Position,
-            ParsedValue::Position(
-                Position::absolute()
-                    .left(Length::px(left))
-                    .top(Length::px(top))
-                    .clip(ClipMode::AnchorParent),
-            ),
-        );
-        handle.apply_style(handle_style);
-        commit_child(&mut arena, root, Box::new(handle));
-    }
-
-    let mut content = Element::new_with_id(0x7f02, 0.0, 0.0, 760.0, 520.0);
-    let mut content_style = positioned(0.0, 0.0, 760.0, 520.0);
-    content_style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::rgb(226, 232, 240)),
-    );
-    content.apply_style(content_style);
-    let content = commit_child(&mut arena, scroll, Box::new(content));
-
-    let mut text = Text::new_with_id(
-        0x7f03,
-        28.0,
-        24.0,
-        300.0,
-        72.0,
-        "RetainedAuto native showcase\nText + Image + Svg + TextArea",
-    );
-    text.set_color(Color::rgb(15, 23, 42));
-    text.set_font("sans-serif");
-    text.set_font_size(20.0);
-    text.set_text_wrap(TextWrap::Wrap);
-    commit_child(&mut arena, content, Box::new(text));
-
-    let image_pixels: Arc<[u8]> = Arc::from([
-        239, 68, 68, 255, 59, 130, 246, 255, 34, 197, 94, 255, 250, 204, 21, 255,
-    ]);
-    let image_source = ImageSource::Rgba {
-        width: 2,
-        height: 2,
-        pixels: image_pixels.clone(),
-    };
-    let image_handle = crate::view::image_resource::acquire_image_resource(&image_source);
-    crate::view::image_resource::replace_ready_image_for_test(
-        image_handle.asset_id(),
-        2,
-        2,
-        image_pixels,
-    );
-    let mut image = Image::new_with_id(0x7f04, image_source);
-    image.apply_style(positioned(28.0, 124.0, 128.0, 96.0));
-    commit_child(&mut arena, content, Box::new(image));
-
-    let mut svg = Svg::new_with_id(0x7f05, SvgSource::Content(SVG.into()));
-    svg.apply_style(positioned(188.0, 124.0, 144.0, 96.0));
-    let svg = commit_child(&mut arena, content, Box::new(svg));
-
-    let mut text_area = TextArea::with_stable_id(0x7f06);
-    text_area.set_text("Editable native content inside a two-axis scroll host.".to_string());
-    text_area.font_families = vec!["sans-serif".to_string()];
-    text_area.font_size = 17.0;
-    text_area.line_height = 1.35;
-    text_area.set_layout_offset(28.0, 256.0);
-    let text_area = commit_child(&mut arena, content, Box::new(text_area));
-    arena.with_element_taken(text_area, |element, _| {
-        element
-            .as_any_mut()
-            .downcast_mut::<TextArea>()
-            .expect("TextArea host")
-            .set_self_node_key(text_area);
-    });
-
-    let measure = LayoutConstraints {
-        max_width: 800.0,
-        max_height: 600.0,
-        viewport_width: 800.0,
-        viewport_height: 600.0,
-        percent_base_width: Some(800.0),
-        percent_base_height: Some(600.0),
-    };
-    let place = LayoutPlacement {
-        parent_x: 0.0,
-        parent_y: 0.0,
-        visual_offset_x: 0.0,
-        visual_offset_y: 0.0,
-        available_width: 800.0,
-        available_height: 600.0,
-        viewport_width: 800.0,
-        viewport_height: 600.0,
-        percent_base_width: Some(800.0),
-        percent_base_height: Some(600.0),
-    };
-    measure_and_place(&mut arena, root, measure, place);
-    let mut plain = Element::new_with_id(0x7f20, 0.0, 0.0, 180.0, 96.0);
-    let mut plain_style = positioned(548.0, 24.0, 180.0, 96.0);
-    plain_style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::rgb(219, 234, 254)),
-    );
-    plain.apply_style(plain_style);
-    let plain_root = commit_element(&mut arena, Box::new(plain));
-    measure_and_place(&mut arena, plain_root, measure, place);
-    {
-        let mut node = arena.get_mut(svg).expect("Svg node");
-        node.element
-            .as_any_mut()
-            .downcast_mut::<Svg>()
-            .expect("Svg host")
-            .prepare_content_paint_for_test(SVG, (144.0, 96.0), 1.0)
-            .expect("prepare SVG paint");
-    }
-    arena.prepare_registered_paint_resources(
-        crate::view::base_component::PaintResourcePreparationContext {
-            frame_number: 1,
-            device_scale: 1.0,
-            now: crate::time::Instant::now(),
-        },
-    );
-    {
-        let mut scroll_host = crate::view::test_support::get_element_mut::<Element>(&arena, scroll);
-        scroll_host.layout_state.content_size = Size {
-            width: 760.0,
-            height: 520.0,
-        };
-        scroll_host.set_scroll_offset((18.0, 22.0));
-    }
-    let mut pending = vec![root, plain_root];
-    while let Some(owner) = pending.pop() {
-        pending.extend(arena.children_of(owner));
-        arena
-            .get_mut(owner)
-            .expect("native showcase owner")
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    arena.clear_arena_dirty_subtree(plain_root, DirtyFlags::ALL);
-    arena.refresh_subtree_dirty_cache(root);
-    arena.refresh_subtree_dirty_cache(plain_root);
-
-    (arena, vec![root, plain_root])
-}
-
 fn hidden_element_subtree(root_id: u64, child_id: u64) -> (NodeArena, NodeKey, NodeKey) {
     let mut arena = new_test_arena();
     let root = commit_element(
@@ -3504,7 +2744,6 @@ mod artifact_identity_tests;
 mod subtree_self_clip_tests;
 
 mod child_mask_and_self_decoration_tests;
-mod chunk_range_tests;
 mod compiler_rect_grammar_tests;
 mod compiler_svg_grammar_tests;
 mod contents_clip_tests;
@@ -3518,7 +2757,6 @@ mod inline_span_tests;
 
 mod generic_recording_capability_tests;
 mod generic_text_area_tests;
-mod metadata_preflight_tests;
 mod outer_shadow_tests;
 mod owning_inline_root_atomic_tests;
 mod owning_inline_root_tests;
@@ -3526,7 +2764,6 @@ mod plain_text_area_preedit_tests;
 mod plain_text_area_tests;
 mod prepared_image_tests;
 
-mod root_effect_tests;
 mod stage_a_artifact_contract_tests;
 mod stage_a_producer_independence_tests;
 mod stage_c_retained_baseline_tests;
@@ -3539,14 +2776,9 @@ mod whole_frame_rect_tests;
 mod whole_frame_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod resource_wrapper_state_tests;
-
-#[cfg(not(target_arch = "wasm32"))]
 mod legacy_group_opacity_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod legacy_native_scope_tests;
 
 mod incremental_cache_tests;
-
-mod normalized_scope_tests;

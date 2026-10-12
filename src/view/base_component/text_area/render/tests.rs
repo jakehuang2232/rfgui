@@ -2,8 +2,10 @@ use super::*;
 use crate::style::{Layout, Length, ParsedValue, PropertyId, ScrollDirection, Style};
 use crate::ui::{RsxNode, RsxTagDescriptor};
 use crate::view::ElementStylePropSchema;
+use crate::view::base_component::text_area::segment::TextAreaProjectionSegment;
 use crate::view::base_component::{
-    Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Size, Text,
+    DirtyPassMask, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Size,
+    Text,
 };
 use crate::view::frame_graph::FrameGraph;
 use std::cell::Cell;
@@ -644,8 +646,6 @@ fn projection_fixture_with_preedit_cursor(
 }
 
 mod caret_blink_tests;
-mod atomic_projection_source_tests;
-mod atomic_projection_identity_tests;
 mod viewport_scissor_tests;
 mod unified_ifc_render_tests;
 mod caret_geometry_tests;

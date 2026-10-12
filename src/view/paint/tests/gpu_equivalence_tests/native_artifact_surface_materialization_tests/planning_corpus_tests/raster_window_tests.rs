@@ -66,16 +66,7 @@ fn long_content_window_preserves_envelope_and_seals_source_origin() {
         [80., 64.],
     );
     let (properties, generations) = sync_identity(&arena, &[root]);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &[root],
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .unwrap() else {
-        panic!("long content must record")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     let plan = prepare(artifact, 1., [0.; 2]);
     let [node] = plan.nodes() else {
         panic!("one materialized scroll target")

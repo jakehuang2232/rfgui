@@ -18,6 +18,7 @@ fn stamp(offset: [f32; 2]) -> ArtifactSurfaceCompositeGeometryStamp {
         quad_offset_bits,
         receiver_clip: None,
         resolved_receiver_clip: ArtifactSurfaceResolvedClip::Unclipped,
+        culled: false,
     }
 }
 

@@ -28,22 +28,8 @@ fn record_generic(arena: &NodeArena, roots: &[NodeKey]) -> PaintArtifact {
             );
         }
     }
-    let outcome = record_surface_dag_frame_artifact(
-        arena,
-        roots,
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("TextArea must record complete state through the generic entry");
-    let FrameArtifactRecordOutcome::Artifact {
-        artifact,
-        eligibility,
-    } = outcome
-    else {
-        panic!("generic TextArea recording must not fall back");
-    };
-    assert!(eligibility.eligible);
+    let outcome = record_surface_dag_frame_artifact(arena, roots, &properties, &generations);
+    let artifact = outcome;
     artifact
 }
 

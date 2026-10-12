@@ -1,5 +1,4 @@
 use super::*;
-use crate::view::paint::compiler::resolved_clips_full_and_refreshed_for_test;
 use crate::view::test_support::get_element_mut;
 
 fn raster_context() -> ArtifactSurfaceRasterContext {
@@ -100,16 +99,7 @@ fn moved_artifact(
         [320.0, 240.0],
     );
     let (properties, generations) = sync_identity(arena, &[root]);
-    artifact(
-        record_surface_dag_frame_artifact(
-            arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap(),
-    )
+    record_surface_dag_frame_artifact(arena, &[root], &properties, &generations)
 }
 
 /// Dragging a window keeps every clip relation and, since clips are relative
@@ -123,8 +113,6 @@ fn moved_window_clips_reuse_relations_and_structure_with_current_scissors() {
     let context = raster_context();
     let mut cache = PlanningCache::default();
     let mut previous_clips = None;
-    let mut previous_resolved = None;
-    let mut latest = None;
     for (frame, left) in [20.0, 27.0, 41.5].into_iter().enumerate() {
         let input = moved_artifact(&mut viewport, &mut arena, root, window, left);
         assert!(!input.scroll_nodes.is_empty(), "fixture must scroll");
@@ -134,39 +122,17 @@ fn moved_window_clips_reuse_relations_and_structure_with_current_scissors() {
                 "recorded clips are relative to their owners"
             );
         }
-        // Relation replay folds current scissors exactly as full validation.
-        let (full, refreshed) = resolved_clips_full_and_refreshed_for_test(&input);
-        assert!(full.is_some(), "frame {frame}");
-        assert_eq!(refreshed, full, "frame {frame}");
-        if let Some(previous) = previous_resolved.replace(full.clone()) {
-            assert_ne!(previous, full, "fixture must move resolved scissors");
-        }
         let cached =
             prepare_artifact_surface_raster_plan_cached(input.clone(), context, &mut cache)
                 .unwrap();
         let fresh = prepare_artifact_surface_raster_plan(input.clone(), context).unwrap();
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
         assert_eq!(
-            cache.relation_hits,
-            usize::from(frame != 0),
-            "frame {frame}"
-        );
-        assert_eq!(
             cache.surface_structure_hits,
             usize::from(frame != 0),
             "frame {frame}"
         );
-        latest = Some(input);
     }
-
-    // A retired clip generation is rejected exactly as a cold plan rejects it.
-    let mut retired = latest.unwrap();
-    retired.clip_nodes[0].generation = 0;
-    let fresh = prepare_artifact_surface_raster_plan(retired.clone(), context).unwrap_err();
-    let cached =
-        prepare_artifact_surface_raster_plan_cached(retired, context, &mut cache).unwrap_err();
-    assert_eq!(format!("{cached:?}"), format!("{fresh:?}"));
-    assert_eq!(cache.relation_hits, 0);
 }
 
 #[test]
@@ -186,6 +152,5 @@ fn changed_clip_relations_do_not_replay() {
     let fresh = prepare_artifact_surface_raster_plan(changed.clone(), context);
     let cached = prepare_artifact_surface_raster_plan_cached(changed, context, &mut cache);
     assert_eq!(format!("{cached:?}"), format!("{fresh:?}"));
-    assert_eq!(cache.relation_hits, 0);
     assert_eq!(cache.surface_structure_hits, 0);
 }

@@ -55,18 +55,8 @@ impl Moved {
             HOST,
         );
         let (properties, generations) = sync_identity(&self.arena, &[self.host]);
-        let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
-            record_surface_dag_frame_artifact(
-                &self.arena,
-                &[self.host],
-                &properties,
-                &generations,
-                RendererMode::ForcedForTests,
-            )
-            .expect("record")
-        else {
-            panic!("fallback")
-        };
+        let artifact =
+            record_surface_dag_frame_artifact(&self.arena, &[self.host], &properties, &generations);
         (properties, artifact)
     }
 

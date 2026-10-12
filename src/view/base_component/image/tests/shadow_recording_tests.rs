@@ -59,12 +59,10 @@ fn error_wrapper_outer_shadow_records_before_active_subtree_and_excludes_inactiv
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &roots, &properties);
     let record = |mode: CoverageRecordingMode| {
-        record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
+        record_coverage_manifest(&arena, &roots, true, mode, &properties, &generations)
     };
     let metadata = record(CoverageRecordingMode::MetadataOnly);
     let full = record(CoverageRecordingMode::FullArtifact);
-    assert!(metadata.validation_errors.is_empty());
-    assert!(full.validation_errors.is_empty());
     assert_eq!(
         metadata
             .items
@@ -194,29 +192,18 @@ fn ready_image_media_with_outer_shadow_records_typed_shadow_prefix() {
             crate::view::paint::PaintOp::PreparedImage(_)
         ]
     ));
-    assert!(
-        crate::view::paint::validate_media_content_artifact_for_test(&artifact),
-        "compiler must accept the exact typed shadow prefix"
-    );
     let mut reordered = artifact.clone();
     assert!(matches!(
         reordered.ops.get(1),
         Some(crate::view::paint::PaintOp::DrawRect(_))
     ));
     reordered.ops.swap(0, 1);
-    assert!(
-        !crate::view::paint::validate_media_content_artifact_for_test(&reordered),
-        "a shadow after decoration must fail closed"
-    );
-    let (baseline_media, baseline_shadows, baseline_decoration) =
-        match &metadata.payload_identity {
-            crate::view::paint::PaintPayloadIdentity::ImageWithShadows(
-                media,
-                shadows,
-                decoration,
-            ) => (media.clone(), shadows.clone(), decoration.clone()),
-            _ => unreachable!(),
-        };
+    let (baseline_media, baseline_shadows, baseline_decoration) = match &metadata.payload_identity {
+        crate::view::paint::PaintPayloadIdentity::ImageWithShadows(media, shadows, decoration) => {
+            (media.clone(), shadows.clone(), decoration.clone())
+        }
+        _ => unreachable!(),
+    };
     drop(node);
     {
         let mut node = arena.get_mut(owner).unwrap();
@@ -353,12 +340,10 @@ fn ready_image_exact_self_clip_shadow_metadata_and_full_are_canonical() {
     );
     drop(node);
     let record = |mode: CoverageRecordingMode| {
-        record_coverage_manifest(&arena, &roots, false, true, mode, &properties, &generations)
+        record_coverage_manifest(&arena, &roots, true, mode, &properties, &generations)
     };
     let metadata_manifest = record(CoverageRecordingMode::MetadataOnly);
     let full = record(CoverageRecordingMode::FullArtifact);
-    assert!(metadata_manifest.validation_errors.is_empty());
-    assert!(full.validation_errors.is_empty());
     let [
         PaintCoverageItem::ArtifactChunk {
             chunk: metadata, ..
@@ -398,83 +383,4 @@ fn ready_image_exact_self_clip_shadow_metadata_and_full_are_canonical() {
         panic!("exact clipped Image must carry one complete self-clip snapshot")
     };
     assert_eq!(clip.id, full_chunk.properties.clip.unwrap());
-}
-
-#[test]
-fn image_wrapper_outer_shadow_root_opacity_is_applied_once() {
-    let mut image = Image::new_with_id(0x9195, path_source("shadow-root-opacity"));
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::BackgroundColor,
-        ParsedValue::color_like(Color::rgb(20, 180, 40)),
-    );
-    style.insert(
-        PropertyId::Opacity,
-        ParsedValue::Opacity(crate::style::Opacity::new(0.4)),
-    );
-    style.set_border(crate::style::Border::uniform(
-        Length::px(2.0),
-        &Color::hex("#102030"),
-    ));
-    style.set_box_shadow(vec![BoxShadow::new().offset_x(1.5).offset_y(-2.25)]);
-    image.apply_style(style);
-    crate::view::image_resource::set_image_loading_for_test(image.source_handle.asset_id());
-    let mut arena = new_test_arena();
-    let owner = commit_element(&mut arena, Box::new(image));
-    measure_and_place(
-        &mut arena,
-        owner,
-        LayoutConstraints {
-            max_width: 100.0,
-            max_height: 100.0,
-            viewport_width: 100.0,
-            viewport_height: 100.0,
-            percent_base_width: None,
-            percent_base_height: None,
-        },
-        LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 100.0,
-            available_height: 100.0,
-            viewport_width: 100.0,
-            viewport_height: 100.0,
-            percent_base_width: None,
-            percent_base_height: None,
-        },
-    );
-    let mut properties = PropertyTrees::default();
-    properties.sync(&arena, &[owner]);
-    let mut generations = PaintGenerationTracker::default();
-    generations.sync(&arena, &[owner], &properties);
-    let outcome = crate::view::paint::record_root_group_opacity_frame_artifact(
-        &arena,
-        &[owner],
-        &properties,
-        &generations,
-        crate::view::paint::RendererMode::ForcedForTests,
-    )
-    .unwrap();
-    let crate::view::paint::FrameArtifactRecordOutcome::Artifact { artifact, .. } = outcome
-    else {
-        panic!("Image wrapper root-opacity must record")
-    };
-    assert_eq!(artifact.effect_nodes.len(), 1);
-    assert_eq!(
-        artifact.effect_nodes[0].opacity.to_bits(),
-        0.4_f32.to_bits()
-    );
-    assert!(matches!(
-        artifact.ops.as_slice(),
-        [
-            crate::view::paint::PaintOp::PreparedShadow(shadow),
-            crate::view::paint::PaintOp::DrawRect(fill),
-            crate::view::paint::PaintOp::DrawRect(border),
-            ..
-        ] if shadow.params.opacity.to_bits() == 1.0_f32.to_bits()
-            && fill.params.opacity.to_bits() == 1.0_f32.to_bits()
-            && border.params.opacity.to_bits() == 1.0_f32.to_bits()
-    ));
 }

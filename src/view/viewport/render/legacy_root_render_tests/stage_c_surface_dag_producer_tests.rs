@@ -1,11 +1,10 @@
 use super::*;
 use crate::view::paint::{
     ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError, ArtifactSurfaceResidentSealError,
-    FrameArtifactFallbackReason, FrameArtifactRecordOutcome,
-    PreparedArtifactSurfaceRasterStep, RETAINED_CHILD_MASK_SLOT, RendererMode,
-    RetainedSurfaceCompileAction, RetainedSurfaceRasterRole,
-    artifact_surface_op_has_baked_opacity_for_test, prepare_artifact_surface_raster_plan,
-    record_surface_dag_frame_artifact, seal_prepared_artifact_surface_frame,
+    PreparedArtifactSurfaceRasterStep, RETAINED_CHILD_MASK_SLOT, RetainedSurfaceCompileAction,
+    RetainedSurfaceRasterRole, artifact_surface_op_has_baked_opacity_for_test,
+    prepare_artifact_surface_raster_plan, record_surface_dag_frame_artifact,
+    seal_prepared_artifact_surface_frame,
 };
 
 const MEASUREMENT_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
@@ -121,8 +120,6 @@ const CASES: [ProducerCase; 14] = [
 
 #[derive(Debug, PartialEq, Eq)]
 enum ProducerMeasurementOutcome {
-    RecordRejected(Vec<FrameArtifactFallbackReason>),
-    RecordFallback(Vec<FrameArtifactFallbackReason>),
     PlanRejected(ArtifactSurfaceRasterPlanError),
     SealRejected(ArtifactSurfaceResidentSealError),
     Prepared {
@@ -155,18 +152,9 @@ fn measure_recorded_scene(
     properties: &PropertyTrees,
     generations: &PaintGenerationTracker,
 ) -> ProducerMeasurementRow {
-    let outcome = match record_surface_dag_frame_artifact(
-        arena,
-        roots,
-        properties,
-        generations,
-        RendererMode::ForcedForTests,
-    ) {
-        Err(error) => ProducerMeasurementOutcome::RecordRejected(error.reasons),
-        Ok(FrameArtifactRecordOutcome::WholeFrameLegacyFallback(eligibility)) => {
-            ProducerMeasurementOutcome::RecordFallback(eligibility.reasons)
-        }
-        Ok(FrameArtifactRecordOutcome::Artifact { artifact, .. }) => {
+    let outcome = {
+        let artifact = record_surface_dag_frame_artifact(arena, roots, properties, generations);
+        {
             let context = ArtifactSurfaceRasterContext::new(
                 dpr,
                 wgpu::TextureFormat::Bgra8Unorm,
@@ -233,16 +221,7 @@ fn prepared_recorded_scene(
     properties: &PropertyTrees,
     generations: &PaintGenerationTracker,
 ) -> crate::view::paint::PreparedArtifactSurfaceFrame {
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        arena,
-        roots,
-        properties,
-        generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("surface DAG scene must record") else {
-        panic!("forced surface DAG scene cannot silently fall back")
-    };
+    let artifact = record_surface_dag_frame_artifact(arena, roots, properties, generations);
     let context = ArtifactSurfaceRasterContext::new(
         dpr,
         wgpu::TextureFormat::Bgra8Unorm,
@@ -481,11 +460,6 @@ fn surface_dag_producer_records_five_real_scroll_property_trees_and_freezes_down
             })
         })
         .collect::<Vec<_>>();
-    assert!(
-        rows.iter()
-            .all(|row| !matches!(row.outcome, ProducerMeasurementOutcome::RecordRejected(_))),
-        "all five real scroll shapes at both DPR values must pass recorder admission: {rows:#?}",
-    );
     let scroll = [RetainedSurfaceRasterRole::ScrollContent];
     let nested_scroll = [
         RetainedSurfaceRasterRole::ScrollContent,
@@ -585,16 +559,7 @@ fn effect_scroll_stencil_mask_stays_neutral_while_color_opacity_is_rebased() {
     let (arena, roots, properties, generations) = prepared_same_owner_effect_scroll_scene();
     // Directly exercises the unwired generic producer seam; production scroll
     // dispatch returns from the existing selector before reaching it.
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("effect-scroll artifact must record") else {
-        panic!("forced effect-scroll artifact cannot silently fall back")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     let effect = artifact
         .effect_nodes
         .iter()
@@ -754,19 +719,14 @@ fn natural_scroll_offset_changes_only_composite_geometry_until_content_changes()
     let owner = viewport
         .begin_retained_surface_frame_stage()
         .expect("baseline resident owner");
-    let baseline_emission = viewport
-        .prepare_artifact_surface_pool_emission_from_pool(baseline.residents().clone())
-        .expect("baseline resident emission");
+    let baseline_emission =
+        viewport.prepare_artifact_surface_pool_emission_from_pool(baseline.residents().clone());
     assert!(
-        viewport.stage_artifact_surface_resident_set(
-            owner,
-            baseline_emission.into_canonical_residents(),
-        )
+        viewport.stage_artifact_surface_resident_set(owner, baseline_emission.into_residents(),)
     );
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
-    let moved_emission = viewport
-        .prepare_artifact_surface_pool_emission_for_forced_test(moved.residents().clone())
-        .expect("offset-only pool actions");
+    let moved_emission =
+        viewport.prepare_artifact_surface_pool_emission_for_forced_test(moved.residents().clone());
     assert!(
         moved_emission
             .ordered_actions()
@@ -790,8 +750,7 @@ fn natural_scroll_offset_changes_only_composite_geometry_until_content_changes()
         "content change must alter the resident stamp",
     );
     let changed_emission = viewport
-        .prepare_artifact_surface_pool_emission_for_forced_test(changed.residents().clone())
-        .expect("content-change pool actions");
+        .prepare_artifact_surface_pool_emission_for_forced_test(changed.residents().clone());
     assert!(
         changed_emission
             .ordered_actions()

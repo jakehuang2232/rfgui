@@ -1,13 +1,12 @@
 use super::*;
 use crate::view::paint::compiler::ArtifactSurfaceResolvedClip;
 use crate::view::paint::{
-    ArtifactSurfaceLocalizationError, FrameArtifactRecordOutcome, PaintOp,
-    PreparedInlineIfcDecorationDescriptor, PreparedInlineIfcDecorationOp,
-    PreparedScrollbarOverlayOp, PreparedShadowOp, RendererMode, ResolvedClip,
+    ArtifactSurfaceLocalizationError, PaintOp, PreparedInlineIfcDecorationDescriptor,
+    PreparedInlineIfcDecorationOp, PreparedScrollbarOverlayOp, PreparedShadowOp, ResolvedClip,
     SurfaceDagExecutionTargetId, artifact_surface_op_corresponds_to_source_for_test,
     artifact_surface_op_has_baked_opacity_for_test, neutralize_artifact_surface_opacity_for_test,
-    prepare_artifact_surface_raster_plan, record_closed_single_target_frame_artifact,
-    resolve_artifact_surface_clip_for_test, seal_prepared_artifact_surface_frame,
+    prepare_artifact_surface_raster_plan, resolve_artifact_surface_clip_for_test,
+    seal_prepared_artifact_surface_frame,
 };
 use crate::view::render_pass::render_target::GraphicsPassScissor;
 
@@ -73,18 +72,7 @@ fn plain_host_op(host: &str, predicate: impl Fn(&PaintOp) -> bool) -> PaintOp {
     properties.sync(&arena, &[root]);
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
-        record_closed_single_target_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .expect("native effect fixture must record")
-    else {
-        panic!("forced native effect fixture cannot silently fall back")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     artifact
         .ops
         .into_iter()
@@ -211,9 +199,8 @@ fn all_seven_artifact_ops_neutralize_exact_owner_local_opacity() {
             &op,
             0.5_f32.to_bits(),
         ));
-        let neutralized =
-            neutralize_artifact_surface_opacity_for_test(op.clone(), 0.5_f32.to_bits())
-                .expect("exact baked opacity must neutralize without division");
+        let neutralized = neutralize_artifact_surface_opacity_for_test(op.clone())
+            .expect("baked opacity must neutralize without division");
         assert!(artifact_surface_op_has_baked_opacity_for_test(
             &neutralized,
             1.0_f32.to_bits(),
@@ -228,18 +215,6 @@ fn all_seven_artifact_ops_neutralize_exact_owner_local_opacity() {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn opacity_neutralization_rejects_a_nonmatching_source_bitwise() {
-    let op = seven_opacity_carriers().remove(0);
-    assert!(matches!(
-        neutralize_artifact_surface_opacity_for_test(op, 0.75_f32.to_bits()),
-        Err(ArtifactSurfaceLocalizationError::OpacityMismatch(
-            crate::view::paint::ArtifactSurfacePaintOpKind::DrawRect,
-        ))
-    ));
-}
-
 #[test]
 fn artifact_surface_localization_error_taxonomy_is_exhaustive() {
     fn label(error: ArtifactSurfaceLocalizationError) -> &'static str {
@@ -247,7 +222,6 @@ fn artifact_surface_localization_error_taxonomy_is_exhaustive() {
             ArtifactSurfaceLocalizationError::NonFiniteTranslation => "non-finite-translation",
             ArtifactSurfaceLocalizationError::EmbeddedClip(_) => "embedded-clip",
             ArtifactSurfaceLocalizationError::InvalidLocalizedOp(_) => "invalid-op",
-            ArtifactSurfaceLocalizationError::OpacityMismatch(_) => "opacity-mismatch",
         }
     }
     let _ = label as fn(ArtifactSurfaceLocalizationError) -> &'static str;

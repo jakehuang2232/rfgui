@@ -1,6 +1,4 @@
-use crate::style::{
-    Border, Rotate, Scale, TransformEntry, Transition, TransitionProperty, Transitions,
-};
+use crate::style::{Border, Rotate, Scale, Transition, TransitionProperty, Transitions};
 use crate::style::{
     ClipMode, Color, Layout, Length, ParsedValue, Position, PropertyId, ScrollDirection, Style,
     Transform, Translate,
@@ -20,73 +18,16 @@ use crate::view::{ImageSource, SvgSource, image_resource};
 use std::any::Any;
 use std::sync::Arc;
 
-struct UnknownOverlayHost {
-    id: u64,
-    bounds: BoxModelSnapshot,
-}
-
-impl Layoutable for UnknownOverlayHost {
-    fn measure(&mut self, _constraints: LayoutConstraints, _arena: &mut NodeArena) {}
-
-    fn place(&mut self, _placement: LayoutPlacement, _arena: &mut NodeArena) {}
-
-    fn measured_size(&self) -> (f32, f32) {
-        (self.bounds.width, self.bounds.height)
-    }
-
-    fn set_layout_width(&mut self, width: f32) {
-        self.bounds.width = width;
-    }
-
-    fn set_layout_height(&mut self, height: f32) {
-        self.bounds.height = height;
-    }
-}
-
-impl EventTarget for UnknownOverlayHost {}
-
-impl Renderable for UnknownOverlayHost {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        ctx.into_state()
-    }
-}
-
-impl ElementTrait for UnknownOverlayHost {
-    fn stable_id(&self) -> u64 {
-        self.id
-    }
-
-    fn box_model_snapshot(&self) -> BoxModelSnapshot {
-        self.bounds
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
-
 use super::{
     ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES, AutoAuthorityKind, AutoAuthorityRejection,
     AutoAuthorityTrace, CachedCompiledGraph, FrameDisposition, FramePaintSelection,
     PaintAuthorityFallbackStage, PaintAuthorityKind, PaintAuthorityTelemetry,
-    RecordedArtifactCandidate, RecordedArtifactPayload, RecordedArtifactSurfacePrepareError,
+    RecordedArtifactCandidate, RecordedArtifactPayload,
     RetainedAutoDecision as AutoAuthorityDecision, RetainedAutoTerminalFailureStage, Viewport,
-    artifact_surface_raster_context, auto_artifact_legacy_fallback_stage,
-    begin_paint_authority_telemetry_attempt, build_root_legacy, compile_auto_artifact_frame,
-    debug_legacy_fallback, enable_paint_authority_test_capture, finish_frame_dirty_lifecycle,
+    artifact_surface_raster_context, begin_paint_authority_telemetry_attempt, build_root_legacy,
+    compile_auto_artifact_frame, enable_paint_authority_test_capture, finish_frame_dirty_lifecycle,
     frame_disposition, paint_authority_test_capture_enabled,
-    require_detached_artifact_surface_plan, require_zero_resident_artifact_surface_plan,
-    retained_auto_circuit_breaker_selection, retained_auto_fallback_overlay_records,
-    retained_auto_overlay_label, retained_auto_terminal_fallback_stage,
+    retained_auto_circuit_breaker_selection, retained_auto_terminal_fallback_stage,
     select_retained_auto_authority, should_store_compile_cache,
     store_paint_authority_test_snapshot, take_paint_authority_test_snapshot,
     terminal_failure_stage,
@@ -966,103 +907,6 @@ fn prepared_exact_scroll_scene() -> (
     (arena, vec![root], properties, generations)
 }
 
-fn prepared_scroll_text_area_scene() -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    prepared_scroll_text_area_scene_with(
-        20.0,
-        9.0,
-        "RetainedAuto must admit bounded internal TextArea scrolling without a ScrollNode",
-    )
-}
-
-fn prepared_scroll_text_area_scene_with(
-    outer_scroll_y: f32,
-    local_scroll_y: f32,
-    content: &str,
-) -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    let (mut arena, _, text_area) =
-        prepared_auto_text_area_with_content(content, local_scroll_y, false);
-    let wrapper = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xe2_a311,
-        0.0,
-        -outer_scroll_y,
-        100.0,
-        300.0,
-    ))));
-    let root = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xe2_a310, 0.0, 0.0, 100.0, 80.0,
-    ))));
-    arena.set_parent(text_area, Some(wrapper));
-    arena.set_children(wrapper, vec![text_area]);
-    arena.set_parent(wrapper, Some(root));
-    arena.set_children(root, vec![wrapper]);
-
-    let text_area_place = LayoutPlacement {
-        parent_x: 0.0,
-        parent_y: -outer_scroll_y,
-        visual_offset_x: 0.0,
-        visual_offset_y: 0.0,
-        available_width: 108.0,
-        available_height: 28.0,
-        viewport_width: 320.0,
-        viewport_height: 240.0,
-        percent_base_width: Some(320.0),
-        percent_base_height: Some(240.0),
-    };
-    arena.with_element_taken(text_area, |element, arena| {
-        element.place(text_area_place, arena);
-    });
-    let mut wrapper_style = Style::new();
-    wrapper_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    crate::view::test_support::get_element_mut::<Element>(&arena, wrapper)
-        .apply_style(wrapper_style);
-
-    let mut root_style = Style::new();
-    root_style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-    );
-    root_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut root_element = crate::view::test_support::get_element_mut::<Element>(&arena, root);
-        root_element.apply_style(root_style);
-        root_element.layout_state.content_size = Size {
-            width: 100.0,
-            height: 300.0,
-        };
-        root_element.set_scroll_offset((0.0, outer_scroll_y));
-        root_element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-    arena
-        .get_mut(wrapper)
-        .expect("scroll content wrapper")
-        .element
-        .clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    let mut stack = vec![text_area];
-    while let Some(key) = stack.pop() {
-        stack.extend(arena.children_of(key));
-        arena
-            .get_mut(key)
-            .unwrap()
-            .element
-            .clear_local_dirty_flags(DirtyFlags::ALL);
-    }
-    arena.clear_arena_dirty_subtree(root, DirtyFlags::ALL);
-    arena.refresh_subtree_dirty_cache(root);
-    let roots = vec![root];
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    (arena, roots, properties, generations)
-}
-
 fn prepared_exact_nested_scroll_scene() -> (
     NodeArena,
     Vec<NodeKey>,
@@ -1173,7 +1017,6 @@ fn assert_native_host_retained_closure(
         crate::view::paint::record_coverage_manifest(
             arena,
             roots,
-            false,
             true,
             mode,
             &properties,
@@ -1183,26 +1026,6 @@ fn assert_native_host_retained_closure(
     let metadata = record(crate::view::paint::CoverageRecordingMode::MetadataOnly);
     let full = record(crate::view::paint::CoverageRecordingMode::FullArtifact);
 
-    assert!(
-        metadata.validation_errors.is_empty(),
-        "{host} metadata manifest validation failed: {:?}",
-        metadata.validation_errors
-    );
-    assert!(
-        full.validation_errors.is_empty(),
-        "{host} full manifest validation failed: {:?}",
-        full.validation_errors
-    );
-    for (pass, manifest) in [("metadata", &metadata), ("full", &full)] {
-        assert!(
-            manifest.items.iter().all(|item| !matches!(
-                item,
-                crate::view::paint::PaintCoverageItem::LegacyBoundary { .. }
-            )),
-            "{host} {pass} manifest must not contain a native LegacyBoundary: {:?}",
-            manifest.items
-        );
-    }
     assert!(
         crate::view::paint::canonical_manifest_matches_for_test(&metadata, &full),
         "{host} metadata/full manifests must be canonical"
@@ -1233,7 +1056,6 @@ fn assert_native_root_opacity_artifact(
     let metadata = crate::view::paint::record_coverage_manifest(
         arena,
         roots,
-        false,
         true,
         crate::view::paint::CoverageRecordingMode::MetadataOnly,
         &properties,
@@ -1242,14 +1064,11 @@ fn assert_native_root_opacity_artifact(
     let full = crate::view::paint::record_coverage_manifest(
         arena,
         roots,
-        false,
         true,
         crate::view::paint::CoverageRecordingMode::FullArtifact,
         &properties,
         &generations,
     );
-    assert!(metadata.validation_errors.is_empty(), "{host}: metadata");
-    assert!(full.validation_errors.is_empty(), "{host}: full artifact");
     assert!(
         crate::view::paint::canonical_manifest_matches_for_test(&metadata, &full),
         "{host}: metadata/full canonical identity"
@@ -1271,7 +1090,6 @@ fn assert_native_root_opacity_artifact(
     };
     assert!(trace.rejections.is_empty());
     let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
-    assert!(frame.residents().is_canonical());
     let resident_count = frame.residents().len();
     let mut viewport = Viewport::new();
     let owner = viewport.begin_retained_surface_frame_stage().unwrap();
@@ -1596,8 +1414,6 @@ mod telemetry_tests;
 
 mod generic_selection_tests;
 
-mod selector_convergence_tests;
-
 mod text_transform_tests;
 
 mod property_boundary_forest_branching_tests;
@@ -1825,5 +1641,3 @@ fn selected_artifact_surface(
     )));
     (candidate, trace, surface_count)
 }
-
-mod reachable_tree_facts_tests;

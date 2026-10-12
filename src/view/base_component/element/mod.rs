@@ -67,7 +67,6 @@ include!("render_trait.rs");
 include!("impl_core.rs");
 include!("impl_scroll.rs");
 include!("impl_render.rs");
-mod inline_witness_inputs;
 mod paint_recording_inputs;
 include!("impl_layout.rs");
 include!("helpers.rs");
@@ -2572,35 +2571,13 @@ pub trait ElementTypeName {
 
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShadowPaintBlocker {
-    Transform,
-    BoxShadow,
-    InlineIfc,
-    ScrollContainer,
-    SelfClip,
-    ChildClip,
-    Deferred,
-    LayoutTransition,
-    StatefulPaint,
-    MissingPreparedInlineDecoration,
-    MissingPreparedInlineRoot,
-    MissingPreparedText,
-    MissingPreparedImage,
-    MissingPreparedSvg,
-    TextAreaSelection,
-}
-
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShadowPaintRecordingCapability {
-    Unsupported,
-    /// This owner and its complete subtree are known to produce no paint for
-    /// the current frame. Unlike `Transparent`, coverage must not recurse
-    /// into children.
+    /// This owner and its complete subtree produce no paint for the current
+    /// frame. Unlike `Transparent`, coverage must not recurse into children.
     CulledSubtree,
+    /// Nothing of its own to draw; its children record.
     Transparent,
     Recordable,
-    Legacy(ShadowPaintBlocker),
 }
 
 /// Engine-owned paint context exposed to custom leaf recorders.
@@ -3036,37 +3013,24 @@ pub trait ElementTrait:
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,
-        arena: &crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         deferred_phase_root: bool,
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
-        // Hidden custom leaves have no paint work. Their live geometry remains
-        // validated, and becoming visible must re-enter complete recording;
-        // absence of a prepared GPU payload while hidden is not UnknownHost.
-        let snapshot = self.box_model_snapshot();
-        if recording_context.surface_dag
-            && !snapshot.should_render
-            && custom_leaf_phase_admissible(self, deferred_phase_root, recording_context)
-            && self.children().is_empty()
-            && snapshot.node_id == self.stable_id()
-            && [snapshot.x, snapshot.y, snapshot.width, snapshot.height]
-                .into_iter()
-                .all(f32::is_finite)
-            && snapshot.width >= 0.0
-            && snapshot.height >= 0.0
-        {
+        // A hidden host and its subtree draw nothing. A host without retained
+        // paint of its own records no chunk; its children still record.
+        if !self.box_model_snapshot().should_render {
             return ShadowPaintRecordingCapability::CulledSubtree;
         }
         let prepared = if self.children().is_empty() {
             prepare_custom_leaf_paint(self, deferred_phase_root, &recording_context).is_some()
         } else {
-            prepare_custom_wrapper_paint(self, None, arena, deferred_phase_root, &recording_context)
-                .is_some()
+            prepare_custom_wrapper_paint(self, deferred_phase_root).is_some()
         };
         if prepared {
             ShadowPaintRecordingCapability::Recordable
         } else {
-            ShadowPaintRecordingCapability::Unsupported
+            ShadowPaintRecordingCapability::Transparent
         }
     }
 
@@ -3077,11 +3041,10 @@ pub trait ElementTrait:
         owner: crate::view::node_arena::NodeKey,
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
-        arena: &crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintChunkMetadata> {
-        let prepared =
-            prepare_owned_custom_leaf_paint(self, owner, properties, arena, &recording_context)?;
+        let prepared = prepare_owned_custom_leaf_paint(self, &recording_context)?;
         Some(prepared.metadata(owner, properties, content_revision))
     }
 
@@ -3092,11 +3055,10 @@ pub trait ElementTrait:
         owner: crate::view::node_arena::NodeKey,
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
-        arena: &crate::view::node_arena::NodeArena,
+        _arena: &crate::view::node_arena::NodeArena,
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintArtifact> {
-        let prepared =
-            prepare_owned_custom_leaf_paint(self, owner, properties, arena, &recording_context)?;
+        let prepared = prepare_owned_custom_leaf_paint(self, &recording_context)?;
         #[cfg(test)]
         crate::view::paint::note_full_artifact_record();
         Some(prepared.artifact(owner, properties, content_revision))
@@ -3193,16 +3155,7 @@ pub trait ElementTrait:
             }
             return Some(plan);
         }
-        if !self.children().is_empty()
-            && let Some(prepared) = prepare_owned_custom_wrapper_paint(
-                self,
-                owner,
-                properties,
-                contents_properties,
-                arena,
-                &recording_context,
-            )
-        {
+        if let Some(prepared) = prepare_custom_wrapper_paint(self, false) {
             return Some(prepared.metadata_plan(owner, properties, content_revision));
         }
         None
@@ -3264,7 +3217,6 @@ pub trait ElementTrait:
                 };
                 let op_count = ops.len();
                 plan.after_children.push(crate::view::paint::PaintArtifact {
-                    target: Default::default(),
                     chunks: vec![crate::view::paint::PaintChunk {
                         frame: crate::view::paint::PaintChunkFrame::Viewport,
                         id: crate::view::paint::PaintChunkId {
@@ -3298,8 +3250,7 @@ pub trait ElementTrait:
                     owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                         owner,
                         parent: None,
-                        snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
-                            .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
+                        snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None),
                     }],
                 });
             }
@@ -3322,16 +3273,7 @@ pub trait ElementTrait:
             }
             return Some(plan);
         }
-        if !self.children().is_empty()
-            && let Some(prepared) = prepare_owned_custom_wrapper_paint(
-                self,
-                owner,
-                properties,
-                contents_properties,
-                arena,
-                &recording_context,
-            )
-        {
+        if let Some(prepared) = prepare_custom_wrapper_paint(self, false) {
             #[cfg(test)]
             crate::view::paint::note_full_artifact_record();
             return Some(prepared.artifact_plan(owner, properties, content_revision));
@@ -3910,7 +3852,6 @@ impl PreparedCustomLeafPaint {
         content_revision: crate::view::paint::PaintContentRevision,
     ) -> crate::view::paint::PaintArtifact {
         crate::view::paint::PaintArtifact {
-            target: Default::default(),
             chunks: vec![crate::view::paint::PaintChunk {
                 frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: self.chunk_id(owner),
@@ -3950,15 +3891,7 @@ fn custom_leaf_phase_admissible<T: ElementTrait + ?Sized>(
     if !element.is_deferred_to_root_viewport_render() {
         return !deferred_phase_root;
     }
-    let stable_id = element.stable_id();
-    match recording_context.opacity_authority {
-        crate::view::paint::PaintOpacityAuthority::NeutralRootEffect(effect) => {
-            recording_context.authorizes_deferred_viewport_effect_for(stable_id, effect)
-        }
-        crate::view::paint::PaintOpacityAuthority::Baked => {
-            recording_context.authorizes_deferred_viewport_self_clip_for(stable_id)
-        }
-    }
+    recording_context.authorizes_deferred_viewport_self_clip_for(element.stable_id())
 }
 
 fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
@@ -3966,22 +3899,17 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
     deferred_phase_root: bool,
     recording_context: &crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomLeafPaint> {
+    if !custom_leaf_phase_admissible(element, deferred_phase_root, recording_context)
+        || !element.children().is_empty()
+    {
+        return None;
+    }
+    let snapshot = element.box_model_snapshot();
+    if !snapshot.should_render {
+        return None;
+    }
     if let Some(source) = element.prepared_gpu_paint_source() {
-        let snapshot = element.box_model_snapshot();
-        let props = element.retained_paint_properties();
-        if !recording_context.surface_dag
-            || !custom_leaf_phase_admissible(element, deferred_phase_root, recording_context)
-            || !element.children().is_empty()
-            || !snapshot.should_render
-            || snapshot.node_id != element.stable_id()
-            || snapshot.border_radius != 0.0
-            || props.opacity != 1.0
-            || props.has_rounded_clip
-            || props.has_box_shadow
-            || props.has_border
-            || props.is_scroll_container
-            || !source.matches_size([snapshot.width, snapshot.height])
-        {
+        if !source.matches_size([snapshot.width, snapshot.height]) {
             return None;
         }
         let bounds = Rect {
@@ -4005,39 +3933,6 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
             payload_identity,
         });
     }
-    if !custom_leaf_phase_admissible(element, deferred_phase_root, recording_context)
-        || element.has_active_animator()
-        || element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        || !element.children().is_empty()
-        || !matches!(
-            recording_context.opacity_authority,
-            crate::view::paint::PaintOpacityAuthority::Baked
-        )
-        || recording_context.inside_text_area
-        || recording_context.text_area_selection.is_some()
-        || recording_context.text_area_preedit.is_some()
-    {
-        return None;
-    }
-
-    let snapshot = element.box_model_snapshot();
-    let paint_properties = element.retained_paint_properties();
-    if !snapshot.should_render
-        || snapshot.node_id != element.stable_id()
-        || !snapshot.border_radius.is_finite()
-        || snapshot.border_radius.to_bits() != 0.0_f32.to_bits()
-        || !paint_properties.opacity.is_finite()
-        || paint_properties.opacity.to_bits() != 1.0_f32.to_bits()
-        || paint_properties.has_rounded_clip
-        || paint_properties.has_box_shadow
-        || paint_properties.has_border
-        || paint_properties.is_scroll_container
-    {
-        return None;
-    }
-
     let bounds = Rect {
         x: snapshot.x,
         y: snapshot.y,
@@ -4100,27 +3995,13 @@ fn prepare_custom_leaf_paint<T: ElementTrait + ?Sized>(
 
 fn prepare_owned_custom_leaf_paint<T: ElementTrait + ?Sized>(
     element: &T,
-    owner: NodeKey,
-    properties: crate::view::compositor::property_tree::PropertyTreeState,
-    arena: &NodeArena,
     recording_context: &crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomLeafPaint> {
-    // A deferred leaf paints under the viewport clip its admission proved.
-    if properties != Default::default()
-        && !(recording_context.surface_dag && element.prepared_gpu_paint_source().is_some())
-        && !(element.is_deferred_to_root_viewport_render()
-            && custom_leaf_phase_admissible(element, false, recording_context))
-    {
-        return None;
-    }
-    let owner_node = arena.get(owner)?;
-    if !owner_node.children().is_empty()
-        || !owner_node.element.children().is_empty()
-        || !std::ptr::eq(owner_node.element.as_any(), element.as_any())
-    {
-        return None;
-    }
-    prepare_custom_leaf_paint(element, false, &recording_context)
+    prepare_custom_leaf_paint(
+        element,
+        element.is_deferred_to_root_viewport_render(),
+        recording_context,
+    )
 }
 
 struct PreparedCustomWrapperFill {
@@ -4214,7 +4095,6 @@ impl PreparedCustomWrapperPaint {
         phase: crate::view::paint::PaintNodePhase,
     ) -> crate::view::paint::PaintArtifact {
         crate::view::paint::PaintArtifact {
-            target: Default::default(),
             chunks: vec![crate::view::paint::PaintChunk {
                 frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: Self::chunk_id(owner, phase, fill.slot),
@@ -4282,47 +4162,6 @@ impl PreparedCustomWrapperPaint {
     }
 }
 
-fn custom_wrapper_topology_is_canonical<T: ElementTrait + ?Sized>(
-    element: &T,
-    owner: NodeKey,
-    arena: &NodeArena,
-) -> bool {
-    let Some(owner_node) = arena.get(owner) else {
-        return false;
-    };
-    if !std::ptr::eq(owner_node.element.as_any(), element.as_any())
-        || owner_node.children().is_empty()
-        || owner_node.element.children() != owner_node.children()
-    {
-        return false;
-    }
-    let children = owner_node.children().to_vec();
-    drop(owner_node);
-
-    let mut seen = FxHashSet::default();
-    seen.insert(owner);
-    let mut stack = children
-        .into_iter()
-        .rev()
-        .map(|child| (owner, child))
-        .collect::<Vec<_>>();
-    while let Some((expected_parent, key)) = stack.pop() {
-        if !seen.insert(key) {
-            return false;
-        }
-        let Some(node) = arena.get(key) else {
-            return false;
-        };
-        if node.parent() != Some(expected_parent) || node.element.children() != node.children() {
-            return false;
-        }
-        let children = node.children().to_vec();
-        drop(node);
-        stack.extend(children.into_iter().rev().map(|child| (key, child)));
-    }
-    true
-}
-
 fn prepare_custom_wrapper_phase(
     bounds: Rect,
     commands: &[CustomWrapperFillRect],
@@ -4370,51 +4209,18 @@ fn prepare_custom_wrapper_phase(
 
 fn prepare_custom_wrapper_paint<T: ElementTrait + ?Sized>(
     element: &T,
-    expected_owner: Option<NodeKey>,
-    arena: &NodeArena,
     deferred_phase_root: bool,
-    recording_context: &crate::view::paint::PaintRecordingContext,
 ) -> Option<PreparedCustomWrapperPaint> {
     if element.children().is_empty()
         || deferred_phase_root
         || element.is_deferred_to_root_viewport_render()
-        || element.has_active_animator()
-        || element
-            .placement_eligibility_metadata()
-            .contains_runtime_layout_state
-        || !matches!(
-            recording_context.opacity_authority,
-            crate::view::paint::PaintOpacityAuthority::Baked
-        )
-        || recording_context.inside_text_area
-        || recording_context.text_area_selection.is_some()
-        || recording_context.text_area_preedit.is_some()
     {
         return None;
     }
-
-    let indexed_owner = arena.find_by_stable_id(element.stable_id())?;
-    let owner = expected_owner.unwrap_or(indexed_owner);
-    if owner != indexed_owner || !custom_wrapper_topology_is_canonical(element, owner, arena) {
-        return None;
-    }
-
     let snapshot = element.box_model_snapshot();
-    let paint_properties = element.retained_paint_properties();
-    if !snapshot.should_render
-        || snapshot.node_id != element.stable_id()
-        || !snapshot.border_radius.is_finite()
-        || snapshot.border_radius.to_bits() != 0.0_f32.to_bits()
-        || !paint_properties.opacity.is_finite()
-        || paint_properties.opacity.to_bits() != 1.0_f32.to_bits()
-        || paint_properties.has_rounded_clip
-        || paint_properties.has_box_shadow
-        || paint_properties.has_border
-        || paint_properties.is_scroll_container
-    {
+    if !snapshot.should_render {
         return None;
     }
-
     let bounds = Rect {
         x: snapshot.x,
         y: snapshot.y,
@@ -4435,20 +4241,6 @@ fn prepare_custom_wrapper_paint<T: ElementTrait + ?Sized>(
         before_children: prepare_custom_wrapper_phase(bounds, &recorder.before_children)?,
         after_children: prepare_custom_wrapper_phase(bounds, &recorder.after_children)?,
     })
-}
-
-fn prepare_owned_custom_wrapper_paint<T: ElementTrait + ?Sized>(
-    element: &T,
-    owner: NodeKey,
-    properties: crate::view::compositor::property_tree::PropertyTreeState,
-    contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
-    arena: &NodeArena,
-    recording_context: &crate::view::paint::PaintRecordingContext,
-) -> Option<PreparedCustomWrapperPaint> {
-    if properties != Default::default() || contents_properties != Default::default() {
-        return None;
-    }
-    prepare_custom_wrapper_paint(element, Some(owner), arena, false, &recording_context)
 }
 
 fn has_canonical_custom_leaf_bounds(rect: Rect) -> bool {
@@ -4859,64 +4651,22 @@ enum InlineIfcNodeInstallOp {
         paint_bounds: InlineIfcPaintRect,
     },
     Atomic {
-        witness: InlineIfcAtomicInstallWitness,
+        atomic: InlineIfcAtomicInstall,
     },
 }
 
-/// Origin-independent proof tying one retained atomic install to the exact
-/// shaped inline-box mapping and the live child that supplied it.
+/// One atomic inline box placed on its line in content coordinates.
 #[derive(Clone, Debug)]
-struct InlineIfcAtomicInstallWitness {
+struct InlineIfcAtomicInstall {
     node_key: NodeKey,
-    stable_id: u64,
-    source: InlineIfcSourceId,
-    inline_box_id: u64,
-    insertion_byte: usize,
-    line_index: usize,
-    measurement: InlineIfcMeasuredAtomicBox,
-    raw_rect: InlineIfcPaintRect,
     aligned_rect: InlineIfcPaintRect,
-    vertical_align: VerticalAlign,
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum OwningInlineIfcRootWitnessDamage {
-    MissingCurrent,
-    Pending,
-    ChildrenSnapshot,
-    PlanMissing,
-    PlanDuplicate,
-    InstalledMissing,
-    InstalledDuplicate,
-    CacheKey,
-    WrongKind,
-    TextPlanPayloadSwap,
-    AtomicStableId,
-    AtomicSource,
-    AtomicInlineBoxId,
-    AtomicInsertionByte,
-    AtomicLineIndex,
-    AtomicMeasurementMaxWidth,
-    AtomicMeasurementAvailableHeight,
-    AtomicMeasurementViewport,
-    AtomicMeasurementPercentBase,
-    AtomicMeasurementSizing,
-    AtomicMeasurementSize,
-    AtomicRawRect,
-    AtomicAlignedRect,
-    AtomicVerticalAlign,
-    AtomicPackageZeroPlacements,
-    AtomicPackageDuplicatePlacements,
-    LayoutDirty,
-    PlacementDirty,
 }
 
 impl InlineIfcNodeInstallOp {
     fn node_key(&self) -> NodeKey {
         match self {
             Self::Span { node_key, .. } | Self::Text { node_key, .. } => *node_key,
-            Self::Atomic { witness } => witness.node_key,
+            Self::Atomic { atomic } => atomic.node_key,
         }
     }
 }
@@ -4930,176 +4680,6 @@ fn exact_inline_ifc_atomic_placement(
     }
     let placement = &package.placements[0];
     (placement.source == source).then_some(placement)
-}
-
-fn f32_bits_eq(left: f32, right: f32) -> bool {
-    left.to_bits() == right.to_bits()
-}
-
-fn option_f32_bits_eq(left: Option<f32>, right: Option<f32>) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => f32_bits_eq(left, right),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-fn inline_ifc_size_bits_eq(left: InlineIfcSize, right: InlineIfcSize) -> bool {
-    f32_bits_eq(left.width, right.width) && f32_bits_eq(left.height, right.height)
-}
-
-fn inline_ifc_rect_bits_eq(left: InlineIfcPaintRect, right: InlineIfcPaintRect) -> bool {
-    f32_bits_eq(left.x, right.x)
-        && f32_bits_eq(left.y, right.y)
-        && f32_bits_eq(left.width, right.width)
-        && f32_bits_eq(left.height, right.height)
-}
-
-fn inline_ifc_atomic_measurement_bits_eq(
-    left: &InlineIfcMeasuredAtomicBox,
-    right: &InlineIfcMeasuredAtomicBox,
-) -> bool {
-    let left_constraints = left.constraints;
-    let right_constraints = right.constraints;
-    option_f32_bits_eq(left_constraints.max_width, right_constraints.max_width)
-        && option_f32_bits_eq(
-            left_constraints.available_height,
-            right_constraints.available_height,
-        )
-        && match (left_constraints.viewport, right_constraints.viewport) {
-            (Some(left), Some(right)) => inline_ifc_size_bits_eq(left, right),
-            (None, None) => true,
-            _ => false,
-        }
-        && option_f32_bits_eq(
-            left_constraints.percent_base.width,
-            right_constraints.percent_base.width,
-        )
-        && option_f32_bits_eq(
-            left_constraints.percent_base.height,
-            right_constraints.percent_base.height,
-        )
-        && option_f32_bits_eq(
-            left_constraints.sizing.min_width,
-            right_constraints.sizing.min_width,
-        )
-        && option_f32_bits_eq(
-            left_constraints.sizing.max_width,
-            right_constraints.sizing.max_width,
-        )
-        && option_f32_bits_eq(
-            left_constraints.sizing.min_height,
-            right_constraints.sizing.min_height,
-        )
-        && option_f32_bits_eq(
-            left_constraints.sizing.max_height,
-            right_constraints.sizing.max_height,
-        )
-        && match (
-            left_constraints.sizing.intrinsic_size,
-            right_constraints.sizing.intrinsic_size,
-        ) {
-            (Some(left), Some(right)) => {
-                f32_bits_eq(left.min_content_width, right.min_content_width)
-                    && f32_bits_eq(left.max_content_width, right.max_content_width)
-                    && option_f32_bits_eq(left.preferred_width, right.preferred_width)
-                    && option_f32_bits_eq(left.preferred_height, right.preferred_height)
-            }
-            (None, None) => true,
-            _ => false,
-        }
-        && inline_ifc_size_bits_eq(left.measured_size, right.measured_size)
-}
-
-fn inline_ifc_atomic_witness_bits_eq(
-    left: &InlineIfcAtomicInstallWitness,
-    right: &InlineIfcAtomicInstallWitness,
-) -> bool {
-    left.node_key == right.node_key
-        && left.stable_id == right.stable_id
-        && left.source == right.source
-        && left.inline_box_id == right.inline_box_id
-        && left.insertion_byte == right.insertion_byte
-        && left.line_index == right.line_index
-        && left.vertical_align == right.vertical_align
-        && inline_ifc_atomic_measurement_bits_eq(&left.measurement, &right.measurement)
-        && inline_ifc_rect_bits_eq(left.raw_rect, right.raw_rect)
-        && inline_ifc_rect_bits_eq(left.aligned_rect, right.aligned_rect)
-}
-
-/// The atomic child's placement at its line position, and that position's
-/// offset from the root's content origin (the child's spatial reference).
-fn inline_ifc_atomic_layout_placement(
-    flow_origin_x: f32,
-    flow_origin_y: f32,
-    visual_offset_x: f32,
-    visual_offset_y: f32,
-    content_top_offset: f32,
-    root_placement: LayoutPlacement,
-    aligned_rect: InlineIfcPaintRect,
-) -> (LayoutPlacement, [f32; 2]) {
-    let offset = [aligned_rect.x, aligned_rect.y - content_top_offset];
-    let placement = LayoutPlacement {
-        parent_x: flow_origin_x + offset[0],
-        parent_y: flow_origin_y + offset[1],
-        visual_offset_x,
-        visual_offset_y,
-        available_width: aligned_rect.width.max(1.0),
-        available_height: aligned_rect.height.max(1.0),
-        viewport_width: root_placement.viewport_width,
-        viewport_height: root_placement.viewport_height,
-        percent_base_width: root_placement.percent_base_width,
-        percent_base_height: root_placement.percent_base_height,
-    };
-    (placement, offset)
-}
-
-fn layout_placement_bits_eq(left: LayoutPlacement, right: LayoutPlacement) -> bool {
-    f32_bits_eq(left.parent_x, right.parent_x)
-        && f32_bits_eq(left.parent_y, right.parent_y)
-        && f32_bits_eq(left.visual_offset_x, right.visual_offset_x)
-        && f32_bits_eq(left.visual_offset_y, right.visual_offset_y)
-        && f32_bits_eq(left.available_width, right.available_width)
-        && f32_bits_eq(left.available_height, right.available_height)
-        && f32_bits_eq(left.viewport_width, right.viewport_width)
-        && f32_bits_eq(left.viewport_height, right.viewport_height)
-        && option_f32_bits_eq(left.percent_base_width, right.percent_base_width)
-        && option_f32_bits_eq(left.percent_base_height, right.percent_base_height)
-}
-
-/// Whether `element` still reports layout or placement work after layout.
-/// A host that does not track its dirty observation is observed every pass
-/// and need never clear its flags, so they are no evidence of a stale install.
-fn reports_stale_layout(element: &dyn ElementTrait) -> bool {
-    element.dirty_observation_is_tracked()
-        && element
-            .local_dirty_flags()
-            .intersects(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT))
-}
-
-/// Atomic placement authority covers the whole hosted subtree, not just the
-/// atomic shell. Read every node's local state directly: cached subtree
-/// aggregates are pass-scoped and may not have been refreshed at paint
-/// preflight time.
-fn inline_ifc_atomic_subtree_layout_placement_clean(arena: &NodeArena, root: NodeKey) -> bool {
-    let mask = DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT);
-    let mut pending = vec![root];
-    let mut visited = FxHashSet::default();
-    while let Some(node_key) = pending.pop() {
-        if !visited.insert(node_key) {
-            return false;
-        }
-        let Some(node) = arena.get(node_key) else {
-            return false;
-        };
-        if arena.arena_local_dirty(node_key).intersects(mask)
-            || reports_stale_layout(node.element.as_ref())
-        {
-            return false;
-        }
-        pending.extend(node.children.iter().copied());
-    }
-    true
 }
 
 /// Takes an inline-IFC-owned node for an install. Installing the same plan
@@ -5426,21 +5006,18 @@ enum InlineIfcRootNodeGeometryKind {
         paint_input: Arc<InlineIfcTextPassPaintInput>,
         paint_bounds: InlineIfcPaintRect,
     },
-    /// Atomic inline box: complete shaped + alignment witness.
-    Atomic {
-        witness: InlineIfcAtomicInstallWitness,
-    },
+    /// Atomic inline box placed on its line.
+    Atomic { atomic: InlineIfcAtomicInstall },
 }
 
-/// Re-derive only the atomic placement consumed by the owning-root paint
-/// witness. Layout uses this same calculation when creating its install.
-fn inline_ifc_atomic_install_witness(
+/// Where the shaped inline box of `node_key` sits on its line, aligned.
+fn inline_ifc_atomic_install(
     context: &InlineFormattingContext,
     snapshot: &InlineIfcTextLayoutSnapshot,
     node_key: NodeKey,
     element: &dyn ElementTrait,
     source: InlineIfcSourceId,
-) -> Option<InlineIfcAtomicInstallWitness> {
+) -> Option<InlineIfcAtomicInstall> {
     let package = context.atomic_box_placement_package(source);
     let placement = exact_inline_ifc_atomic_placement(&package, source)?;
     let vertical_align = inline_atomic_vertical_align(element);
@@ -5455,18 +5032,37 @@ fn inline_ifc_atomic_install_witness(
         vertical_align,
     );
     aligned_rect.y = line.y + align_offset;
-    Some(InlineIfcAtomicInstallWitness {
+    Some(InlineIfcAtomicInstall {
         node_key,
-        stable_id: element.stable_id(),
-        source,
-        inline_box_id: placement.id,
-        insertion_byte: placement.insertion_byte,
-        line_index: placement.line_index,
-        measurement: placement.measurement.clone(),
-        raw_rect: placement.rect,
         aligned_rect,
-        vertical_align,
     })
+}
+
+/// The atomic child's placement at its line position, and that position's
+/// offset from the root's content origin (the child's spatial reference).
+fn inline_ifc_atomic_layout_placement(
+    flow_origin_x: f32,
+    flow_origin_y: f32,
+    visual_offset_x: f32,
+    visual_offset_y: f32,
+    content_top_offset: f32,
+    root_placement: LayoutPlacement,
+    aligned_rect: InlineIfcPaintRect,
+) -> (LayoutPlacement, [f32; 2]) {
+    let offset = [aligned_rect.x, aligned_rect.y - content_top_offset];
+    let placement = LayoutPlacement {
+        parent_x: flow_origin_x + offset[0],
+        parent_y: flow_origin_y + offset[1],
+        visual_offset_x,
+        visual_offset_y,
+        available_width: aligned_rect.width.max(1.0),
+        available_height: aligned_rect.height.max(1.0),
+        viewport_width: root_placement.viewport_width,
+        viewport_height: root_placement.viewport_height,
+        percent_base_width: root_placement.percent_base_width,
+        percent_base_height: root_placement.percent_base_height,
+    };
+    (placement, offset)
 }
 
 fn inline_ifc_root_geometry(
@@ -5477,8 +5073,6 @@ fn inline_ifc_root_geometry(
     root_key: NodeKey,
 ) -> Option<InlineIfcRootGeometry> {
     let _profile = layout_profile_scope(LayoutPlaceTiming::InlineIfcGeometry);
-    #[cfg(test)]
-    tests::inline_ifc_preflight_tests::note_geometry_rebuild();
     let context = context?;
     let snapshot = context.text_layout_snapshot_ref();
     let content_top_offset = snapshot
@@ -5591,17 +5185,12 @@ fn inline_ifc_root_geometry(
             continue;
         }
 
-        let witness = inline_ifc_atomic_install_witness(
-            context,
-            snapshot,
-            node_key,
-            node.element.as_ref(),
-            source,
-        )?;
-        merge(witness.aligned_rect, &mut content);
+        let atomic =
+            inline_ifc_atomic_install(context, snapshot, node_key, node.element.as_ref(), source)?;
+        merge(atomic.aligned_rect, &mut content);
         nodes.push(InlineIfcRootNodeGeometry {
             node_key,
-            kind: InlineIfcRootNodeGeometryKind::Atomic { witness },
+            kind: InlineIfcRootNodeGeometryKind::Atomic { atomic },
         });
     }
 
@@ -5679,8 +5268,8 @@ fn build_inline_ifc_install_plan(
                     paint_bounds,
                 });
             }
-            InlineIfcRootNodeGeometryKind::Atomic { witness } => {
-                plan.push(InlineIfcNodeInstallOp::Atomic { witness });
+            InlineIfcRootNodeGeometryKind::Atomic { atomic } => {
+                plan.push(InlineIfcNodeInstallOp::Atomic { atomic });
             }
         }
     }
@@ -6199,7 +5788,6 @@ pub struct Element {
     padding: EdgeInsets,
     background_color: Box<dyn ColorLike>,
     paint_recording_inputs: RefCell<Option<paint_recording_inputs::NativeSelfPaintInputs>>,
-    inline_witness_inputs: RefCell<Option<inline_witness_inputs::NativeInlineWitnessInputs>>,
     child_mask_recording_inputs: RefCell<Option<crate::view::paint::RetainedChildMaskPlan>>,
     /// `child_clip_classification` for one coverage walk and arena clock.
     child_clip_memo: RefCell<Option<((u64, u64), ChildClipClassification)>>,
@@ -6274,20 +5862,6 @@ pub struct Element {
     inherited_paint_cull_rect: Option<Rect>,
     last_child_paint_cull_rect: Option<Rect>,
     children: Vec<crate::view::node_arena::NodeKey>,
-}
-
-/// A synchronous native preflight proof. Only `record_inline_root_preflight`
-/// constructs it; it never leaves the capability/metadata pair or enters the
-/// recording cache. It proves layout ownership, not paint/property authority.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct InlineRootRecordingWitness {
-    owner: crate::view::node_arena::NodeKey,
-    stable_id: u64,
-}
-impl InlineRootRecordingWitness {
-    fn matches(self, owner: Option<crate::view::node_arena::NodeKey>, stable_id: u64) -> bool {
-        owner == Some(self.owner) && stable_id == self.stable_id
-    }
 }
 
 impl Element {
@@ -6372,659 +5946,6 @@ impl Element {
                 },
             },
         ))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inline_root_witness_checks_for_test() -> usize {
-        tests::inline_ifc_preflight_tests::witness_checks()
-    }
-
-    /// Fuse only the known native IFC root's synchronous preflight calls.
-    /// Public/custom hooks retain their original invocation order. Unknown
-    /// descendants can have interior mutable getters, so their roots cannot
-    /// share this proof even if they opt into command replay.
-    pub(crate) fn record_inline_root_preflight(
-        &self,
-        owner: crate::view::node_arena::NodeKey,
-        properties: crate::view::compositor::property_tree::PropertyTreeState,
-        contents: crate::view::compositor::property_tree::PropertyTreeState,
-        revision: crate::view::paint::PaintContentRevision,
-        arena: &NodeArena,
-        deferred_phase_root: bool,
-        context: &crate::view::paint::PaintRecordingContext,
-    ) -> Option<(
-        ShadowPaintRecordingCapability,
-        Option<crate::view::paint::PaintNodePlan<crate::view::paint::PaintChunkMetadata>>,
-    )> {
-        if !self.is_owning_inline_ifc_root_role()
-            || context.recording_owner != Some(owner)
-            || context.recording_owner_stable_id != Some(self.stable_id())
-        {
-            return None;
-        }
-        let mut pending = self.children.clone();
-        let mut seen = FxHashSet::default();
-        while let Some(key) = pending.pop() {
-            if !seen.insert(key) {
-                return None;
-            }
-            let node = arena.get(key)?;
-            let host = node.element.as_any();
-            if !(host.is::<Element>()
-                || host.is::<Text>()
-                || host.is::<crate::view::base_component::image::Image>()
-                || host.is::<crate::view::base_component::svg::Svg>()
-                || host.is::<crate::view::base_component::text_area::TextArea>())
-            {
-                return None;
-            }
-            pending.extend_from_slice(node.element.children());
-        }
-        let mut context = context.clone();
-        context.inline_root_recording = None;
-        // Preserve the original capability call and rejection precedence. For
-        // an owning IFC root, Recordable implies its full live layout witness
-        // just succeeded. Only the immediately following metadata call shares it.
-        let capability =
-            self.shadow_paint_recording_capability(arena, deferred_phase_root, &context);
-        let plan = if matches!(capability, ShadowPaintRecordingCapability::Recordable) {
-            context.inline_root_recording = Some(InlineRootRecordingWitness {
-                owner,
-                stable_id: self.stable_id(),
-            });
-            self.record_shadow_paint_metadata_plan(
-                owner, properties, contents, revision, arena, &context,
-            )
-        } else {
-            None
-        };
-        Some((capability, plan))
-    }
-
-    /// Pure paint-preflight proof that this fragmentable `Element` is the
-    /// live owner of a fully-installed, non-atomic IFC.  This deliberately
-    /// derives authority from the current install plus a fresh collector
-    /// snapshot; `inline_ifc_owned_by_root == false` alone is not ownership
-    /// evidence, and the install vector order is not paint/DOM order.
-    fn owning_inline_ifc_root_paint_witness(
-        &self,
-        arena: &NodeArena,
-    ) -> Result<(), ShadowPaintBlocker> {
-        let observed = inline_witness_inputs::NativeInlineWitnessInputs::observe(self, arena);
-        if observed.as_ref().is_some_and(|current| {
-            self.inline_witness_inputs
-                .borrow()
-                .as_ref()
-                .is_some_and(|old| old.same_inputs(current))
-        }) {
-            crate::view::paint::work_profile::count("inline_install_replays", 1);
-            return Ok(());
-        }
-        self.inline_witness_inputs.borrow_mut().take();
-        let result = self.validate_owning_inline_ifc_root_install(arena);
-        if result.is_ok()
-            && observed.as_ref().is_some_and(|before| {
-                inline_witness_inputs::NativeInlineWitnessInputs::observe(self, arena)
-                    .as_ref()
-                    .is_some_and(|after| before.same_inputs(after))
-            })
-        {
-            *self.inline_witness_inputs.borrow_mut() = observed;
-        }
-        result
-    }
-
-    fn validate_owning_inline_ifc_root_install(
-        &self,
-        arena: &NodeArena,
-    ) -> Result<(), ShadowPaintBlocker> {
-        let _profile = crate::view::paint::work_profile::scope("validate_inline_root_install");
-        #[cfg(test)]
-        tests::inline_ifc_preflight_tests::note_witness_check();
-        let reject = || ShadowPaintBlocker::MissingPreparedInlineRoot;
-        if !self.is_owning_inline_ifc_root_role()
-            || self.layout_dirty
-            || self
-                .dirty_flags
-                .intersects(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT))
-            || self.inline_ifc_layout_call_site.pending.is_some()
-        {
-            return Err(reject());
-        }
-        let root_key = arena
-            .find_by_stable_id(self.stable_id())
-            .ok_or_else(reject)?;
-        if arena
-            .arena_local_dirty(root_key)
-            .intersects(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT))
-        {
-            return Err(reject());
-        }
-        let install = self
-            .inline_ifc_layout_call_site
-            .current
-            .as_ref()
-            .ok_or_else(reject)?;
-        let placement = self.last_layout_placement.ok_or_else(reject)?;
-        if install.children_snapshot != self.children
-            || install.viewport_width != placement.viewport_width
-            || install.viewport_height != placement.viewport_height
-            || install.applied_origins != self.inline_ifc_apply_origins()
-            || !install.build_inner_width.is_finite()
-            || install.build_inner_width < 0.0
-            || !install.applied_inner_width.is_finite()
-            || install.applied_inner_width < 0.0
-        {
-            return Err(reject());
-        }
-
-        let collector_input = ElementInlineIfcMetadataCollectorInput::new(
-            root_key,
-            install.build_inner_width,
-            install.viewport_width,
-            install.viewport_height,
-        );
-        let line_width = collector_input.max_width;
-        let collected = {
-            let _profile =
-                crate::view::paint::work_profile::scope("collect_live_inline_root_inputs");
-            ElementInlineIfcMetadataCollector::collect(arena, collector_input).ok_or_else(reject)?
-        };
-        if !collected.root_source.matches_cache_key(&install.cache_key) {
-            return Err(reject());
-        }
-        let context = self
-            .inline_ifc_layout_call_site
-            .cache
-            .context_for(&install.cache_key)
-            .ok_or_else(reject)?;
-        let snapshot = context.text_layout_snapshot_ref();
-        // Text and span installs are checked against their live owners below.
-        // Rebuilding their geometry here would create caret lines and glyph
-        // payloads only to discard them. Derive the atomic evidence from the
-        // fresh collector and shaped context, never from the install being
-        // validated; leftover atomics still reject a missing/wrong-kind plan.
-        let mut current_atomic_witnesses = FxHashMap::default();
-        for &node_key in collected.node_order.iter().filter(|&&key| key != root_key) {
-            let source = collected
-                .sources_by_node
-                .get(&node_key)
-                .copied()
-                .ok_or_else(reject)?;
-            let node = arena.get(node_key).ok_or_else(reject)?;
-            if node.element.as_any().is::<Text>()
-                || node
-                    .element
-                    .as_any()
-                    .downcast_ref::<Element>()
-                    .is_some_and(Element::is_fragmentable_inline_element)
-            {
-                continue;
-            }
-            let witness = inline_ifc_atomic_install_witness(
-                context,
-                snapshot,
-                node_key,
-                node.element.as_ref(),
-                source,
-            )
-            .ok_or_else(reject)?;
-            current_atomic_witnesses.insert(node_key, witness);
-        }
-        // The fresh collector already owns the expected source-key set. Check
-        // membership/cardinality against it directly, then consume the unique
-        // plan keys when checking installed owners. No second/third hash set
-        // is needed to prove these three sets are exactly equal.
-        let expected_node_count = collected.sources_by_node.len()
-            - usize::from(collected.sources_by_node.contains_key(&root_key));
-        let mut plan_nodes =
-            FxHashSet::with_capacity_and_hasher(install.plan.len(), Default::default());
-        for op in &install.plan {
-            let node_key = op.node_key();
-            if node_key == root_key
-                || !collected.sources_by_node.contains_key(&node_key)
-                || !plan_nodes.insert(node_key)
-                || arena
-                    .arena_local_dirty(node_key)
-                    .intersects(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT))
-            {
-                return Err(reject());
-            }
-            let node = arena.get(node_key).ok_or_else(reject)?;
-            if reports_stale_layout(node.element.as_ref()) {
-                return Err(reject());
-            }
-            match op {
-                InlineIfcNodeInstallOp::Span {
-                    package,
-                    paint_fragments,
-                    ..
-                } => {
-                    let Some(span) = node.element.as_any().downcast_ref::<Element>() else {
-                        return Err(reject());
-                    };
-                    if !span.is_fragmentable_inline_element()
-                        || !span.inline_ifc_owned_by_root
-                        || span.layout_dirty
-                    {
-                        return Err(reject());
-                    }
-                    let origin_x = install.applied_origins.0;
-                    let origin_y = install.applied_origins.1 - install.content_top_offset;
-                    let mut expected_packages = package
-                        .as_ref()
-                        .map(ElementInlineIfcRolloutPackages::from_inline_ifc_distributed)
-                        .unwrap_or_default();
-                    if let Some(package) = expected_packages.decoration_draw_rect.as_mut() {
-                        for fragment in &mut package.fragments {
-                            fragment.metadata.position[0] += origin_x;
-                            fragment.metadata.position[1] += origin_y;
-                        }
-                    }
-                    let expected_fragments = paint_fragments
-                        .iter()
-                        .map(|rect| Rect {
-                            x: origin_x + rect.x,
-                            y: origin_y + rect.y,
-                            width: rect.width,
-                            height: rect.height,
-                        })
-                        .collect::<Vec<_>>();
-                    let expected_shell_bounds = bounding_rect(
-                        &expected_fragments
-                            .iter()
-                            .map(|rect| crate::ui::Rect {
-                                x: rect.x,
-                                y: rect.y,
-                                width: rect.width,
-                                height: rect.height,
-                            })
-                            .collect::<Vec<_>>(),
-                    );
-                    let rect_bits_eq = |left: &Rect, right: &Rect| {
-                        left.x.to_bits() == right.x.to_bits()
-                            && left.y.to_bits() == right.y.to_bits()
-                            && left.width.to_bits() == right.width.to_bits()
-                            && left.height.to_bits() == right.height.to_bits()
-                    };
-                    let shell_matches = span.layout_state.layout_position.x.to_bits()
-                        == expected_shell_bounds.x.to_bits()
-                        && span.layout_state.layout_position.y.to_bits()
-                            == expected_shell_bounds.y.to_bits()
-                        && span.layout_state.layout_flow_position.x.to_bits()
-                            == expected_shell_bounds.x.to_bits()
-                        && span.layout_state.layout_flow_position.y.to_bits()
-                            == expected_shell_bounds.y.to_bits()
-                        && span.layout_state.layout_inner_position.x.to_bits()
-                            == expected_shell_bounds.x.to_bits()
-                        && span.layout_state.layout_inner_position.y.to_bits()
-                            == expected_shell_bounds.y.to_bits()
-                        && span.layout_state.layout_size.width.to_bits()
-                            == expected_shell_bounds.width.to_bits()
-                        && span.layout_state.layout_size.height.to_bits()
-                            == expected_shell_bounds.height.to_bits()
-                        && span.layout_state.layout_inner_size.width.to_bits()
-                            == expected_shell_bounds.width.to_bits()
-                        && span.layout_state.layout_inner_size.height.to_bits()
-                            == expected_shell_bounds.height.to_bits()
-                        && span.layout_state.should_render
-                            == (expected_shell_bounds.width > 0.0
-                                && expected_shell_bounds.height > 0.0);
-                    if span.inline_ifc_rollout_packages != expected_packages
-                        || span.inline_paint_fragments.len() != expected_fragments.len()
-                        || !span
-                            .inline_paint_fragments
-                            .iter()
-                            .zip(&expected_fragments)
-                            .all(|(left, right)| rect_bits_eq(left, right))
-                        || !shell_matches
-                    {
-                        return Err(reject());
-                    }
-                }
-                InlineIfcNodeInstallOp::Text {
-                    lines,
-                    paint_input,
-                    paint_bounds,
-                    ..
-                } => {
-                    let Some(text) = node.element.as_any().downcast_ref::<Text>() else {
-                        return Err(reject());
-                    };
-                    let origin_x = install.applied_origins.0;
-                    let origin_y = install.applied_origins.1 - install.content_top_offset;
-                    let expected_paint_bounds = crate::ui::Rect {
-                        x: origin_x + paint_bounds.x,
-                        y: origin_y + paint_bounds.y,
-                        width: paint_bounds.width,
-                        height: paint_bounds.height,
-                    };
-                    let mut expected_shell_bounds = bounding_rect_iter(lines.iter().map(|line| {
-                        let mut rect = line.rect;
-                        rect.x += origin_x;
-                        rect.y += origin_y;
-                        rect
-                    }));
-                    if (expected_shell_bounds.width <= 0.0 || expected_shell_bounds.height <= 0.0)
-                        && paint_bounds.width > 0.0
-                        && paint_bounds.height > 0.0
-                    {
-                        expected_shell_bounds = expected_paint_bounds;
-                    }
-                    if !text.matches_inline_ifc_owned_install(
-                        lines,
-                        [origin_x, origin_y],
-                        paint_input,
-                        expected_paint_bounds,
-                        expected_shell_bounds,
-                    ) {
-                        return Err(reject());
-                    }
-                }
-                InlineIfcNodeInstallOp::Atomic { witness } => {
-                    if !inline_ifc_atomic_subtree_layout_placement_clean(arena, node_key) {
-                        return Err(reject());
-                    }
-                    let current_witness = current_atomic_witnesses
-                        .remove(&node_key)
-                        .ok_or_else(reject)?;
-                    let current_measurement =
-                        inline_atomic_measurement(node.element.as_ref(), line_width);
-                    let current_vertical_align =
-                        inline_atomic_vertical_align(node.element.as_ref());
-                    // Only this install places an atomic child, so a host that
-                    // does not report its placement sits where the current
-                    // install put it.
-                    let placement_matches = node.element.last_placement().is_none_or(|actual| {
-                        let (expected, _) = inline_ifc_atomic_layout_placement(
-                            install.applied_origins.2,
-                            install.applied_origins.3,
-                            self.layout_state.layout_position.x
-                                - self.layout_state.layout_flow_position.x,
-                            self.layout_state.layout_position.y
-                                - self.layout_state.layout_flow_position.y,
-                            install.content_top_offset,
-                            placement,
-                            witness.aligned_rect,
-                        );
-                        layout_placement_bits_eq(actual, expected)
-                    });
-                    if !inline_ifc_atomic_witness_bits_eq(witness, &current_witness)
-                        || witness.stable_id != node.element.stable_id()
-                        || current_vertical_align != witness.vertical_align
-                        || !inline_ifc_atomic_measurement_bits_eq(
-                            &witness.measurement,
-                            &current_measurement,
-                        )
-                        || !placement_matches
-                    {
-                        return Err(reject());
-                    }
-                }
-            }
-        }
-        if !current_atomic_witnesses.is_empty()
-            || plan_nodes.len() != expected_node_count
-            || install.installed_nodes.len() != plan_nodes.len()
-            || install
-                .installed_nodes
-                .iter()
-                .any(|node| !plan_nodes.remove(node))
-            || !plan_nodes.is_empty()
-        {
-            return Err(reject());
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn damage_owning_inline_ifc_root_witness_for_test(
-        &mut self,
-        damage: OwningInlineIfcRootWitnessDamage,
-    ) {
-        match damage {
-            OwningInlineIfcRootWitnessDamage::MissingCurrent => {
-                self.inline_ifc_layout_call_site.current = None;
-            }
-            OwningInlineIfcRootWitnessDamage::Pending => {
-                let install = self.inline_ifc_layout_call_site.current.as_ref().unwrap();
-                self.inline_ifc_layout_call_site.pending = Some(ElementInlineIfcPendingPlan {
-                    cache_key: install.cache_key.clone(),
-                    children_snapshot: install.children_snapshot.clone(),
-                    content_top_offset: install.content_top_offset,
-                    content_size: install.content_size,
-                    inner_width: install.build_inner_width,
-                    plan: Vec::new(),
-                });
-            }
-            OwningInlineIfcRootWitnessDamage::ChildrenSnapshot => {
-                self.inline_ifc_layout_call_site
-                    .current
-                    .as_mut()
-                    .unwrap()
-                    .children_snapshot
-                    .push(<NodeKey as slotmap::Key>::null());
-            }
-            OwningInlineIfcRootWitnessDamage::PlanMissing => {
-                self.inline_ifc_layout_call_site
-                    .current
-                    .as_mut()
-                    .unwrap()
-                    .plan
-                    .pop();
-            }
-            OwningInlineIfcRootWitnessDamage::PlanDuplicate => {
-                let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-                install.plan.push(install.plan[0].clone());
-            }
-            OwningInlineIfcRootWitnessDamage::InstalledMissing => {
-                self.inline_ifc_layout_call_site
-                    .current
-                    .as_mut()
-                    .unwrap()
-                    .installed_nodes
-                    .pop();
-            }
-            OwningInlineIfcRootWitnessDamage::InstalledDuplicate => {
-                let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-                install.installed_nodes.push(install.installed_nodes[0]);
-            }
-            OwningInlineIfcRootWitnessDamage::CacheKey => {
-                self.inline_ifc_layout_call_site
-                    .current
-                    .as_mut()
-                    .unwrap()
-                    .build_inner_width += 13.0;
-            }
-            OwningInlineIfcRootWitnessDamage::WrongKind => {
-                let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-                let node_key = install.plan[0].node_key();
-                install.plan[0] = InlineIfcNodeInstallOp::Span {
-                    node_key,
-                    package: None,
-                    paint_fragments: Vec::new(),
-                };
-            }
-            OwningInlineIfcRootWitnessDamage::TextPlanPayloadSwap => {
-                let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-                let text_indices = install
-                    .plan
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, op)| {
-                        matches!(op, InlineIfcNodeInstallOp::Text { .. }).then_some(index)
-                    })
-                    .collect::<Vec<_>>();
-                assert!(text_indices.len() >= 2);
-                let second = text_indices[1];
-                let (left, right) = install.plan.split_at_mut(second);
-                let InlineIfcNodeInstallOp::Text {
-                    lines: left_lines,
-                    paint_input: left_input,
-                    paint_bounds: left_bounds,
-                    ..
-                } = &mut left[text_indices[0]]
-                else {
-                    unreachable!()
-                };
-                let InlineIfcNodeInstallOp::Text {
-                    lines: right_lines,
-                    paint_input: right_input,
-                    paint_bounds: right_bounds,
-                    ..
-                } = &mut right[0]
-                else {
-                    unreachable!()
-                };
-                std::mem::swap(left_lines, right_lines);
-                std::mem::swap(left_input, right_input);
-                std::mem::swap(left_bounds, right_bounds);
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicStableId => {
-                let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-                let InlineIfcNodeInstallOp::Atomic { witness } = install
-                    .plan
-                    .iter_mut()
-                    .find(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }))
-                    .unwrap()
-                else {
-                    unreachable!()
-                };
-                witness.stable_id = witness.stable_id.wrapping_add(1);
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicSource => {
-                let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-                let InlineIfcNodeInstallOp::Atomic { witness } = install
-                    .plan
-                    .iter_mut()
-                    .find(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }))
-                    .unwrap()
-                else {
-                    unreachable!()
-                };
-                witness.source = InlineIfcSourceId(witness.source.0.wrapping_add(1));
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicInlineBoxId => {
-                let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-                let InlineIfcNodeInstallOp::Atomic { witness } = install
-                    .plan
-                    .iter_mut()
-                    .find(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }))
-                    .unwrap()
-                else {
-                    unreachable!()
-                };
-                witness.inline_box_id = witness.inline_box_id.wrapping_add(1);
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicInsertionByte => {
-                let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-                let InlineIfcNodeInstallOp::Atomic { witness } = install
-                    .plan
-                    .iter_mut()
-                    .find(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }))
-                    .unwrap()
-                else {
-                    unreachable!()
-                };
-                witness.insertion_byte = witness.insertion_byte.wrapping_add(1);
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicLineIndex => {
-                let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-                let InlineIfcNodeInstallOp::Atomic { witness } = install
-                    .plan
-                    .iter_mut()
-                    .find(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }))
-                    .unwrap()
-                else {
-                    unreachable!()
-                };
-                witness.line_index = witness.line_index.wrapping_add(1);
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicMeasurementMaxWidth => {
-                let witness = self.atomic_install_witness_mut_for_test();
-                witness.measurement.constraints.max_width = Some(1.25);
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicMeasurementAvailableHeight => {
-                let witness = self.atomic_install_witness_mut_for_test();
-                witness.measurement.constraints.available_height = Some(2.5);
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicMeasurementViewport => {
-                let witness = self.atomic_install_witness_mut_for_test();
-                witness.measurement.constraints.viewport = Some(InlineIfcSize::new(3.0, 4.0));
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicMeasurementPercentBase => {
-                let witness = self.atomic_install_witness_mut_for_test();
-                witness.measurement.constraints.percent_base =
-                    InlineIfcPercentBase::new(Some(5.0), Some(6.0));
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicMeasurementSizing => {
-                let witness = self.atomic_install_witness_mut_for_test();
-                witness.measurement.constraints.sizing.min_width = Some(7.0);
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicMeasurementSize => {
-                let witness = self.atomic_install_witness_mut_for_test();
-                witness.measurement.measured_size.width += 1.0;
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicRawRect => {
-                let witness = self.atomic_install_witness_mut_for_test();
-                witness.raw_rect.x += 1.0;
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicAlignedRect => {
-                let witness = self.atomic_install_witness_mut_for_test();
-                witness.aligned_rect.y += 1.0;
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicVerticalAlign => {
-                let witness = self.atomic_install_witness_mut_for_test();
-                witness.vertical_align = match witness.vertical_align {
-                    VerticalAlign::Baseline => VerticalAlign::Top,
-                    _ => VerticalAlign::Baseline,
-                };
-            }
-            OwningInlineIfcRootWitnessDamage::AtomicPackageZeroPlacements
-            | OwningInlineIfcRootWitnessDamage::AtomicPackageDuplicatePlacements => {
-                let install = self.inline_ifc_layout_call_site.current.as_ref().unwrap();
-                let cache_key = install.cache_key.clone();
-                let source = install
-                    .plan
-                    .iter()
-                    .find_map(|op| match op {
-                        InlineIfcNodeInstallOp::Atomic { witness } => Some(witness.source),
-                        _ => None,
-                    })
-                    .unwrap();
-                self.inline_ifc_layout_call_site
-                    .cache
-                    .damage_atomic_package_cardinality_for_test(
-                        &cache_key,
-                        source,
-                        matches!(
-                            damage,
-                            OwningInlineIfcRootWitnessDamage::AtomicPackageDuplicatePlacements
-                        ),
-                    );
-            }
-            OwningInlineIfcRootWitnessDamage::LayoutDirty => {
-                self.layout_dirty = true;
-                self.dirty_flags = self.dirty_flags.union(DirtyPassMask::LAYOUT);
-            }
-            OwningInlineIfcRootWitnessDamage::PlacementDirty => {
-                self.dirty_flags = self.dirty_flags.union(DirtyPassMask::PLACEMENT);
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn atomic_install_witness_mut_for_test(&mut self) -> &mut InlineIfcAtomicInstallWitness {
-        let install = self.inline_ifc_layout_call_site.current.as_mut().unwrap();
-        let InlineIfcNodeInstallOp::Atomic { witness } = install
-            .plan
-            .iter_mut()
-            .find(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }))
-            .unwrap()
-        else {
-            unreachable!()
-        };
-        witness
     }
 
     /// Placement-skip buster for inline IFC roots: a root whose layout
@@ -7433,7 +6354,7 @@ impl Element {
                         );
                     }
                 }
-                InlineIfcNodeInstallOp::Atomic { witness } => {
+                InlineIfcNodeInstallOp::Atomic { atomic } => {
                     let (child_placement, offset) = inline_ifc_atomic_layout_placement(
                         flow_origin_x,
                         flow_origin_y,
@@ -7441,15 +6362,15 @@ impl Element {
                         visual_offset_y,
                         top_offset,
                         placement,
-                        witness.aligned_rect,
+                        atomic.aligned_rect,
                     );
                     let offset = inline_atomic_spatial_offset(
                         arena,
-                        witness.node_key,
+                        atomic.node_key,
                         offset,
                         [origin_x, origin_y],
                     );
-                    arena.with_element_taken(witness.node_key, |child, arena| {
+                    arena.with_element_taken(atomic.node_key, |child, arena| {
                         child.set_layout_offset(0.0, 0.0);
                         child.place(child_placement, arena);
                         child.rebase_inline_atomic_spatial_reference(offset);
@@ -7469,30 +6390,6 @@ impl Element {
             let absolute_mask = self.compute_children_absolute_mask(arena);
             self.update_content_size_from_children(arena, &absolute_mask);
         }
-    }
-
-    /// Moves installed span geometry away from its install plan, so tests can
-    /// prove that live drift fails the paint witness closed.
-    #[cfg(test)]
-    pub(crate) fn offset_inline_ifc_owned_geometry_for_test(&mut self, dx: f32, dy: f32) {
-        if let Some(package) = self
-            .inline_ifc_rollout_packages
-            .decoration_draw_rect
-            .as_mut()
-        {
-            for fragment in &mut package.fragments {
-                fragment.metadata.position[0] += dx;
-                fragment.metadata.position[1] += dy;
-            }
-        }
-        for rect in &mut self.inline_paint_fragments {
-            rect.x += dx;
-            rect.y += dy;
-        }
-        self.layout_state.layout_position.x += dx;
-        self.layout_state.layout_position.y += dy;
-        self.layout_state.layout_flow_position = self.layout_state.layout_position;
-        self.layout_state.layout_inner_position = self.layout_state.layout_position;
     }
 
     /// Apply an origin-independent install plan: shift each op by the root's
@@ -7558,7 +6455,7 @@ impl Element {
                     top_offset,
                     NodeChange::Mutation,
                 ),
-                InlineIfcNodeInstallOp::Atomic { witness } => {
+                InlineIfcNodeInstallOp::Atomic { atomic } => {
                     let (child_placement, offset) = inline_ifc_atomic_layout_placement(
                         flow_origin_x,
                         flow_origin_y,
@@ -7566,15 +6463,15 @@ impl Element {
                         visual_offset_y,
                         top_offset,
                         placement,
-                        witness.aligned_rect,
+                        atomic.aligned_rect,
                     );
                     let offset = inline_atomic_spatial_offset(
                         arena,
-                        witness.node_key,
+                        atomic.node_key,
                         offset,
                         [origin_x, origin_y],
                     );
-                    arena.with_element_taken(witness.node_key, |child, arena| {
+                    arena.with_element_taken(atomic.node_key, |child, arena| {
                         // Bake the line placement into the parent origin:
                         // not every atomic host honours set_layout_offset
                         // (TextAreaTextRun places at parent + visual only).
@@ -8399,63 +7296,14 @@ impl ElementTrait for Element {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,
-        arena: &crate::view::node_arena::NodeArena,
-        deferred_phase_root: bool,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _arena: &crate::view::node_arena::NodeArena,
+        _deferred_phase_root: bool,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> ShadowPaintRecordingCapability {
         if !self.layout_state.should_render || self.backface_culled {
-            let blocker = if self.resolved_transform.is_some()
-                && !recording_context.authorizes_transform_surface_root(self.stable_id())
-            {
-                Some(ShadowPaintBlocker::Transform)
-            } else if (self.should_append_to_root_viewport_render() || deferred_phase_root)
-                && !(recording_context.surface_dag
-                    && deferred_phase_root
-                    && recording_context
-                        .authorizes_deferred_viewport_self_clip_for(self.stable_id()))
-            {
-                Some(ShadowPaintBlocker::Deferred)
-            } else if self.scroll_direction != ScrollDirection::None
-                && !self.has_exact_inactive_scroll_paint(arena)
-                && !recording_context.authorizes_generic_scroll_host_root(self.stable_id())
-            {
-                Some(ShadowPaintBlocker::ScrollContainer)
-            } else if !recording_context.surface_dag
-                && (self.opacity.to_bits() != 1.0_f32.to_bits()
-                    || !matches!(
-                        recording_context.opacity_authority,
-                        crate::view::paint::PaintOpacityAuthority::Baked
-                    ))
-            {
-                Some(ShadowPaintBlocker::StatefulPaint)
-            } else {
-                None
-            };
-            return blocker.map_or(
-                ShadowPaintRecordingCapability::CulledSubtree,
-                ShadowPaintRecordingCapability::Legacy,
-            );
+            return ShadowPaintRecordingCapability::CulledSubtree;
         }
-        if self.inline_ifc_owned_by_root {
-            return match self.inline_ifc_owned_shadow_paint_blocker(
-                arena,
-                deferred_phase_root,
-                &recording_context,
-            ) {
-                Some(blocker) => ShadowPaintRecordingCapability::Legacy(blocker),
-                None => ShadowPaintRecordingCapability::Recordable,
-            };
-        }
-        match self.shadow_paint_blocker(
-            arena,
-            deferred_phase_root,
-            self.recording_context_authorizes_exact_self_clip(&recording_context),
-            true,
-            &recording_context,
-        ) {
-            Some(blocker) => ShadowPaintRecordingCapability::Legacy(blocker),
-            None => ShadowPaintRecordingCapability::Recordable,
-        }
+        ShadowPaintRecordingCapability::Recordable
     }
 
     #[allow(private_interfaces)]
@@ -8464,13 +7312,11 @@ impl ElementTrait for Element {
         owner: crate::view::node_arena::NodeKey,
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
-        arena: &crate::view::node_arena::NodeArena,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _arena: &crate::view::node_arena::NodeArena,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintChunkMetadata> {
         if self.inline_ifc_owned_by_root {
-            let payload = self
-                .prepared_inline_ifc_decoration_payload(&recording_context)
-                .ok()?;
+            let payload = self.prepared_inline_ifc_decoration_payload()?;
             return Some(crate::view::paint::PaintChunkMetadata {
                 frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: crate::view::paint::PaintChunkId {
@@ -8491,14 +7337,7 @@ impl ElementTrait for Element {
                     ),
             });
         }
-        self.record_shadow_node_paint_metadata(
-            owner,
-            properties,
-            content_revision,
-            Some(arena),
-            &recording_context,
-        )
-        .ok()
+        self.record_shadow_node_paint_metadata(owner, properties, content_revision)
     }
 
     #[allow(private_interfaces)]
@@ -8508,12 +7347,10 @@ impl ElementTrait for Element {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintArtifact> {
         if self.inline_ifc_owned_by_root {
-            let payload = self
-                .prepared_inline_ifc_decoration_payload(&recording_context)
-                .ok()?;
+            let payload = self.prepared_inline_ifc_decoration_payload()?;
             #[cfg(test)]
             crate::view::paint::note_full_artifact_record();
             let payload_identity =
@@ -8533,7 +7370,6 @@ impl ElementTrait for Element {
                     .map(crate::view::paint::PaintOp::inline_decoration),
             );
             return Some(crate::view::paint::PaintArtifact {
-                target: Default::default(),
                 chunks: vec![crate::view::paint::PaintChunk {
                     frame: crate::view::paint::PaintChunkFrame::Viewport,
                     id: crate::view::paint::PaintChunkId {
@@ -8562,20 +7398,12 @@ impl ElementTrait for Element {
                 owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                     owner,
                     parent: None,
-                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
-                        .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
+                    snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None),
                 }],
             });
         }
-        let artifact = self
-            .record_shadow_node_paint_artifact(
-                owner,
-                properties,
-                content_revision,
-                arena,
-                &recording_context,
-            )
-            .ok()?;
+        let artifact =
+            self.record_shadow_node_paint_artifact(owner, properties, content_revision, arena)?;
         #[cfg(test)]
         crate::view::paint::note_full_artifact_record();
         Some(artifact)

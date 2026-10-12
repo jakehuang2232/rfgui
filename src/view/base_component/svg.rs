@@ -11,7 +11,6 @@ use crate::view::svg_resource::{
     svg_raster_asset_id_for_request,
 };
 use crate::view::{ImageFit, ImageSampling, SvgSource};
-use rustc_hash::FxHashSet;
 use std::hash::{Hash, Hasher};
 
 use super::resource_slot::{self, ActiveSlot, SlotReplacementError};
@@ -101,9 +100,6 @@ struct SvgRasterPlan {
 
 #[derive(Clone, Debug)]
 struct FrozenSvgPaint {
-    document_key: u64,
-    raster_key: u64,
-    device_scale_bits: u32,
     plan: SvgRasterPlan,
     inner_origin: [f32; 2],
     upload: SampledTextureUpload,
@@ -792,9 +788,6 @@ impl Svg {
             return;
         };
         self.frozen_paint = Some(FrozenSvgPaint {
-            document_key: self.source_key,
-            raster_key: active_raster_key,
-            device_scale_bits,
             plan: active_plan,
             inner_origin: [inner_x, inner_y],
             upload,
@@ -824,334 +817,20 @@ impl Svg {
         }
     }
 
-    fn has_frozen_ready_request_state(&self) -> bool {
-        self.frozen_request_state == Some(self.current_request_state())
-    }
-
-    fn classify_shadow_paint(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        expected_owner: Option<crate::view::node_arena::NodeKey>,
-        properties: Option<crate::view::compositor::property_tree::PropertyTreeState>,
-        deferred_phase_root: bool,
-        recording_context: &crate::view::paint::PaintRecordingContext,
-    ) -> Result<SvgShadowPaintClass, super::ShadowPaintBlocker> {
-        let indexed_owner = arena
-            .find_by_stable_id(self.stable_id())
-            .ok_or(super::ShadowPaintBlocker::MissingPreparedSvg)?;
-        let owner = expected_owner.unwrap_or(indexed_owner);
-        if owner != indexed_owner
-            || !arena.contains_key(owner)
-            || self.element.children() != arena.children_of(owner)
-        {
-            return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-        }
-
+    /// What this SVG draws. `None` when it has nothing to draw.
+    fn classify_shadow_paint(&self) -> Option<SvgShadowPaintClass> {
         match (&self.frozen_document, self.active_slot) {
             (Some(SvgDocumentSnapshot::Ready { .. }), ActiveSlot::None) => {
-                if let Some(blocker) = self.element.shadow_paint_blocker(
-                    arena,
-                    deferred_phase_root,
-                    recording_context.authorizes_self_clip_for(self.stable_id())
-                        || recording_context
-                            .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
-                    true,
-                    &recording_context,
-                ) {
-                    return Err(blocker);
-                }
-                if let Some(properties) = properties {
-                    if properties.transform.is_some()
-                        && !recording_context
-                            .authorizes_transform_surface_owner(properties.transform)
-                    {
-                        return Err(super::ShadowPaintBlocker::Transform);
-                    }
-                    // Generic recording preserves inherited state for the
-                    // planner; legacy recording still needs its projection.
-                    if properties.scroll.is_some()
-                        && !recording_context.authorizes_surface_dag_paint_properties(
-                            owner,
-                            self.stable_id(),
-                            properties,
-                        )
-                    {
-                        return Err(super::ShadowPaintBlocker::ScrollContainer);
-                    }
-                }
-                if !self.element.children().is_empty() || !self.has_frozen_ready_request_state() {
-                    return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-                }
-                let mut inactive_roots = FxHashSet::default();
-                for &inactive_root in self.loading_slot.iter().chain(self.error_slot.iter()) {
-                    if !inactive_roots.insert(inactive_root)
-                        || !arena.contains_key(inactive_root)
-                        || arena.parent_of(inactive_root) != Some(owner)
-                    {
-                        return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-                    }
-                }
-                let prepared = self
-                    .prepared_svg_op(
-                        [0.0, 0.0],
-                        recording_context
-                            .paint_opacity(self.frozen_paint.as_ref().map_or(0.0, |p| p.opacity)),
-                    )
-                    .ok_or(super::ShadowPaintBlocker::MissingPreparedSvg)?;
-                if crate::view::paint::PreparedSvgIdentity::from_op(&prepared).is_none() {
-                    return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-                }
-                let frozen = self
-                    .frozen_paint
-                    .as_ref()
-                    .ok_or(super::ShadowPaintBlocker::MissingPreparedSvg)?;
-                let current_asset_id = svg_raster_asset_id_for_request(
-                    frozen.raster_key,
-                    frozen.document_key,
-                    frozen.plan.request,
-                );
-                if frozen.document_key != self.source_key
-                    || self.frozen_document_key != Some(self.source_key)
-                    || self.active_raster_key != Some(frozen.raster_key)
-                    || self.active_raster_request != Some(frozen.plan.request)
-                    || (self.frozen_request_is_exact
-                        && self.active_device_scale_bits != Some(frozen.device_scale_bits))
-                    || current_asset_id
-                        .map(crate::view::sampled_texture::SampledTextureId::SvgRaster)
-                        != Some(frozen.upload.id)
-                    || frozen.plan.local_draw_bounds[2] <= 0.0
-                    || frozen.plan.local_draw_bounds[3] <= 0.0
-                {
-                    return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-                }
-                Ok(SvgShadowPaintClass::ReadyPrepared(prepared))
+                let opacity = self.frozen_paint.as_ref().map_or(0.0, |p| p.opacity);
+                Some(SvgShadowPaintClass::ReadyPrepared(
+                    self.prepared_svg_op([0.0, 0.0], opacity.clamp(0.0, 1.0))?,
+                ))
             }
-            (Some(document), ActiveSlot::Loading | ActiveSlot::Error) => {
-                if let Some(blocker) = self.element.shadow_paint_blocker(
-                    arena,
-                    // Authorize only the wrapper's canonical zero-blur
-                    // outer-shadow payload under an exact recorder-owned clip.
-                    deferred_phase_root,
-                    recording_context.authorizes_self_clip_for(self.stable_id())
-                        || recording_context
-                            .authorizes_deferred_viewport_self_clip_for(self.stable_id()),
-                    true,
-                    &recording_context,
-                ) {
-                    return Err(blocker);
-                }
-                if let Some(properties) = properties {
-                    if properties.transform.is_some()
-                        && !recording_context
-                            .authorizes_transform_surface_owner(properties.transform)
-                    {
-                        return Err(super::ShadowPaintBlocker::Transform);
-                    }
-                    // Generic recording preserves inherited state for the
-                    // planner; legacy recording still needs its projection.
-                    if properties.scroll.is_some()
-                        && !recording_context.authorizes_surface_dag_paint_properties(
-                            owner,
-                            self.stable_id(),
-                            properties,
-                        )
-                    {
-                        return Err(super::ShadowPaintBlocker::ScrollContainer);
-                    }
-                    // The generic recorder owns the complete state. Record local
-                    // opacity in paint ops; the surface compiler neutralizes it
-                    // for rasterization and applies the effect at composition.
-                    // This does not bake opacity into the reusable raster pixels.
-                    if let Some(effect) = properties.effect
-                        && !recording_context.authorizes_surface_dag_paint_properties(
-                            owner,
-                            self.stable_id(),
-                            properties,
-                        )
-                        && !matches!(
-                            recording_context.opacity_authority,
-                            crate::view::paint::PaintOpacityAuthority::NeutralRootEffect(authority)
-                                if authority == effect
-                        )
-                    {
-                        return Err(super::ShadowPaintBlocker::StatefulPaint);
-                    }
-                }
-                let resolved =
-                    Self::resolve_frozen_slot(document, self.frozen_active_raster.as_ref());
-                if self.frozen_document_key != Some(self.source_key)
-                    || resolved != self.active_slot
-                    || self.active_raster_key != self.frozen_active_raster_key
-                    || self.pending_raster_key != self.frozen_pending_raster_key
-                    || self.frozen_active_raster_key.is_some()
-                        != self.frozen_active_raster.is_some()
-                    || self.frozen_pending_raster_key.is_some()
-                        != self.frozen_pending_raster.is_some()
-                    || self.frozen_paint.is_some()
-                    || self.frozen_request_is_exact
-                {
-                    return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-                }
-                // sync_active_slot moves the active roots out of slot storage
-                // into element/arena children. Empty storage proves that
-                // transfer completed; nonempty active children are allowed
-                // and validated below before normal coverage traversal.
-                let active_target_is_empty = match self.active_slot {
-                    ActiveSlot::Loading => self.loading_slot.is_empty(),
-                    ActiveSlot::Error => self.error_slot.is_empty(),
-                    ActiveSlot::None => false,
-                };
-                if !active_target_is_empty {
-                    return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-                }
-
-                let mut active_reachable = FxHashSet::default();
-                let mut active_stack = self
-                    .element
-                    .children()
-                    .iter()
-                    .rev()
-                    .copied()
-                    .map(|child| (owner, child))
-                    .collect::<Vec<_>>();
-                while let Some((expected_parent, key)) = active_stack.pop() {
-                    if !active_reachable.insert(key) {
-                        return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-                    }
-                    let node = arena
-                        .get(key)
-                        .ok_or(super::ShadowPaintBlocker::MissingPreparedSvg)?;
-                    if node.parent() != Some(expected_parent)
-                        || node.element.children() != node.children()
-                    {
-                        return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-                    }
-                    let children = node.children().to_vec();
-                    drop(node);
-                    active_stack.extend(children.into_iter().rev().map(|child| (key, child)));
-                }
-
-                let mut inactive_roots = FxHashSet::default();
-                for &inactive_root in self.loading_slot.iter().chain(self.error_slot.iter()) {
-                    if active_reachable.contains(&inactive_root)
-                        || !inactive_roots.insert(inactive_root)
-                        || !arena.contains_key(inactive_root)
-                        || arena.parent_of(inactive_root) != Some(owner)
-                    {
-                        return Err(super::ShadowPaintBlocker::MissingPreparedSvg);
-                    }
-                }
-                Ok(SvgShadowPaintClass::ActiveSlotWrapper(self.active_slot))
+            (Some(_), ActiveSlot::Loading | ActiveSlot::Error) => {
+                Some(SvgShadowPaintClass::ActiveSlotWrapper(self.active_slot))
             }
-            _ => Err(super::ShadowPaintBlocker::MissingPreparedSvg),
+            _ => None,
         }
-    }
-
-    fn has_canonical_culled_subtree_state(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> bool {
-        if self.element.layout_state.should_render {
-            return false;
-        }
-        let Some(owner) = arena.find_by_stable_id(self.stable_id()) else {
-            return false;
-        };
-        if !arena.contains_key(owner) || self.element.children() != arena.children_of(owner) {
-            return false;
-        }
-
-        match (&self.frozen_document, self.active_slot) {
-            (Some(SvgDocumentSnapshot::Ready { .. }), ActiveSlot::None) => {
-                let Some(frozen) = self.frozen_paint.as_ref() else {
-                    return false;
-                };
-                let current_asset_id = svg_raster_asset_id_for_request(
-                    frozen.raster_key,
-                    frozen.document_key,
-                    frozen.plan.request,
-                );
-                if !self.element.children().is_empty()
-                    || !self.has_frozen_ready_request_state()
-                    || frozen.document_key != self.source_key
-                    || self.frozen_document_key != Some(self.source_key)
-                    || self.active_raster_key != Some(frozen.raster_key)
-                    || self.active_raster_request != Some(frozen.plan.request)
-                    || (self.frozen_request_is_exact
-                        && self.active_device_scale_bits != Some(frozen.device_scale_bits))
-                    || current_asset_id
-                        .map(crate::view::sampled_texture::SampledTextureId::SvgRaster)
-                        != Some(frozen.upload.id)
-                    || frozen.upload.validate_rgba8().is_none()
-                {
-                    return false;
-                }
-            }
-            (Some(document), ActiveSlot::Loading | ActiveSlot::Error) => {
-                let resolved =
-                    Self::resolve_frozen_slot(document, self.frozen_active_raster.as_ref());
-                let active_target_is_empty = match self.active_slot {
-                    ActiveSlot::Loading => self.loading_slot.is_empty(),
-                    ActiveSlot::Error => self.error_slot.is_empty(),
-                    ActiveSlot::None => false,
-                };
-                if !active_target_is_empty
-                    || self.frozen_document_key != Some(self.source_key)
-                    || resolved != self.active_slot
-                    || self.active_raster_key != self.frozen_active_raster_key
-                    || self.pending_raster_key != self.frozen_pending_raster_key
-                    || self.frozen_active_raster_key.is_some()
-                        != self.frozen_active_raster.is_some()
-                    || self.frozen_pending_raster_key.is_some()
-                        != self.frozen_pending_raster.is_some()
-                    || self.frozen_paint.is_some()
-                    || self.frozen_request_is_exact
-                {
-                    return false;
-                }
-            }
-            _ => return false,
-        }
-
-        let mut active_reachable = FxHashSet::default();
-        let mut active_stack = self
-            .element
-            .children()
-            .iter()
-            .rev()
-            .copied()
-            .map(|child| (owner, child))
-            .collect::<Vec<_>>();
-        while let Some((expected_parent, key)) = active_stack.pop() {
-            if !active_reachable.insert(key) {
-                return false;
-            }
-            let Some(node) = arena.get(key) else {
-                return false;
-            };
-            if node.parent() != Some(expected_parent) || node.element.children() != node.children()
-            {
-                return false;
-            }
-            active_stack.extend(
-                node.children()
-                    .iter()
-                    .rev()
-                    .copied()
-                    .map(|child| (key, child)),
-            );
-        }
-
-        let mut inactive_roots = FxHashSet::default();
-        self.loading_slot
-            .iter()
-            .chain(self.error_slot.iter())
-            .all(|&inactive_root| {
-                !active_reachable.contains(&inactive_root)
-                    && inactive_roots.insert(inactive_root)
-                    && arena.contains_key(inactive_root)
-                    && arena.parent_of(inactive_root) == Some(owner)
-            })
     }
 
     fn apply_intrinsic_measurement(
@@ -1237,9 +916,6 @@ impl Svg {
         self.frozen_active_raster = Some(ImageSnapshot::Ready(image));
         self.frozen_desired_request = Some(plan.request);
         self.frozen_paint = Some(FrozenSvgPaint {
-            document_key: self.source_key,
-            raster_key,
-            device_scale_bits: device_scale.max(0.0001).to_bits(),
             plan,
             inner_origin: [inner_x, inner_y],
             upload,
@@ -1302,9 +978,6 @@ pub(crate) fn prepare_svg_fixture_for_test(
         .upload_for_image(&image)
         .ok_or_else(|| "failed to prepare SVG fixture upload".to_string())?;
     svg.frozen_paint = Some(FrozenSvgPaint {
-        document_key: svg.source_key,
-        raster_key: 0,
-        device_scale_bits: device_scale.max(0.0001).to_bits(),
         plan,
         inner_origin: [destination[0], destination[1]],
         upload,
@@ -1451,56 +1124,14 @@ impl ElementTrait for Svg {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,
-        arena: &crate::view::node_arena::NodeArena,
-        deferred_phase_root: bool,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _arena: &crate::view::node_arena::NodeArena,
+        _deferred_phase_root: bool,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> super::ShadowPaintRecordingCapability {
-        // A turned-away host records nothing, whatever its source state.
-        if self.element.is_backface_culled() {
-            return self.element.shadow_paint_recording_capability(
-                arena,
-                deferred_phase_root,
-                recording_context,
-            );
+        if !self.element.layout_state.should_render || self.element.is_backface_culled() {
+            return super::ShadowPaintRecordingCapability::CulledSubtree;
         }
-        if !self.element.layout_state.should_render {
-            let paint = self.element.retained_paint_properties();
-            let blocker = if self.element.has_retained_transform_surface()
-                && !recording_context.authorizes_transform_surface_root(self.stable_id())
-            {
-                Some(super::ShadowPaintBlocker::Transform)
-            } else if self.element.is_deferred_to_root_viewport_render() || deferred_phase_root {
-                Some(super::ShadowPaintBlocker::Deferred)
-            } else if paint.is_scroll_container
-                && !self.element.has_exact_inactive_scroll_paint(arena)
-            {
-                Some(super::ShadowPaintBlocker::ScrollContainer)
-            } else if paint.opacity.to_bits() != 1.0_f32.to_bits()
-                || !matches!(
-                    recording_context.opacity_authority,
-                    crate::view::paint::PaintOpacityAuthority::Baked
-                )
-            {
-                Some(super::ShadowPaintBlocker::StatefulPaint)
-            } else {
-                None
-            };
-            if let Some(blocker) = blocker {
-                return super::ShadowPaintRecordingCapability::Legacy(blocker);
-            }
-            return if self.has_canonical_culled_subtree_state(arena) {
-                super::ShadowPaintRecordingCapability::CulledSubtree
-            } else {
-                super::ShadowPaintRecordingCapability::Legacy(
-                    super::ShadowPaintBlocker::MissingPreparedSvg,
-                )
-            };
-        }
-        match self.classify_shadow_paint(arena, None, None, deferred_phase_root, &recording_context)
-        {
-            Ok(_) => super::ShadowPaintRecordingCapability::Recordable,
-            Err(blocker) => super::ShadowPaintRecordingCapability::Legacy(blocker),
-        }
+        super::ShadowPaintRecordingCapability::Recordable
     }
 
     #[allow(private_interfaces)]
@@ -1519,38 +1150,24 @@ impl ElementTrait for Svg {
         owner: crate::view::node_arena::NodeKey,
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
-        arena: &crate::view::node_arena::NodeArena,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _arena: &crate::view::node_arena::NodeArena,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintChunkMetadata> {
-        match self
-            .classify_shadow_paint(
-                arena,
-                Some(owner),
-                Some(properties),
-                recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id()),
-                &recording_context,
-            )
-            .ok()?
-        {
+        match self.classify_shadow_paint()? {
             SvgShadowPaintClass::ReadyPrepared(prepared) => {
                 let identity = crate::view::paint::PreparedSvgIdentity::from_op(&prepared)?;
-                let mut metadata = self
-                    .element
-                    .record_shadow_node_paint_metadata(
-                        owner,
-                        properties,
-                        content_revision,
-                        Some(arena),
-                        &recording_context,
-                    )
-                    .ok()?;
+                let mut metadata = self.element.record_shadow_node_paint_metadata(
+                    owner,
+                    properties,
+                    content_revision,
+                )?;
                 metadata.id.role = crate::view::paint::PaintChunkRole::SvgContent;
                 let decoration = self
                     .element
                     .self_decoration_paint_ops(prepared.params.opacity, [0.0, 0.0])
                     .into_iter()
                     .collect::<Vec<_>>();
-                let shadows = self.element.prepared_outer_shadow_ops(&recording_context)?;
+                let shadows = self.element.prepared_outer_shadow_ops()?;
                 metadata.payload_identity =
                     crate::view::paint::PaintPayloadIdentity::svg_with_shadows_and_decoration(
                         identity,
@@ -1561,14 +1178,7 @@ impl ElementTrait for Svg {
             }
             SvgShadowPaintClass::ActiveSlotWrapper(_slot) => self
                 .element
-                .record_shadow_node_paint_metadata(
-                    owner,
-                    properties,
-                    content_revision,
-                    Some(arena),
-                    &recording_context,
-                )
-                .ok(),
+                .record_shadow_node_paint_metadata(owner, properties, content_revision),
         }
     }
 
@@ -1579,34 +1189,20 @@ impl ElementTrait for Svg {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: &crate::view::paint::PaintRecordingContext,
+        _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::PaintArtifact> {
-        let classification = self
-            .classify_shadow_paint(
-                arena,
-                Some(owner),
-                Some(properties),
-                recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id()),
-                &recording_context,
-            )
-            .ok()?;
-        let artifact = match classification {
+        let artifact = match self.classify_shadow_paint()? {
             SvgShadowPaintClass::ReadyPrepared(prepared) => {
                 let identity = crate::view::paint::PreparedSvgIdentity::from_op(&prepared)?;
-                let mut metadata = self
-                    .element
-                    .record_shadow_node_paint_metadata(
-                        owner,
-                        properties,
-                        content_revision,
-                        Some(arena),
-                        &recording_context,
-                    )
-                    .ok()?;
+                let mut metadata = self.element.record_shadow_node_paint_metadata(
+                    owner,
+                    properties,
+                    content_revision,
+                )?;
                 metadata.id.role = crate::view::paint::PaintChunkRole::SvgContent;
                 let mut ops = self
                     .element
-                    .prepared_outer_shadow_ops(&recording_context)?
+                    .prepared_outer_shadow_ops()?
                     .into_iter()
                     .map(crate::view::paint::PaintOp::PreparedShadow)
                     .collect::<Vec<_>>();
@@ -1634,7 +1230,6 @@ impl ElementTrait for Svg {
                     )?;
                 ops.push(crate::view::paint::PaintOp::PreparedSvg(prepared));
                 crate::view::paint::PaintArtifact {
-                    target: Default::default(),
                     chunks: vec![crate::view::paint::PaintChunk {
                         frame: crate::view::paint::PaintChunkFrame::Viewport,
                         id: metadata.id,
@@ -1657,21 +1252,13 @@ impl ElementTrait for Svg {
                     owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                         owner,
                         parent: None,
-                        snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
-                            .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
+                        snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None),
                     }],
                 }
             }
             SvgShadowPaintClass::ActiveSlotWrapper(_slot) => self
                 .element
-                .record_shadow_node_paint_artifact(
-                    owner,
-                    properties,
-                    content_revision,
-                    arena,
-                    &recording_context,
-                )
-                .ok()?,
+                .record_shadow_node_paint_artifact(owner, properties, content_revision, arena)?,
         };
         #[cfg(test)]
         crate::view::paint::note_full_artifact_record();

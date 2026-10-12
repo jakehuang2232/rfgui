@@ -7,8 +7,8 @@ use crate::time::{Duration, Instant};
 use crate::view::SvgSource;
 use crate::view::base_component::{
     ComputedStyleConsumer, DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, PaintResourcePreparationContext, ShadowPaintBlocker,
-    ShadowPaintRecordingCapability, Size,
+    LayoutPlacement, Layoutable, PaintResourcePreparationContext, ShadowPaintRecordingCapability,
+    Size,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::image_resource::{ImageSnapshot, ReadyImage};
@@ -319,36 +319,6 @@ fn prepared_ready_svg_with_inactive_slots(
         error_root,
         error_child,
     )
-}
-
-fn assert_missing_prepared_svg_hooks(arena: &NodeArena, owner: NodeKey) {
-    let node = arena.get(owner).unwrap();
-    let context = node
-        .element
-        .shadow_paint_recording_context(&Default::default());
-    assert!(matches!(
-        node.element
-            .shadow_paint_recording_capability(arena, false, &context),
-        ShadowPaintRecordingCapability::Legacy(
-            ShadowPaintBlocker::MissingPreparedSvg
-                | ShadowPaintBlocker::MissingPreparedInlineRoot
-        )
-    ));
-    let revision = crate::view::paint::PaintContentRevision {
-        self_paint_revision: 1,
-        composite_revision: 1,
-        topology_revision: 1,
-    };
-    assert!(
-        node.element
-            .record_shadow_paint_metadata(owner, Default::default(), revision, arena, &context,)
-            .is_none()
-    );
-    assert!(
-        node.element
-            .record_shadow_paint_artifact(owner, Default::default(), revision, arena, &context,)
-            .is_none()
-    );
 }
 
 mod retained_paint_tests;

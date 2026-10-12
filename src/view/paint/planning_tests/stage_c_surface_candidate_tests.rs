@@ -52,8 +52,7 @@ fn stage_c_surface_dag_type_domains_are_exhaustive() {
 fn stage_c_same_owner_artifact_derives_three_surface_kinds_in_canonical_order() {
     let (arena, root, properties, generations) = same_owner_transform_effect_scroll_roles_fixture();
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C2a same-owner artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let candidates = derive_artifact_surface_candidates(
         &artifact,
         LayerizationPolicy::ResolveMaterializedTargets,
@@ -111,8 +110,7 @@ fn stage_c_same_owner_artifact_derives_three_surface_kinds_in_canonical_order() 
 fn stage_c_nested_scroll_candidates_preserve_outer_and_local_clip_ids() {
     let (arena, roots, properties, generations) = native_scroll_forest_plan_fixture();
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations)
-            .expect("C2a native-forest artifact");
+        stage_c_classification_artifact_fixture(&arena, &roots, &properties, &generations);
     let candidates = derive_artifact_surface_candidates(
         &artifact,
         LayerizationPolicy::ResolveMaterializedTargets,
@@ -168,8 +166,7 @@ fn stage_c_named_anchor_spatial_closure_mints_only_its_authored_transform_surfac
     let (arena, root, _, child, properties, generations) =
         stage_c_named_anchor_classification_fixture();
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C2a named-anchor artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     assert!(!artifact.layout_position_nodes.is_empty());
     assert!(!artifact.visual_offset_nodes.is_empty());
     let candidates = derive_artifact_surface_candidates(
@@ -191,8 +188,7 @@ fn stage_c_named_anchor_spatial_closure_mints_only_its_authored_transform_surfac
 fn stage_c_scroll_surface_rejects_a_missing_contents_clip_with_exact_identity() {
     let (arena, root, properties, generations) = same_owner_transform_effect_scroll_roles_fixture();
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C2a same-owner artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     let expected = ClipNodeId {
         owner: root,
         role: ClipNodeRole::ContentsClip,

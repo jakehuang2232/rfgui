@@ -1,25 +1,22 @@
 use super::*;
 mod span_cache;
-pub(super) mod command_blocks;
 
 /// Viewport-owned CPU products. Entries are exact-input proofs, not residency
 /// witnesses: live GPU validity is checked separately every frame.
 #[derive(Default)]
 pub(crate) struct PlanningCache {
-    pub(super) commands: command_blocks::CommandBlocks,
     pending_geometry_change: bool,
     geometry_owners: FxHashSet<NodeKey>,
     recording_observation: Option<(std::sync::Arc<()>, u64)>,
     frame_geometry_change: bool,
     spans: span_cache::SpanCache,
-    geometry: Option<ValidatedArtifactSurfaceDagProgram>,
+    geometry: Option<ArtifactSurfaceDagProgram>,
     graphs: Option<super::super::surface_dag::ArtifactSurfaceInputGraphs>,
     localized: FxHashMap<super::super::PaintChunkId, LocalizedEntry>,
     placed_blocks: FxHashMap<usize, PlacedBlock>,
     pub(crate) geometry_hits: usize,
     pub(crate) graph_hits: usize,
     pub(crate) surface_structure_hits: usize,
-    pub(crate) relation_hits: usize,
     pub(crate) coverage_hits: usize,
     pub(crate) placement_hits: usize,
     pub(crate) localized_hits: usize,
@@ -63,11 +60,6 @@ impl PlanningCache {
     }
 
     #[cfg(test)]
-    pub(crate) fn command_validation_counts(&self) -> (usize, usize) {
-        (self.commands.reused_chunks, self.commands.validated_chunks)
-    }
-
-    #[cfg(test)]
     pub(crate) fn geometry_changed_this_frame(&self) -> bool {
         self.frame_geometry_change
     }
@@ -99,11 +91,9 @@ impl PlanningCache {
     pub(crate) fn begin(&mut self) {
         self.frame_geometry_change = std::mem::take(&mut self.pending_geometry_change);
         self.spans.begin();
-        self.commands.begin();
         self.geometry_hits = 0;
         self.graph_hits = 0;
         self.surface_structure_hits = 0;
-        self.relation_hits = 0;
         self.coverage_hits = 0;
         self.placement_hits = 0;
         self.localized_hits = 0;
@@ -118,7 +108,6 @@ impl PlanningCache {
     }
     pub(crate) fn finish(&mut self, accepted: bool) {
         self.spans.finish(accepted);
-        self.commands.finish(accepted);
         self.placed_blocks.retain(|_, entry| accepted && entry.seen);
         self.localized.retain(|_, entry| {
             accepted
@@ -143,7 +132,7 @@ impl PlanningCache {
     pub(super) fn geometry(
         &mut self,
         artifact: &PaintArtifact,
-    ) -> Option<ValidatedArtifactSurfaceDagProgram> {
+    ) -> Option<ArtifactSurfaceDagProgram> {
         if self.frame_geometry_change {
             crate::view::paint::work_profile::count("geometry_change_work", 1);
             return None;
@@ -156,7 +145,7 @@ impl PlanningCache {
         // The caller immediately installs the current artifact. Copying the
         // previous owner/property/chunk stores only to overwrite them performs
         // another whole-scene allocation on every unchanged warm frame.
-        Some(ValidatedArtifactSurfaceDagProgram {
+        Some(ArtifactSurfaceDagProgram {
             artifact: PaintArtifact::default(),
             resolved_clips: previous.resolved_clips.clone(),
             owner_local_clips: Default::default(),
@@ -167,27 +156,6 @@ impl PlanningCache {
             host_placement: previous.host_placement.clone(),
         })
     }
-    /// Called only after current command identity, ranges and mask nesting
-    /// have passed validation. This reuses owner/clip/effect relationships,
-    /// never payload validity or current baked opacity.
-    pub(super) fn relations(&mut self, artifact: &PaintArtifact) -> Option<ValidatedArtifact> {
-        let previous = self.geometry.as_ref()?;
-        if !relationship_inputs_match(&previous.artifact, artifact) {
-            return None;
-        }
-        // Moved clips keep every relation; only their scissors fold again.
-        let resolved_clips = if previous.artifact.clip_nodes == artifact.clip_nodes {
-            previous.resolved_clips.clone()
-        } else {
-            super::resolve_validated_clip_values(artifact)?
-        };
-        self.relation_hits += 1;
-        Some(ValidatedArtifact {
-            target: ValidatedArtifactTarget::CurrentTarget,
-            resolved_clips,
-        })
-    }
-
     pub(super) fn coverage(
         &mut self,
         artifact: &PaintArtifact,
@@ -260,8 +228,7 @@ impl PlanningCache {
         // Current values still pass the same validators as graph construction.
         // Reference-scroll edges and chunk order also remain part of the key:
         // the owner graph stores first-chunk and scene-root indices.
-        if old.target != artifact.target
-            || old.owner_nodes != artifact.owner_nodes
+        if old.owner_nodes != artifact.owner_nodes
             || old.owner_property_states != artifact.owner_property_states
             || old.clip_nodes.len() != artifact.clip_nodes.len()
             || !old
@@ -361,7 +328,7 @@ impl PlanningCache {
         Ok(Some((dag, coverage)))
     }
 
-    pub(super) fn remember_geometry(&mut self, program: &ValidatedArtifactSurfaceDagProgram) {
+    pub(super) fn remember_geometry(&mut self, program: &ArtifactSurfaceDagProgram) {
         if self
             .geometry
             .as_ref()
@@ -377,13 +344,11 @@ impl PlanningCache {
         // Geometry depends on chunk ids/order/ranges/bounds/property endpoints
         // and all property stores. It does not read paint payloads or revisions.
         // Retain immutable chunk metadata blocks without copying unchanged
-        // chunks. Commands are not retained here; only CommandBlocks can prove
-        // their validity against the exact complete operation allocation.
+        // chunks. Commands are not retained here.
         // Exhaustive destructuring makes adding an artifact field a review
         // obligation here: it must either join this key or be explicitly
         // justified as payload-only after current-input validation.
         let PaintArtifact {
-            target: _,
             chunks: _,
             ops: _,
             clip_nodes: _,
@@ -396,7 +361,6 @@ impl PlanningCache {
             owner_property_states: _,
         } = &program.artifact;
         let mut shape = PaintArtifact {
-            target: program.artifact.target,
             chunks: program.artifact.chunks.clone(),
             clip_nodes: program.artifact.clip_nodes.clone(),
             effect_nodes: program.artifact.effect_nodes.clone(),
@@ -411,7 +375,7 @@ impl PlanningCache {
         // Operation count is represented by contiguous chunk ranges; the
         // current artifact's range validity is checked before lookup.
         shape.ops.clear();
-        self.geometry = Some(ValidatedArtifactSurfaceDagProgram {
+        self.geometry = Some(ArtifactSurfaceDagProgram {
             artifact: shape,
             resolved_clips: program.resolved_clips.clone(),
             owner_local_clips: Default::default(),
@@ -531,7 +495,7 @@ fn clip_topology_matches(a: &[ClipNodeSnapshot], b: &[ClipNodeSnapshot]) -> bool
 /// copies clip snapshots but never branches on their scissors, so refreshing
 /// the copies equals a fresh derivation under matching clip topology.
 fn current_clip_coverage(
-    previous: &ValidatedArtifactSurfaceDagProgram,
+    previous: &ArtifactSurfaceDagProgram,
     artifact: &PaintArtifact,
 ) -> Option<std::sync::Arc<ArtifactSurfaceCoverageForest>> {
     if previous.artifact.clip_nodes == artifact.clip_nodes {
@@ -544,8 +508,7 @@ fn current_clip_coverage(
 }
 
 fn geometry_matches(a: &PaintArtifact, b: &PaintArtifact) -> bool {
-    a.target == b.target
-        && a.clip_nodes == b.clip_nodes
+    a.clip_nodes == b.clip_nodes
         && a.effect_nodes == b.effect_nodes
         && a.transform_nodes == b.transform_nodes
         && a.layout_position_nodes == b.layout_position_nodes
@@ -576,8 +539,7 @@ fn coverage_inputs_match(a: &PaintArtifact, b: &PaintArtifact) -> bool {
     // affects current transfer/raster preparation, while its parent links and
     // mask chunk schedule determine coverage. The current reconstructed DAG
     // is compared separately before any cached forest is returned.
-    a.target == b.target
-        && clip_topology_matches(&a.clip_nodes, &b.clip_nodes)
+    clip_topology_matches(&a.clip_nodes, &b.clip_nodes)
         && a.scroll_nodes.len() == b.scroll_nodes.len()
         && a.scroll_nodes
             .iter()
@@ -590,32 +552,6 @@ fn coverage_inputs_match(a: &PaintArtifact, b: &PaintArtifact) -> bool {
             .iter()
             .zip(&b.transform_nodes)
             .all(|(a, b)| a.id == b.id && a.owner == b.owner && a.parent == b.parent)
-        && a.effect_nodes.len() == b.effect_nodes.len()
-        && a.effect_nodes
-            .iter()
-            .zip(&b.effect_nodes)
-            .all(|(a, b)| a.id == b.id && a.owner == b.owner && a.parent == b.parent)
-        && a.chunks.len() == b.chunks.len()
-        && a.chunks.equivalent_with(&b.chunks, |a, b| {
-            a.id == b.id
-                && a.owner == b.owner
-                && a.op_range == b.op_range
-                && a.properties == b.properties
-        })
-}
-
-fn relationship_inputs_match(a: &PaintArtifact, b: &PaintArtifact) -> bool {
-    // Spatial matrices and paint revisions are validated/consumed by later
-    // planning phases. This proof concerns only the owner and clip/effect
-    // relations checked by validate_artifact_store_with_policy. Chunk bounds
-    // do not determine those relations or resolved clips. Current canonical
-    // bounds, child-mask geometry, command identity and shadow-prefix grammar
-    // are validated around this lookup; geometry planning still sees new bounds.
-    a.target == PaintArtifactTarget::CurrentTarget
-        && b.target == a.target
-        && a.owner_nodes == b.owner_nodes
-        && a.owner_property_states == b.owner_property_states
-        && clip_topology_matches(&a.clip_nodes, &b.clip_nodes)
         && a.effect_nodes.len() == b.effect_nodes.len()
         && a.effect_nodes
             .iter()

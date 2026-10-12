@@ -450,8 +450,4 @@ mod persistent_target_key_tests;
 mod translation_sync_tests;
 mod backface_tests;
 
-pub(super) mod inline_ifc_preflight_tests;
-
-mod inline_text_area_witness_tests;
-
 pub(super) mod native_paint_input_tests;

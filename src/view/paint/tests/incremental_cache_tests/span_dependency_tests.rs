@@ -3,16 +3,7 @@ use super::*;
 fn two_clipped_roots() -> (PaintArtifact, ClipNodeId, ClipNodeId) {
     let (arena, roots, _) = prepared_plain_tree();
     let (properties, generations) = sync_identity(&arena, &roots);
-    let mut input = artifact(
-        record_surface_dag_frame_artifact(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            RendererMode::Auto,
-        )
-        .unwrap(),
-    );
+    let mut input = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     let parent: std::collections::HashMap<_, _> = input
         .owner_nodes
         .iter()
@@ -104,10 +95,4 @@ fn local_clip_edit_reprepares_only_spans_that_consume_it() {
             "frame {frame}"
         );
     }
-    let mut invalid = baseline;
-    invalid.clip_nodes[0].parent = Some(first);
-    assert!(
-        prepare_artifact_surface_raster_plan_cached(invalid, context, &mut cache).is_err(),
-        "dependency reuse cannot hide an invalid current clip graph"
-    );
 }

@@ -13,11 +13,9 @@ use crate::view::render_pass::text_pass::{
     TextInput, TextOutput, TextPassPreparedFragment, TextPassPreparedParams,
 };
 
-use super::super::ShadowPaintBlocker;
 use super::Text;
 use super::hit_test::current_text_area_selection_render_context;
 use super::paint_cache::{TextPaintKey, TextPaintMemo};
-use crate::view::inline_text_pass_adapter::inline_ifc_paint_input_to_text_pass_staging_input_with_color;
 use std::sync::Arc;
 
 impl Renderable for Text {
@@ -38,7 +36,7 @@ impl Renderable for Text {
         self.emit_selection_underlay(graph, &mut ctx);
         // Both renderers consume the same immutable, memoized text payload.
         // Rebuilding a Vec here would defeat the prepared-input warm lookup.
-        let Ok(payload) = self.prepared_shadow_text_payload(ctx.paint_offset(), opacity) else {
+        let Some(payload) = self.prepared_shadow_text_payload(ctx.paint_offset(), opacity) else {
             return ctx.into_state();
         };
         let Some(op) = &payload.op else {
@@ -61,33 +59,6 @@ impl Renderable for Text {
 }
 
 impl Text {
-    /// Closed admission oracle for the nested-scroll direct Text primitive.
-    /// Inline-IFC-owned geometry and zero-op/unprepared standalone payloads
-    /// remain outside this authority even though the general Text recorder can
-    /// represent them in other frame-artifact paths.
-    pub(crate) fn is_exact_standalone_retained_text_leaf(&self) -> bool {
-        if self.inline_ifc_owned.is_some() {
-            return false;
-        }
-        let Ok(payload) = self.prepared_standalone_text_payload([0.0, 0.0], self.opacity) else {
-            return false;
-        };
-        let Some(params) = payload.params else {
-            return false;
-        };
-        params.fragments.len() == 1
-            && !params.staging_input.glyphs.is_empty()
-            && params.staging_input.scale_factor.to_bits() == 1.0_f32.to_bits()
-            && params
-                .staging_input
-                .glyphs
-                .iter()
-                .all(|glyph| glyph.paint.fragment_index == 0)
-            && params.scissor_rect.is_none()
-            && params.stencil_clip_id.is_none()
-            && crate::view::paint::PreparedTextOp::new(params).is_some()
-    }
-
     /// Exact visibility gate shared by legacy build and retained recording.
     /// Callers supply the effective opacity. Neutral root-effect recording
     /// uses 1.0, while baked paths use the clamped local opacity.
@@ -108,88 +79,26 @@ impl Text {
         }
     }
 
-    /// Pure retained-paint bridge shared by legacy and artifact recording.
-    /// It only borrows the payload eagerly prepared by `measure`.
-    pub(super) fn prepared_standalone_text_payload(
-        &self,
-        paint_offset: [f32; 2],
-        opacity: f32,
-    ) -> Result<StandaloneTextPaintPayload, ShadowPaintBlocker> {
-        if self.inline_ifc_owned.is_some() {
-            return Err(ShadowPaintBlocker::InlineIfc);
-        }
-        let bounds = self.standalone_paint_bounds();
-        if !self.is_paint_visible(opacity) {
-            return Ok(StandaloneTextPaintPayload { params: None });
-        }
-        let context = self
-            .shaped_context
-            .as_ref()
-            .ok_or(ShadowPaintBlocker::MissingPreparedText)?;
-        let paint_input = context
-            .prepared_text_pass_paint_input_ref()
-            .ok_or(ShadowPaintBlocker::MissingPreparedText)?;
-        let origin = [bounds.x + paint_offset[0], bounds.y + paint_offset[1]];
-        let staging_input = inline_ifc_paint_input_to_text_pass_staging_input_with_color(
-            paint_input,
-            origin,
-            opacity,
-            0,
-            1.0,
-            Some(self.color.to_rgba_f32()),
-        );
-        let params = (!staging_input.glyphs.is_empty()).then(|| TextPassPreparedParams {
-            staging_input,
-            fragments: vec![TextPassPreparedFragment {
-                origin,
-                size: [bounds.width, bounds.height],
-            }],
-            scissor_rect: None,
-            stencil_clip_id: None,
-        });
-        Ok(StandaloneTextPaintPayload { params })
-    }
-
-    /// Resolve the same immutable source for capability and recording. Empty
-    /// paint stays distinct from a missing or invalid prepared payload.
-    fn shadow_text_paint_source(
-        &self,
-        opacity: f32,
-    ) -> Result<ShadowTextPaintSource<'_>, ShadowPaintBlocker> {
+    /// The immutable source recording reads: owned by an inline formatting
+    /// context, or shaped by this Text itself. `None` without one.
+    fn shadow_text_paint_source(&self, opacity: f32) -> Option<ShadowTextPaintSource<'_>> {
         if let Some(input) = self.inline_ifc_owned_paint_input() {
-            let installed = self
-                .inline_ifc_owned_paint_bounds()
-                .ok_or(ShadowPaintBlocker::MissingPreparedText)?;
+            let installed = self.inline_ifc_owned_paint_bounds()?;
             let bounds = super::super::Rect {
                 x: installed.x,
                 y: installed.y,
                 width: installed.width,
                 height: installed.height,
             };
-            if !self.is_paint_visible(opacity) {
-                return Ok(ShadowTextPaintSource {
-                    bounds,
-                    input: None,
-                    color_override: None,
-                });
-            }
-            if input.glyphs.is_empty()
-                && self
-                    .content
-                    .chars()
-                    .any(|character| !character.is_whitespace())
-            {
-                return Err(ShadowPaintBlocker::MissingPreparedText);
-            }
-            return Ok(ShadowTextPaintSource {
+            return Some(ShadowTextPaintSource {
                 bounds,
-                input: Some(input),
+                input: self.is_paint_visible(opacity).then_some(input),
                 color_override: None,
             });
         }
         let bounds = self.standalone_paint_bounds();
         if !self.is_paint_visible(opacity) {
-            return Ok(ShadowTextPaintSource {
+            return Some(ShadowTextPaintSource {
                 bounds,
                 input: None,
                 color_override: None,
@@ -197,56 +106,24 @@ impl Text {
         }
         let input = self
             .shaped_context
-            .as_ref()
-            .and_then(|context| context.prepared_text_pass_paint_input_ref())
-            .ok_or(ShadowPaintBlocker::MissingPreparedText)?;
-        Ok(ShadowTextPaintSource {
+            .as_ref()?
+            .prepared_text_pass_paint_input_ref()?;
+        Some(ShadowTextPaintSource {
             bounds,
             input: Some(input),
             color_override: Some(self.color.to_rgba_f32()),
         })
     }
 
-    pub(super) fn validate_shadow_text_payload(
-        &self,
-        paint_offset: [f32; 2],
-        opacity: f32,
-    ) -> Result<(), ShadowPaintBlocker> {
-        let source = self.shadow_text_paint_source(opacity)?;
-        let Some(input) = source.input.filter(|input| !input.glyphs.is_empty()) else {
-            return Ok(());
-        };
-        let fragment = source.fragment(paint_offset);
-        let key = TextPaintKey::new(self, &source, paint_offset, opacity);
-        if self
-            .paint_memo
-            .borrow()
-            .as_ref()
-            .is_some_and(|memo| memo.key.matches(&key))
-        {
-            return Ok(());
-        }
-        if !crate::view::paint::PreparedTextOp::validate_unclipped_glyph_stream(
-            1.0,
-            &[fragment],
-            source.staged_glyphs(input, fragment.origin, opacity),
-        ) {
-            return Err(ShadowPaintBlocker::MissingPreparedText);
-        }
-        Ok(())
-    }
-
     /// Recording materializes the glyph vector and frozen identity on a cache miss.
-    /// Capability uses the same source, conversion and field validators as a
-    /// stream, so it does not build a complete op merely to discard it.
     pub(super) fn prepared_shadow_text_payload(
         &self,
         paint_offset: [f32; 2],
         opacity: f32,
-    ) -> Result<Arc<PreparedShadowTextPayload>, ShadowPaintBlocker> {
+    ) -> Option<Arc<PreparedShadowTextPayload>> {
         let source = self.shadow_text_paint_source(opacity)?;
         let Some(input) = source.input.filter(|input| !input.glyphs.is_empty()) else {
-            return Ok(Arc::new(PreparedShadowTextPayload {
+            return Some(Arc::new(PreparedShadowTextPayload {
                 bounds: source.bounds,
                 op: None,
             }));
@@ -258,7 +135,7 @@ impl Text {
             .as_ref()
             .filter(|memo| memo.key.matches(&key))
         {
-            return Ok(memo.payload.clone());
+            return Some(memo.payload.clone());
         }
         let fragment = source.fragment(paint_offset);
         let params = TextPassPreparedParams {
@@ -272,8 +149,7 @@ impl Text {
             scissor_rect: None,
             stencil_clip_id: None,
         };
-        let op = crate::view::paint::PreparedTextOp::new(params)
-            .ok_or(ShadowPaintBlocker::MissingPreparedText)?;
+        let op = crate::view::paint::PreparedTextOp::new(params)?;
         let payload = Arc::new(PreparedShadowTextPayload {
             bounds: source.bounds,
             op: Some(op),
@@ -282,7 +158,7 @@ impl Text {
             key,
             payload: payload.clone(),
         });
-        Ok(payload)
+        Some(payload)
     }
 
     /// Emit the TextArea-selection underlay rects for this Text when a
@@ -330,7 +206,7 @@ impl Text {
         let context = self.shaped_context.as_ref()?;
         let paint_input = context.text_pass_paint_input_ref();
         Some(
-            inline_ifc_paint_input_to_text_pass_staging_input_with_color(
+            crate::view::inline_text_pass_adapter::inline_ifc_paint_input_to_text_pass_staging_input_with_color(
                 &paint_input,
                 origin,
                 opacity,
@@ -356,10 +232,6 @@ impl Text {
     {
         self.shaped_context.as_ref()
     }
-}
-
-pub(super) struct StandaloneTextPaintPayload {
-    pub(super) params: Option<TextPassPreparedParams>,
 }
 
 pub(super) struct PreparedShadowTextPayload {
@@ -416,6 +288,3 @@ impl ShadowTextPaintSource<'_> {
         })
     }
 }
-
-#[cfg(test)]
-mod preflight_tests;

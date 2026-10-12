@@ -33,16 +33,12 @@ fn fixture(scene: Scene) -> Fixture {
 
 fn record(fixture: &Fixture) -> PaintArtifact {
     let (properties, generations) = sync_identity(&fixture.arena, &fixture.roots);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
+    let artifact = record_surface_dag_frame_artifact(
         &fixture.arena,
         &fixture.roots,
         &properties,
         &generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("complete production layout must record") else {
-        panic!("fallback")
-    };
+    );
     artifact
 }
 

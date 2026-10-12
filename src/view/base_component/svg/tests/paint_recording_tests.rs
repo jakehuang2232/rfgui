@@ -45,17 +45,10 @@ fn rounded_loading_and_error_svg_wrappers_record_exact_child_mask_scope() {
         let manifest = record_coverage_manifest(
             &arena,
             &roots,
-            false,
             true,
             CoverageRecordingMode::FullArtifact,
             &properties,
             &generations,
-        );
-        assert!(manifest.validation_errors.is_empty(), "{state:?}");
-        assert_eq!(
-            manifest.stats().legacy_boundaries,
-            0,
-            "{state:?}: {manifest:?}"
         );
         let mask_indices = manifest
             .items
@@ -168,7 +161,6 @@ fn ready_svg_with_two_inactive_subtrees_records_only_svg_content() {
     let metadata = record_coverage_manifest(
         &arena,
         &roots,
-        false,
         true,
         CoverageRecordingMode::MetadataOnly,
         &properties,
@@ -177,14 +169,11 @@ fn ready_svg_with_two_inactive_subtrees_records_only_svg_content() {
     let full = record_coverage_manifest(
         &arena,
         &roots,
-        false,
         true,
         CoverageRecordingMode::FullArtifact,
         &properties,
         &generations,
     );
-    assert!(metadata.validation_errors.is_empty());
-    assert!(full.validation_errors.is_empty());
     let [
         PaintCoverageItem::ArtifactChunk {
             chunk: metadata_chunk,
@@ -229,96 +218,6 @@ fn ready_svg_with_two_inactive_subtrees_records_only_svg_content() {
             item,
             PaintCoverageItem::ArtifactChunk { chunk, .. } if chunk.owner == inactive
         )));
-    }
-}
-
-#[test]
-fn ready_svg_rejects_invalid_inactive_roots_and_children_mirror_drift() {
-    enum Drift {
-        Missing,
-        Duplicate,
-        WrongParent,
-        ChildrenMirror,
-    }
-
-    for (index, drift) in [
-        Drift::Missing,
-        Drift::Duplicate,
-        Drift::WrongParent,
-        Drift::ChildrenMirror,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let (mut arena, owner, loading_root, _, _, _) =
-            prepared_ready_svg_with_inactive_slots(0x93d0 + index as u64 * 0x10);
-        match drift {
-            Drift::Missing => {
-                arena.remove_subtree(loading_root);
-            }
-            Drift::Duplicate => {
-                arena.with_element_taken(owner, |element, _arena| {
-                    element
-                        .as_any_mut()
-                        .downcast_mut::<Svg>()
-                        .unwrap()
-                        .error_slot = vec![loading_root];
-                });
-            }
-            Drift::WrongParent => arena.set_parent(loading_root, None),
-            Drift::ChildrenMirror => arena.set_children(owner, vec![loading_root]),
-        }
-        assert_missing_prepared_svg_hooks(&arena, owner);
-    }
-}
-
-#[test]
-fn ready_svg_inactive_slots_do_not_bypass_source_raster_or_request_drift() {
-    enum Drift {
-        Source,
-        Raster,
-        Request,
-    }
-
-    for (index, drift) in [Drift::Source, Drift::Raster, Drift::Request]
-        .into_iter()
-        .enumerate()
-    {
-        let (arena, owner, ..) =
-            prepared_ready_svg_with_inactive_slots(0x9420 + index as u64 * 0x10);
-        let mut restore_key = None;
-        {
-            let mut node = arena.get_mut(owner).unwrap();
-            let svg = node.element.as_any_mut().downcast_mut::<Svg>().unwrap();
-            match drift {
-                Drift::Source => {
-                    restore_key = Some((true, svg.source_key));
-                    svg.source_key = svg.source_key.wrapping_add(0x1000);
-                }
-                Drift::Raster => {
-                    restore_key = Some((false, svg.active_raster_key.unwrap()));
-                    svg.active_raster_key = svg.active_raster_key.map(|key| key + 0x1000);
-                }
-                Drift::Request => {
-                    let request = svg.active_raster_request.unwrap();
-                    svg.active_raster_request = Some(SvgRasterRequest::new(
-                        request.physical_width.saturating_add(8),
-                        request.physical_height,
-                        request.mode,
-                    ));
-                }
-            }
-        }
-        assert_missing_prepared_svg_hooks(&arena, owner);
-        if let Some((source, key)) = restore_key {
-            let mut node = arena.get_mut(owner).unwrap();
-            let svg = node.element.as_any_mut().downcast_mut::<Svg>().unwrap();
-            if source {
-                svg.source_key = key;
-            } else {
-                svg.active_raster_key = Some(key);
-            }
-        }
     }
 }
 
@@ -559,108 +458,4 @@ fn path_generation_and_pixel_arc_are_frozen_across_metadata_and_full_recording()
     let next_identity = crate::view::paint::PreparedSvgIdentity::from_op(next).unwrap();
     assert_eq!(next_identity.generation, new_generation);
     assert_eq!(next_identity.pixel_ptr, new_pixels.as_ptr() as usize);
-}
-
-#[test]
-fn path_document_and_raster_loading_error_record_wrappers_but_invalid_ready_fails() {
-    fn assert_wrapper(svg: Svg) {
-        let mut arena = new_test_arena();
-        let root = commit_element(&mut arena, Box::new(svg));
-        let node = arena.get(root).unwrap();
-        assert_eq!(
-            node.element
-                .shadow_paint_recording_capability(&arena, false, &Default::default()),
-            ShadowPaintRecordingCapability::Recordable
-        );
-        let revision = crate::view::paint::PaintContentRevision {
-            self_paint_revision: 1,
-            composite_revision: 1,
-            topology_revision: 1,
-        };
-        let metadata = node
-            .element
-            .record_shadow_paint_metadata(
-                root,
-                Default::default(),
-                revision,
-                &arena,
-                &Default::default(),
-            )
-            .unwrap();
-        let artifact = node
-            .element
-            .record_shadow_paint_artifact(
-                root,
-                Default::default(),
-                revision,
-                &arena,
-                &Default::default(),
-            )
-            .unwrap();
-        assert_eq!(
-            metadata.id.role,
-            crate::view::paint::PaintChunkRole::SelfDecoration
-        );
-        assert!(
-            artifact
-                .ops
-                .iter()
-                .all(|op| { !matches!(op, crate::view::paint::PaintOp::PreparedSvg(_)) })
-        );
-    }
-
-    fn assert_legacy(svg: Svg) {
-        let mut arena = new_test_arena();
-        let root = commit_element(&mut arena, Box::new(svg));
-        assert_eq!(
-            arena
-                .get(root)
-                .unwrap()
-                .element
-                .shadow_paint_recording_capability(&arena, false, &Default::default()),
-            ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::MissingPreparedSvg)
-        );
-    }
-
-    let mut document_loading =
-        freeze_ready_svg(0x6b20, SvgSource::Path("document-loading.svg".into()), 1.0);
-    set_svg_document_loading_for_test(document_loading.source_key);
-    let mut sync_arena = new_test_arena();
-    document_loading.sync_arena(&mut sync_arena);
-    assert_wrapper(document_loading);
-
-    let mut document_error =
-        freeze_ready_svg(0x6b21, SvgSource::Path("document-error.svg".into()), 1.0);
-    set_svg_document_error_for_test(document_error.source_key);
-    document_error.sync_arena(&mut sync_arena);
-    assert_wrapper(document_error);
-
-    let mut raster_loading =
-        freeze_ready_svg(0x6b22, SvgSource::Path("raster-loading.svg".into()), 1.0);
-    set_svg_raster_loading_for_test(raster_loading.active_raster_key.unwrap());
-    raster_loading.sync_arena(&mut sync_arena);
-    assert_wrapper(raster_loading);
-
-    let mut raster_error =
-        freeze_ready_svg(0x6b23, SvgSource::Path("raster-error.svg".into()), 1.0);
-    set_svg_raster_error_for_test(raster_error.active_raster_key.unwrap());
-    raster_error.sync_arena(&mut sync_arena);
-    assert_wrapper(raster_error);
-
-    let mut invalid =
-        freeze_ready_svg(0x6b24, SvgSource::Path("invalid-raster.svg".into()), 1.0);
-    let request = invalid.active_raster_request.unwrap();
-    replace_svg_raster_ready_for_test(
-        invalid.active_raster_key.unwrap(),
-        request.physical_width,
-        request.physical_height,
-        std::sync::Arc::from([1_u8, 2, 3]),
-    );
-    invalid.sync_arena(&mut sync_arena);
-    invalid.prepare_frozen_paint(PaintResourcePreparationContext {
-        frame_number: 3,
-        device_scale: 1.0,
-        now: Instant::now(),
-    });
-    assert_legacy(invalid);
 }

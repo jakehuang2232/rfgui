@@ -31,8 +31,7 @@ fn classify_fixture(
     generations: &PaintGenerationTracker,
     requests: &[ArtifactTransitionRequest],
 ) -> (PaintArtifact, Vec<ClassifiedTransitionEvent>) {
-    let artifact = stage_c_classification_artifact_fixture(arena, roots, properties, generations)
-        .expect("C1c structural artifact must close over the synced property trees");
+    let artifact = stage_c_classification_artifact_fixture(arena, roots, properties, generations);
     let events = classify_closed_artifact(cases, observed, arena, &artifact, requests);
     (artifact, events)
 }
@@ -328,16 +327,7 @@ fn stage_c_all_eleven_scroll_capabilities_classify_from_closed_artifacts() {
     assert_exact_transition(*event, content, baseline, moved);
 
     let (arena, roots, properties, generations) = stage_c_visible_overlay_fixture();
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .unwrap() else {
-        panic!("visible overlay must record")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     // Keep the complete owner/chunk closure; classify only the after-children overlay edges.
     let overlay = artifact;
     // AfterChildren commands appear in postorder, but transition requests
@@ -395,8 +385,7 @@ fn stage_c_capability_rejections_preserve_typed_reason_and_owner() {
     let (from, to) = owner_state_edge(&properties, child);
     let request = [ArtifactTransitionRequest::new(child, from, to)];
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C1c named-anchor artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     artifact
         .layout_position_nodes
         .retain(|snapshot| snapshot.id != LayoutPositionNodeId(anchor));
@@ -413,8 +402,7 @@ fn stage_c_capability_rejections_preserve_typed_reason_and_owner() {
     let (from, to) = owner_state_edge(&properties, child);
     let request = [ArtifactTransitionRequest::new(child, from, to)];
     let mut artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C1c reference-scroll artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     artifact
         .scroll_nodes
         .retain(|snapshot| snapshot.id != ScrollNodeId(root));
@@ -434,8 +422,7 @@ fn stage_c_capability_rejections_preserve_typed_reason_and_owner() {
         1.0,
     ))));
     let artifact =
-        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations)
-            .expect("C1c closed owner artifact");
+        stage_c_classification_artifact_fixture(&arena, &[root], &properties, &generations);
     assert_eq!(
         classify_artifact_transition_sequence(
             &artifact,

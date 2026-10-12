@@ -38,16 +38,7 @@ fn structural_replay_recomputes_transfer_and_target_elimination_from_current_val
         let (measure, place) = constraints();
         measure_and_place(&mut arena, root, measure, place);
         let (properties, generations) = sync_identity(&arena, &[root]);
-        let source = artifact(
-            record_surface_dag_frame_artifact(
-                &arena,
-                &[root],
-                &properties,
-                &generations,
-                RendererMode::Auto,
-            )
-            .unwrap(),
-        );
+        let source = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         let fresh = prepare_artifact_surface_raster_plan(source.clone(), context).unwrap();
         let cached =
             prepare_artifact_surface_raster_plan_cached(source.clone(), context, &mut cache)

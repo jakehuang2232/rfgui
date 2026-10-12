@@ -1,18 +1,15 @@
-#![allow(dead_code)] // Staged artifact authority is exercised by tests until viewport rollout.
-
 use std::ops::Range;
 use std::sync::Arc;
 
-use rustc_hash::{FxHashMap, FxHashSet};
-use slotmap::Key;
+use rustc_hash::FxHashMap;
 
 use crate::view::ImageSampling;
 use crate::view::base_component::{Rect, ScrollbarOverlayWitness, ScrollbarPaintStateWitness};
 use crate::view::compositor::property_tree::PropertyTreeState;
 use crate::view::compositor::property_tree::{
-    ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
-    LayoutPositionNodeId, LayoutPositionNodeSnapshot, ScrollNodeId, ScrollNodeSnapshot,
-    TransformNodeId, TransformNodeSnapshot, VisualOffsetNodeSnapshot,
+    ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeSnapshot,
+    LayoutPositionNodeId, LayoutPositionNodeSnapshot, ScrollNodeSnapshot, TransformNodeSnapshot,
+    VisualOffsetNodeSnapshot,
 };
 use crate::view::node_arena::NodeKey;
 use crate::view::render_pass::draw_rect_pass::{
@@ -32,49 +29,6 @@ pub(crate) struct PaintDeferredViewportSelfClipWitness {
     target_owner: NodeKey,
     stable_id: u64,
     clip: ClipNodeSnapshot,
-}
-
-/// Late-phase-only authority for one deferred viewport root whose opacity is
-/// owned by a retained effect surface. It binds the exact Replace self clip
-/// and isolated effect snapshot so neither can be replayed independently in
-/// the normal phase.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PaintDeferredViewportEffectWitness {
-    clip: PaintDeferredViewportSelfClipWitness,
-    effect: EffectNodeSnapshot,
-}
-
-impl PaintDeferredViewportEffectWitness {
-    pub(crate) fn new(
-        clip: PaintDeferredViewportSelfClipWitness,
-        effect: EffectNodeSnapshot,
-    ) -> Option<Self> {
-        (effect.id.0 == clip.target_owner
-            && effect.owner == clip.target_owner
-            && effect.parent.is_none()
-            && effect.generation != 0
-            && effect.opacity.is_finite()
-            && (0.0..=1.0).contains(&effect.opacity))
-        .then_some(Self { clip, effect })
-    }
-
-    pub(super) fn is_canonical_for(
-        self,
-        owner: NodeKey,
-        stable_id: u64,
-        authoritative_self_clip: Option<ClipNodeId>,
-        effect: EffectNodeId,
-    ) -> bool {
-        self.effect.id == effect
-            && self.effect.owner == owner
-            && self.effect.parent.is_none()
-            && self.effect.generation != 0
-            && self.effect.opacity.is_finite()
-            && (0.0..=1.0).contains(&self.effect.opacity)
-            && self
-                .clip
-                .is_canonical_for(owner, stable_id, authoritative_self_clip)
-    }
 }
 
 impl PaintDeferredViewportSelfClipWitness {
@@ -117,1024 +71,6 @@ impl PaintDeferredViewportSelfClipWitness {
     }
 }
 
-/// Typed raster-local generation for a detached contents clip. Live property
-/// generations include viewport-space ancestry and therefore cannot
-/// participate in a reusable offset-zero content identity.
-pub(crate) const DETACHED_LOCAL_CLIP_GENERATION: u64 = 1;
-
-/// One frozen property boundary in root-to-surface order. The snapshot's
-/// parent id must name the nearest earlier entry with the same role.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum PropertyForestBoundarySnapshot {
-    Transform(TransformNodeSnapshot),
-    Effect(EffectNodeSnapshot),
-}
-
-impl PropertyForestBoundarySnapshot {
-    fn owner(self) -> NodeKey {
-        match self {
-            Self::Transform(snapshot) => snapshot.owner,
-            Self::Effect(snapshot) => snapshot.owner,
-        }
-    }
-}
-
-/// Complete root-to-surface T/E order used by the no-scroll property forest
-/// recorder. This owns the entire chain; the Copy token installed in
-/// `PaintRecordingContext` can only be minted after the frozen order,
-/// same-role parent links and canonical same-owner T -> E edge are rechecked.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ConsumedPropertyForestAncestorChainWitness {
-    boundary_owner: NodeKey,
-    entries: Vec<PropertyForestBoundarySnapshot>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PropertyForestProjectionToken {
-    target_owner: NodeKey,
-    expected_transform: Option<TransformNodeId>,
-    projected_transform: Option<TransformNodeId>,
-    expected_effect: Option<EffectNodeId>,
-    projected_effect: Option<EffectNodeId>,
-    neutral_effect: Option<EffectNodeId>,
-}
-
-impl ConsumedPropertyForestAncestorChainWitness {
-    pub(crate) fn new(
-        boundary_owner: NodeKey,
-        entries: Vec<PropertyForestBoundarySnapshot>,
-    ) -> Option<Self> {
-        let witness = Self {
-            boundary_owner,
-            entries,
-        };
-        witness.is_canonical().then_some(witness)
-    }
-
-    fn canonical_leaves(
-        &self,
-    ) -> Option<(
-        Option<TransformNodeId>,
-        Option<EffectNodeId>,
-        PropertyForestBoundarySnapshot,
-    )> {
-        if self.boundary_owner.is_null() || self.entries.is_empty() {
-            return None;
-        }
-        let mut latest_transform = None;
-        let mut latest_effect = None;
-        let mut previous = None;
-        for entry in self.entries.iter().copied() {
-            if let Some(previous) = previous {
-                let alternates = matches!(
-                    (previous, entry),
-                    (
-                        PropertyForestBoundarySnapshot::Transform(_),
-                        PropertyForestBoundarySnapshot::Effect(_),
-                    ) | (
-                        PropertyForestBoundarySnapshot::Effect(_),
-                        PropertyForestBoundarySnapshot::Transform(_),
-                    )
-                );
-                let same_owner_is_canonical = previous.owner() != entry.owner()
-                    || matches!(
-                        (previous, entry),
-                        (
-                            PropertyForestBoundarySnapshot::Transform(_),
-                            PropertyForestBoundarySnapshot::Effect(_),
-                        )
-                    );
-                if !alternates || !same_owner_is_canonical {
-                    return None;
-                }
-            }
-            match entry {
-                PropertyForestBoundarySnapshot::Transform(snapshot) => {
-                    if snapshot.id.0 != snapshot.owner
-                        || snapshot.owner.is_null()
-                        || snapshot.generation == 0
-                        || snapshot.parent != latest_transform
-                        || snapshot.validate_projection_value().is_err()
-                    {
-                        return None;
-                    }
-                    latest_transform = Some(snapshot.id);
-                }
-                PropertyForestBoundarySnapshot::Effect(snapshot) => {
-                    if snapshot.id.0 != snapshot.owner
-                        || snapshot.owner.is_null()
-                        || snapshot.generation == 0
-                        || snapshot.parent != latest_effect
-                        || !snapshot.opacity.is_finite()
-                        || !(0.0..=1.0).contains(&snapshot.opacity)
-                    {
-                        return None;
-                    }
-                    latest_effect = Some(snapshot.id);
-                }
-            }
-            previous = Some(entry);
-        }
-        let leaf = self.entries.last().copied()?;
-        (leaf.owner() == self.boundary_owner).then_some((latest_transform, latest_effect, leaf))
-    }
-
-    pub(crate) fn is_canonical(&self) -> bool {
-        self.canonical_leaves().is_some()
-    }
-
-    pub(crate) fn projection_for_target(
-        &self,
-        target_owner: NodeKey,
-    ) -> Option<PropertyForestProjectionToken> {
-        if target_owner.is_null() {
-            return None;
-        }
-        let (transform, effect, leaf) = self.canonical_leaves()?;
-        Some(match leaf {
-            PropertyForestBoundarySnapshot::Transform(_) => PropertyForestProjectionToken {
-                target_owner,
-                expected_transform: transform,
-                projected_transform: transform,
-                expected_effect: effect,
-                projected_effect: None,
-                neutral_effect: effect,
-            },
-            PropertyForestBoundarySnapshot::Effect(_) => PropertyForestProjectionToken {
-                target_owner,
-                expected_transform: transform,
-                projected_transform: None,
-                expected_effect: effect,
-                projected_effect: effect,
-                neutral_effect: None,
-            },
-        })
-    }
-}
-
-impl PropertyForestProjectionToken {
-    pub(super) fn project_for(
-        self,
-        owner: NodeKey,
-        live: PropertyTreeState,
-        opacity_authority: PaintOpacityAuthority,
-    ) -> Option<PropertyTreeState> {
-        if self.target_owner != owner
-            || live.transform != self.expected_transform
-            || live.effect != self.expected_effect
-            || self.neutral_effect.is_some_and(|effect| {
-                opacity_authority != PaintOpacityAuthority::NeutralRootEffect(effect)
-            })
-        {
-            return None;
-        }
-        Some(PropertyTreeState {
-            transform: self.projected_transform,
-            effect: self.projected_effect,
-            ..live
-        })
-    }
-}
-
-const MAX_CONSUMED_ANCESTOR_PROPERTIES: usize = 3;
-
-/// Exact bounded projection stack used by the property/scroll receiver
-/// recorder.  Entries are applied outer-to-inner and rebound to each current
-/// traversal owner by the coverage walker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ConsumedAncestorPropertyStackWitness {
-    entries: [Option<ConsumedAncestorProperty>; MAX_CONSUMED_ANCESTOR_PROPERTIES],
-    len: u8,
-    target_owner: NodeKey,
-}
-
-impl ConsumedAncestorPropertyStackWitness {
-    pub(crate) fn new(target_owner: NodeKey, entries: &[ConsumedAncestorProperty]) -> Option<Self> {
-        if target_owner.is_null()
-            || entries.is_empty()
-            || entries.len() > MAX_CONSUMED_ANCESTOR_PROPERTIES
-        {
-            return None;
-        }
-        let mut transform_seen = false;
-        let mut effect_seen = false;
-        let mut scroll_seen = false;
-        for (index, entry) in entries.iter().enumerate() {
-            match entry {
-                ConsumedAncestorProperty::Transform(witness) => {
-                    if scroll_seen {
-                        return None;
-                    }
-                    if !witness
-                        .for_target(target_owner)
-                        .is_canonical_for(target_owner)
-                    {
-                        return None;
-                    }
-                    if std::mem::replace(&mut transform_seen, true) {
-                        return None;
-                    }
-                }
-                ConsumedAncestorProperty::SameOwnerTransformBoundary(_) => return None,
-                ConsumedAncestorProperty::SameOwnerEffectBoundary(_) => return None,
-                ConsumedAncestorProperty::ScrollContents(witness) => {
-                    if !witness
-                        .for_target(target_owner)
-                        .is_canonical_for(target_owner)
-                    {
-                        return None;
-                    }
-                    if std::mem::replace(&mut scroll_seen, true) {
-                        return None;
-                    }
-                    if index + 1 != entries.len() {
-                        return None;
-                    }
-                }
-                ConsumedAncestorProperty::Effect(witness) => {
-                    if scroll_seen {
-                        return None;
-                    }
-                    if !witness
-                        .for_target(target_owner)
-                        .is_canonical_for(target_owner)
-                    {
-                        return None;
-                    }
-                    if std::mem::replace(&mut effect_seen, true) {
-                        return None;
-                    }
-                }
-            }
-        }
-        let mut sealed = [None; MAX_CONSUMED_ANCESTOR_PROPERTIES];
-        for (slot, entry) in sealed.iter_mut().zip(entries.iter().copied()) {
-            *slot = Some(entry.for_target(target_owner));
-        }
-        Some(Self {
-            entries: sealed,
-            len: entries.len() as u8,
-            target_owner,
-        })
-    }
-
-    /// Seals the only equal-owner stack admitted by the native property DAG:
-    /// the owner's outer transform followed by its scroll/contents-clip pair
-    /// projected onto the direct content child. The generic constructor keeps
-    /// rejecting equal-owner transform entries.
-    pub(crate) fn new_same_owner_transform_scroll(
-        target_owner: NodeKey,
-        transform: ConsumedSameOwnerTransformBoundaryWitness,
-        scroll: ConsumedAncestorScrollContentsWitness,
-    ) -> Option<Self> {
-        if target_owner.is_null()
-            || transform.owner != scroll.parent_boundary
-            || scroll.child_boundary != target_owner
-            || !transform
-                .for_target(target_owner)
-                .is_canonical_for(target_owner)
-            || !scroll
-                .for_target(target_owner)
-                .is_canonical_for(target_owner)
-        {
-            return None;
-        }
-        Some(Self {
-            entries: [
-                Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(
-                    transform.for_target(target_owner),
-                )),
-                Some(ConsumedAncestorProperty::ScrollContents(
-                    scroll.for_target(target_owner),
-                )),
-                None,
-            ],
-            len: 2,
-            target_owner,
-        })
-    }
-
-    /// Seals the equal-owner `Effect -> ScrollContents` projection used by
-    /// the native E+S compiler. The generic constructor keeps rejecting this
-    /// shape so only the typed same-owner planner can neutralize the effect
-    /// before recording H/C/O.
-    pub(crate) fn new_same_owner_effect_scroll(
-        target_owner: NodeKey,
-        effect: ConsumedSameOwnerEffectBoundaryWitness,
-        scroll: ConsumedAncestorScrollContentsWitness,
-    ) -> Option<Self> {
-        if target_owner.is_null()
-            || effect.owner != scroll.parent_boundary
-            || scroll.child_boundary != target_owner
-            || !effect
-                .for_target(target_owner)
-                .is_canonical_for(target_owner)
-            || !scroll
-                .for_target(target_owner)
-                .is_canonical_for(target_owner)
-        {
-            return None;
-        }
-        Some(Self {
-            entries: [
-                Some(ConsumedAncestorProperty::SameOwnerEffectBoundary(
-                    effect.for_target(target_owner),
-                )),
-                Some(ConsumedAncestorProperty::ScrollContents(
-                    scroll.for_target(target_owner),
-                )),
-                None,
-            ],
-            len: 2,
-            target_owner,
-        })
-    }
-
-    /// Seals the same-owner T+E projection used while recording H/O. Scroll
-    /// remains live on the direct content child so `BakedScrollHost` can keep
-    /// its established phase split.
-    pub(crate) fn new_same_owner_transform_effect_host(
-        target_owner: NodeKey,
-        transform: ConsumedSameOwnerTransformBoundaryWitness,
-        effect: ConsumedSameOwnerEffectBoundaryWitness,
-    ) -> Option<Self> {
-        if target_owner.is_null()
-            || transform.owner != effect.owner
-            || transform.owner != target_owner
-            || !transform
-                .for_target(target_owner)
-                .is_canonical_for(target_owner)
-            || !effect
-                .for_target(target_owner)
-                .is_canonical_for(target_owner)
-        {
-            return None;
-        }
-        Some(Self {
-            entries: [
-                Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(
-                    transform.for_target(target_owner),
-                )),
-                Some(ConsumedAncestorProperty::SameOwnerEffectBoundary(
-                    effect.for_target(target_owner),
-                )),
-                None,
-            ],
-            len: 2,
-            target_owner,
-        })
-    }
-
-    /// Seals the complete same-owner T -> E -> ScrollContents projection onto
-    /// the direct detached content child. Generic stacks continue to reject
-    /// all equal-owner boundary witnesses.
-    pub(crate) fn new_same_owner_transform_effect_scroll(
-        target_owner: NodeKey,
-        transform: ConsumedSameOwnerTransformBoundaryWitness,
-        effect: ConsumedSameOwnerEffectBoundaryWitness,
-        scroll: ConsumedAncestorScrollContentsWitness,
-    ) -> Option<Self> {
-        if target_owner.is_null()
-            || transform.owner != effect.owner
-            || transform.owner != scroll.parent_boundary
-            || scroll.child_boundary != target_owner
-            || !transform
-                .for_target(target_owner)
-                .is_canonical_for(target_owner)
-            || !effect
-                .for_target(target_owner)
-                .is_canonical_for(target_owner)
-            || !scroll
-                .for_target(target_owner)
-                .is_canonical_for(target_owner)
-        {
-            return None;
-        }
-        Some(Self {
-            entries: [
-                Some(ConsumedAncestorProperty::SameOwnerTransformBoundary(
-                    transform.for_target(target_owner),
-                )),
-                Some(ConsumedAncestorProperty::SameOwnerEffectBoundary(
-                    effect.for_target(target_owner),
-                )),
-                Some(ConsumedAncestorProperty::ScrollContents(
-                    scroll.for_target(target_owner),
-                )),
-            ],
-            len: 3,
-            target_owner,
-        })
-    }
-
-    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
-        let mut entries = self.entries;
-        for entry in entries.iter_mut().take(self.len as usize) {
-            *entry = entry.map(|entry| entry.for_target(target_owner));
-        }
-        Self {
-            entries,
-            target_owner,
-            ..self
-        }
-    }
-
-    pub(crate) fn entries(self) -> impl Iterator<Item = ConsumedAncestorProperty> {
-        self.entries.into_iter().take(self.len as usize).flatten()
-    }
-
-    pub(super) fn project_for(
-        self,
-        owner: NodeKey,
-        mut live: PropertyTreeState,
-        opacity_authority: PaintOpacityAuthority,
-    ) -> Option<PropertyTreeState> {
-        if owner != self.target_owner || self.len == 0 {
-            return None;
-        }
-        for entry in self.entries() {
-            live = match entry {
-                ConsumedAncestorProperty::Transform(witness)
-                    if witness.is_canonical_for(owner)
-                        && live.transform == Some(witness.transform) =>
-                {
-                    PropertyTreeState {
-                        transform: None,
-                        ..live
-                    }
-                }
-                ConsumedAncestorProperty::SameOwnerTransformBoundary(witness)
-                    if witness.is_canonical_for(owner)
-                        && live.transform == Some(witness.transform) =>
-                {
-                    PropertyTreeState {
-                        transform: None,
-                        ..live
-                    }
-                }
-                ConsumedAncestorProperty::SameOwnerEffectBoundary(witness)
-                    if witness.is_canonical_for(owner)
-                        && opacity_authority
-                            == PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
-                        && live.effect == witness.expected_before =>
-                {
-                    PropertyTreeState {
-                        effect: witness.projected_after,
-                        ..live
-                    }
-                }
-                ConsumedAncestorProperty::ScrollContents(witness)
-                    if witness.is_canonical_for(owner)
-                        && live.scroll == Some(witness.scroll)
-                        && live.clip == Some(witness.contents_clip) =>
-                {
-                    PropertyTreeState {
-                        clip: None,
-                        scroll: None,
-                        ..live
-                    }
-                }
-                ConsumedAncestorProperty::Effect(witness)
-                    if witness.is_canonical_for(owner)
-                        && opacity_authority
-                            == PaintOpacityAuthority::NeutralRootEffect(witness.effect.id)
-                        && live.effect == witness.expected_before =>
-                {
-                    PropertyTreeState {
-                        effect: witness.projected_after,
-                        ..live
-                    }
-                }
-                _ => return None,
-            };
-        }
-        Some(live)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ConsumedAncestorProperty {
-    Transform(ConsumedAncestorTransformWitness),
-    SameOwnerTransformBoundary(ConsumedSameOwnerTransformBoundaryWitness),
-    SameOwnerEffectBoundary(ConsumedSameOwnerEffectBoundaryWitness),
-    Effect(ConsumedAncestorEffectWitness),
-    /// One scroll projection and its owning contents clip are consumed as a
-    /// single boundary. Projecting only one half would either double-translate
-    /// content or retain a viewport-space clip in the offset-zero raster.
-    ScrollContents(ConsumedAncestorScrollContentsWitness),
-}
-
-impl ConsumedAncestorProperty {
-    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
-        match self {
-            Self::Transform(witness) => Self::Transform(witness.for_target(target_owner)),
-            Self::SameOwnerTransformBoundary(witness) => {
-                Self::SameOwnerTransformBoundary(witness.for_target(target_owner))
-            }
-            Self::SameOwnerEffectBoundary(witness) => {
-                Self::SameOwnerEffectBoundary(witness.for_target(target_owner))
-            }
-            Self::Effect(witness) => Self::Effect(witness.for_target(target_owner)),
-            Self::ScrollContents(witness) => Self::ScrollContents(witness.for_target(target_owner)),
-        }
-    }
-}
-
-/// Exact projection for an effect boundary and scroll host owned by the same
-/// native node. This capability is intentionally separate from
-/// `ConsumedAncestorEffectWitness`, whose unequal-owner invariant remains
-/// unchanged.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ConsumedSameOwnerEffectBoundaryWitness {
-    pub(crate) owner: NodeKey,
-    pub(crate) effect: EffectNodeSnapshot,
-    pub(crate) expected_before: Option<EffectNodeId>,
-    pub(crate) projected_after: Option<EffectNodeId>,
-    pub(crate) target_owner: NodeKey,
-}
-
-impl ConsumedSameOwnerEffectBoundaryWitness {
-    pub(crate) fn new(owner: NodeKey, effect: EffectNodeSnapshot) -> Option<Self> {
-        let witness = Self {
-            owner,
-            effect,
-            expected_before: Some(effect.id),
-            projected_after: effect.parent,
-            target_owner: owner,
-        };
-        witness.is_canonical_for(owner).then_some(witness)
-    }
-
-    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
-        Self {
-            target_owner,
-            ..self
-        }
-    }
-
-    pub(super) fn is_canonical_for(self, owner: NodeKey) -> bool {
-        self.effect.id.0 == self.owner
-            && self.effect.owner == self.owner
-            && self.effect.parent.is_none()
-            && self.effect.generation != 0
-            && self.effect.opacity.is_finite()
-            && (0.0..=1.0).contains(&self.effect.opacity)
-            && self.expected_before == Some(self.effect.id)
-            && self.projected_after == self.effect.parent
-            && self.target_owner == owner
-    }
-}
-
-/// Exact effect-chain projection owned by one already-neutralized receiver.
-/// The before/after leaf ids are part of the capability, so removing an
-/// arbitrary effect tag or skipping an ancestor cannot pass projection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ConsumedAncestorEffectWitness {
-    pub(crate) parent_boundary: NodeKey,
-    pub(crate) child_boundary: NodeKey,
-    pub(crate) effect: EffectNodeSnapshot,
-    pub(crate) expected_before: Option<EffectNodeId>,
-    pub(crate) projected_after: Option<EffectNodeId>,
-    pub(crate) target_owner: NodeKey,
-}
-
-impl ConsumedAncestorEffectWitness {
-    pub(crate) fn new(
-        parent_boundary: NodeKey,
-        child_boundary: NodeKey,
-        effect: EffectNodeSnapshot,
-        expected_before: Option<EffectNodeId>,
-        projected_after: Option<EffectNodeId>,
-    ) -> Option<Self> {
-        let witness = Self {
-            parent_boundary,
-            child_boundary,
-            effect,
-            expected_before,
-            projected_after,
-            target_owner: child_boundary,
-        };
-        witness.is_canonical_for(child_boundary).then_some(witness)
-    }
-
-    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
-        Self {
-            target_owner,
-            ..self
-        }
-    }
-
-    pub(super) fn is_canonical_for(self, owner: NodeKey) -> bool {
-        self.parent_boundary != self.child_boundary
-            && self.effect.id.0 == self.parent_boundary
-            && self.effect.owner == self.parent_boundary
-            && self.effect.generation != 0
-            && self.effect.opacity.is_finite()
-            && (0.0..=1.0).contains(&self.effect.opacity)
-            && self.expected_before == Some(self.effect.id)
-            && self.projected_after == self.effect.parent
-            && self.target_owner == owner
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ConsumedAncestorScrollContentsWitness {
-    pub(crate) parent_boundary: NodeKey,
-    pub(crate) child_boundary: NodeKey,
-    pub(crate) scroll: ScrollNodeId,
-    pub(crate) contents_clip: ClipNodeId,
-    pub(crate) target_owner: NodeKey,
-}
-
-impl ConsumedAncestorScrollContentsWitness {
-    pub(crate) fn new(
-        parent_boundary: NodeKey,
-        child_boundary: NodeKey,
-        scroll: ScrollNodeId,
-        contents_clip: ClipNodeId,
-    ) -> Option<Self> {
-        (parent_boundary != child_boundary
-            && scroll.0 == parent_boundary
-            && contents_clip.owner == parent_boundary
-            && contents_clip.role == ClipNodeRole::ContentsClip)
-            .then_some(Self {
-                parent_boundary,
-                child_boundary,
-                scroll,
-                contents_clip,
-                target_owner: child_boundary,
-            })
-    }
-
-    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
-        Self {
-            target_owner,
-            ..self
-        }
-    }
-
-    pub(super) fn is_canonical_for(self, owner: NodeKey) -> bool {
-        self.parent_boundary != self.child_boundary
-            && self.scroll.0 == self.parent_boundary
-            && self.contents_clip.owner == self.parent_boundary
-            && self.contents_clip.role == ClipNodeRole::ContentsClip
-            && self.target_owner == owner
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ConsumedAncestorTransformWitness {
-    pub(crate) parent_boundary: NodeKey,
-    pub(crate) child_boundary: NodeKey,
-    pub(crate) transform: TransformNodeId,
-    pub(crate) target_owner: NodeKey,
-}
-
-/// Exact projection for a transform boundary already owned by an outer
-/// retained surface while an inner effect surface records the same node.
-/// This is deliberately separate from `ConsumedAncestorTransformWitness`:
-/// equal owners are canonical here and remain forbidden for the ancestor
-/// capability.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ConsumedSameOwnerTransformBoundaryWitness {
-    pub(crate) owner: NodeKey,
-    pub(crate) transform: TransformNodeId,
-    pub(crate) target_owner: NodeKey,
-}
-
-impl ConsumedSameOwnerTransformBoundaryWitness {
-    pub(crate) fn new(owner: NodeKey, transform: TransformNodeId) -> Option<Self> {
-        (transform.0 == owner).then_some(Self {
-            owner,
-            transform,
-            target_owner: owner,
-        })
-    }
-
-    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
-        Self {
-            target_owner,
-            ..self
-        }
-    }
-
-    pub(super) fn is_canonical_for(self, owner: NodeKey) -> bool {
-        self.owner == self.transform.0 && self.target_owner == owner
-    }
-}
-
-impl ConsumedAncestorTransformWitness {
-    pub(crate) fn new(
-        parent_boundary: NodeKey,
-        child_boundary: NodeKey,
-        transform: TransformNodeId,
-    ) -> Option<Self> {
-        (parent_boundary != child_boundary && transform.0 == parent_boundary).then_some(Self {
-            parent_boundary,
-            child_boundary,
-            transform,
-            target_owner: child_boundary,
-        })
-    }
-
-    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
-        Self {
-            target_owner,
-            ..self
-        }
-    }
-
-    pub(super) fn is_canonical_for(self, owner: NodeKey) -> bool {
-        self.parent_boundary != self.child_boundary
-            && self.transform.0 == self.parent_boundary
-            && self.target_owner == owner
-    }
-}
-
-/// Recorder-owned identity for one detached, offset-zero scroll-content
-/// artifact. Both recording passes receive this exact immutable value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PaintScrollContentWitness {
-    boundary_root: NodeKey,
-    content_root: NodeKey,
-    scroll: ScrollNodeSnapshot,
-    contents_clip: ClipNodeSnapshot,
-    normalization_offset_bits: [u32; 2],
-}
-
-/// One boundary-local projection edge in an arbitrary-depth scroll forest.
-/// The witness consumes exactly this scroll/contents-clip pair; ancestor
-/// edges are represented by the parent target and never accumulated in the
-/// bounded ancestor-property stack.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PaintScrollForestEdgeWitness {
-    boundary_root: NodeKey,
-    content_root: NodeKey,
-    scroll: ScrollNodeSnapshot,
-    contents_clip: ClipNodeSnapshot,
-    normalization_offset_bits: [u32; 2],
-}
-
-impl PaintScrollForestEdgeWitness {
-    pub(crate) fn new(
-        boundary_root: NodeKey,
-        content_root: NodeKey,
-        scroll: ScrollNodeSnapshot,
-        contents_clip: ClipNodeSnapshot,
-        parent_scroll: Option<ScrollNodeId>,
-        parent_clip: Option<ClipNodeId>,
-    ) -> Option<Self> {
-        let normalization_offset = [scroll.offset.x, scroll.offset.y];
-        (boundary_root != content_root
-            && scroll.id.0 == boundary_root
-            && scroll.owner == boundary_root
-            && scroll.parent == parent_scroll
-            && scroll.generation != 0
-            && normalization_offset.into_iter().all(f32::is_finite)
-            && contents_clip.id.owner == boundary_root
-            && contents_clip.id.role == ClipNodeRole::ContentsClip
-            && contents_clip.owner == boundary_root
-            && contents_clip.parent == parent_clip
-            && contents_clip.generation != 0
-            && scroll.has_canonical_geometry_with_contents_clip_parent_ids(
-                contents_clip,
-                parent_scroll,
-                parent_clip,
-            ))
-        .then_some(Self {
-            boundary_root,
-            content_root,
-            scroll,
-            contents_clip,
-            normalization_offset_bits: normalization_offset.map(f32::to_bits),
-        })
-    }
-
-    pub(crate) fn boundary_root(self) -> NodeKey {
-        self.boundary_root
-    }
-
-    pub(crate) fn content_root(self) -> NodeKey {
-        self.content_root
-    }
-
-    pub(crate) fn scroll_snapshot(self) -> ScrollNodeSnapshot {
-        self.scroll
-    }
-
-    pub(crate) fn contents_clip_snapshot(self) -> ClipNodeSnapshot {
-        self.contents_clip
-    }
-
-    pub(crate) fn normalization_paint_offset(self) -> [f32; 2] {
-        self.normalization_offset_bits.map(f32::from_bits)
-    }
-
-    pub(crate) fn consumed_property(self) -> ConsumedAncestorProperty {
-        ConsumedAncestorProperty::ScrollContents(
-            ConsumedAncestorScrollContentsWitness::new(
-                self.boundary_root,
-                self.content_root,
-                self.scroll.id,
-                self.contents_clip.id,
-            )
-            .expect("canonical forest edge owns one scroll/clip projection"),
-        )
-    }
-
-    pub(crate) fn project_host_for(
-        self,
-        owner: NodeKey,
-        live: PropertyTreeState,
-    ) -> Option<PropertyTreeState> {
-        if owner != self.boundary_root {
-            return None;
-        }
-        let parent = PropertyTreeState {
-            clip: self.contents_clip.parent,
-            scroll: self.scroll.parent,
-            ..PropertyTreeState::default()
-        };
-        let own = PropertyTreeState {
-            clip: Some(self.contents_clip.id),
-            scroll: Some(self.scroll.id),
-            ..PropertyTreeState::default()
-        };
-        if live.legacy_boundary_eq(parent) {
-            Some(PropertyTreeState {
-                transform: None,
-                clip: None,
-                effect: None,
-                scroll: None,
-                ..live
-            })
-        } else if live.legacy_boundary_eq(own) {
-            // Host masks are emitted on the parent target around the typed
-            // content receiver. The receiver keeps the own S/C edge; storing
-            // it again on the mask would double-apply scroll/clip state.
-            Some(PropertyTreeState {
-                transform: None,
-                clip: None,
-                effect: None,
-                scroll: None,
-                ..live
-            })
-        } else {
-            None
-        }
-    }
-}
-
-impl PaintScrollContentWitness {
-    pub(crate) fn new(
-        boundary_root: NodeKey,
-        content_root: NodeKey,
-        scroll: ScrollNodeSnapshot,
-        contents_clip: ClipNodeSnapshot,
-    ) -> Option<Self> {
-        let normalization_offset = [scroll.offset.x, scroll.offset.y];
-        (boundary_root != content_root
-            && scroll.id.0 == boundary_root
-            && scroll.owner == boundary_root
-            && scroll.parent.is_none()
-            && scroll.generation != 0
-            && normalization_offset.into_iter().all(f32::is_finite)
-            && contents_clip.id.owner == boundary_root
-            && contents_clip.id.role == ClipNodeRole::ContentsClip
-            && contents_clip.owner == boundary_root
-            && contents_clip.parent.is_none()
-            && contents_clip.generation != 0
-            && scroll.has_canonical_vertical_geometry_with_contents_clip(contents_clip))
-        .then_some(Self {
-            boundary_root,
-            content_root,
-            scroll,
-            contents_clip,
-            normalization_offset_bits: normalization_offset.map(f32::to_bits),
-        })
-    }
-
-    pub(crate) fn boundary_root(self) -> NodeKey {
-        self.boundary_root
-    }
-
-    pub(crate) fn content_root(self) -> NodeKey {
-        self.content_root
-    }
-
-    pub(crate) fn scroll_snapshot(self) -> ScrollNodeSnapshot {
-        self.scroll
-    }
-
-    pub(crate) fn contents_clip_snapshot(self) -> ClipNodeSnapshot {
-        self.contents_clip
-    }
-
-    pub(crate) fn normalization_paint_offset(self) -> [f32; 2] {
-        self.normalization_offset_bits.map(f32::from_bits)
-    }
-
-    pub(crate) fn consumed_property(self) -> ConsumedAncestorProperty {
-        ConsumedAncestorProperty::ScrollContents(
-            ConsumedAncestorScrollContentsWitness::new(
-                self.boundary_root,
-                self.content_root,
-                self.scroll.id,
-                self.contents_clip.id,
-            )
-            .expect("validated scroll-content witness has canonical property identities"),
-        )
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PaintTransformSurfaceWitness {
-    pub(crate) boundary_owner: NodeKey,
-    pub(crate) transform: TransformNodeId,
-    pub(crate) target_owner: NodeKey,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PaintBakedScrollHostWitness {
-    boundary_root: NodeKey,
-    child: NodeKey,
-    scroll: crate::view::compositor::property_tree::ScrollNodeSnapshot,
-    contents_clip: ClipNodeId,
-    target_owner: NodeKey,
-}
-
-impl PaintBakedScrollHostWitness {
-    pub(crate) fn new(
-        boundary_root: NodeKey,
-        child: NodeKey,
-        scroll: crate::view::compositor::property_tree::ScrollNodeSnapshot,
-        contents_clip: ClipNodeId,
-    ) -> Option<Self> {
-        (boundary_root != child
-            && scroll.id.0 == boundary_root
-            && scroll.owner == boundary_root
-            && contents_clip.owner == boundary_root
-            && contents_clip.role == ClipNodeRole::ContentsClip)
-            .then_some(Self {
-                boundary_root,
-                child,
-                scroll,
-                contents_clip,
-                target_owner: boundary_root,
-            })
-    }
-
-    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
-        Self {
-            target_owner,
-            ..self
-        }
-    }
-
-    pub(crate) fn boundary_root(self) -> NodeKey {
-        self.boundary_root
-    }
-
-    pub(crate) fn child(self) -> NodeKey {
-        self.child
-    }
-
-    pub(crate) fn scroll(self) -> crate::view::compositor::property_tree::ScrollNodeId {
-        self.scroll.id
-    }
-
-    pub(crate) fn scroll_snapshot(
-        self,
-    ) -> crate::view::compositor::property_tree::ScrollNodeSnapshot {
-        self.scroll
-    }
-
-    pub(crate) fn contents_clip(self) -> ClipNodeId {
-        self.contents_clip
-    }
-
-    pub(crate) fn target_owner(self) -> NodeKey {
-        self.target_owner
-    }
-}
-
-impl PaintTransformSurfaceWitness {
-    pub(crate) fn canonical_root(root: NodeKey) -> Self {
-        Self {
-            boundary_owner: root,
-            transform: TransformNodeId(root),
-            target_owner: root,
-        }
-    }
-
-    pub(crate) fn for_target(self, target_owner: NodeKey) -> Self {
-        Self {
-            target_owner,
-            ..self
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PaintTextPreeditWitness {
     pub(crate) projection_owner: NodeKey,
@@ -1148,18 +84,7 @@ pub(crate) struct PaintTextPreeditWitness {
     pub(crate) target_caret_char: usize,
 }
 
-impl PaintTextPreeditWitness {
-    pub(crate) fn is_canonical_for(self, owner: NodeKey, stable_id: u64) -> bool {
-        self.target_owner == owner
-            && self.target_stable_id == stable_id
-            && self.local_start_char < self.local_end_char
-            && self.target_start_byte < self.target_end_byte
-            && self.target_caret_byte >= self.target_start_byte
-            && self.target_caret_byte <= self.target_end_byte
-            && self.target_caret_char >= self.local_start_char
-            && self.target_caret_char <= self.local_end_char
-    }
-}
+impl PaintTextPreeditWitness {}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PaintTextSelectionWitness {
@@ -1170,272 +95,8 @@ pub(crate) struct PaintTextSelectionWitness {
     pub(crate) fill: [f32; 4],
 }
 
-impl PaintTextSelectionWitness {
-    pub(crate) fn is_canonical_for(self, owner: NodeKey, stable_id: u64) -> bool {
-        self.target_owner == owner
-            && self.target_stable_id == stable_id
-            && self.local_start < self.local_end
-            && self
-                .fill
-                .iter()
-                .all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum PaintOpacityAuthority {
-    #[default]
-    Baked,
-    NeutralRootEffect(EffectNodeId),
-}
-
-/// One owner in the canonical, cutout-aware content topology of a retained
-/// effect raster.  Composite revisions are deliberately absent: opacity and
-/// effect generations are composite authority and must not enter the raster
-/// identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct EffectPropertyContentWitness {
-    pub(crate) owner: NodeKey,
-    pub(crate) stable_id: u64,
-    pub(crate) parent: Option<NodeKey>,
-    pub(crate) self_paint_revision: u64,
-    pub(crate) topology_revision: u64,
-}
-
-/// Opaque, owning compiler/recorder authority materialized from the canonical
-/// effect scaffold.  It freezes both sides of detachment: the exact live
-/// effect/clip chains and the surface-local view that may enter the artifact.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct EffectPropertySurfaceArtifactContract {
-    boundary_root: NodeKey,
-    stable_id: u64,
-    isolated_leaf: EffectNodeSnapshot,
-    live_effect_chain: Vec<EffectNodeSnapshot>,
-    detached_ancestors: Vec<EffectNodeSnapshot>,
-    local_raster_clips: Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>,
-    detached_ancestor_clips: Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>,
-    content: Vec<EffectPropertyContentWitness>,
-}
-
-impl EffectPropertySurfaceArtifactContract {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn new(
-        boundary_root: NodeKey,
-        stable_id: u64,
-        isolated_leaf: EffectNodeSnapshot,
-        live_effect_chain: Vec<EffectNodeSnapshot>,
-        detached_ancestors: Vec<EffectNodeSnapshot>,
-        local_raster_clips: Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>,
-        detached_ancestor_clips: Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>,
-        content: Vec<EffectPropertyContentWitness>,
-    ) -> Option<Self> {
-        let contract = Self {
-            boundary_root,
-            stable_id,
-            isolated_leaf,
-            live_effect_chain,
-            detached_ancestors,
-            local_raster_clips,
-            detached_ancestor_clips,
-            content,
-        };
-        contract.is_canonical().then_some(contract)
-    }
-
-    pub(crate) fn boundary_root(&self) -> NodeKey {
-        self.boundary_root
-    }
-
-    pub(crate) fn stable_id(&self) -> u64 {
-        self.stable_id
-    }
-
-    pub(crate) fn isolated_leaf(&self) -> EffectNodeSnapshot {
-        self.isolated_leaf
-    }
-
-    pub(crate) fn live_effect_chain(&self) -> &[EffectNodeSnapshot] {
-        &self.live_effect_chain
-    }
-
-    pub(crate) fn detached_ancestors(&self) -> &[EffectNodeSnapshot] {
-        &self.detached_ancestors
-    }
-
-    pub(crate) fn local_raster_clips(
-        &self,
-    ) -> &[crate::view::compositor::property_tree::ClipNodeSnapshot] {
-        &self.local_raster_clips
-    }
-
-    pub(crate) fn detached_ancestor_clips(
-        &self,
-    ) -> &[crate::view::compositor::property_tree::ClipNodeSnapshot] {
-        &self.detached_ancestor_clips
-    }
-
-    pub(crate) fn isolated_local_raster_clips(
-        &self,
-    ) -> Vec<crate::view::compositor::property_tree::ClipNodeSnapshot> {
-        let mut clips = self.local_raster_clips.clone();
-        if let Some(root) = clips.last_mut() {
-            root.parent = None;
-        }
-        clips
-    }
-
-    pub(crate) fn content(&self) -> &[EffectPropertyContentWitness] {
-        &self.content
-    }
-
-    pub(crate) fn is_canonical(&self) -> bool {
-        if self.boundary_root.is_null()
-            || self.stable_id == 0
-            || self.live_effect_chain.first()
-                != Some(&EffectNodeSnapshot {
-                    parent: self.live_effect_chain.first().and_then(|leaf| leaf.parent),
-                    ..self.isolated_leaf
-                })
-            || self.isolated_leaf.id != EffectNodeId(self.boundary_root)
-            || self.isolated_leaf.owner != self.boundary_root
-            || self.isolated_leaf.parent.is_some()
-            || self.detached_ancestors != self.live_effect_chain[1..]
-            || self.content.is_empty()
-        {
-            return false;
-        }
-        let mut effects = rustc_hash::FxHashSet::default();
-        for (index, effect) in self.live_effect_chain.iter().enumerate() {
-            if effect.id.0 != effect.owner
-                || effect.generation == 0
-                || !effect.opacity.is_finite()
-                || !(0.0..=1.0).contains(&effect.opacity)
-                || !effects.insert(effect.id)
-                || effect.parent != self.live_effect_chain.get(index + 1).map(|next| next.id)
-            {
-                return false;
-            }
-        }
-
-        let mut clips = rustc_hash::FxHashSet::default();
-        let full_clips = self
-            .local_raster_clips
-            .iter()
-            .chain(&self.detached_ancestor_clips)
-            .collect::<Vec<_>>();
-        for (index, clip) in full_clips.iter().enumerate() {
-            if clip.id.owner != clip.owner
-                || clip.generation == 0
-                || !matches!(
-                    (clip.id.role, clip.behavior),
-                    (
-                        ClipNodeRole::SelfClip,
-                        crate::view::compositor::property_tree::ClipBehavior::Replace
-                    ) | (
-                        ClipNodeRole::ContentsClip,
-                        crate::view::compositor::property_tree::ClipBehavior::Intersect
-                    )
-                )
-                || !clips.insert(clip.id)
-                || clip.parent != full_clips.get(index + 1).map(|next| next.id)
-            {
-                return false;
-            }
-        }
-
-        let mut owners = rustc_hash::FxHashSet::default();
-        let mut stable_ids = rustc_hash::FxHashSet::default();
-        for (index, witness) in self.content.iter().enumerate() {
-            if witness.stable_id == 0
-                || witness.self_paint_revision == 0
-                || witness.topology_revision == 0
-                || !stable_ids.insert(witness.stable_id)
-                || (index == 0
-                    && (witness.owner != self.boundary_root
-                        || witness.stable_id != self.stable_id
-                        || witness.parent.is_some()))
-                || (index != 0
-                    && witness
-                        .parent
-                        .is_none_or(|parent| parent == witness.owner || !owners.contains(&parent)))
-                || !owners.insert(witness.owner)
-            {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub(crate) fn detach_effect_snapshot(
-        &self,
-        leaf: Option<EffectNodeId>,
-        live: &[EffectNodeSnapshot],
-    ) -> Option<Vec<EffectNodeSnapshot>> {
-        (self.is_canonical()
-            && leaf == Some(self.isolated_leaf.id)
-            && live == self.live_effect_chain)
-            .then(|| vec![self.isolated_leaf])
-    }
-
-    /// Removes only the exact frozen ancestor suffix. Descendant-local clips
-    /// remain intact, while the boundary's own local chain must stay present.
-    pub(crate) fn detach_clip_snapshot(
-        &self,
-        live: &[crate::view::compositor::property_tree::ClipNodeSnapshot],
-    ) -> Option<Vec<crate::view::compositor::property_tree::ClipNodeSnapshot>> {
-        if !self.is_canonical() {
-            return None;
-        }
-        // Coverage already validated the full live chain before projecting an
-        // ancestor-only leaf to `None`. Snapshot collection then observes an
-        // empty projected chain, which is the exact local artifact view.
-        if live.is_empty() && self.local_raster_clips.is_empty() {
-            return Some(Vec::new());
-        }
-        if live.len() < self.detached_ancestor_clips.len()
-            || live[live.len() - self.detached_ancestor_clips.len()..]
-                != self.detached_ancestor_clips
-        {
-            return None;
-        }
-        let mut local = live[..live.len() - self.detached_ancestor_clips.len()].to_vec();
-        if local.len() < self.local_raster_clips.len()
-            || local[local.len() - self.local_raster_clips.len()..] != self.local_raster_clips
-        {
-            return None;
-        }
-        if let Some(root) = local.last_mut() {
-            root.parent = None;
-        }
-        Some(local)
-    }
-
-    pub(crate) fn project_clip_leaf(
-        &self,
-        live_leaf: Option<ClipNodeId>,
-        live: &[crate::view::compositor::property_tree::ClipNodeSnapshot],
-    ) -> Option<Option<ClipNodeId>> {
-        if live.first().map(|clip| clip.id) != live_leaf {
-            return None;
-        }
-        self.detach_clip_snapshot(live)
-            .map(|local| local.first().map(|clip| clip.id))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum PaintArtifactTarget {
-    #[default]
-    CurrentTarget,
-    RootOpacityGroup {
-        root: NodeKey,
-        effect: EffectNodeId,
-    },
-}
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PaintArtifact {
-    pub(crate) target: PaintArtifactTarget,
     pub(crate) chunks: super::shared_sequence::SharedSequence<PaintChunk>,
     pub(crate) ops: super::shared_sequence::SharedSequence<PaintOp>,
     /// Complete, arena-independent transitive clip snapshot for every clip
@@ -1500,25 +161,25 @@ impl PaintOwnerSnap {
 
     /// The snap of `host`, relative to the layout frame `frame`. A point that
     /// does not return exactly to itself from that frame is kept in viewport
-    /// space instead, so the compiler snaps the very value the legacy build
-    /// snaps.
+    /// space instead, so the compiler snaps the very value layout produced.
     pub(crate) fn observe<H: crate::view::base_component::ElementTrait + ?Sized>(
         host: &H,
         arena: &crate::view::node_arena::NodeArena,
         frame: Option<LayoutPositionNodeId>,
-    ) -> Option<Self> {
+    ) -> Self {
         let points = host.paint_snap_points(arena);
         if points == [None, None] {
-            return Some(Self::INHERIT);
+            return Self::INHERIT;
         }
         let viewport = Self {
             frame: None,
             points_bits: points.map(|point| point.map(|point| point.map(f32::to_bits))),
         };
-        let Some(frame) = frame else {
-            return Some(viewport);
+        let Some((frame, frame_node)) = frame.and_then(|frame| Some((frame, arena.get(frame.0)?)))
+        else {
+            return viewport;
         };
-        let bounds = arena.get(frame.0)?.element.box_model_snapshot();
+        let bounds = frame_node.element.box_model_snapshot();
         let origin = [bounds.x, bounds.y];
         let mut points_bits = [None; 2];
         for (relative, point) in points_bits.iter_mut().zip(points) {
@@ -1529,14 +190,14 @@ impl PaintOwnerSnap {
             if [origin[0] + local[0], origin[1] + local[1]].map(f32::to_bits)
                 != point.map(f32::to_bits)
             {
-                return Some(viewport);
+                return viewport;
             }
             *relative = Some(local.map(f32::to_bits));
         }
-        Some(Self {
+        Self {
             frame: Some(frame),
             points_bits,
-        })
+        }
     }
 }
 
@@ -1551,134 +212,6 @@ pub(crate) struct PaintOwnerPropertyStateSnapshot {
     pub(crate) stable_id: u64,
     pub(crate) paint: PropertyTreeState,
     pub(crate) descendants: PropertyTreeState,
-}
-
-/// Restricts the two stores already materialized by coverage recording to the
-/// clip/effect closure of `target` chunks and owner endpoints. Spatial stores
-/// remain the separate Stage C preflight responsibility; this artifact-local
-/// projection is not a global property-tree completeness claim.
-pub(super) fn project_clip_effect_snapshot_closure(
-    target: &mut PaintArtifact,
-    source: &PaintArtifact,
-) -> Option<()> {
-    let states = target
-        .chunks
-        .iter()
-        .map(|chunk| chunk.properties)
-        .chain(
-            target
-                .owner_property_states
-                .iter()
-                .flat_map(|snapshot| [snapshot.paint, snapshot.descendants]),
-        )
-        .collect::<Vec<_>>();
-
-    let clip_nodes = source
-        .clip_nodes
-        .iter()
-        .map(|snapshot| (snapshot.id, *snapshot))
-        .collect::<FxHashMap<_, _>>();
-    let effect_nodes = source
-        .effect_nodes
-        .iter()
-        .map(|snapshot| (snapshot.id, *snapshot))
-        .collect::<FxHashMap<_, _>>();
-    let mut clips = FxHashSet::default();
-    let mut effects = FxHashSet::default();
-    let mut pending_clips = states
-        .iter()
-        .filter_map(|state| state.clip)
-        .collect::<Vec<_>>();
-    let mut pending_effects = states
-        .iter()
-        .filter_map(|state| state.effect)
-        .collect::<Vec<_>>();
-    while let Some(id) = pending_clips.pop() {
-        if clips.insert(id) {
-            if let Some(parent) = clip_nodes.get(&id)?.parent {
-                pending_clips.push(parent);
-            }
-        }
-    }
-    while let Some(id) = pending_effects.pop() {
-        if effects.insert(id) {
-            if let Some(parent) = effect_nodes.get(&id)?.parent {
-                pending_effects.push(parent);
-            }
-        }
-    }
-    target.clip_nodes = source
-        .clip_nodes
-        .iter()
-        .copied()
-        .filter(|snapshot| clips.contains(&snapshot.id))
-        .collect();
-    target.effect_nodes = source
-        .effect_nodes
-        .iter()
-        .copied()
-        .filter(|snapshot| effects.contains(&snapshot.id))
-        .collect();
-    Some(())
-}
-
-/// Returns only the clip/effect snapshots that participate in chunk raster
-/// semantics. Owner endpoints may legitimately extend the artifact stores,
-/// but those endpoint-only snapshots are transition data rather than raster
-/// identity. Source order is preserved for the frozen identity callers.
-pub(super) fn chunk_raster_property_snapshot_closure(
-    artifact: &PaintArtifact,
-) -> Option<(Vec<ClipNodeSnapshot>, Vec<EffectNodeSnapshot>)> {
-    let clip_nodes = artifact
-        .clip_nodes
-        .iter()
-        .map(|snapshot| (snapshot.id, *snapshot))
-        .collect::<FxHashMap<_, _>>();
-    let effect_nodes = artifact
-        .effect_nodes
-        .iter()
-        .map(|snapshot| (snapshot.id, *snapshot))
-        .collect::<FxHashMap<_, _>>();
-    let mut clips = FxHashSet::default();
-    let mut effects = FxHashSet::default();
-    let mut pending_clips = artifact
-        .chunks
-        .iter()
-        .filter_map(|chunk| chunk.properties.clip)
-        .collect::<Vec<_>>();
-    let mut pending_effects = artifact
-        .chunks
-        .iter()
-        .filter_map(|chunk| chunk.properties.effect)
-        .collect::<Vec<_>>();
-    while let Some(id) = pending_clips.pop() {
-        if clips.insert(id) {
-            if let Some(parent) = clip_nodes.get(&id).and_then(|snapshot| snapshot.parent) {
-                pending_clips.push(parent);
-            }
-        }
-    }
-    while let Some(id) = pending_effects.pop() {
-        if effects.insert(id) {
-            if let Some(parent) = effect_nodes.get(&id).and_then(|snapshot| snapshot.parent) {
-                pending_effects.push(parent);
-            }
-        }
-    }
-    Some((
-        artifact
-            .clip_nodes
-            .iter()
-            .copied()
-            .filter(|snapshot| clips.contains(&snapshot.id))
-            .collect(),
-        artifact
-            .effect_nodes
-            .iter()
-            .copied()
-            .filter(|snapshot| effects.contains(&snapshot.id))
-            .collect(),
-    ))
 }
 
 /// The frame a chunk's geometry — bounds, payload identity and commands — is
@@ -1734,15 +267,6 @@ pub(crate) struct PaintChunkMetadata {
     pub(crate) properties: PropertyTreeState,
     pub(crate) content_revision: PaintContentRevision,
     pub(crate) payload_identity: PaintPayloadIdentity,
-}
-
-pub(crate) fn has_canonical_paint_bounds(bounds: Rect) -> bool {
-    bounds.x.is_finite()
-        && bounds.y.is_finite()
-        && bounds.width.is_finite()
-        && bounds.height.is_finite()
-        && bounds.width >= 0.0
-        && bounds.height >= 0.0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1882,23 +406,6 @@ impl RetainedChildMaskPlan {
         })
     }
 
-    pub(crate) fn is_canonical_for_children(&self, children: &[NodeKey]) -> bool {
-        let mut expected_in_scope = self.in_scope_children.iter().copied();
-        let mut expected_overflow = self.overflow_children.iter().copied();
-        let mut next_in_scope = expected_in_scope.next();
-        let mut next_overflow = expected_overflow.next();
-        for &child in children {
-            if next_in_scope == Some(child) {
-                next_in_scope = expected_in_scope.next();
-            } else if next_overflow == Some(child) {
-                next_overflow = expected_overflow.next();
-            } else {
-                return false;
-            }
-        }
-        next_in_scope.is_none() && next_overflow.is_none()
-    }
-
     pub(crate) fn in_scope_children(&self) -> &[NodeKey] {
         &self.in_scope_children
     }
@@ -1939,7 +446,6 @@ impl RetainedChildMaskPlan {
         content_revision: PaintContentRevision,
     ) -> PaintArtifact {
         PaintArtifact {
-            target: Default::default(),
             chunks: vec![PaintChunk {
                 frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: PaintChunkId {
@@ -1972,16 +478,21 @@ impl RetainedChildMaskPlan {
             }],
         }
     }
-
-    pub(crate) fn logical_scissor(&self) -> [u32; 4] {
-        self.logical_scissor
-    }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct PaintNodePlan<T> {
     pub(crate) before_children: Vec<T>,
     pub(crate) after_children: Vec<T>,
+}
+
+impl<T> Default for PaintNodePlan<T> {
+    fn default() -> Self {
+        Self {
+            before_children: Vec::new(),
+            after_children: Vec::new(),
+        }
+    }
 }
 
 impl<T> PaintNodePlan<T> {
@@ -1990,10 +501,6 @@ impl<T> PaintNodePlan<T> {
             before_children: vec![item],
             after_children: Vec::new(),
         }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.before_children.is_empty() && self.after_children.is_empty()
     }
 }
 
@@ -2070,16 +577,6 @@ impl PreparedInlineIfcDecorationOp {
             border,
             identity,
         })
-    }
-
-    pub(crate) fn has_canonical_identity(&self) -> bool {
-        PreparedInlineIfcDecorationIdentity::from_parts(
-            &self.descriptor,
-            &self.fill,
-            self.border.as_ref(),
-        )
-        .as_ref()
-            == Some(&self.identity)
     }
 
     pub(crate) fn frozen_identity(&self) -> PreparedInlineIfcDecorationIdentity {
@@ -2238,11 +735,6 @@ impl PreparedShadowOp {
         })
     }
 
-    pub(crate) fn has_canonical_identity(&self) -> bool {
-        PreparedShadowIdentity::from_parts(&self.shape, self.params).as_ref()
-            == Some(&self.identity)
-    }
-
     pub(crate) fn frozen_identity(&self) -> PreparedShadowIdentity {
         self.identity.clone()
     }
@@ -2357,13 +849,6 @@ impl PreparedScrollbarOverlayOp {
         })
     }
 
-    pub(crate) fn from_vertical_witness(witness: ScrollbarOverlayWitness) -> Option<Self> {
-        if witness.horizontal_track.is_some() || witness.horizontal_thumb.is_some() {
-            return None;
-        }
-        Self::from_witness(witness)
-    }
-
     fn axis(
         track: Rect,
         thumb: Rect,
@@ -2421,30 +906,6 @@ impl PreparedScrollbarOverlayOp {
         };
         PreparedDrawRectIdentity::from_op(&op)?;
         Some(op)
-    }
-
-    pub(crate) fn has_canonical_identity(&self) -> bool {
-        PreparedScrollbarOverlayIdentity::from_parts(
-            &self.track_shadow,
-            &self.track,
-            &self.thumb_shadow,
-            &self.thumb,
-            self.secondary.as_deref(),
-        )
-        .as_ref()
-            == Some(&self.identity)
-    }
-
-    pub(crate) fn matches_vertical_witness(&self, witness: ScrollbarOverlayWitness) -> bool {
-        self.has_canonical_identity()
-            && Self::from_vertical_witness(witness)
-                .is_some_and(|expected| expected.identity == self.identity)
-    }
-
-    pub(crate) fn matches_witness(&self, witness: ScrollbarOverlayWitness) -> bool {
-        self.has_canonical_identity()
-            && Self::from_witness(witness)
-                .is_some_and(|expected| expected.identity == self.identity)
     }
 
     pub(crate) fn secondary_axis(
@@ -2509,6 +970,7 @@ impl PreparedScrollbarOverlayOp {
         Some(translated)
     }
 
+    #[cfg(test)]
     pub(crate) fn has_baked_opacity(&self, expected_bits: u32) -> bool {
         self.track_shadow.params.opacity.to_bits() == expected_bits
             && self.track.params.opacity.to_bits() == expected_bits
@@ -2562,61 +1024,6 @@ impl PreparedScrollbarOverlayOp {
             rebuilt.secondary.as_deref(),
         )?;
         Some(rebuilt)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn axis_geometry_bits_for_test(&self) -> Vec<([u32; 4], [u32; 4])> {
-        let rect_bits = |op: &DrawRectOp| {
-            (
-                [
-                    op.params.position[0].to_bits(),
-                    op.params.position[1].to_bits(),
-                    op.params.size[0].to_bits(),
-                    op.params.size[1].to_bits(),
-                ],
-                op.params.fill_color.map(f32::to_bits),
-            )
-        };
-        let mut axes = vec![(rect_bits(&self.track).0, rect_bits(&self.thumb).0)];
-        if let Some(axis) = self.secondary.as_deref() {
-            axes.push((rect_bits(&axis.track).0, rect_bits(&axis.thumb).0));
-        }
-        axes
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tamper_track_position_for_test(&mut self) {
-        self.track.params.position[0] += 1.0;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tamper_primary_axis_for_test(&mut self) {
-        self.track.params.position.swap(0, 1);
-        self.track.params.size.swap(0, 1);
-        self.thumb.params.position.swap(0, 1);
-        self.thumb.params.size.swap(0, 1);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tamper_thumb_size_for_test(&mut self) {
-        self.thumb.params.size[0] += 1.0;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tamper_alpha_for_test(&mut self) {
-        self.track.params.fill_color[3] *= 0.5;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tamper_axis_order_for_test(&mut self) -> bool {
-        let Some(secondary) = self.secondary.as_deref_mut() else {
-            return false;
-        };
-        std::mem::swap(&mut self.track_shadow, &mut secondary.track_shadow);
-        std::mem::swap(&mut self.track, &mut secondary.track);
-        std::mem::swap(&mut self.thumb_shadow, &mut secondary.thumb_shadow);
-        std::mem::swap(&mut self.thumb, &mut secondary.thumb);
-        true
     }
 }
 
@@ -2702,75 +1109,25 @@ impl PreparedShadowIdentity {
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedTextOp {
     pub(crate) params: Arc<TextPassPreparedParams>,
-    // Sharing immutable validated input makes clone/replay and revalidation
-    // constant-time. A changed allocation still goes through full validation.
-    validated_params: Arc<TextPassPreparedParams>,
-    uniform_opacity_bits: Option<u32>,
     identity: PreparedTextIdentity,
 }
 
 impl PreparedTextOp {
-    /// Validate the unclipped source used by Text capability, with the same
-    /// glyph/fragment rules as `new`, without allocating an op or identity.
-    /// Recorded ops still validate their own scissor through `new`.
-    pub(crate) fn validate_unclipped_glyph_stream(
-        scale_factor: f32,
-        fragments: &[TextPassPreparedFragment],
-        mut glyphs: impl ExactSizeIterator<Item = TextPassPreparedStagingGlyphInput>,
-    ) -> bool {
-        PreparedTextIdentity::valid_header(scale_factor, glyphs.len(), fragments, None)
-            && fragments
-                .iter()
-                .all(|fragment| PreparedTextFragmentIdentity::from_fragment(fragment).is_some())
-            && glyphs
-                .all(|glyph| PreparedTextGlyphIdentity::from_glyph(&glyph, fragments).is_some())
-    }
-
     pub(crate) fn new(params: impl Into<Arc<TextPassPreparedParams>>) -> Option<Self> {
         let params = params.into();
         #[cfg(test)]
         prepared_text_identity_tests::note_construction();
         let identity = PreparedTextIdentity::from_params(&params)?;
-        let uniform_opacity_bits = params.staging_input.glyphs.first().and_then(|first| {
-            let bits = first.paint.opacity.to_bits();
-            params
-                .staging_input
-                .glyphs
-                .iter()
-                .all(|glyph| glyph.paint.opacity.to_bits() == bits)
-                .then_some(bits)
-        });
-        Some(Self {
-            validated_params: params.clone(),
-            uniform_opacity_bits,
-            params,
-            identity,
-        })
-    }
-
-    pub(crate) fn has_canonical_identity(&self) -> bool {
-        Arc::ptr_eq(&self.params, &self.validated_params)
-            || self.identity.matches_params(&self.params)
-    }
-
-    pub(crate) fn has_baked_opacity(&self, expected_bits: u32) -> bool {
-        if Arc::ptr_eq(&self.params, &self.validated_params) {
-            // The summary belongs to the same immutable, nonempty glyph
-            // allocation validated by new. Replacing params must inspect the
-            // replacement, even if the old frozen identity was left intact.
-            self.uniform_opacity_bits == Some(expected_bits)
-        } else {
-            self.params
-                .staging_input
-                .glyphs
-                .iter()
-                .all(|glyph| glyph.paint.opacity.to_bits() == expected_bits)
-        }
+        Some(Self { params, identity })
     }
 
     #[cfg(test)]
-    pub(crate) fn construction_count_for_test() -> usize {
-        prepared_text_identity_tests::construction_count()
+    pub(crate) fn has_baked_opacity(&self, expected_bits: u32) -> bool {
+        self.params
+            .staging_input
+            .glyphs
+            .iter()
+            .all(|glyph| glyph.paint.opacity.to_bits() == expected_bits)
     }
 
     pub(crate) fn frozen_identity(&self) -> PreparedTextIdentity {
@@ -2820,16 +1177,9 @@ pub(crate) enum PaintArtifactContractViolation {
     CompositeBounds,
     CompositeClip,
     CompositePayload,
-    CompositePhaseOrder,
-    CompositeSourceParity,
     SelectionRange,
     SelectionColor,
     SelectionRectIdentity,
-    SelectionSourceParity,
-    TransitionOrigin,
-    TransitionRevision,
-    TransitionRevisionParity,
-    TransitionSourceParity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2859,25 +1209,6 @@ impl PaintTextSelectionSource {
                 .into_iter()
                 .all(|channel| channel.is_finite() && (0.0..=1.0).contains(&channel))
     }
-
-    pub(crate) fn matches_payload(self, payload: &TextSelectionPayloadIdentity) -> bool {
-        self.is_canonical()
-            && payload.matches_source(self.start_char, self.end_char, self.color_rgba_bits)
-    }
-
-    pub(crate) fn validate_payload_for_owner(
-        self,
-        owner: NodeKey,
-        payload: &TextSelectionPayloadIdentity,
-    ) -> Result<(), PaintArtifactContractRejection> {
-        payload.validate_for_owner(owner)?;
-        self.matches_payload(payload)
-            .then_some(())
-            .ok_or(PaintArtifactContractRejection {
-                owner,
-                violation: PaintArtifactContractViolation::SelectionSourceParity,
-            })
-    }
 }
 
 /// Generic semantic source for a resident text payload. These cases describe
@@ -2902,10 +1233,6 @@ impl PaintTextContentSource {
             Self::Selection(selection) => Some(selection),
             Self::Glyphs | Self::Preedit => None,
         }
-    }
-
-    pub(crate) fn has_preedit(self) -> bool {
-        matches!(self, Self::Preedit)
     }
 }
 
@@ -2988,48 +1315,8 @@ impl TextSelectionPayloadIdentity {
         Ok(())
     }
 
-    pub(crate) fn validate_for_owner(
-        &self,
-        owner: NodeKey,
-    ) -> Result<(), PaintArtifactContractRejection> {
-        self.validate_parts()
-            .map_err(|violation| PaintArtifactContractRejection { owner, violation })
-    }
-
-    pub(crate) fn validate_exact_ops_for_owner(
-        &self,
-        owner: NodeKey,
-        rects: &[DrawRectOp],
-    ) -> Result<(), PaintArtifactContractRejection> {
-        self.validate_for_owner(owner)?;
-        let exact = PaintPayloadIdentity::prepared_text_selection(
-            self.start_char,
-            self.end_char,
-            self.color_rgba_bits,
-            rects,
-        );
-        (exact.as_ref() == Some(&PaintPayloadIdentity::TextSelection(self.clone())))
-            .then_some(())
-            .ok_or(PaintArtifactContractRejection {
-                owner,
-                violation: PaintArtifactContractViolation::SelectionRectIdentity,
-            })
-    }
-
     pub(crate) fn is_canonical(&self) -> bool {
         self.validate_parts().is_ok()
-    }
-
-    pub(crate) fn matches_source(
-        &self,
-        start_char: usize,
-        end_char: usize,
-        color_rgba_bits: [u32; 4],
-    ) -> bool {
-        self.is_canonical()
-            && self.start_char == start_char
-            && self.end_char == end_char
-            && self.color_rgba_bits == color_rgba_bits
     }
 }
 
@@ -3191,29 +1478,6 @@ pub(crate) enum PaintPayloadIdentity {
     ),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextPayloadNodeKind {
-    TextRun,
-    PreeditRun,
-    LineBreak,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TextPayloadNodeIdentity {
-    pub(crate) topology_index: usize,
-    pub(crate) owner: NodeKey,
-    pub(crate) parent: NodeKey,
-    pub(crate) stable_id: u64,
-    pub(crate) source_id: u64,
-    pub(crate) kind: TextPayloadNodeKind,
-    pub(crate) char_range: Range<usize>,
-    pub(crate) backing_byte_range: Range<usize>,
-    pub(crate) preedit_backing_byte_range: Option<Range<usize>>,
-    pub(crate) preedit_caret_backing_byte: Option<usize>,
-    pub(crate) text: Arc<str>,
-    pub(crate) preedit_cursor: Option<(usize, usize)>,
-}
-
 /// Exact source record for a projection between two artifact coordinate spaces.
 ///
 /// This is geometry/composite-side data. It validates how an already-recorded
@@ -3226,19 +1490,6 @@ pub(crate) struct PaintArtifactSpaceTransition {
     from_origin_bits: [u32; 2],
     to_origin_bits: [u32; 2],
     semantic_revision: u64,
-}
-
-/// Bitwise result of evaluating `to - from` at `f32` on both spatial axes.
-///
-/// Reassociated source origins may produce this same value. Semantic revision
-/// is deliberately absent and must be compared independently.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PaintArtifactSpaceTranslationBits([u32; 2]);
-
-impl PaintArtifactSpaceTranslationBits {
-    pub(crate) fn into_bits(self) -> [u32; 2] {
-        self.0
-    }
 }
 
 impl PaintArtifactSpaceTransition {
@@ -3266,86 +1517,6 @@ impl PaintArtifactSpaceTransition {
             && self.translation().is_some()
     }
 
-    pub(crate) fn validate_for_owner(
-        self,
-        owner: NodeKey,
-    ) -> Result<(), PaintArtifactContractRejection> {
-        if self.semantic_revision == 0 {
-            return Err(PaintArtifactContractRejection {
-                owner,
-                violation: PaintArtifactContractViolation::TransitionRevision,
-            });
-        }
-        if self
-            .from_origin_bits
-            .into_iter()
-            .chain(self.to_origin_bits)
-            .map(f32::from_bits)
-            .any(|value| !value.is_finite())
-            || self.translation().is_none()
-        {
-            return Err(PaintArtifactContractRejection {
-                owner,
-                violation: PaintArtifactContractViolation::TransitionOrigin,
-            });
-        }
-        Ok(())
-    }
-
-    pub(crate) fn validate_expected_for_owner(
-        self,
-        owner: NodeKey,
-        expected: Self,
-    ) -> Result<(), PaintArtifactContractRejection> {
-        self.validate_for_owner(owner)?;
-        expected.validate_for_owner(owner)?;
-        if !self.source_bits_eq(expected) {
-            return Err(PaintArtifactContractRejection {
-                owner,
-                violation: PaintArtifactContractViolation::TransitionSourceParity,
-            });
-        }
-        self.semantic_revision_eq(expected)
-            .then_some(())
-            .ok_or(PaintArtifactContractRejection {
-                owner,
-                violation: PaintArtifactContractViolation::TransitionRevisionParity,
-            })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tamper_from_origin_for_test(mut self, axis: usize) -> Self {
-        self.from_origin_bits[axis] ^= 1;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tamper_to_origin_for_test(mut self, axis: usize) -> Self {
-        self.to_origin_bits[axis] ^= 1;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tamper_revision_for_test(mut self) -> Self {
-        self.semantic_revision = self.semantic_revision.saturating_add(1);
-        self
-    }
-
-    pub(crate) fn semantic_revision(self) -> u64 {
-        self.semantic_revision
-    }
-
-    /// Exact parity of both recorded origin bit pairs. This is stricter than
-    /// equality of their derived translation.
-    pub(crate) fn source_bits_eq(self, other: Self) -> bool {
-        self.from_origin_bits == other.from_origin_bits
-            && self.to_origin_bits == other.to_origin_bits
-    }
-
-    pub(crate) fn semantic_revision_eq(self, other: Self) -> bool {
-        self.semantic_revision == other.semantic_revision
-    }
-
     fn derived_translation(self) -> Option<[f32; 2]> {
         let from = self.from_origin_bits.map(f32::from_bits);
         let to = self.to_origin_bits.map(f32::from_bits);
@@ -3356,178 +1527,8 @@ impl PaintArtifactSpaceTransition {
             .then_some(translation)
     }
 
-    /// Artifact-only seam for a later cross-source spatial differential.
-    /// Production admission must continue comparing exact source bits and the
-    /// semantic revision independently.
-    pub(crate) fn translation_bits(self) -> Option<PaintArtifactSpaceTranslationBits> {
-        self.derived_translation()
-            .map(|translation| PaintArtifactSpaceTranslationBits(translation.map(f32::to_bits)))
-    }
-
     pub(crate) fn translation(self) -> Option<[f32; 2]> {
         self.derived_translation()
-    }
-
-    pub(crate) fn project_bounds_bits(self, bounds_bits: [u32; 4]) -> Option<[u32; 4]> {
-        let [delta_x, delta_y] = self.translation()?;
-        let x = f32::from_bits(bounds_bits[0]) + delta_x;
-        let y = f32::from_bits(bounds_bits[1]) + delta_y;
-        let width = f32::from_bits(bounds_bits[2]);
-        let height = f32::from_bits(bounds_bits[3]);
-        [x, y, width, height]
-            .into_iter()
-            .all(f32::is_finite)
-            .then_some([x, y, width, height].map(f32::to_bits))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TextPreeditPayloadIdentity {
-    pub(crate) owner: NodeKey,
-    pub(crate) content: Arc<str>,
-    pub(crate) backing_text: Arc<str>,
-    pub(crate) ime_preedit: Arc<str>,
-    pub(crate) ime_preedit_cursor: Option<(usize, usize)>,
-    pub(crate) cursor_char: usize,
-    pub(crate) unified_ifc_source_revision: u64,
-    pub(crate) artifact_space_transition: Option<PaintArtifactSpaceTransition>,
-    pub(crate) generated_topology: Arc<[TextPayloadNodeIdentity]>,
-    pub(crate) foreground_color_bits: [u32; 4],
-    pub(crate) glyph_bounds_bits: [u32; 4],
-    pub(crate) underline_bounds_bits: [u32; 4],
-    pub(crate) glyph_identity: PaintPayloadIdentity,
-    pub(crate) underline_identity: PaintPayloadIdentity,
-}
-
-impl TextPreeditPayloadIdentity {
-    pub(crate) fn is_canonical(&self) -> bool {
-        if self.ime_preedit.is_empty()
-            || self
-                .foreground_color_bits
-                .map(f32::from_bits)
-                .into_iter()
-                .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(&channel))
-            || self.cursor_char > self.content.chars().count()
-            || !self.ime_preedit_cursor.is_none_or(|(start, end)| {
-                start <= end
-                    && end <= self.ime_preedit.len()
-                    && self.ime_preedit.is_char_boundary(start)
-                    && self.ime_preedit.is_char_boundary(end)
-            })
-            || self.unified_ifc_source_revision == 0
-            || !self.artifact_space_transition.is_some_and(|transition| {
-                transition.is_canonical()
-                    && transition.semantic_revision() == self.unified_ifc_source_revision
-            })
-            || self.generated_topology.is_empty()
-            || !preedit_glyph_identity_is_exact(
-                &self.glyph_identity,
-                self.glyph_bounds_bits,
-                self.foreground_color_bits,
-            )
-            || !preedit_underline_identity_is_exact(
-                &self.underline_identity,
-                self.underline_bounds_bits,
-                self.foreground_color_bits,
-            )
-        {
-            return false;
-        }
-        let insert_byte = self
-            .content
-            .char_indices()
-            .nth(self.cursor_char)
-            .map(|(index, _)| index)
-            .unwrap_or(self.content.len());
-        let mut expected_backing =
-            String::with_capacity(self.content.len().saturating_add(self.ime_preedit.len()));
-        expected_backing.push_str(&self.content[..insert_byte]);
-        expected_backing.push_str(&self.ime_preedit);
-        expected_backing.push_str(&self.content[insert_byte..]);
-        if expected_backing.as_str() != self.backing_text.as_ref() {
-            return false;
-        }
-        let expected_preedit_caret = self
-            .ime_preedit_cursor
-            .map(|(_, end)| end)
-            .unwrap_or(self.ime_preedit.len());
-        let mut backing_cursor = 0usize;
-        let mut committed_chars = 0usize;
-        let mut committed = String::with_capacity(self.content.len());
-        let mut preedit_count = 0usize;
-        for (index, entry) in self.generated_topology.iter().enumerate() {
-            if entry.topology_index != index
-                || entry.stable_id == 0
-                || entry.parent != self.owner
-                || entry.owner == self.owner
-                || entry.source_id != entry.stable_id
-                || entry.char_range.start > entry.char_range.end
-                || entry.backing_byte_range.start != backing_cursor
-                || entry.backing_byte_range.start > entry.backing_byte_range.end
-                || entry.backing_byte_range.end > self.backing_text.len()
-                || !self
-                    .backing_text
-                    .is_char_boundary(entry.backing_byte_range.start)
-                || !self
-                    .backing_text
-                    .is_char_boundary(entry.backing_byte_range.end)
-                || self.generated_topology[..index]
-                    .iter()
-                    .any(|previous| previous.owner == entry.owner)
-            {
-                return false;
-            }
-            let backing = &self.backing_text[entry.backing_byte_range.clone()];
-            match entry.kind {
-                TextPayloadNodeKind::PreeditRun => {
-                    preedit_count += 1;
-                    let expected_range = entry.backing_byte_range.clone();
-                    if preedit_count != 1
-                        || entry.char_range != (self.cursor_char..self.cursor_char)
-                        || entry.text.as_ref() != self.ime_preedit.as_ref()
-                        || backing != self.ime_preedit.as_ref()
-                        || entry.preedit_cursor != self.ime_preedit_cursor
-                        || entry.preedit_backing_byte_range != Some(expected_range.clone())
-                        || entry.preedit_caret_backing_byte
-                            != Some(expected_range.start + expected_preedit_caret)
-                    {
-                        return false;
-                    }
-                }
-                TextPayloadNodeKind::TextRun => {
-                    let char_len = entry.text.chars().count();
-                    if entry.char_range
-                        != (committed_chars..committed_chars.saturating_add(char_len))
-                        || backing != entry.text.as_ref()
-                        || entry.preedit_cursor.is_some()
-                        || entry.preedit_backing_byte_range.is_some()
-                        || entry.preedit_caret_backing_byte.is_some()
-                    {
-                        return false;
-                    }
-                    committed_chars = entry.char_range.end;
-                    committed.push_str(&entry.text);
-                }
-                TextPayloadNodeKind::LineBreak => {
-                    if entry.char_range != (committed_chars..committed_chars.saturating_add(1))
-                        || backing != "\n"
-                        || !entry.text.is_empty()
-                        || entry.preedit_cursor.is_some()
-                        || entry.preedit_backing_byte_range.is_some()
-                        || entry.preedit_caret_backing_byte.is_some()
-                    {
-                        return false;
-                    }
-                    committed_chars = entry.char_range.end;
-                    committed.push('\n');
-                }
-            }
-            backing_cursor = entry.backing_byte_range.end;
-        }
-        preedit_count == 1
-            && backing_cursor == self.backing_text.len()
-            && committed_chars == self.content.chars().count()
-            && committed == self.content.as_ref()
     }
 }
 
@@ -3770,71 +1771,6 @@ impl PaintPayloadIdentity {
         }
     }
 
-    pub(crate) fn text_selection_identity(&self) -> Option<TextSelectionPayloadIdentity> {
-        let Self::TextSelection(seal) = self else {
-            return None;
-        };
-        Some(seal.clone())
-    }
-
-    pub(crate) fn matches_text_selection_source(
-        &self,
-        start_char: usize,
-        end_char: usize,
-        color_rgba_bits: [u32; 4],
-    ) -> bool {
-        matches!(self, Self::TextSelection(selection)
-            if selection.matches_source(start_char, end_char, color_rgba_bits))
-    }
-
-    pub(crate) fn matches_exact_text_selection_ops<'a>(
-        &self,
-        rects: impl IntoIterator<Item = &'a DrawRectOp>,
-    ) -> bool {
-        let Self::TextSelection(selection) = self else {
-            return false;
-        };
-        Self::prepared_text_selection(
-            selection.start_char,
-            selection.end_char,
-            selection.color_rgba_bits,
-            rects,
-        )
-        .as_ref()
-            == Some(self)
-    }
-
-    pub(crate) fn exact_fill_rect_ops(&self) -> Option<Vec<DrawRectOp>> {
-        let Self::PreparedRects(rects) = self else {
-            return None;
-        };
-        let ops = rects
-            .iter()
-            .map(|rect| {
-                (rect.mode == RectRenderMode::FillOnly
-                    && rect.params.border_width_bits == [0.0_f32.to_bits(); 4]
-                    && rect.params.border_radius_bits == [[0.0_f32.to_bits(); 2]; 4]
-                    && rect.params.border_color_bits == [0.0_f32.to_bits(); 4]
-                    && rect.params.border_side_color_bits == [[0.0_f32.to_bits(); 4]; 4]
-                    && !rect.params.use_border_side_colors
-                    && rect.params.depth_bits == 0.0_f32.to_bits()
-                    && rect.params.gradient.is_none()
-                    && rect.params.border_gradient.is_none())
-                .then(|| DrawRectOp {
-                    params: RectPassParams {
-                        position: rect.params.position_bits.map(f32::from_bits),
-                        size: rect.params.size_bits.map(f32::from_bits),
-                        fill_color: rect.params.fill_color_bits.map(f32::from_bits),
-                        opacity: f32::from_bits(rect.params.opacity_bits),
-                        ..Default::default()
-                    },
-                    mode: rect.mode,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-        (Self::prepared_rects(ops.iter()).as_ref() == Some(self)).then_some(ops)
-    }
-
     pub(crate) fn prepared_text_selection<'a>(
         start_char: usize,
         end_char: usize,
@@ -3851,71 +1787,6 @@ impl PaintPayloadIdentity {
         selection
             .is_canonical()
             .then_some(Self::TextSelection(selection))
-    }
-
-    pub(crate) fn matches_exact_text_selection(
-        &self,
-        start_char: usize,
-        end_char: usize,
-        color_rgba_bits: [u32; 4],
-        op_count: usize,
-        bounds_bits: [u32; 4],
-    ) -> bool {
-        let Self::TextSelection(seal) = self else {
-            return false;
-        };
-        if !seal.matches_source(start_char, end_char, color_rgba_bits)
-            || seal.rects.len() != op_count
-        {
-            return false;
-        }
-        Self::exact_fill_rect_bounds_bits(&seal.rects, color_rgba_bits) == Some(bounds_bits)
-    }
-
-    pub(crate) fn matches_exact_fill_rects(
-        &self,
-        op_count: usize,
-        fill_color_bits: [u32; 4],
-        bounds_bits: [u32; 4],
-    ) -> bool {
-        let Self::PreparedRects(rects) = self else {
-            return false;
-        };
-        if rects.len() != op_count {
-            return false;
-        }
-        Self::exact_fill_rect_bounds_bits(rects, fill_color_bits) == Some(bounds_bits)
-    }
-
-    fn exact_fill_rect_bounds_bits(
-        rects: &[PreparedDrawRectIdentity],
-        fill_color_bits: [u32; 4],
-    ) -> Option<[u32; 4]> {
-        if rects.is_empty()
-            || rects.iter().any(|rect| {
-                rect.mode != RectRenderMode::FillOnly
-                    || rect.params.fill_color_bits != fill_color_bits
-                    || rect.params.opacity_bits != 1.0_f32.to_bits()
-            })
-        {
-            return None;
-        }
-        let mut left = f32::INFINITY;
-        let mut top = f32::INFINITY;
-        let mut right = f32::NEG_INFINITY;
-        let mut bottom = f32::NEG_INFINITY;
-        for rect in rects.iter() {
-            let [x, y] = rect.params.position_bits.map(f32::from_bits);
-            let [width, height] = rect.params.size_bits.map(f32::from_bits);
-            left = left.min(x);
-            top = top.min(y);
-            right = right.max(x + width);
-            bottom = bottom.max(y + height);
-        }
-        [left, top, right, bottom]
-            .into_iter()
-            .all(f32::is_finite)
-            .then(|| [left, top, right - left, bottom - top].map(f32::to_bits))
     }
 
     /// Canonical ordered identity for generic rectangle-only paint phases.
@@ -3957,13 +1828,6 @@ impl PaintPayloadIdentity {
         ))
     }
 
-    pub(crate) fn image_with_decoration<'a>(
-        image: PreparedImageIdentity,
-        decoration: impl IntoIterator<Item = &'a DrawRectOp>,
-    ) -> Option<Self> {
-        Some(Self::Image(image, Self::draw_rect_identities(decoration)?))
-    }
-
     pub(crate) fn image_with_shadows_and_decoration<'a, 'b>(
         image: PreparedImageIdentity,
         shadows: impl IntoIterator<Item = &'a PreparedShadowOp>,
@@ -3979,13 +1843,6 @@ impl PaintPayloadIdentity {
         } else {
             Some(Self::ImageWithShadows(image, shadows.into(), decoration))
         }
-    }
-
-    pub(crate) fn svg_with_decoration<'a>(
-        svg: PreparedSvgIdentity,
-        decoration: impl IntoIterator<Item = &'a DrawRectOp>,
-    ) -> Option<Self> {
-        Some(Self::Svg(svg, Self::draw_rect_identities(decoration)?))
     }
 
     pub(crate) fn svg_with_shadows_and_decoration<'a, 'b>(
@@ -4025,12 +1882,6 @@ impl PaintPayloadIdentity {
                 .collect::<Vec<_>>()
                 .into(),
         )
-    }
-
-    pub(crate) fn inline_ifc_decorations<'a>(
-        decorations: impl IntoIterator<Item = &'a PreparedInlineIfcDecorationOp>,
-    ) -> Self {
-        Self::inline_ifc_decorations_with_shadows(std::iter::empty(), decorations)
     }
 
     pub(crate) fn inline_ifc_decorations_with_shadows<'a, 'b>(
@@ -4190,34 +2041,6 @@ impl PreparedTextIdentity {
             stencil_clip_id: params.stencil_clip_id,
         })
     }
-
-    fn matches_params(&self, params: &TextPassPreparedParams) -> bool {
-        Self::valid_header(
-            params.staging_input.scale_factor,
-            params.staging_input.glyphs.len(),
-            &params.fragments,
-            params.scissor_rect,
-        ) && self.scale_factor_bits == params.staging_input.scale_factor.to_bits()
-            && self.scissor_rect == params.scissor_rect
-            && self.stencil_clip_id == params.stencil_clip_id
-            && self.fragments.len() == params.fragments.len()
-            && self.glyphs.len() == params.staging_input.glyphs.len()
-            && self
-                .fragments
-                .iter()
-                .zip(&params.fragments)
-                .all(|(expected, actual)| {
-                    PreparedTextFragmentIdentity::from_fragment(actual).as_ref() == Some(expected)
-                })
-            && self
-                .glyphs
-                .iter()
-                .zip(&params.staging_input.glyphs)
-                .all(|(expected, actual)| {
-                    PreparedTextGlyphIdentity::from_glyph(actual, &params.fragments).as_ref()
-                        == Some(expected)
-                })
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4303,15 +2126,6 @@ impl PreparedSvgIdentity {
 
 mod layout_frame;
 pub(crate) use layout_frame::{artifact_plan_in_layout_frame, metadata_plan_in_layout_frame};
-
-#[cfg(test)]
-mod consumed_ancestor_property_tests;
-#[cfg(test)]
-mod paint_artifact_contract_violation_tests;
-#[cfg(test)]
-mod paint_artifact_space_transition_tests;
-#[cfg(test)]
-mod text_selection_payload_identity_tests;
 
 #[cfg(test)]
 mod prepared_text_identity_tests;

@@ -1,20 +1,17 @@
-#![allow(dead_code)]
-
 #[cfg(test)]
 use super::PaintNodePlan;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::view::base_component::{ShadowPaintBlocker, ShadowPaintRecordingCapability};
+use crate::view::base_component::ShadowPaintRecordingCapability;
 use crate::view::compositor::property_tree::{
-    ClipNodeId, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, PropertyTreeState,
-    ScrollNodeId, TransformNodeId,
+    ClipNodeId, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot, PropertyTreeState, ScrollNodeId,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::{
-    LegacyPaintReason, PaintChunkMetadata, PaintContentRevision, PaintNodePhase,
-    PaintOwnerPropertyStateSnapshot, PaintOwnerSnapshot, PaintPropertyScope, PaintRecordingContext,
+    PaintChunkMetadata, PaintContentRevision, PaintNodePhase, PaintOwnerPropertyStateSnapshot,
+    PaintOwnerSnapshot, PaintPropertyScope, PaintRecordingContext,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,24 +28,6 @@ pub(crate) struct CoverageOrder {
 // `child_path` would sort before a descendant path.
 
 impl CoverageOrder {
-    fn node(root_index: usize, child_path: &[usize]) -> Self {
-        Self {
-            root_index,
-            child_path: child_path.into(),
-            phase: PaintNodePhase::BeforeChildren,
-            slot: 0,
-        }
-    }
-
-    fn chunk(root_index: usize, child_path: &[usize], phase: PaintNodePhase, slot: u16) -> Self {
-        Self {
-            root_index,
-            child_path: child_path.into(),
-            phase,
-            slot,
-        }
-    }
-
     fn for_chunk(&self, phase: PaintNodePhase, slot: u16) -> Self {
         Self {
             phase,
@@ -56,14 +35,6 @@ impl CoverageOrder {
             ..self.clone()
         }
     }
-}
-
-// Native owners usually have one or two slots. Keep that exact duplicate
-// proof inline; custom schedules beyond four entries retain hash-set scaling.
-#[derive(Default)]
-struct SeenChunkSlots {
-    inline: [Option<(PaintNodePhase, u16)>; 4],
-    spill: FxHashSet<(PaintNodePhase, u16)>,
 }
 
 /// Most native phases emit one chunk. Keep that chunk in the pending phase
@@ -93,49 +64,10 @@ impl IntoIterator for PreparedPlanSide {
         self.first.into_iter().chain(self.remaining)
     }
 }
-impl SeenChunkSlots {
-    fn insert(&mut self, slot: (PaintNodePhase, u16)) -> bool {
-        if self.inline.contains(&Some(slot)) {
-            return false;
-        }
-        if let Some(empty) = self.inline.iter_mut().find(|entry| entry.is_none()) {
-            *empty = Some(slot);
-            return true;
-        }
-        self.spill.insert(slot)
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CoverageRecordingMode {
     MetadataOnly,
     FullArtifact,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct PlannedBoundary {
-    pub(crate) root: NodeKey,
-    pub(crate) stable_id: u64,
-    pub(crate) kind: PlannedBoundaryKind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum PlannedBoundaryKind {
-    Transform(TransformNodeId),
-    Isolation(crate::view::compositor::property_tree::EffectNodeId),
-    /// Typed H/C/O insertion point owned by the B4 property/scroll planner.
-    /// The recorder stops before the host subtree; a later compiler must
-    /// materialize host-before, detached content, and overlay-after exactly
-    /// once at this marker.
-    Scroll(ScrollNodeId),
-}
-
-pub(crate) type PlannedBoundaryCutoutSet = FxHashMap<NodeKey, PlannedBoundary>;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NativeScrollContentReceiverCutout {
-    pub(super) stable_id: u64,
-    pub(super) witness: super::PaintScrollForestEdgeWitness,
 }
 
 /// One immutable owner observation, shared by its chunks and descendants.
@@ -174,6 +106,9 @@ pub(crate) enum PaintCoverageItem {
         owner_scope: std::sync::Arc<PaintOwnerScope>,
         ops: Option<std::sync::Arc<[super::PaintOp]>>,
     },
+    /// Draws nothing of its own. Walks and the subtree cache still see it;
+    /// tests read its fields.
+    #[cfg_attr(not(test), allow(dead_code))]
     TransparentNode {
         order: CoverageOrder,
         owner: NodeKey,
@@ -181,6 +116,8 @@ pub(crate) enum PaintCoverageItem {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: PaintContentRevision,
     },
+    /// Draws nothing, nor does its subtree.
+    #[cfg_attr(not(test), allow(dead_code))]
     CulledSubtree {
         order: CoverageOrder,
         owner: NodeKey,
@@ -188,195 +125,49 @@ pub(crate) enum PaintCoverageItem {
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: PaintContentRevision,
     },
-    LegacyBoundary {
-        order: CoverageOrder,
-        root: NodeKey,
-        stable_id: u64,
-        reason: LegacyPaintReason,
-    },
-    PlannedBoundary {
-        order: CoverageOrder,
-        boundary: PlannedBoundary,
-    },
-    NativeScrollContentReceiver {
-        order: CoverageOrder,
-        cutout: NativeScrollContentReceiverCutout,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PaintCoverageValidationError {
-    MissingNode(NodeKey),
-    DuplicateNodeKey(NodeKey),
-    DuplicateStableId(u64),
-    InvalidChunkIdOwner(NodeKey),
-    InvalidChunkOwner(NodeKey),
-    InvalidChunkBounds(NodeKey),
-    InvalidChunkProperties(NodeKey),
-    InvalidChunkRevision(NodeKey),
-    InvalidChunkPhase {
-        node: NodeKey,
-        expected: PaintNodePhase,
-        actual: PaintNodePhase,
-    },
-    DuplicateChunkSlot {
-        node: NodeKey,
-        phase: PaintNodePhase,
-        slot: u16,
-    },
-    InvalidClipSnapshot(NodeKey),
-    InvalidEffectSnapshot(NodeKey),
-    InvalidOwnerSnapshot(NodeKey),
-    ConflictingOwnerPropertyState(NodeKey),
-    ConflictingClipSnapshot(ClipNodeId),
-    ConflictingEffectSnapshot(EffectNodeId),
-    ConflictingOwnerSnapshot(NodeKey),
-    InvalidArtifactChunkCount {
-        node: NodeKey,
-        actual: usize,
-    },
-    InvalidArtifactOpRange {
-        node: NodeKey,
-        start: usize,
-        end: usize,
-        op_count: usize,
-    },
-    InvalidPlannedBoundary(NodeKey),
-    RecordingPassMismatch,
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PaintCoverageManifest {
     pub(crate) items: super::shared_sequence::SharedSequence<PaintCoverageItem>,
-    pub(crate) validation_errors: Vec<PaintCoverageValidationError>,
     covered_nodes: std::sync::Arc<FxHashSet<NodeKey>>,
-    legacy_coverage: FxHashMap<LegacyPaintReason, FxHashSet<NodeKey>>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PaintCoverageStats {
     pub(crate) total_nodes: usize,
     pub(crate) artifact_nodes: usize,
     pub(crate) artifact_chunks: usize,
     pub(crate) culled_subtrees: usize,
-    pub(crate) legacy_boundaries: usize,
-    pub(crate) legacy_covered_nodes: usize,
-    pub(crate) legacy_by_reason: Vec<(LegacyPaintReason, usize)>,
-    pub(crate) validation_errors: usize,
-    pub(crate) authority_eligible: bool,
-    pub(crate) authority_ineligible_reasons: Vec<&'static str>,
-    covered_node_keys: FxHashSet<NodeKey>,
-    artifact_node_keys: FxHashSet<NodeKey>,
-    culled_node_keys: FxHashSet<NodeKey>,
-    legacy_node_keys: FxHashSet<NodeKey>,
 }
 
+#[cfg(test)]
 impl PaintCoverageManifest {
     pub(crate) fn stats(&self) -> PaintCoverageStats {
-        let mut nodes = FxHashSet::default();
         let mut artifact_nodes = FxHashSet::default();
-        let mut legacy = FxHashSet::default();
         let mut culled = FxHashSet::default();
-        let mut by_reason = FxHashMap::<LegacyPaintReason, usize>::default();
         let mut artifact_chunks = 0usize;
         for item in &self.items {
             match item {
                 PaintCoverageItem::ArtifactChunk { chunk, .. } => {
-                    nodes.insert(chunk.owner);
                     artifact_nodes.insert(chunk.owner);
                     artifact_chunks = artifact_chunks.saturating_add(1);
                 }
                 PaintCoverageItem::TransparentNode { owner, .. } => {
-                    nodes.insert(*owner);
                     artifact_nodes.insert(*owner);
                 }
                 PaintCoverageItem::CulledSubtree { owner, .. } => {
-                    nodes.insert(*owner);
                     artifact_nodes.insert(*owner);
                     culled.insert(*owner);
                 }
-                PaintCoverageItem::LegacyBoundary { root, .. } => {
-                    nodes.insert(*root);
-                    legacy.insert(*root);
-                }
-                PaintCoverageItem::PlannedBoundary { boundary, .. } => {
-                    nodes.insert(boundary.root);
-                }
-                PaintCoverageItem::NativeScrollContentReceiver { cutout, .. } => {
-                    nodes.insert(cutout.witness.content_root());
-                }
             }
-        }
-        let legacy_nodes = self
-            .legacy_coverage
-            .values()
-            .flatten()
-            .copied()
-            .collect::<FxHashSet<_>>();
-        for (&reason, keys) in &self.legacy_coverage {
-            by_reason.insert(reason, keys.len());
-        }
-        let mut legacy_by_reason = by_reason.into_iter().collect::<Vec<_>>();
-        legacy_by_reason.sort_by_key(|(reason, _)| format!("{reason:?}"));
-        let mut authority_ineligible_reasons = vec!["shadow_only"];
-        if !legacy.is_empty() {
-            authority_ineligible_reasons.push("legacy_boundaries");
-        }
-        if !self.validation_errors.is_empty() {
-            authority_ineligible_reasons.push("validation_errors");
         }
         PaintCoverageStats {
             total_nodes: self.covered_nodes.len(),
             artifact_nodes: artifact_nodes.len(),
             artifact_chunks,
             culled_subtrees: culled.len(),
-            legacy_boundaries: legacy.len(),
-            legacy_covered_nodes: legacy_nodes.len(),
-            legacy_by_reason,
-            validation_errors: self.validation_errors.len(),
-            authority_eligible: false,
-            authority_ineligible_reasons,
-            covered_node_keys: self.covered_nodes.as_ref().clone(),
-            artifact_node_keys: artifact_nodes,
-            culled_node_keys: culled,
-            legacy_node_keys: legacy_nodes,
-        }
-    }
-}
-
-impl PaintCoverageStats {
-    pub(crate) fn merge(&mut self, other: Self) {
-        self.covered_node_keys.extend(other.covered_node_keys);
-        self.artifact_node_keys.extend(other.artifact_node_keys);
-        self.culled_node_keys.extend(other.culled_node_keys);
-        self.legacy_node_keys.extend(other.legacy_node_keys);
-        self.total_nodes = self.covered_node_keys.len();
-        self.artifact_nodes = self.artifact_node_keys.len();
-        self.culled_subtrees = self.culled_node_keys.len();
-        self.legacy_covered_nodes = self.legacy_node_keys.len();
-        self.artifact_chunks = self.artifact_chunks.saturating_add(other.artifact_chunks);
-        self.legacy_boundaries = self
-            .legacy_boundaries
-            .saturating_add(other.legacy_boundaries);
-        self.validation_errors = self
-            .validation_errors
-            .saturating_add(other.validation_errors);
-        for (reason, count) in other.legacy_by_reason {
-            if let Some((_, current)) = self
-                .legacy_by_reason
-                .iter_mut()
-                .find(|(current_reason, _)| *current_reason == reason)
-            {
-                *current = current.saturating_add(count);
-            } else {
-                self.legacy_by_reason.push((reason, count));
-            }
-        }
-        self.authority_eligible = false;
-        for reason in other.authority_ineligible_reasons {
-            if !self.authority_ineligible_reasons.contains(&reason) {
-                self.authority_ineligible_reasons.push(reason);
-            }
         }
     }
 }
@@ -385,7 +176,6 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
     arena: &NodeArena,
     owner: NodeKey,
     property_trees: &PropertyTrees,
-    generic: bool,
 ) -> Option<super::PaintDeferredViewportSelfClipWitness> {
     let node = arena.get(owner)?;
     let stable_id = node.element.stable_id();
@@ -433,12 +223,9 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
             && state
                 .descendants
                 .legacy_boundary_eq(exact_clip_effect_state));
-    // Generic recording validates and freezes the complete property chains
-    // separately. This witness only proves the late Replace clip and must not
-    // reject independent placement/effect obligations because they coexist.
-    // Compatibility recording still needs its original complete-state proof.
-    let generic_clip_scope = generic
-        && state.paint.clip == Some(id)
+    // This witness only proves the late Replace clip; the complete property
+    // chains are frozen with the artifact.
+    let generic_clip_scope = state.paint.clip == Some(id)
         && property_trees
             .clip_snapshot_for(state.descendants.clip)
             .is_some_and(|chain| {
@@ -471,54 +258,45 @@ pub(super) fn exact_deferred_viewport_self_clip_witness(
     super::PaintDeferredViewportSelfClipWitness::new(owner, stable_id, clip, geometry)
 }
 
+#[cfg(test)]
 pub(crate) fn record_coverage_manifest(
     arena: &NodeArena,
     roots: &[NodeKey],
-    force_legacy_roots: bool,
     emit_deferred_late: bool,
     recording_mode: CoverageRecordingMode,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
 ) -> PaintCoverageManifest {
-    let planned_boundary_cutouts = PlannedBoundaryCutoutSet::default();
     record_coverage_manifest_with_context(
         arena,
         roots,
-        force_legacy_roots,
         emit_deferred_late,
         recording_mode,
         property_trees,
         paint_generations,
         PaintRecordingContext::default(),
-        None,
-        &planned_boundary_cutouts,
     )
 }
 
+#[cfg(test)]
 pub(super) fn record_coverage_manifest_with_context(
     arena: &NodeArena,
     roots: &[NodeKey],
-    force_legacy_roots: bool,
     emit_deferred_late: bool,
     recording_mode: CoverageRecordingMode,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     initial_recording_context: PaintRecordingContext,
-    transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
-    planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
 ) -> PaintCoverageManifest {
-    record_coverage_manifest_with_property_authorities(
+    record_cached_coverage_manifest(
         arena,
         roots,
-        force_legacy_roots,
         emit_deferred_late,
         recording_mode,
         property_trees,
         paint_generations,
         initial_recording_context,
-        transform_surface_authority,
         None,
-        planned_boundary_cutouts,
     )
 }
 
@@ -526,163 +304,29 @@ pub(super) fn record_coverage_manifest_with_context(
 pub(super) fn record_cached_coverage_manifest(
     arena: &NodeArena,
     roots: &[NodeKey],
-    force_legacy_roots: bool,
-    emit_deferred_late: bool,
-    recording_mode: CoverageRecordingMode,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    context: PaintRecordingContext,
-    transform: Option<super::PaintTransformSurfaceWitness>,
-    cutouts: &PlannedBoundaryCutoutSet,
-    cache: Option<&mut super::RecordingCache>,
-) -> PaintCoverageManifest {
-    let _profile =
-        crate::view::paint::work_profile::scope("record_retained_coverage_manifest_with_context");
-    super::work_profile::count("coverage_item_bytes", std::mem::size_of::<PaintCoverageItem>());
-    super::work_profile::count("recording_context_bytes", std::mem::size_of::<PaintRecordingContext>());
-    record_coverage_manifest_with_property_authorities_impl(
-        arena,
-        roots,
-        force_legacy_roots,
-        emit_deferred_late,
-        recording_mode,
-        property_trees,
-        paint_generations,
-        context,
-        transform,
-        None,
-        None,
-        cutouts,
-        None,
-        cache,
-    )
-}
-
-/// Retained-authority recorder.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn record_retained_coverage_manifest_with_context(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    force_legacy_roots: bool,
     emit_deferred_late: bool,
     recording_mode: CoverageRecordingMode,
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     initial_recording_context: PaintRecordingContext,
-    transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
-    planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
-) -> PaintCoverageManifest {
-    let _profile =
-        crate::view::paint::work_profile::scope("record_retained_coverage_manifest_with_context");
-    record_coverage_manifest_with_context(
-        arena,
-        roots,
-        force_legacy_roots,
-        emit_deferred_late,
-        recording_mode,
-        property_trees,
-        paint_generations,
-        initial_recording_context,
-        transform_surface_authority,
-        planned_boundary_cutouts,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn record_coverage_manifest_with_property_authorities(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    force_legacy_roots: bool,
-    emit_deferred_late: bool,
-    recording_mode: CoverageRecordingMode,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    initial_recording_context: PaintRecordingContext,
-    transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
-    effect_surface_authority: Option<&super::EffectPropertySurfaceArtifactContract>,
-    planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
-) -> PaintCoverageManifest {
-    record_coverage_manifest_with_property_authorities_impl(
-        arena,
-        roots,
-        force_legacy_roots,
-        emit_deferred_late,
-        recording_mode,
-        property_trees,
-        paint_generations,
-        initial_recording_context,
-        transform_surface_authority,
-        effect_surface_authority,
-        None,
-        planned_boundary_cutouts,
-        None,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn record_retained_coverage_manifest_with_property_authorities(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    force_legacy_roots: bool,
-    emit_deferred_late: bool,
-    recording_mode: CoverageRecordingMode,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    initial_recording_context: PaintRecordingContext,
-    transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
-    effect_surface_authority: Option<&super::EffectPropertySurfaceArtifactContract>,
-    planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
-) -> PaintCoverageManifest {
-    record_coverage_manifest_with_property_authorities(
-        arena,
-        roots,
-        force_legacy_roots,
-        emit_deferred_late,
-        recording_mode,
-        property_trees,
-        paint_generations,
-        initial_recording_context,
-        transform_surface_authority,
-        effect_surface_authority,
-        planned_boundary_cutouts,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_coverage_manifest_with_property_authorities_impl(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    force_legacy_roots: bool,
-    emit_deferred_late: bool,
-    recording_mode: CoverageRecordingMode,
-    property_trees: &PropertyTrees,
-    paint_generations: &PaintGenerationTracker,
-    initial_recording_context: PaintRecordingContext,
-    transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
-    effect_surface_authority: Option<&super::EffectPropertySurfaceArtifactContract>,
-    property_forest_ancestor_chain: Option<&super::ConsumedPropertyForestAncestorChainWitness>,
-    planned_boundary_cutouts: &PlannedBoundaryCutoutSet,
-    native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
     mut recording_cache: Option<&mut super::RecordingCache>,
 ) -> PaintCoverageManifest {
+    let _profile = crate::view::paint::work_profile::scope("record_coverage_manifest");
+    super::work_profile::count(
+        "coverage_item_bytes",
+        std::mem::size_of::<PaintCoverageItem>(),
+    );
+    super::work_profile::count(
+        "recording_context_bytes",
+        std::mem::size_of::<PaintRecordingContext>(),
+    );
     let _walk = super::coverage_walk::begin();
     if let Some(cache) = recording_cache.as_deref_mut() {
         cache.subtrees.bind(arena, roots);
     }
     let subtree_replay = recording_mode == CoverageRecordingMode::MetadataOnly
-        && !force_legacy_roots
         && emit_deferred_late
-        && initial_recording_context
-            == PaintRecordingContext {
-                surface_dag: true,
-                ..Default::default()
-            }
-        && transform_surface_authority.is_none()
-        && effect_surface_authority.is_none()
-        && property_forest_ancestor_chain.is_none()
-        && planned_boundary_cutouts.is_empty()
-        && native_scroll_receiver.is_none();
+        && initial_recording_context == PaintRecordingContext::default();
     let mut manifest = PaintCoverageManifest::default();
     let cached_topology = recording_cache
         .as_deref_mut()
@@ -709,30 +353,12 @@ fn record_coverage_manifest_with_property_authorities_impl(
             .map(|root| (root, None))
             .collect::<Vec<_>>();
         while let Some((key, traversal_parent)) = stack.pop() {
-            match owner_parents.entry(key) {
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(traversal_parent);
-                }
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    manifest
-                        .validation_errors
-                        .push(PaintCoverageValidationError::DuplicateNodeKey(key));
-                    continue;
-                }
-            }
+            owner_parents.insert(key, traversal_parent);
             let Some(node) = arena.get(key) else {
-                manifest
-                    .validation_errors
-                    .push(PaintCoverageValidationError::MissingNode(key));
                 continue;
             };
             resolved_nodes.insert(key);
-            let stable_id = node.element.stable_id();
-            if stable_keys.insert(stable_id, key).is_some() {
-                manifest
-                    .validation_errors
-                    .push(PaintCoverageValidationError::DuplicateStableId(stable_id));
-            }
+            stable_keys.insert(node.element.stable_id(), key);
             let children = node.element.children();
             if subtree_replay {
                 observed_children.insert(key, children.to_vec());
@@ -774,7 +400,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 deferred_roots,
                 deferred: deferred_set,
             });
-        if subtree_replay && manifest.validation_errors.is_empty() {
+        if subtree_replay {
             if let Some(cache) = recording_cache.as_deref_mut() {
                 cache.topology.remember(
                     arena,
@@ -805,27 +431,13 @@ fn record_coverage_manifest_with_property_authorities_impl(
             FxHashMap<Option<EffectNodeId>, Option<std::sync::Arc<[EffectNodeSnapshot]>>>,
         recording_cache: Option<&'a mut super::RecordingCache>,
         arena: &'a NodeArena,
-        force_legacy_roots: bool,
         deferred_roots: &'a FxHashSet<NodeKey>,
         properties: &'a PropertyTrees,
         owner_parents: &'a FxHashMap<NodeKey, Option<NodeKey>>,
         observed_owner_property_states: &'a mut FxHashMap<NodeKey, PaintOwnerPropertyStateSnapshot>,
         generations: &'a PaintGenerationTracker,
         recording_mode: CoverageRecordingMode,
-        transform_surface_authority: Option<super::PaintTransformSurfaceWitness>,
-        surface_dag: bool,
-        effect_surface_authority: Option<&'a super::EffectPropertySurfaceArtifactContract>,
-        property_forest_ancestor_chain:
-            Option<&'a super::ConsumedPropertyForestAncestorChainWitness>,
-        baked_scroll_host_authority: Option<super::PaintBakedScrollHostWitness>,
-        consumed_ancestor_property: Option<super::ConsumedAncestorProperty>,
-        consumed_ancestor_property_stack: Option<super::ConsumedAncestorPropertyStackWitness>,
-        scroll_forest_host: Option<std::sync::Arc<super::PaintScrollForestEdgeWitness>>,
-        opacity_authority: super::PaintOpacityAuthority,
-        planned_boundary_cutouts: &'a PlannedBoundaryCutoutSet,
-        native_scroll_receiver: Option<NativeScrollContentReceiverCutout>,
         items: &'a mut super::shared_sequence::SharedSequence<PaintCoverageItem>,
-        validation_errors: &'a mut Vec<PaintCoverageValidationError>,
     }
     struct RecordedPlanItem {
         chunk: PaintChunkMetadata,
@@ -860,75 +472,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
         before_children: RecordedPlanSide,
         after_children: RecordedPlanSide,
     }
-    enum CulledSubtreeBoundary {
-        Deferred,
-        Property(LegacyPaintReason),
-    }
     impl Recorder<'_> {
-        fn culled_subtree_boundary(&self, root: NodeKey) -> Option<CulledSubtreeBoundary> {
-            let _profile = crate::view::paint::work_profile::scope("culled_subtree_boundary");
-            // Generic recording preserves property scopes without drawing a
-            // culled subtree. Deferred roots are collected by the independent
-            // topology walk and recorded in the late phase. There is no legacy
-            // boundary to discover here, regardless of descendant properties.
-            if self.surface_dag {
-                return None;
-            }
-            let mut stack = self
-                .arena
-                .get(root)?
-                .element
-                .children()
-                .iter()
-                .copied()
-                .collect::<Vec<_>>();
-            let mut seen = FxHashSet::default();
-            while let Some(key) = stack.pop() {
-                if !seen.insert(key) {
-                    continue;
-                }
-                if self.deferred_roots.contains(&key) {
-                    if !self.surface_dag {
-                        return Some(CulledSubtreeBoundary::Deferred);
-                    }
-                    // Generic recording independently walks every collected
-                    // deferred root in the late phase, even when its authored
-                    // ancestor is culled. Do not erase that separate work or
-                    // reject the ancestor for containing it.
-                    continue;
-                }
-                let Some(node) = self.arena.get(key) else {
-                    continue;
-                };
-                // Generic recording freezes property scopes. A culled subtree
-                // contributes no operations even under an effect/transform;
-                // deferred roots above remain separate paint obligations.
-                if !self.surface_dag
-                    && let Some(state) = self.properties.node_state_for(key)
-                {
-                    for properties in [state.paint, state.descendants] {
-                        if properties.transform.is_some() {
-                            return Some(CulledSubtreeBoundary::Property(
-                                LegacyPaintReason::Transform,
-                            ));
-                        }
-                        if properties.scroll.is_some() {
-                            return Some(CulledSubtreeBoundary::Property(
-                                LegacyPaintReason::ScrollContainer,
-                            ));
-                        }
-                        if properties.effect.is_some() {
-                            return Some(CulledSubtreeBoundary::Property(
-                                LegacyPaintReason::StatefulPaint,
-                            ));
-                        }
-                    }
-                }
-                stack.extend(node.element.children().iter().copied());
-            }
-            None
-        }
-
         fn walk(
             &mut self,
             key: NodeKey,
@@ -974,7 +518,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     .is_some_and(|cache| cache.subtrees.should_capture(key))
             });
             let start = self.items.len();
-            let errors = self.validation_errors.len();
             if candidate.is_some() {
                 self.subtree_capture_depth += 1;
             }
@@ -988,22 +531,20 @@ fn record_coverage_manifest_with_property_authorities_impl(
             if candidate.is_some() {
                 self.subtree_capture_depth -= 1;
             }
-            if let Some((input, members)) = candidate {
-                if errors == self.validation_errors.len() {
-                    if let Some(cache) = self.recording_cache.as_deref_mut() {
-                        cache.remember_subtree(
-                            key,
-                            input,
-                            self.arena,
-                            &members,
-                            &self.items[start..],
-                            self.observed_owner_property_states,
-                            &self.owner_scopes,
-                            self.properties,
-                            self.generations,
-                        );
-                    }
-                }
+            if let Some((input, members)) = candidate
+                && let Some(cache) = self.recording_cache.as_deref_mut()
+            {
+                cache.remember_subtree(
+                    key,
+                    input,
+                    self.arena,
+                    &members,
+                    &self.items[start..],
+                    self.observed_owner_property_states,
+                    &self.owner_scopes,
+                    self.properties,
+                    self.generations,
+                );
             }
         }
 
@@ -1037,90 +578,16 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 phase: PaintNodePhase::BeforeChildren,
                 slot: 0,
             };
-            if let Some(cutout) = self.native_scroll_receiver
-                && key == cutout.witness.content_root()
-            {
-                if cutout.stable_id != stable_id
-                    || self.owner_parents.get(&key).copied().flatten()
-                        != Some(cutout.witness.boundary_root())
-                {
-                    self.validation_errors
-                        .push(PaintCoverageValidationError::InvalidPlannedBoundary(key));
-                    return;
-                }
-                self.items
-                    .push(PaintCoverageItem::NativeScrollContentReceiver { order, cutout });
-                return;
-            }
-            if let Some(boundary) = self.planned_boundary_cutouts.get(&key) {
-                if boundary.root != key
-                    || boundary.stable_id != stable_id
-                    || match boundary.kind {
-                        PlannedBoundaryKind::Transform(transform) => {
-                            transform.0 != key
-                                || !self.properties.transforms.get(&transform).is_some_and(
-                                    |snapshot| snapshot.owner == key && snapshot.generation != 0,
-                                )
-                        }
-                        PlannedBoundaryKind::Isolation(effect) => {
-                            effect.0 != key
-                                || !self
-                                    .properties
-                                    .effects
-                                    .get(&effect)
-                                    .is_some_and(|snapshot| {
-                                        snapshot.owner == key
-                                            && snapshot.generation != 0
-                                            && snapshot.opacity.is_finite()
-                                            && (0.0..=1.0).contains(&snapshot.opacity)
-                                    })
-                        }
-                        PlannedBoundaryKind::Scroll(scroll) => {
-                            scroll.0 != key
-                                || !self
-                                    .properties
-                                    .scrolls
-                                    .get(&scroll)
-                                    .is_some_and(|snapshot| {
-                                        snapshot.owner == key && snapshot.generation != 0
-                                    })
-                        }
-                    }
-                {
-                    self.validation_errors
-                        .push(PaintCoverageValidationError::InvalidPlannedBoundary(key));
-                    return;
-                }
-                self.items.push(PaintCoverageItem::PlannedBoundary {
-                    order,
-                    boundary: *boundary,
-                });
-                return;
-            }
-            if self.force_legacy_roots && path.is_empty() && !node.element.children().is_empty() {
-                self.push_legacy_boundary(key, stable_id, LegacyPaintReason::HasChildren, order);
-                return;
-            }
-            let Some(property_states) = self.properties.node_state_for(key) else {
-                self.push_legacy_boundary(
-                    key,
-                    stable_id,
-                    LegacyPaintReason::MissingPaintIdentity,
-                    order,
-                );
-                return;
-            };
+            let property_states = self
+                .properties
+                .node_state_for(key)
+                .expect("synced property trees hold every walked node");
             let live_properties = property_states.paint;
             let live_contents_properties = property_states.descendants;
-            let Some(generations) = self.generations.local_generations_for(key) else {
-                self.push_legacy_boundary(
-                    key,
-                    stable_id,
-                    LegacyPaintReason::MissingPaintIdentity,
-                    order,
-                );
-                return;
-            };
+            let generations = self
+                .generations
+                .local_generations_for(key)
+                .expect("synced paint generations cover every walked node");
             let revision = PaintContentRevision {
                 self_paint_revision: generations.self_paint_revision,
                 composite_revision: generations.composite_revision,
@@ -1130,132 +597,17 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 .element
                 .shadow_paint_recording_context(parent_recording_context);
             recording_context.is_frame_root = path.is_empty() && !deferred_phase_root;
-            recording_context.inline_root_recording = None;
             recording_context.recording_owner = Some(key);
             recording_context.recording_owner_stable_id = Some(stable_id);
-            recording_context.authoritative_self_clip = None;
-            recording_context.subtree_self_clip = None;
-            // A component hook cannot mint or retarget consumed-property
-            // authority.  Rebind the recorder-owned witness to this canonical
-            // traversal owner after the hook returns.
-            recording_context.consumed_ancestor_property = self
-                .consumed_ancestor_property
-                .map(|witness| std::sync::Arc::new(witness.for_target(key)));
-            recording_context.consumed_ancestor_property_stack = self
-                .consumed_ancestor_property_stack
-                .map(|witness| std::sync::Arc::new(witness.for_target(key)));
-            recording_context.property_forest_projection = self
-                .property_forest_ancestor_chain
-                .and_then(|witness| witness.projection_for_target(key));
-            recording_context.scroll_forest_host = self.scroll_forest_host.clone();
-            // Retired detached-subtree flags cannot be inherited from component hooks.
-            recording_context.descendant_contents_clip = false;
-            recording_context.resident_caret_suppressed = false;
-            // Opacity authority is a recorder policy, not ambient component
-            // state. Rebind it after every node/child hook so a component
-            // cannot bake a root-group opacity that the compositor will apply
-            // again at the isolation boundary.
-            recording_context.opacity_authority = self.opacity_authority;
-            // Never inherit ambient transform authority. Only this recorder's
-            // canonical surface policy may bind a witness to the current
-            // traversal owner and exact inherited transform boundary.
-            recording_context.transform_surface = None;
-            recording_context.surface_dag = self.surface_dag;
-            recording_context.surface_dag_transform = self
-                .surface_dag
-                .then_some(live_properties.transform)
-                .flatten();
-            recording_context.surface_dag_scroll = self
-                .surface_dag
-                .then(|| {
-                    let scroll = ScrollNodeId(key);
-                    (live_contents_properties.scroll == Some(scroll)).then_some(scroll)
-                })
-                .flatten();
+            let scroll = ScrollNodeId(key);
+            recording_context.surface_dag_scroll =
+                (live_contents_properties.scroll == Some(scroll)).then_some(scroll);
             recording_context.surface_dag_scroll_snapshot = recording_context
                 .surface_dag_scroll
                 .and_then(|id| self.properties.scroll_snapshot_for(id))
                 .map(std::sync::Arc::new);
-            if let Some(witness) = self.transform_surface_authority
-                && live_properties.transform == Some(witness.transform)
-            {
-                recording_context.transform_surface = Some(witness.for_target(key));
-            }
-            recording_context.baked_scroll_host = None;
-            if let Some(witness) = self.baked_scroll_host_authority
-                && (key == witness.boundary_root() || key == witness.child())
-            {
-                recording_context.baked_scroll_host =
-                    Some(std::sync::Arc::new(witness.for_target(key)));
-            }
-            let project = |live| recording_context.project_consumed_ancestor_property(live);
-            let Some(mut properties) = project(live_properties) else {
-                self.push_legacy_boundary(
-                    key,
-                    stable_id,
-                    LegacyPaintReason::MissingPaintIdentity,
-                    order,
-                );
-                return;
-            };
-            let Some(mut contents_properties) = project(live_contents_properties) else {
-                self.push_legacy_boundary(
-                    key,
-                    stable_id,
-                    LegacyPaintReason::MissingPaintIdentity,
-                    order,
-                );
-                return;
-            };
-            if let Some(authority) = self.effect_surface_authority {
-                let Some(paint_chain) = self.properties.clip_snapshot_for(properties.clip) else {
-                    self.push_legacy_boundary(
-                        key,
-                        stable_id,
-                        LegacyPaintReason::MissingPaintIdentity,
-                        order,
-                    );
-                    return;
-                };
-                let Some(projected) = authority.project_clip_leaf(properties.clip, &paint_chain)
-                else {
-                    self.push_legacy_boundary(
-                        key,
-                        stable_id,
-                        LegacyPaintReason::MissingPaintIdentity,
-                        order,
-                    );
-                    return;
-                };
-                properties.clip = projected;
-
-                let Some(contents_chain) =
-                    self.properties.clip_snapshot_for(contents_properties.clip)
-                else {
-                    self.push_legacy_boundary(
-                        key,
-                        stable_id,
-                        LegacyPaintReason::MissingPaintIdentity,
-                        order,
-                    );
-                    return;
-                };
-                let Some(projected) =
-                    authority.project_clip_leaf(contents_properties.clip, &contents_chain)
-                else {
-                    self.push_legacy_boundary(
-                        key,
-                        stable_id,
-                        LegacyPaintReason::MissingPaintIdentity,
-                        order,
-                    );
-                    return;
-                };
-                contents_properties.clip = projected;
-            }
-            // Rebind after component hooks and projection: a resource host may
-            // preserve only this owner's exact generic recorded property state.
-            recording_context.surface_dag_paint_state = self.surface_dag.then_some(properties);
+            let properties = live_properties;
+            let contents_properties = live_contents_properties;
             let owner_property_state = PaintOwnerPropertyStateSnapshot {
                 owner: key,
                 stable_id,
@@ -1263,118 +615,35 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 descendants: contents_properties,
             };
             self.restore_owner_inputs(key);
-            if let Some(existing) = self.observed_owner_property_states.get(&key) {
-                if *existing != owner_property_state {
-                    self.validation_errors.push(
-                        PaintCoverageValidationError::ConflictingOwnerPropertyState(key),
-                    );
-                    self.push_legacy_boundary(
-                        key,
-                        stable_id,
-                        LegacyPaintReason::MissingPaintIdentity,
-                        order,
-                    );
-                    return;
-                }
-            } else {
-                self.observed_owner_property_states
-                    .insert(key, owner_property_state);
-            }
+            self.observed_owner_property_states
+                .entry(key)
+                .or_insert(owner_property_state);
             recording_context.authoritative_self_clip = self
                 .properties
                 .authoritative_self_clip_for_owner(key, live_properties);
-            recording_context.subtree_self_clip = self
-                .surface_dag
-                .then(|| {
-                    super::recording_context::PaintSubtreeSelfClipWitness::from_live_owner(
-                        self.arena,
-                        key,
-                        self.properties,
-                        recording_context.is_frame_root,
-                    )
-                })
-                .flatten()
-                .filter(|witness| witness.matches_recorded_scopes(properties, contents_properties))
-                .map(std::sync::Arc::new);
             recording_context.deferred_viewport_self_clip = None;
-            recording_context.deferred_viewport_effect = None;
             if deferred_phase_root {
-                let clip = exact_deferred_viewport_self_clip_witness(
-                    self.arena,
-                    key,
-                    self.properties,
-                    self.surface_dag,
-                );
+                let clip =
+                    exact_deferred_viewport_self_clip_witness(self.arena, key, self.properties);
                 recording_context.deferred_viewport_self_clip = clip.map(std::sync::Arc::new);
-                recording_context.deferred_viewport_effect = clip
-                    .and_then(|clip| {
-                        let contract = self.effect_surface_authority?;
-                        (contract.boundary_root() == key).then_some(())?;
-                        super::PaintDeferredViewportEffectWitness::new(
-                            clip,
-                            contract.isolated_leaf(),
-                        )
-                    })
-                    .map(std::sync::Arc::new);
             }
             drop(context_profile);
             let capability_profile = super::work_profile::scope("observe_recording_capability");
-            let mut native_preflight = if self.recording_mode == CoverageRecordingMode::MetadataOnly
-            {
-                node.element
-                    .as_any()
-                    .downcast_ref::<crate::view::base_component::Element>()
-                    .and_then(|element| {
-                        element.record_inline_root_preflight(
-                            key,
-                            properties,
-                            contents_properties,
-                            revision,
-                            self.arena,
-                            deferred_phase_root,
-                            &recording_context,
-                        )
-                    })
-            } else {
-                None
-            };
-            let capability = native_preflight
-                .as_ref()
-                .map(|(capability, _)| *capability)
-                .unwrap_or_else(|| {
-                    node.element.shadow_paint_recording_capability(
-                        self.arena,
-                        deferred_phase_root,
-                        &recording_context,
-                    )
-                });
+            let capability = node.element.shadow_paint_recording_capability(
+                self.arena,
+                deferred_phase_root,
+                &recording_context,
+            );
             drop(capability_profile);
             match capability {
-                ShadowPaintRecordingCapability::Unsupported => {
-                    self.push_legacy_boundary(key, stable_id, LegacyPaintReason::UnknownHost, order)
-                }
-                ShadowPaintRecordingCapability::Legacy(blocker) => {
-                    self.push_legacy_boundary(key, stable_id, legacy_reason(blocker), order)
-                }
                 ShadowPaintRecordingCapability::CulledSubtree => {
-                    match self.culled_subtree_boundary(key) {
-                        Some(CulledSubtreeBoundary::Deferred) => self.push_legacy_boundary(
-                            key,
-                            stable_id,
-                            LegacyPaintReason::Deferred,
-                            order,
-                        ),
-                        Some(CulledSubtreeBoundary::Property(reason)) => {
-                            self.push_legacy_boundary(key, stable_id, reason, order)
-                        }
-                        None => self.items.push(PaintCoverageItem::CulledSubtree {
-                            order,
-                            owner: key,
-                            stable_id,
-                            properties,
-                            content_revision: revision,
-                        }),
-                    }
+                    self.items.push(PaintCoverageItem::CulledSubtree {
+                        order,
+                        owner: key,
+                        stable_id,
+                        properties,
+                        content_revision: revision,
+                    })
                 }
                 ShadowPaintRecordingCapability::Transparent => {
                     self.items.push(PaintCoverageItem::TransparentNode {
@@ -1402,41 +671,21 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     let retained_child_mask = node
                         .element
                         .retained_child_mask_plan(self.arena, &recording_context);
-                    if retained_child_mask.as_ref().is_some_and(|mask| {
-                        !mask.is_canonical_for_children(node.element.children())
-                    }) {
-                        self.push_legacy_boundary(
-                            key,
-                            stable_id,
-                            LegacyPaintReason::ChildClip,
-                            order,
-                        );
-                        return;
-                    }
                     drop(mask_profile);
                     let plan = match self.recording_mode {
                         CoverageRecordingMode::MetadataOnly => {
                             let _profile = crate::view::paint::work_profile::scope("metadata_hook");
-                            let plan = match native_preflight.take() {
-                                Some((_, plan)) => plan,
-                                None => node.element.record_shadow_paint_metadata_plan(
-                                    key,
-                                    properties,
-                                    contents_properties,
-                                    revision,
-                                    self.arena,
-                                    &recording_context,
-                                ),
-                            };
-                            let Some(plan) = plan else {
-                                self.push_legacy_boundary(
-                                    key,
-                                    stable_id,
-                                    LegacyPaintReason::MissingPaintIdentity,
-                                    order,
-                                );
-                                return;
-                            };
+                            let plan = node.element.record_shadow_paint_metadata_plan(
+                                key,
+                                properties,
+                                contents_properties,
+                                revision,
+                                self.arena,
+                                &recording_context,
+                            );
+                            // A host with nothing of its own to draw records
+                            // no chunk; its children still record.
+                            let plan = plan.unwrap_or_default();
                             let plan = super::metadata_plan_in_layout_frame(plan, self.arena);
                             if node.element.supports_retained_command_replay() {
                                 if let Some(cache) = self.recording_cache.as_deref_mut() {
@@ -1467,53 +716,31 @@ fn record_coverage_manifest_with_property_authorities_impl(
                                 .as_deref_mut()
                                 .and_then(|cache| cache.replay(key));
                             let was_replayed = replayed.is_some();
-                            let Some(plan) = replayed.or_else(|| {
-                                node.element
-                                    .record_shadow_paint_artifact_plan(
-                                        key,
-                                        properties,
-                                        contents_properties,
-                                        revision,
-                                        self.arena,
-                                        &recording_context,
-                                    )
-                                    .and_then(|plan| {
-                                        super::artifact_plan_in_layout_frame(plan, self.arena)
-                                    })
-                            }) else {
-                                self.push_legacy_boundary(
-                                    key,
-                                    stable_id,
-                                    LegacyPaintReason::MissingPaintIdentity,
-                                    order,
-                                );
-                                return;
-                            };
+                            let plan = replayed
+                                .or_else(|| {
+                                    node.element
+                                        .record_shadow_paint_artifact_plan(
+                                            key,
+                                            properties,
+                                            contents_properties,
+                                            revision,
+                                            self.arena,
+                                            &recording_context,
+                                        )
+                                        .and_then(|plan| {
+                                            super::artifact_plan_in_layout_frame(plan, self.arena)
+                                        })
+                                })
+                                .unwrap_or_default();
                             if !was_replayed && node.element.supports_retained_command_replay() {
                                 if let Some(cache) = self.recording_cache.as_deref_mut() {
                                     cache.insert(key, plan.clone());
                                 }
                             }
-                            let Some(before_children) = self.record_artifact_plan_side(
-                                key,
-                                stable_id,
-                                root_index,
-                                path,
-                                PaintNodePhase::BeforeChildren,
-                                plan.before_children,
-                            ) else {
-                                return;
-                            };
-                            let Some(after_children) = self.record_artifact_plan_side(
-                                key,
-                                stable_id,
-                                root_index,
-                                path,
-                                PaintNodePhase::AfterChildren,
-                                plan.after_children,
-                            ) else {
-                                return;
-                            };
+                            let before_children =
+                                Self::record_artifact_plan_side(plan.before_children);
+                            let after_children =
+                                Self::record_artifact_plan_side(plan.after_children);
                             RecordedPlan {
                                 before_children: RecordedPlanSide::Full(
                                     before_children.into_iter(),
@@ -1522,42 +749,18 @@ fn record_coverage_manifest_with_property_authorities_impl(
                             }
                         }
                     };
-                    if plan.before_children.len() == 0 && plan.after_children.len() == 0 {
-                        self.push_legacy_boundary(
-                            key,
-                            stable_id,
-                            LegacyPaintReason::MissingPaintIdentity,
-                            order,
-                        );
-                        return;
-                    }
-                    let mut seen_slots = SeenChunkSlots::default();
-                    let Some(before_children) = self.prepare_plan_side(
+                    let before_children = self.prepare_plan_side(
                         key,
-                        stable_id,
                         &order,
                         PaintNodePhase::BeforeChildren,
-                        properties,
-                        contents_properties,
-                        revision,
                         plan.before_children,
-                        &mut seen_slots,
-                    ) else {
-                        return;
-                    };
-                    let Some(after_children) = self.prepare_plan_side(
+                    );
+                    let after_children = self.prepare_plan_side(
                         key,
-                        stable_id,
                         &order,
                         PaintNodePhase::AfterChildren,
-                        properties,
-                        contents_properties,
-                        revision,
                         plan.after_children,
-                        &mut seen_slots,
-                    ) else {
-                        return;
-                    };
+                    );
                     self.items.extend(before_children);
                     let children = node.element.children();
                     // A child mask carries its own normal/overflow partition.
@@ -1577,18 +780,10 @@ fn record_coverage_manifest_with_property_authorities_impl(
                         {
                             continue;
                         }
-                        let Some(index) = (if retained_child_mask.is_none() {
-                            Some(schedule_index)
+                        let index = if retained_child_mask.is_none() {
+                            schedule_index
                         } else {
                             next_ordered_child_index(children, &mut next_in_scope_index, child)
-                        }) else {
-                            self.push_legacy_boundary(
-                                key,
-                                stable_id,
-                                LegacyPaintReason::ChildClip,
-                                order.clone(),
-                            );
-                            return;
                         };
                         let child_recording_context =
                             node.element.shadow_paint_recording_context_for_child(
@@ -1623,17 +818,8 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     if let Some(mask) = retained_child_mask {
                         let mut next_overflow_index = 0;
                         for &child in mask.overflow_children() {
-                            let Some(index) =
-                                next_ordered_child_index(children, &mut next_overflow_index, child)
-                            else {
-                                self.push_legacy_boundary(
-                                    key,
-                                    stable_id,
-                                    LegacyPaintReason::ChildClip,
-                                    order.clone(),
-                                );
-                                return;
-                            };
+                            let index =
+                                next_ordered_child_index(children, &mut next_overflow_index, child);
                             let child_recording_context =
                                 node.element.shadow_paint_recording_context_for_child(
                                     child,
@@ -1649,118 +835,47 @@ fn record_coverage_manifest_with_property_authorities_impl(
             }
         }
 
+        /// Each host artifact is one chunk and the commands it draws.
         fn record_artifact_plan_side(
-            &mut self,
-            key: NodeKey,
-            stable_id: u64,
-            root_index: usize,
-            path: &[usize],
-            phase: PaintNodePhase,
             artifacts: Vec<super::PaintArtifact>,
-        ) -> Option<Vec<RecordedPlanItem>> {
-            let mut recorded = Vec::with_capacity(artifacts.len());
-            for artifact in artifacts {
-                let slot = artifact.chunks.first().map_or(0, |chunk| chunk.id.slot);
-                let order = CoverageOrder::chunk(root_index, path, phase, slot);
-                let [artifact_chunk] = artifact.chunks.as_slice() else {
-                    self.reject_invalid_chunk(
-                        key,
-                        stable_id,
-                        order,
-                        PaintCoverageValidationError::InvalidArtifactChunkCount {
-                            node: key,
-                            actual: artifact.chunks.len(),
+        ) -> Vec<RecordedPlanItem> {
+            artifacts
+                .into_iter()
+                .map(|artifact| {
+                    let [artifact_chunk] = artifact.chunks.as_slice() else {
+                        unreachable!("a host artifact holds exactly one chunk")
+                    };
+                    RecordedPlanItem {
+                        chunk: PaintChunkMetadata {
+                            frame: artifact_chunk.frame,
+                            id: artifact_chunk.id,
+                            owner: artifact_chunk.owner,
+                            bounds: artifact_chunk.bounds,
+                            properties: artifact_chunk.properties,
+                            content_revision: artifact_chunk.content_revision,
+                            payload_identity: artifact_chunk.payload_identity.clone(),
                         },
-                    );
-                    return None;
-                };
-                if artifact_chunk.op_range != (0..artifact.ops.len()) {
-                    self.reject_invalid_chunk(
-                        key,
-                        stable_id,
-                        order,
-                        PaintCoverageValidationError::InvalidArtifactOpRange {
-                            node: key,
-                            start: artifact_chunk.op_range.start,
-                            end: artifact_chunk.op_range.end,
-                            op_count: artifact.ops.len(),
-                        },
-                    );
-                    return None;
-                }
-                recorded.push(RecordedPlanItem {
-                    chunk: PaintChunkMetadata {
-                        frame: artifact_chunk.frame,
-                        id: artifact_chunk.id,
-                        owner: artifact_chunk.owner,
-                        bounds: artifact_chunk.bounds,
-                        properties: artifact_chunk.properties,
-                        content_revision: artifact_chunk.content_revision,
-                        payload_identity: artifact_chunk.payload_identity.clone(),
-                    },
-                    ops: Some(artifact.ops.into()),
-                });
-            }
-            Some(recorded)
+                        ops: Some(artifact.ops.into()),
+                    }
+                })
+                .collect()
         }
 
-        #[allow(clippy::too_many_arguments)]
         fn prepare_plan_side(
             &mut self,
             key: NodeKey,
-            stable_id: u64,
             node_order: &CoverageOrder,
             phase: PaintNodePhase,
-            self_properties: crate::view::compositor::property_tree::PropertyTreeState,
-            contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
-            expected_revision: PaintContentRevision,
             items: RecordedPlanSide,
-            seen_slots: &mut SeenChunkSlots,
-        ) -> Option<PreparedPlanSide> {
+        ) -> PreparedPlanSide {
             let _profile = crate::view::paint::work_profile::scope("prepare_plan_side");
             let mut prepared = PreparedPlanSide {
                 first: None,
                 remaining: Vec::with_capacity(items.len().saturating_sub(1)),
             };
+            let scope = self.owner_scope_for(key);
             for RecordedPlanItem { chunk, ops } in items {
                 let order = node_order.for_chunk(phase, chunk.id.slot);
-                let Some(chunk) = self.validate_chunk_identity(
-                    key,
-                    stable_id,
-                    &order,
-                    phase,
-                    self_properties,
-                    contents_properties,
-                    expected_revision,
-                    chunk,
-                ) else {
-                    return None;
-                };
-                if !seen_slots.insert((phase, chunk.id.slot)) {
-                    self.reject_invalid_chunk(
-                        key,
-                        stable_id,
-                        order,
-                        PaintCoverageValidationError::DuplicateChunkSlot {
-                            node: key,
-                            phase,
-                            slot: chunk.id.slot,
-                        },
-                    );
-                    return None;
-                }
-                let scope = match self.owner_scope_for(key) {
-                    Ok(scope) => scope,
-                    Err(error) => {
-                        self.reject_invalid_chunk(key, stable_id, order.clone(), error);
-                        return None;
-                    }
-                };
-                // Identity validation above binds this chunk to exactly one
-                // of this traversal's two observed owner states. Scope creation
-                // validates both complete clip/effect chains against the same
-                // immutable property trees and detachment authority. Looking
-                // them up again per chunk only clones and drops the same Arcs.
                 let endpoint = match chunk.id.scope {
                     PaintPropertyScope::SelfPaint => 0,
                     PaintPropertyScope::Contents => 1,
@@ -1770,54 +885,11 @@ fn record_coverage_manifest_with_property_authorities_impl(
                     chunk,
                     clip_snapshot: scope.clips[endpoint].clone(),
                     effect_snapshot: scope.effects[endpoint].clone(),
-                    owner_scope: scope,
+                    owner_scope: scope.clone(),
                     ops,
                 });
             }
-            Some(prepared)
-        }
-
-        fn validate_chunk_identity(
-            &mut self,
-            key: NodeKey,
-            stable_id: u64,
-            order: &CoverageOrder,
-            expected_phase: PaintNodePhase,
-            self_properties: crate::view::compositor::property_tree::PropertyTreeState,
-            contents_properties: crate::view::compositor::property_tree::PropertyTreeState,
-            expected_revision: PaintContentRevision,
-            chunk: PaintChunkMetadata,
-        ) -> Option<PaintChunkMetadata> {
-            let _profile = crate::view::paint::work_profile::scope("validate_chunk_identity");
-            let expected_properties = match chunk.id.scope {
-                PaintPropertyScope::SelfPaint => self_properties,
-                PaintPropertyScope::Contents => contents_properties,
-            };
-            let error = if !super::has_canonical_paint_bounds(chunk.bounds) {
-                Some(PaintCoverageValidationError::InvalidChunkBounds(key))
-            } else if chunk.id.phase != expected_phase {
-                Some(PaintCoverageValidationError::InvalidChunkPhase {
-                    node: key,
-                    expected: expected_phase,
-                    actual: chunk.id.phase,
-                })
-            } else if chunk.id.owner != key {
-                Some(PaintCoverageValidationError::InvalidChunkIdOwner(key))
-            } else if chunk.owner != key {
-                Some(PaintCoverageValidationError::InvalidChunkOwner(key))
-            } else if chunk.properties != expected_properties {
-                Some(PaintCoverageValidationError::InvalidChunkProperties(key))
-            } else if chunk.content_revision != expected_revision {
-                Some(PaintCoverageValidationError::InvalidChunkRevision(key))
-            } else {
-                None
-            };
-            if let Some(error) = error {
-                self.reject_invalid_chunk(key, stable_id, order.clone(), error);
-                None
-            } else {
-                Some(chunk)
-            }
+            prepared
         }
 
         fn clip_snapshot_for(
@@ -1827,14 +899,10 @@ fn record_coverage_manifest_with_property_authorities_impl(
             if let Some(chain) = self.clip_chains.get(&state.clip) {
                 return chain.clone();
             }
-            let chain = (|| {
-                let snapshots = self.properties.clip_snapshot_for(state.clip)?;
-                let snapshots = match self.effect_surface_authority {
-                    Some(authority) => authority.detach_clip_snapshot(&snapshots)?,
-                    None => snapshots,
-                };
-                Some(std::sync::Arc::from(snapshots))
-            })();
+            let chain = self
+                .properties
+                .clip_snapshot_for(state.clip)
+                .map(std::sync::Arc::from);
             self.clip_chains.insert(state.clip, chain.clone());
             chain
         }
@@ -1846,16 +914,10 @@ fn record_coverage_manifest_with_property_authorities_impl(
             if let Some(chain) = self.effect_chains.get(&state.effect) {
                 return chain.clone();
             }
-            let chain = (|| {
-                let snapshots = self.properties.effect_snapshot_for(state.effect)?;
-                let snapshots = match self.effect_surface_authority {
-                    Some(authority) => {
-                        authority.detach_effect_snapshot(state.effect, &snapshots)?
-                    }
-                    None => snapshots,
-                };
-                Some(std::sync::Arc::from(snapshots))
-            })();
+            let chain = self
+                .properties
+                .effect_snapshot_for(state.effect)
+                .map(std::sync::Arc::from);
             self.effect_chains.insert(state.effect, chain.clone());
             chain
         }
@@ -1894,64 +956,45 @@ fn record_coverage_manifest_with_property_authorities_impl(
         }
 
         /// Resolve each owner once in this traversal. The immutable property
-        /// trees and fixed detachment authority also make endpoint chain reuse
-        /// exact; later conflicting owner observations still reject upstream.
-        fn owner_scope_for(
-            &mut self,
-            leaf: NodeKey,
-        ) -> Result<std::sync::Arc<PaintOwnerScope>, PaintCoverageValidationError> {
-            // The scope belongs to this traversal and already passed the
-            // ancestry and endpoint checks below. Conflicting owner
-            // observations reject in walk before they can reach this lookup.
+        /// trees make endpoint chain reuse exact.
+        fn owner_scope_for(&mut self, leaf: NodeKey) -> std::sync::Arc<PaintOwnerScope> {
             self.restore_owner_inputs(leaf);
             if let Some(scope) = self.owner_scopes.get(&leaf) {
-                return Ok(scope.clone());
+                return scope.clone();
             }
-            let invalid = || PaintCoverageValidationError::InvalidOwnerSnapshot(leaf);
+            const WALKED: &str = "an owner is walked before its chunks are prepared";
             self.scope_pending.clear();
             self.scope_seen.clear();
             let mut cursor = Some(leaf);
             while let Some(owner) = cursor {
                 self.restore_owner_inputs(owner);
-                if self.owner_scopes.contains_key(&owner) {
+                if self.owner_scopes.contains_key(&owner) || !self.scope_seen.insert(owner) {
                     break;
                 }
-                if !self.scope_seen.insert(owner) {
-                    return Err(invalid());
-                }
                 self.scope_pending.push(owner);
-                cursor = *self.owner_parents.get(&owner).ok_or_else(invalid)?;
+                cursor = *self.owner_parents.get(&owner).expect(WALKED);
             }
             while let Some(owner) = self.scope_pending.pop() {
-                let parent_key = *self.owner_parents.get(&owner).ok_or_else(invalid)?;
-                let parent = parent_key
-                    .map(|key| self.owner_scopes.get(&key).cloned().ok_or_else(invalid))
-                    .transpose()?;
-                let state = *self
-                    .observed_owner_property_states
-                    .get(&owner)
-                    .ok_or_else(invalid)?;
+                let parent_key = *self.owner_parents.get(&owner).expect(WALKED);
+                let parent = parent_key.map(|key| self.owner_scopes[&key].clone());
+                let state = self.observed_owner_property_states[&owner];
                 // Store the two immutable endpoint chains directly. Copying
                 // their complete ancestry into every owner merely duplicates
                 // observations; materialization merges each shared chain once.
+                const SYNCED: &str = "synced property trees hold every referenced chain";
                 let clips = [
-                    self.clip_snapshot_for(state.paint)
-                        .ok_or(PaintCoverageValidationError::InvalidClipSnapshot(owner))?,
-                    self.clip_snapshot_for(state.descendants)
-                        .ok_or(PaintCoverageValidationError::InvalidClipSnapshot(owner))?,
+                    self.clip_snapshot_for(state.paint).expect(SYNCED),
+                    self.clip_snapshot_for(state.descendants).expect(SYNCED),
                 ];
                 let effects = [
-                    self.effect_snapshot_for(state.paint)
-                        .ok_or(PaintCoverageValidationError::InvalidEffectSnapshot(owner))?,
-                    self.effect_snapshot_for(state.descendants)
-                        .ok_or(PaintCoverageValidationError::InvalidEffectSnapshot(owner))?,
+                    self.effect_snapshot_for(state.paint).expect(SYNCED),
+                    self.effect_snapshot_for(state.descendants).expect(SYNCED),
                 ];
                 let snap = super::PaintOwnerSnap::observe(
-                    self.arena.get(owner).ok_or_else(invalid)?.element.as_ref(),
+                    self.arena.get(owner).expect(WALKED).element.as_ref(),
                     self.arena,
                     state.paint.layout_position,
-                )
-                .ok_or_else(invalid)?;
+                );
                 let scope = PaintOwnerScope {
                     topology: PaintOwnerSnapshot {
                         owner,
@@ -1969,38 +1012,7 @@ fn record_coverage_manifest_with_property_authorities_impl(
                 };
                 self.owner_scopes.insert(owner, scope);
             }
-            self.owner_scopes.get(&leaf).cloned().ok_or_else(invalid)
-        }
-
-        fn reject_invalid_chunk(
-            &mut self,
-            key: NodeKey,
-            stable_id: u64,
-            order: CoverageOrder,
-            error: PaintCoverageValidationError,
-        ) {
-            self.validation_errors.push(error);
-            self.push_legacy_boundary(
-                key,
-                stable_id,
-                LegacyPaintReason::MissingPaintIdentity,
-                order,
-            );
-        }
-
-        fn push_legacy_boundary(
-            &mut self,
-            root: NodeKey,
-            stable_id: u64,
-            reason: LegacyPaintReason,
-            order: CoverageOrder,
-        ) {
-            self.items.push(PaintCoverageItem::LegacyBoundary {
-                order,
-                root,
-                stable_id,
-                reason,
-            });
+            self.owner_scopes[&leaf].clone()
         }
     }
 
@@ -2032,35 +1044,13 @@ fn record_coverage_manifest_with_property_authorities_impl(
         effect_chains: FxHashMap::default(),
         recording_cache,
         arena,
-        force_legacy_roots,
         deferred_roots: &deferred_set,
         properties: property_trees,
         owner_parents: &owner_parents,
         observed_owner_property_states: &mut observed_owner_property_states,
         generations: paint_generations,
         recording_mode,
-        transform_surface_authority,
-        surface_dag: initial_recording_context.surface_dag,
-        effect_surface_authority,
-        property_forest_ancestor_chain,
-        baked_scroll_host_authority: initial_recording_context
-            .baked_scroll_host
-            .as_deref()
-            .copied(),
-        consumed_ancestor_property: initial_recording_context
-            .consumed_ancestor_property
-            .as_deref()
-            .copied(),
-        consumed_ancestor_property_stack: initial_recording_context
-            .consumed_ancestor_property_stack
-            .as_deref()
-            .copied(),
-        scroll_forest_host: initial_recording_context.scroll_forest_host.clone(),
-        opacity_authority: initial_recording_context.opacity_authority,
-        planned_boundary_cutouts,
-        native_scroll_receiver,
         items: &mut manifest.items,
-        validation_errors: &mut manifest.validation_errors,
     };
     let walk_profile = super::work_profile::scope("walk_manifest");
     for (root_index, &root) in roots.iter().enumerate() {
@@ -2085,43 +1075,6 @@ fn record_coverage_manifest_with_property_authorities_impl(
     }
     drop(walk_profile);
     drop(recorder);
-    if let Some(receiver) = native_scroll_receiver
-        && !manifest.items.iter().any(|item| {
-            matches!(item, PaintCoverageItem::NativeScrollContentReceiver { cutout, .. } if *cutout == receiver)
-        })
-    {
-        manifest
-            .validation_errors
-            .push(PaintCoverageValidationError::InvalidPlannedBoundary(
-                receiver.witness.content_root(),
-            ));
-    }
-    fn mark_legacy_coverage(
-        arena: &NodeArena,
-        key: NodeKey,
-        root: NodeKey,
-        deferred: &FxHashSet<NodeKey>,
-        out: &mut FxHashSet<NodeKey>,
-    ) {
-        if key != root && deferred.contains(&key) {
-            return;
-        }
-        let Some(node) = arena.get(key) else {
-            return;
-        };
-        if !out.insert(key) {
-            return;
-        }
-        for &child in node.element.children() {
-            mark_legacy_coverage(arena, child, root, deferred, out);
-        }
-    }
-    for item in &manifest.items {
-        if let PaintCoverageItem::LegacyBoundary { root, reason, .. } = item {
-            let coverage = manifest.legacy_coverage.entry(*reason).or_default();
-            mark_legacy_coverage(arena, *root, *root, &deferred_set, coverage);
-        }
-    }
     manifest
 }
 
@@ -2153,46 +1106,15 @@ fn escaping_child_phases(
 
 /// Each canonical mask partition preserves original sibling order. Continue
 /// searching at the previous match instead of rescanning every earlier child.
-fn next_ordered_child_index(
-    children: &[NodeKey],
-    next: &mut usize,
-    child: NodeKey,
-) -> Option<usize> {
-    let offset = children
-        .get(*next..)?
+fn next_ordered_child_index(children: &[NodeKey], next: &mut usize, child: NodeKey) -> usize {
+    let offset = children[*next..]
         .iter()
-        .position(|candidate| *candidate == child)?;
+        .position(|candidate| *candidate == child)
+        .expect("a child mask partition keeps sibling order");
     let index = *next + offset;
     *next = index + 1;
-    Some(index)
-}
-
-fn legacy_reason(blocker: ShadowPaintBlocker) -> LegacyPaintReason {
-    match blocker {
-        ShadowPaintBlocker::Transform => LegacyPaintReason::Transform,
-        ShadowPaintBlocker::BoxShadow => LegacyPaintReason::BoxShadow,
-        ShadowPaintBlocker::InlineIfc => LegacyPaintReason::InlineIfc,
-        ShadowPaintBlocker::ScrollContainer => LegacyPaintReason::ScrollContainer,
-        ShadowPaintBlocker::SelfClip => LegacyPaintReason::SelfClip,
-        ShadowPaintBlocker::ChildClip => LegacyPaintReason::ChildClip,
-        ShadowPaintBlocker::Deferred => LegacyPaintReason::Deferred,
-        ShadowPaintBlocker::LayoutTransition => LegacyPaintReason::LayoutTransition,
-        ShadowPaintBlocker::StatefulPaint => LegacyPaintReason::StatefulPaint,
-        ShadowPaintBlocker::MissingPreparedInlineDecoration => {
-            LegacyPaintReason::MissingPreparedInlineDecoration
-        }
-        ShadowPaintBlocker::MissingPreparedInlineRoot => {
-            LegacyPaintReason::MissingPreparedInlineRoot
-        }
-        ShadowPaintBlocker::MissingPreparedText => LegacyPaintReason::MissingPreparedText,
-        ShadowPaintBlocker::MissingPreparedImage => LegacyPaintReason::MissingPreparedImage,
-        ShadowPaintBlocker::MissingPreparedSvg => LegacyPaintReason::MissingPreparedSvg,
-        ShadowPaintBlocker::TextAreaSelection => LegacyPaintReason::TextAreaSelection,
-    }
+    index
 }
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod slot_storage_tests;

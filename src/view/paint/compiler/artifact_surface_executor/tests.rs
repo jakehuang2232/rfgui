@@ -7,9 +7,8 @@ use crate::view::compositor::property_tree::{ClipBehavior, EffectNodeId, EffectN
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::paint::{
-    ArtifactSurfaceRasterContext, FrameArtifactRecordOutcome, PaintOp, RendererMode,
-    SurfaceDagExecutionTargetId, prepare_artifact_surface_raster_plan,
-    record_closed_single_target_frame_artifact, record_surface_dag_frame_artifact,
+    ArtifactSurfaceRasterContext, PaintOp, SurfaceDagExecutionTargetId,
+    prepare_artifact_surface_raster_plan, record_surface_dag_frame_artifact,
     seal_prepared_artifact_surface_frame,
 };
 use crate::view::viewport::Viewport;
@@ -24,18 +23,8 @@ fn prepared_child_mask_surface_frame() -> PreparedArtifactSurfaceFrame {
     properties.sync(&arena, &[root]);
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
-    let FrameArtifactRecordOutcome::Artifact { mut artifact, .. } =
-        record_closed_single_target_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .expect("rounded surface fixture must record")
-    else {
-        panic!("forced rounded surface recording cannot fall back")
-    };
+    let mut artifact =
+        record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -92,16 +81,7 @@ fn prepared_child_mask_surface_frame() -> PreparedArtifactSurfaceFrame {
 fn prepared_nested_scroll_surface_frame() -> PreparedArtifactSurfaceFrame {
     let (arena, outer, _, _, properties, generations) =
         crate::view::paint::nested_scroll_plan_fixture();
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &[outer],
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .expect("nested ScrollContent fixture must record") else {
-        panic!("forced nested ScrollContent recording cannot fall back")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &[outer], &properties, &generations);
     let plan = prepare_artifact_surface_raster_plan(artifact, raster_context())
         .expect("nested ScrollContent raster plan");
     seal_prepared_artifact_surface_frame(plan).expect("nested ScrollContent resident seal")

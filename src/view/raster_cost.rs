@@ -10,11 +10,7 @@ pub(crate) enum CostConfidence {
     Unknown,
 }
 
-impl CostConfidence {
-    pub(crate) fn budget_usable(self) -> bool {
-        !matches!(self, Self::Unknown)
-    }
-}
+impl CostConfidence {}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DescriptorPayloadBytes {

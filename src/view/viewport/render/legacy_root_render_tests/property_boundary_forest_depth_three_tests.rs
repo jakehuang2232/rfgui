@@ -208,8 +208,6 @@ fn retained_auto_depth_three_dpr1_dpr2_stages_artifact_residents_and_never_red()
             trace,
         });
         assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Artifact);
-        assert!(telemetry.fallback_boundary_nodes().is_empty());
-        assert!(retained_auto_fallback_overlay_records(&telemetry, &fixture.roots).is_empty());
 
         let mut viewport = Viewport::new();
         let (cold, _, _) = selected_artifact(&fixture, dpr);

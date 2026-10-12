@@ -260,22 +260,6 @@ impl Element {
         self.core.should_paint = should_paint;
     }
 
-    #[cfg(test)]
-    pub(crate) fn install_empty_inline_ifc_atomic_package_for_test(&mut self) {
-        let source = self
-            .inline_ifc_rollout_packages
-            .decoration_draw_rect
-            .as_ref()
-            .map(|package| package.source)
-            .unwrap_or(crate::view::inline_formatting_context::InlineIfcSourceId(0));
-        self.inline_ifc_rollout_packages.atomic_placement = Some(
-            crate::view::inline_formatting_context::InlineIfcAtomicBoxPlacementPackage {
-                source,
-                placements: Vec::new(),
-            },
-        );
-    }
-
     fn requires_child_mask_surface(&self, arena: &crate::view::node_arena::NodeArena) -> bool {
         !self.children.is_empty() && self.child_clip_classification(arena).clip_children
     }
@@ -320,8 +304,7 @@ impl Element {
         recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<crate::view::paint::RetainedChildMaskPlan> {
         if (self.scroll_direction != ScrollDirection::None
-            && !(recording_context.authorizes_frame_root_scroll_host_child_mask(self.stable_id())
-                || recording_context.authorizes_generic_scroll_host_root(self.stable_id())))
+            && !recording_context.authorizes_generic_scroll_host_root(self.stable_id()))
             || (self.is_fragmentable_inline_element() && self.inline_paint_fragments.len() > 1)
             || !self.requires_child_mask_surface(arena)
         {
@@ -806,80 +789,17 @@ impl Element {
         ops
     }
 
-    #[allow(dead_code)] // Used by the staged artifact recorder before viewport authority rollout.
-    pub(crate) fn record_safe_leaf_paint_artifact(
-        &self,
-        owner: crate::view::node_arena::NodeKey,
-        properties: crate::view::compositor::property_tree::PropertyTreeState,
-        content_revision: crate::view::paint::PaintContentRevision,
-    ) -> Result<crate::view::paint::PaintArtifact, crate::view::paint::LegacyPaintReason> {
-        use crate::view::paint::{PaintArtifact, PaintChunk, PaintOp};
-
-        let mut metadata =
-            self.record_safe_leaf_paint_metadata(owner, properties, content_revision)?;
-
-        let ops = self
-            .self_decoration_paint_ops(self.opacity, [0.0, 0.0])
-            .into_iter()
-            .map(PaintOp::DrawRect)
-            .collect::<Vec<_>>();
-        metadata.payload_identity =
-            crate::view::paint::PaintPayloadIdentity::prepared_shadows_with_decoration(
-                std::iter::empty(),
-                ops.iter().filter_map(|op| match op {
-                    PaintOp::DrawRect(rect) => Some(rect),
-                    _ => None,
-                }),
-            )
-            .ok_or(crate::view::paint::LegacyPaintReason::StatefulPaint)?;
-        let op_len = ops.len();
-        Ok(PaintArtifact {
-            target: Default::default(),
-            chunks: vec![PaintChunk {
-                frame: crate::view::paint::PaintChunkFrame::Viewport,
-                id: metadata.id,
-                owner: metadata.owner,
-                op_range: 0..op_len,
-                bounds: metadata.bounds,
-                properties: metadata.properties,
-                content_revision: metadata.content_revision,
-                payload_identity: metadata.payload_identity,
-            }]
-            .into(),
-            ops: ops.into(),
-            clip_nodes: Vec::new(),
-            effect_nodes: Vec::new(),
-            transform_nodes: Vec::new(),
-            layout_position_nodes: Vec::new(),
-            visual_offset_nodes: Vec::new(),
-            scroll_nodes: Vec::new(),
-            owner_property_states: Vec::new(),
-            owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
-                owner,
-                parent: None,
-                // `record_root` replaces this topology with the arena-observed one.
-                snap: crate::view::paint::PaintOwnerSnap::INHERIT,
-            }],
-        })
-    }
-
     pub(super) fn record_shadow_node_paint_artifact(
         &self,
         owner: crate::view::node_arena::NodeKey,
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
         arena: &crate::view::node_arena::NodeArena,
-        recording_context: &crate::view::paint::PaintRecordingContext,
-    ) -> Result<crate::view::paint::PaintArtifact, crate::view::paint::LegacyPaintReason> {
+    ) -> Option<crate::view::paint::PaintArtifact> {
         use crate::view::paint::{PaintArtifact, PaintChunk, PaintOp};
-        let prepared = self.prepared_self_paint_record(&recording_context)?;
-        let mut metadata = self.record_shadow_node_paint_metadata(
-            owner,
-            properties,
-            content_revision,
-            Some(arena),
-            &recording_context,
-        )?;
+        let prepared = self.prepared_self_paint_record()?;
+        let mut metadata =
+            self.record_shadow_node_paint_metadata(owner, properties, content_revision)?;
         let mut ops = prepared
             .shadows
             .iter()
@@ -889,8 +809,7 @@ impl Element {
         ops.extend(prepared.decoration.into_iter().map(PaintOp::DrawRect));
         metadata.bounds = prepared.geometry.bounds;
         metadata.payload_identity = prepared.payload_identity;
-        Ok(PaintArtifact {
-            target: Default::default(),
+        Some(PaintArtifact {
             chunks: vec![PaintChunk {
                 frame: crate::view::paint::PaintChunkFrame::Viewport,
                 id: metadata.id,
@@ -913,76 +832,9 @@ impl Element {
             owner_nodes: vec![crate::view::paint::PaintOwnerSnapshot {
                 owner,
                 parent: None,
-                snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None)
-                    .unwrap_or(crate::view::paint::PaintOwnerSnap::INHERIT),
+                snap: crate::view::paint::PaintOwnerSnap::observe(self, arena, None),
             }],
         })
-    }
-
-    #[allow(dead_code)] // Used by the staged artifact recorder before viewport authority rollout.
-    pub(crate) fn record_safe_leaf_paint_metadata(
-        &self,
-        owner: crate::view::node_arena::NodeKey,
-        properties: crate::view::compositor::property_tree::PropertyTreeState,
-        content_revision: crate::view::paint::PaintContentRevision,
-    ) -> Result<crate::view::paint::PaintChunkMetadata, crate::view::paint::LegacyPaintReason> {
-        use crate::view::paint::LegacyPaintReason;
-
-        if !self.children.is_empty() {
-            return Err(LegacyPaintReason::HasChildren);
-        }
-        if !self.box_shadows.is_empty() {
-            return Err(LegacyPaintReason::BoxShadow);
-        }
-        self.record_shadow_node_paint_metadata(
-            owner,
-            properties,
-            content_revision,
-            None,
-            &crate::view::paint::PaintRecordingContext::default(),
-        )
-    }
-
-    fn recording_context_authorizes_exact_self_clip(
-        &self,
-        recording_context: &crate::view::paint::PaintRecordingContext,
-    ) -> bool {
-        (self.anchor_parent_leaf_self_clip_geometry().is_some()
-            && recording_context.authorizes_self_clip_for(self.stable_id()))
-            || self.self_clip_geometry().is_some_and(|geometry| {
-                recording_context.authorizes_subtree_self_clip_for(self.stable_id(), geometry)
-            })
-            || recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id())
-    }
-
-    /// An authored scroll declaration need not create a paint scope. Reuse the
-    /// live, dirty-checked observation that PropertyTrees consumes, then prove
-    /// that omitting that scope loses neither displacement nor overlay paint.
-    /// This does not authorize an active host with a missing ScrollNode.
-    pub(super) fn has_exact_inactive_scroll_paint(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-    ) -> bool {
-        if self.scroll_direction == ScrollDirection::None
-            || self.scroll_offset.x != 0.0
-            || self.scroll_offset.y != 0.0
-        {
-            return false;
-        }
-        let Some(owner) = arena.find_by_stable_id(self.stable_id()) else {
-            return false;
-        };
-        if !matches!(
-            self.scroll_geometry_observation(owner, arena),
-            ScrollGeometryObservation::Inactive
-        ) {
-            return false;
-        }
-        let geometry = self.scrollbar_geometry(0.0, 0.0);
-        geometry.vertical_track.is_none()
-            && geometry.vertical_thumb.is_none()
-            && geometry.horizontal_track.is_none()
-            && geometry.horizontal_thumb.is_none()
     }
 
     pub(super) fn record_shadow_node_paint_metadata(
@@ -990,67 +842,13 @@ impl Element {
         owner: crate::view::node_arena::NodeKey,
         properties: crate::view::compositor::property_tree::PropertyTreeState,
         content_revision: crate::view::paint::PaintContentRevision,
-        arena: Option<&crate::view::node_arena::NodeArena>,
-        recording_context: &crate::view::paint::PaintRecordingContext,
-    ) -> Result<crate::view::paint::PaintChunkMetadata, crate::view::paint::LegacyPaintReason> {
-        use crate::view::paint::{
-            LegacyPaintReason, PaintChunkId, PaintChunkMetadata, PaintChunkRole,
-        };
-        if self.resolved_transform.is_some()
-            && !recording_context.authorizes_transform_surface_root(self.stable_id())
-        {
-            return Err(LegacyPaintReason::Transform);
-        }
-        if self.inline_ifc_owned_by_root {
-            return Err(LegacyPaintReason::InlineIfc);
-        }
-        if self.is_owning_inline_ifc_root_role()
-            && !recording_context
-                .inline_root_recording
-                .is_some_and(|w| w.matches(recording_context.recording_owner, self.stable_id()))
-            && arena.is_none_or(|arena| self.owning_inline_ifc_root_paint_witness(arena).is_err())
-        {
-            return Err(LegacyPaintReason::MissingPreparedInlineRoot);
-        }
-        if self.scroll_direction != ScrollDirection::None
-            && !(recording_context.authorizes_baked_scroll_host_root(self.stable_id())
-                || recording_context.authorizes_generic_scroll_host_root(self.stable_id()))
-            && !arena.is_some_and(|arena| self.has_exact_inactive_scroll_paint(arena))
-        {
-            return Err(LegacyPaintReason::ScrollContainer);
-        }
-        if self.absolute_clip_scissor_rect().is_some() {
-            if !self.recording_context_authorizes_exact_self_clip(&recording_context) {
-                return Err(LegacyPaintReason::SelfClip);
-            }
-        }
-        if self.should_append_to_root_viewport_render()
-            && !recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id())
-        {
-            return Err(LegacyPaintReason::Deferred);
-        }
-        // Layout-transition tracks install their sampled position and size in
-        // `layout_state` before paint. The retained payload below consumes
-        // that same frozen frame geometry; any clip topology still passes
-        // through the ordinary SelfClip / ChildClip authority gates.
-        if arena.is_some_and(|arena| self.requires_child_mask_surface(arena))
-            && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
-            && !recording_context.authorizes_generic_scroll_host_root(self.stable_id())
-            && !recording_context.authorizes_descendant_contents_clip(self.stable_id())
-            && arena.is_none_or(|arena| {
-                self.prepared_retained_child_mask_plan(arena, &recording_context)
-                    .is_none()
-            })
-        {
-            return Err(LegacyPaintReason::ChildClip);
-        }
+    ) -> Option<crate::view::paint::PaintChunkMetadata> {
+        use crate::view::paint::{PaintChunkId, PaintChunkMetadata, PaintChunkRole};
         if !self.layout_state.should_render {
-            return Err(LegacyPaintReason::StatefulPaint);
+            return None;
         }
-
-        let prepared = self.prepared_self_paint_record(&recording_context)?;
-
-        Ok(PaintChunkMetadata {
+        let prepared = self.prepared_self_paint_record()?;
+        Some(PaintChunkMetadata {
             frame: crate::view::paint::PaintChunkFrame::Viewport,
             id: PaintChunkId {
                 owner,
@@ -1067,12 +865,8 @@ impl Element {
         })
     }
 
-    fn prepared_self_paint_record(
-        &self,
-        context: &crate::view::paint::PaintRecordingContext,
-    ) -> Result<PreparedSelfPaintRecord, crate::view::paint::LegacyPaintReason> {
-        let geometry = self.self_paint_recording_geometry();
-        self.prepared_self_paint_from_inputs(geometry, &context)
+    fn prepared_self_paint_record(&self) -> Option<PreparedSelfPaintRecord> {
+        self.prepared_self_paint_from_inputs(self.self_paint_recording_geometry())
     }
 
     /// Produces the one geometry input shared by metadata-only and full
@@ -1088,89 +882,13 @@ impl Element {
         }
     }
 
-    pub(super) fn shadow_paint_blocker(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        deferred_phase_root: bool,
-        authoritative_self_clip: bool,
-        allow_outer_shadow_artifact: bool,
-        recording_context: &crate::view::paint::PaintRecordingContext,
-    ) -> Option<crate::view::base_component::element::ShadowPaintBlocker> {
-        use crate::view::base_component::element::ShadowPaintBlocker;
-        if !self.layout_state.should_render {
-            return Some(ShadowPaintBlocker::StatefulPaint);
-        }
-        if self.resolved_transform.is_some()
-            && !recording_context.authorizes_transform_surface_root(self.stable_id())
-        {
-            return Some(ShadowPaintBlocker::Transform);
-        }
-        let deferred_authorized = match recording_context.opacity_authority {
-            crate::view::paint::PaintOpacityAuthority::NeutralRootEffect(effect) => {
-                recording_context.authorizes_deferred_viewport_effect_for(self.stable_id(), effect)
-            }
-            crate::view::paint::PaintOpacityAuthority::Baked => {
-                recording_context.authorizes_deferred_viewport_self_clip_for(self.stable_id())
-            }
-        };
-        if self.should_append_to_root_viewport_render()
-            && (!deferred_phase_root || !deferred_authorized)
-        {
-            return Some(ShadowPaintBlocker::Deferred);
-        }
-        if !self.box_shadows.is_empty()
-            && (!allow_outer_shadow_artifact
-                || self.prepared_outer_shadow_ops(&recording_context).is_none())
-        {
-            return Some(ShadowPaintBlocker::BoxShadow);
-        }
-        if self.inline_ifc_owned_by_root {
-            return Some(ShadowPaintBlocker::InlineIfc);
-        }
-        if self.is_owning_inline_ifc_root_role()
-            && self.owning_inline_ifc_root_paint_witness(arena).is_err()
-        {
-            return Some(ShadowPaintBlocker::MissingPreparedInlineRoot);
-        }
-        if self.scroll_direction != ScrollDirection::None
-            && !(recording_context.authorizes_baked_scroll_host_root(self.stable_id())
-                || recording_context.authorizes_generic_scroll_host_root(self.stable_id()))
-            && !self.has_exact_inactive_scroll_paint(arena)
-        {
-            return Some(ShadowPaintBlocker::ScrollContainer);
-        }
-        if self.absolute_clip_scissor_rect().is_some()
-            && (!authoritative_self_clip
-                || !self.recording_context_authorizes_exact_self_clip(&recording_context))
-        {
-            return Some(ShadowPaintBlocker::SelfClip);
-        }
-        // Active layout transitions are paintable once their sampled frame is
-        // installed in `layout_state`. Retained recording reads exactly that
-        // geometry; clip-dependent cases remain guarded below.
-        if !self.children.is_empty() {
-            if self.child_clip_classification(arena).clip_children
-                && !recording_context.authorizes_baked_scroll_host_root(self.stable_id())
-                && !recording_context.authorizes_generic_scroll_host_root(self.stable_id())
-                && !recording_context.authorizes_descendant_contents_clip(self.stable_id())
-                && self
-                    .prepared_retained_child_mask_plan(arena, &recording_context)
-                    .is_none()
-            {
-                return Some(ShadowPaintBlocker::ChildClip);
-            }
-        }
-        None
-    }
-
     pub(super) fn prepared_outer_shadow_ops(
         &self,
-        recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> Option<Vec<crate::view::paint::PreparedShadowOp>> {
         if !self.core.should_paint || self.box_shadows.is_empty() {
             return Some(Vec::new());
         }
-        if let Some(prepared) = self.replay_prepared_outer_shadow_ops(recording_context) {
+        if let Some(prepared) = self.replay_prepared_outer_shadow_ops() {
             return Some(prepared);
         }
         let fragment_rects =
@@ -1193,7 +911,7 @@ impl Element {
         }) {
             return None;
         }
-        let opacity = recording_context.paint_opacity(self.opacity);
+        let opacity = self.opacity.clamp(0.0, 1.0);
         let mut prepared = Vec::with_capacity(fragment_rects.len() * self.box_shadows.len());
         for fragment in fragment_rects {
             let outer_radii =
@@ -1339,170 +1057,42 @@ impl Element {
         ElementInlineIfcDrawRectPassMetadata { fill, border }
     }
 
+    /// The decorations of an inline span the root's formatting context owns:
+    /// one rect per installed fragment. `None` when it has nothing to draw.
     pub(super) fn prepared_inline_ifc_decoration_payload(
         &self,
-        recording_context: &crate::view::paint::PaintRecordingContext,
-    ) -> Result<PreparedElementInlineIfcDecorationPayload, ShadowPaintBlocker> {
-        if recording_context.inside_text_area {
-            return Err(ShadowPaintBlocker::TextAreaSelection);
-        }
+    ) -> Option<PreparedElementInlineIfcDecorationPayload> {
         if !self.inline_ifc_owned_by_root
             || self.inline_ifc_rollout_packages.atomic_placement.is_some()
         {
-            return Err(ShadowPaintBlocker::InlineIfc);
+            return None;
         }
-        let shell_bounds = Rect {
-            x: self.layout_state.layout_position.x,
-            y: self.layout_state.layout_position.y,
-            width: self.layout_state.layout_size.width.max(0.0),
-            height: self.layout_state.layout_size.height.max(0.0),
-        };
         if !self.core.should_paint {
-            if [
-                shell_bounds.x,
-                shell_bounds.y,
-                shell_bounds.width,
-                shell_bounds.height,
-            ]
-            .iter()
-            .any(|value| !value.is_finite())
-            {
-                return Err(ShadowPaintBlocker::MissingPreparedInlineDecoration);
-            }
-            return Ok(PreparedElementInlineIfcDecorationPayload {
-                bounds: shell_bounds,
+            return Some(PreparedElementInlineIfcDecorationPayload {
+                bounds: Rect {
+                    x: self.layout_state.layout_position.x,
+                    y: self.layout_state.layout_position.y,
+                    width: self.layout_state.layout_size.width.max(0.0),
+                    height: self.layout_state.layout_size.height.max(0.0),
+                },
                 shadows: Vec::new(),
                 ops: Vec::new(),
             });
         }
-
-        let shadows = self
-            .prepared_outer_shadow_ops(&recording_context)
-            .ok_or(ShadowPaintBlocker::BoxShadow)?;
-
+        let shadows = self.prepared_outer_shadow_ops()?;
         let package = self
             .inline_ifc_rollout_packages
             .decoration_draw_rect
-            .as_ref()
-            .ok_or(ShadowPaintBlocker::MissingPreparedInlineDecoration)?;
-        let stable_id = self.stable_id();
-        if stable_id == 0 || package.source.0 != stable_id {
-            return Err(ShadowPaintBlocker::MissingPreparedInlineDecoration);
-        }
-        let expected_source = self.inline_ifc_decoration_package_source(package.source);
-        let expected_style = expected_source.draw_rect_style;
-        let expected_insets = [
-            expected_source.slice_insets.left,
-            expected_source.slice_insets.right,
-            expected_source.slice_insets.top,
-            expected_source.slice_insets.bottom,
-        ];
-        if package.fragments.is_empty()
-            || package.fragments.len() != self.inline_paint_fragments.len()
-            || package.style_key != expected_style.style_key
-            || [
-                package.slice_insets.left,
-                package.slice_insets.right,
-                package.slice_insets.top,
-                package.slice_insets.bottom,
-            ]
-            .map(f32::to_bits)
-                != expected_insets.map(f32::to_bits)
-            || [
-                package.slice_insets.left,
-                package.slice_insets.right,
-                package.slice_insets.top,
-                package.slice_insets.bottom,
-            ]
-            .iter()
-            .any(|value| !value.is_finite() || *value < 0.0)
-        {
-            return Err(ShadowPaintBlocker::MissingPreparedInlineDecoration);
-        }
-
-        let package_insets = [
-            package.slice_insets.left,
-            package.slice_insets.right,
-            package.slice_insets.top,
-            package.slice_insets.bottom,
-        ];
-        let mut previous_order = None;
+            .as_ref()?;
         let mut ops = Vec::with_capacity(package.fragments.len());
         let mut left = f32::INFINITY;
         let mut top = f32::INFINITY;
         let mut right = f32::NEG_INFINITY;
         let mut bottom = f32::NEG_INFINITY;
-        let last_index = package.fragments.len() - 1;
-        for (index, fragment) in package.fragments.iter().enumerate() {
-            let metadata = fragment.metadata;
-            let installed_rect = self.inline_paint_fragments[index];
-            let order = (
-                fragment.line_index,
-                fragment.range.start,
-                fragment.range.end,
-            );
-            let fragment_insets = [
-                fragment.slice_insets.left,
-                fragment.slice_insets.right,
-                fragment.slice_insets.top,
-                fragment.slice_insets.bottom,
-            ];
-            let package_matches = fragment.source == package.source
-                && fragment.style_key == package.style_key
-                && fragment_insets.map(f32::to_bits) == package_insets.map(f32::to_bits)
-                && fragment.range.start <= fragment.range.end
-                && previous_order.is_none_or(|previous| previous < order)
-                && fragment.is_first_for_source == (index == 0)
-                && fragment.is_last_for_source == (index == last_index)
-                && installed_rect.x.to_bits() == metadata.position[0].to_bits()
-                && installed_rect.y.to_bits() == metadata.position[1].to_bits()
-                && installed_rect.width.to_bits() == metadata.size[0].to_bits()
-                && installed_rect.height.to_bits() == metadata.size[1].to_bits()
-                && fragment.rect.width.to_bits() == metadata.size[0].to_bits()
-                && fragment.rect.height.to_bits() == metadata.size[1].to_bits()
-                && metadata.fill_color.map(f32::to_bits)
-                    == expected_style.fill_color.map(f32::to_bits)
-                && metadata.opacity.to_bits() == expected_style.opacity.to_bits()
-                && metadata.border_widths.map(f32::to_bits)
-                    == expected_style.border_widths.map(f32::to_bits)
-                && metadata.border_colors.map(|color| color.map(f32::to_bits))
-                    == expected_style
-                        .border_colors
-                        .map(|color| color.map(f32::to_bits));
-            let colors_are_valid = metadata
-                .fill_color
-                .iter()
-                .chain(metadata.border_colors.iter().flatten())
-                .all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel));
-            if !package_matches
-                || metadata.position.iter().any(|value| !value.is_finite())
-                || metadata
-                    .size
-                    .iter()
-                    .any(|value| !value.is_finite() || *value <= 0.0)
-                || [
-                    fragment.rect.x,
-                    fragment.rect.y,
-                    fragment.rect.width,
-                    fragment.rect.height,
-                ]
-                .iter()
-                .any(|value| !value.is_finite())
-                || !metadata.opacity.is_finite()
-                || !(0.0..=1.0).contains(&metadata.opacity)
-                || metadata
-                    .border_widths
-                    .iter()
-                    .any(|value| !value.is_finite() || *value < 0.0)
-                || !colors_are_valid
-            {
-                return Err(ShadowPaintBlocker::MissingPreparedInlineDecoration);
-            }
-            previous_order = Some(order);
-
+        for fragment in &package.fragments {
             let mut prepared =
                 self.inline_ifc_fragment_draw_rect_pass_metadata(fragment, [0.0, 0.0]);
-            let opacity = recording_context.paint_opacity(metadata.opacity);
+            let opacity = fragment.metadata.opacity.clamp(0.0, 1.0);
             prepared.fill.opacity = opacity;
             if let Some(border) = &mut prepared.border {
                 border.opacity = opacity;
@@ -1512,34 +1102,34 @@ impl Element {
                 line_index: fragment.line_index,
                 range: fragment.range.clone(),
                 style_key: fragment.style_key.brush,
-                slice_insets: fragment_insets,
+                slice_insets: [
+                    fragment.slice_insets.left,
+                    fragment.slice_insets.right,
+                    fragment.slice_insets.top,
+                    fragment.slice_insets.bottom,
+                ],
                 is_first_for_source: fragment.is_first_for_source,
                 is_last_for_source: fragment.is_last_for_source,
             };
-            let op = crate::view::paint::PreparedInlineIfcDecorationOp::new(
+            let Some(op) = crate::view::paint::PreparedInlineIfcDecorationOp::new(
                 descriptor,
                 prepared.fill,
                 prepared.border,
-            )
-            .ok_or(ShadowPaintBlocker::MissingPreparedInlineDecoration)?;
+            ) else {
+                continue;
+            };
             left = left.min(op.fill.position[0]);
             top = top.min(op.fill.position[1]);
             right = right.max(op.fill.position[0] + op.fill.size[0]);
             bottom = bottom.max(op.fill.position[1] + op.fill.size[1]);
             ops.push(op);
         }
-
         let width = right - left;
         let height = bottom - top;
-        if [left, top, right, bottom, width, height]
-            .iter()
-            .any(|value| !value.is_finite())
-            || width <= 0.0
-            || height <= 0.0
-        {
-            return Err(ShadowPaintBlocker::MissingPreparedInlineDecoration);
+        if !(width > 0.0 && height > 0.0) {
+            return None;
         }
-        Ok(PreparedElementInlineIfcDecorationPayload {
+        Some(PreparedElementInlineIfcDecorationPayload {
             bounds: Rect {
                 x: left,
                 y: top,
@@ -1549,48 +1139,6 @@ impl Element {
             shadows,
             ops,
         })
-    }
-
-    pub(super) fn inline_ifc_owned_shadow_paint_blocker(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        _deferred_phase_root: bool,
-        recording_context: &crate::view::paint::PaintRecordingContext,
-    ) -> Option<ShadowPaintBlocker> {
-        if !self.layout_state.should_render {
-            return Some(ShadowPaintBlocker::StatefulPaint);
-        }
-        if self.resolved_transform.is_some()
-            && !recording_context.authorizes_transform_surface_root(self.stable_id())
-        {
-            return Some(ShadowPaintBlocker::Transform);
-        }
-        if self.should_append_to_root_viewport_render() {
-            return Some(ShadowPaintBlocker::Deferred);
-        }
-        if self.scroll_direction != ScrollDirection::None {
-            return Some(ShadowPaintBlocker::ScrollContainer);
-        }
-        if self.absolute_clip_scissor_rect().is_some() {
-            return Some(ShadowPaintBlocker::SelfClip);
-        }
-        // Inline layout installs the sampled fragment rectangles and the
-        // matching decoration package before paint. Retained recording
-        // validates those two frozen inputs against each other below, so an
-        // active size track is not itself a paint blocker. A stale or partial
-        // package still fails closed as MissingPreparedInlineDecoration.
-        // A single installed inline fragment has a real inner rectangle and
-        // can use the same child-mask command scope as an ordinary owner.
-        // Fragmented spans still never acquire one box around all fragments.
-        if self.requires_child_mask_surface(arena)
-            && self
-                .prepared_retained_child_mask_plan(arena, &recording_context)
-                .is_none()
-        {
-            return Some(ShadowPaintBlocker::ChildClip);
-        }
-        self.prepared_inline_ifc_decoration_payload(&recording_context)
-            .err()
     }
 
     fn build_inline_ifc_draw_rect_package_render_pipeline(

@@ -41,15 +41,12 @@ fn native_install_observation_polls_external_text_color_without_dirty_notificati
     let (properties, generations) = sync_identity(&arena, &roots);
     let mut cache = RecordingCache::default();
     for _ in 0..2 {
-        let _ = artifact(
-            record_surface_dag_frame_artifact_cached(
-                &arena,
-                &roots,
-                &properties,
-                &generations,
-                &mut cache,
-            )
-            .unwrap(),
+        let _ = record_surface_dag_frame_artifact_cached(
+            &arena,
+            &roots,
+            &properties,
+            &generations,
+            &mut cache,
         );
     }
     let revision = arena.mutation_revision(text);
@@ -63,33 +60,19 @@ fn native_install_observation_polls_external_text_color_without_dirty_notificati
             .local_dirty_flags()
             .is_empty()
     );
-    let before = Element::inline_root_witness_checks_for_test();
-    assert!(matches!(
-        record_surface_dag_frame_artifact_cached(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &mut cache
-        )
-        .unwrap(),
-        FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-    ));
-    assert!(
-        Element::inline_root_witness_checks_for_test() > before,
-        "external color drift must revalidate the installed IFC paint input"
+    let cached = record_surface_dag_frame_artifact_cached(
+        &arena,
+        &roots,
+        &properties,
+        &generations,
+        &mut cache,
     );
-    assert!(matches!(
-        record_surface_dag_frame_artifact(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            RendererMode::Auto
-        )
-        .unwrap(),
-        FrameArtifactRecordOutcome::WholeFrameLegacyFallback(_)
-    ));
+    let fresh = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
+    assert_eq!(
+        format!("{cached:?}"),
+        format!("{fresh:?}"),
+        "external color drift must reach the cached recording"
+    );
 }
 
 #[test]
@@ -97,15 +80,12 @@ fn native_noop_ticks_and_render_dirty_consumption_preserve_install_observation()
     let (mut arena, roots, root, text) = prepared_fixed_owning_inline_text_root();
     let (properties, generations) = sync_identity(&arena, &roots);
     let mut cache = RecordingCache::default();
-    let cold = artifact(
-        record_surface_dag_frame_artifact_cached(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &mut cache,
-        )
-        .unwrap(),
+    let cold = record_surface_dag_frame_artifact_cached(
+        &arena,
+        &roots,
+        &properties,
+        &generations,
+        &mut cache,
     );
     let revisions = [root, text].map(|key| arena.mutation_revision(key));
     let capture = arena.capture_render_changes();
@@ -124,57 +104,12 @@ fn native_noop_ticks_and_render_dirty_consumption_preserve_install_observation()
         [root, text].map(|key| arena.mutation_revision(key)),
         revisions
     );
-    let before = Element::inline_root_witness_checks_for_test();
-    let warm = artifact(
-        record_surface_dag_frame_artifact_cached(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &mut cache,
-        )
-        .unwrap(),
+    let warm = record_surface_dag_frame_artifact_cached(
+        &arena,
+        &roots,
+        &properties,
+        &generations,
+        &mut cache,
     );
-    assert_eq!(Element::inline_root_witness_checks_for_test(), before);
     assert_eq!(format!("{warm:?}"), format!("{cold:?}"));
-}
-
-#[test]
-fn unrelated_native_mutation_does_not_revalidate_an_unchanged_install() {
-    let (mut arena, roots, _, _) = prepared_fixed_owning_inline_text_root();
-    let unrelated = arena.insert(crate::view::node_arena::Node::new(Box::new(
-        Element::new_with_id(0xbeef_9001, 0., 0., 20., 16.),
-    )));
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let mut cache = RecordingCache::default();
-    let _ = artifact(
-        record_surface_dag_frame_artifact_cached(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &mut cache,
-        )
-        .unwrap(),
-    );
-    arena
-        .get_mut(unrelated)
-        .unwrap()
-        .element
-        .as_any_mut()
-        .downcast_mut::<Element>()
-        .unwrap()
-        .set_background_color(Color::rgb(0, 0, 255));
-    let before = Element::inline_root_witness_checks_for_test();
-    let _ = artifact(
-        record_surface_dag_frame_artifact_cached(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            &mut cache,
-        )
-        .unwrap(),
-    );
-    assert_eq!(Element::inline_root_witness_checks_for_test(), before);
 }

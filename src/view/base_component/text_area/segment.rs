@@ -409,29 +409,12 @@ impl ElementTrait for TextAreaProjectionSegment {
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,
-        arena: &crate::view::node_arena::NodeArena,
-        deferred_phase_root: bool,
+        _arena: &crate::view::node_arena::NodeArena,
+        _deferred_phase_root: bool,
         _recording_context: &crate::view::paint::PaintRecordingContext,
     ) -> crate::view::base_component::ShadowPaintRecordingCapability {
-        let Some(self_key) = unique_projection_segment_key(arena, self) else {
-            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
-        };
-        let Some(parent_key) = arena.parent_of(self_key) else {
-            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
-        };
-        let Some(parent) = arena.get(parent_key) else {
-            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
-        };
-        let Some(text_area) = parent.element.as_any().downcast_ref::<super::TextArea>() else {
-            return crate::view::base_component::ShadowPaintRecordingCapability::Unsupported;
-        };
-        text_area.projection_segment_shadow_capability(
-            parent_key,
-            self_key,
-            self.node_id,
-            arena,
-            deferred_phase_root,
-        )
+        // The TextArea draws its runs and projections; their children record.
+        crate::view::base_component::ShadowPaintRecordingCapability::Transparent
     }
 
     #[allow(private_interfaces)]

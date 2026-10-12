@@ -862,18 +862,6 @@ impl NodeArena {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_arena_children_without_mirror_for_test(
-        &mut self,
-        key: NodeKey,
-        children: Vec<NodeKey>,
-    ) {
-        self.note_topology_change(key);
-        if let Some(node) = self.slots.get_mut(key) {
-            node.children = children;
-        }
-    }
-
     pub fn push_child(&mut self, parent: NodeKey, child: NodeKey) {
         self.note_topology_change(parent);
         if let Some(node) = self.slots.get_mut(parent) {

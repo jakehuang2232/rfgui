@@ -425,6 +425,7 @@ impl SurfaceDagExecutionOrder {
         self.source_to_execution.get(source.index()).copied()
     }
 
+    #[cfg(test)]
     pub(crate) fn source_node_id(
         &self,
         execution: SurfaceDagExecutionNodeId,

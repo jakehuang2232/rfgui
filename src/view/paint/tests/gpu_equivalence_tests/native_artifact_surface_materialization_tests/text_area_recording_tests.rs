@@ -158,18 +158,8 @@ fn run(legacy: bool) -> Result<(), String> {
                 None
             } else {
                 let (properties, generations) = sync_identity(&arena, &roots);
-                let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
-                    record_surface_dag_frame_artifact(
-                        &arena,
-                        &roots,
-                        &properties,
-                        &generations,
-                        RendererMode::ForcedForTests,
-                    )
-                    .map_err(|error| format!("record case {case}: {error:?}"))?
-                else {
-                    panic!("fallback")
-                };
+                let artifact =
+                    record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
                 Some(artifact)
             };
             let mut viewport = Viewport::new();
@@ -281,16 +271,7 @@ fn native_legacy_text_area_frozen_ime_caret_pixels() -> Result<(), String> {
 fn generic_text_area_resident_span_uses_parent_edges_not_store_order() {
     let (arena, roots, _) = fixture(3);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } = record_surface_dag_frame_artifact(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        RendererMode::ForcedForTests,
-    )
-    .unwrap() else {
-        panic!("fallback")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     assert!(
         artifact
             .owner_nodes

@@ -113,8 +113,6 @@ fn retained_auto_nested_scroll_hard_cutover_selects_artifact_and_emits_two_surfa
         true,
     ));
     assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Artifact);
-    assert!(telemetry.fallback_boundary_nodes().is_empty());
-    assert!(retained_auto_fallback_overlay_records(&telemetry, &roots).is_empty());
     let mut viewport = Viewport::new();
     viewport.scene.node_arena = arena;
     let capture = viewport.build_retained_auto_debug_capture(&telemetry, &roots, true, true);

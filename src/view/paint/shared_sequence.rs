@@ -67,13 +67,6 @@ impl<T: Clone> SharedSequence<T> {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn insert(&mut self, index: usize, value: T) {
-        self.deref_mut().insert(index, value);
-    }
-    pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
     pub(crate) fn append_shared(&mut self, block: Arc<[T]>) {
         if block.is_empty() {
             return;

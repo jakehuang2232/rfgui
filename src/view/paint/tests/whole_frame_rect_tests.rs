@@ -96,7 +96,7 @@ fn whole_frame_rects_covers_target_size_format_and_scale() {
 fn strict_snapshot_is_sensitive_to_scale_factor_alone() {
     let (arena, root, properties, generations) =
         prepared_leaf(108, Color::rgb(20, 40, 60), 1.0, false);
-    let (artifact, _) = whole_frame_artifact(&arena, &[root], &properties, &generations);
+    let artifact = whole_frame_artifact(&arena, &[root], &properties, &generations);
     let base = PaintParityConfig::default();
     let scaled = PaintParityConfig {
         scale_factor: 2.0,

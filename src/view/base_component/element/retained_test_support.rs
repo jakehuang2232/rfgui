@@ -119,8 +119,4 @@ impl Element {
 
 use slotmap::Key;
 
-impl UiBuildContext {
-    pub(crate) fn merge_child_render_state(&mut self, child: &BuildState) {
-        self.state.merge_child_render_state(child);
-    }
-}
+impl UiBuildContext {}

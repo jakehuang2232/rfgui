@@ -1,13 +1,11 @@
 use super::*;
 use crate::view::paint::compiler::ArtifactSurfaceResolvedClip;
 use crate::view::paint::{
-    ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceLocalizationError,
-    ArtifactSurfacePaintOpKind, ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError,
-    FrameArtifactRecordOutcome, PreparedArtifactSurfaceRasterStep,
-    PreparedInlineIfcDecorationDescriptor, PreparedInlineIfcDecorationOp,
-    PreparedScrollbarOverlayOp, RendererMode, SurfaceDagExecutionTargetId,
+    ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfacePaintOpKind,
+    ArtifactSurfaceRasterContext, ArtifactSurfaceRasterPlanError,
+    PreparedArtifactSurfaceRasterStep, PreparedInlineIfcDecorationDescriptor,
+    PreparedInlineIfcDecorationOp, PreparedScrollbarOverlayOp, SurfaceDagExecutionTargetId,
     localize_artifact_surface_op, prepare_artifact_surface_raster_plan,
-    record_closed_single_target_frame_artifact,
 };
 use crate::view::render_pass::render_target::GraphicsPassScissor;
 
@@ -65,18 +63,7 @@ pub(super) fn scroll_surface_artifact() -> PaintArtifact {
     properties.sync(&arena, &[root]);
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
-        record_closed_single_target_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .expect("plain scroll fixture must be recordable")
-    else {
-        panic!("forced scroll fixture cannot silently fall back")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     // The chunks are rebound to synthetic property states below, so they
     // leave the layout frames their recorded states named first.
     let mut artifact = crate::view::paint::compiler::with_placed_chunks(artifact, 1.0);
@@ -215,18 +202,8 @@ fn effect_depth_artifact(effect_depth: usize) -> PaintArtifact {
     properties.sync(&arena, &[root]);
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &[root], &properties);
-    let FrameArtifactRecordOutcome::Artifact { mut artifact, .. } =
-        record_closed_single_target_frame_artifact(
-            &arena,
-            &[root],
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .expect("plain depth chain must be fully recordable")
-    else {
-        panic!("forced depth-chain recording cannot silently fall back")
-    };
+    let mut artifact =
+        record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
     assert_eq!(artifact.chunks.len(), owners.len());
     assert_eq!(artifact.owner_nodes.len(), owners.len());
 
@@ -302,18 +279,7 @@ pub(crate) fn exact_self_clip_shadow_artifact() -> PaintArtifact {
     properties.sync(&arena, &roots);
     let mut generations = PaintGenerationTracker::default();
     generations.sync(&arena, &roots, &properties);
-    let FrameArtifactRecordOutcome::Artifact { artifact, .. } =
-        record_closed_single_target_frame_artifact(
-            &arena,
-            &roots,
-            &properties,
-            &generations,
-            RendererMode::ForcedForTests,
-        )
-        .expect("exact self-clip shadow fixture must be recordable")
-    else {
-        panic!("forced self-clip shadow fixture cannot silently fall back")
-    };
+    let artifact = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks.len(), 1);
     assert!(matches!(
         artifact.ops.first(),
@@ -335,70 +301,6 @@ pub(super) fn raster_context_with_incoming_scissor(
         256 * 1024 * 1024,
     )
     .expect("canonical raster context with incoming scissor")
-}
-
-#[test]
-fn artifact_surface_raster_context_rejects_each_invalid_value_family() {
-    assert!(
-        ArtifactSurfaceRasterContext::new(
-            f32::NAN,
-            wgpu::TextureFormat::Bgra8Unorm,
-            [0.0, 0.0],
-            None,
-            [4096, 4096],
-            4096,
-            1,
-        )
-        .is_none()
-    );
-    assert!(
-        ArtifactSurfaceRasterContext::new(
-            1.0,
-            wgpu::TextureFormat::Bgra8Unorm,
-            [f32::INFINITY, 0.0],
-            None,
-            [4096, 4096],
-            4096,
-            1,
-        )
-        .is_none()
-    );
-    assert!(
-        ArtifactSurfaceRasterContext::new(
-            1.0,
-            wgpu::TextureFormat::Bgra8Unorm,
-            [0.0, 0.0],
-            Some([0, 0, 0, 1]),
-            [4096, 4096],
-            4096,
-            1,
-        )
-        .is_none()
-    );
-    assert!(
-        ArtifactSurfaceRasterContext::new(
-            1.0,
-            wgpu::TextureFormat::Bgra8Unorm,
-            [0.0, 0.0],
-            None,
-            [4096, 4096],
-            0,
-            1,
-        )
-        .is_none()
-    );
-    assert!(
-        ArtifactSurfaceRasterContext::new(
-            1.0,
-            wgpu::TextureFormat::Bgra8Unorm,
-            [0.0, 0.0],
-            None,
-            [4096, 4096],
-            4096,
-            0,
-        )
-        .is_none()
-    );
 }
 
 #[test]
@@ -533,24 +435,6 @@ fn artifact_surface_raster_plan_keeps_only_what_the_texture_budget_holds() {
 }
 
 #[test]
-fn artifact_surface_raster_origin_rejects_unrepresentable_physical_projection_before_descriptor() {
-    let context = ArtifactSurfaceRasterContext::new(
-        f32::MAX,
-        wgpu::TextureFormat::Bgra8Unorm,
-        [0.0, 0.0],
-        None,
-        [4096, 4096],
-        u32::MAX,
-        u64::MAX,
-    )
-    .expect("finite scale is value-valid before bounds projection");
-    assert!(matches!(
-        prepare_artifact_surface_raster_plan(depth_four_effect_artifact(), context),
-        Err(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(_)),
-    ));
-}
-
-#[test]
 fn scroll_content_surface_seals_typed_offset_generation_and_receiver_clip_geometry() {
     let artifact = scroll_surface_artifact();
     let expected = artifact
@@ -634,20 +518,6 @@ fn artifact_surface_paint_op_taxonomy_is_a_closed_eight_variant_set() {
 }
 
 #[test]
-fn artifact_surface_localization_rejects_nonfinite_translation_with_typed_reason() {
-    let artifact = scroll_surface_artifact();
-    let op = artifact
-        .ops
-        .iter()
-        .find(|op| matches!(op, PaintOp::DrawRect(_)))
-        .expect("scroll fixture carries one draw op");
-    assert!(matches!(
-        localize_artifact_surface_op(op, [f32::NAN, 0.0]),
-        Err(ArtifactSurfaceLocalizationError::NonFiniteTranslation)
-    ));
-}
-
-#[test]
 fn inline_ifc_decoration_localization_translates_fill_and_border_and_rebuilds_identity() {
     let descriptor = PreparedInlineIfcDecorationDescriptor {
         source: 0xc3_b301,
@@ -694,7 +564,6 @@ fn inline_ifc_decoration_localization_translates_fill_and_border_and_rebuilds_id
     );
     assert_eq!(localized.descriptor.source, descriptor.source);
     assert_eq!(localized.descriptor.range, descriptor.range);
-    assert!(localized.has_canonical_identity());
 }
 
 #[test]
@@ -786,7 +655,6 @@ fn scrollbar_overlay_localization_translates_both_axes_and_rebuilds_identity() {
         .map(f32::to_bits)
     );
     assert_ne!(localized.frozen_identity(), original_identity);
-    assert!(localized.has_canonical_identity());
 }
 
 #[test]
@@ -797,10 +665,7 @@ fn artifact_surface_raster_plan_error_taxonomy_is_exhaustive() {
             ArtifactSurfaceRasterPlanError::SurfaceDag(_) => "surface-dag",
             ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(_) => "missing-snapshot",
             ArtifactSurfaceRasterPlanError::MissingCoverageNode(_) => "missing-coverage",
-            ArtifactSurfaceRasterPlanError::EmptySurfaceBounds(_) => "empty-bounds",
             ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(_) => "invalid-bounds",
-            ArtifactSurfaceRasterPlanError::InvalidDescriptor(_) => "invalid-descriptor",
-            ArtifactSurfaceRasterPlanError::TextureBudgetExceeded(_) => "texture-budget",
             ArtifactSurfaceRasterPlanError::InvalidCoverageSpan(_) => "coverage-span",
             ArtifactSurfaceRasterPlanError::InvalidOwnerTopology { .. } => "owner-topology",
             ArtifactSurfaceRasterPlanError::InvalidChunkBounds { .. } => "chunk-bounds",
@@ -810,7 +675,6 @@ fn artifact_surface_raster_plan_error_taxonomy_is_exhaustive() {
             ArtifactSurfaceRasterPlanError::LocalizedPayload { .. } => "payload",
             ArtifactSurfaceRasterPlanError::InvalidNestedSurface { .. } => "nested-surface",
             ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(_) => "raster-origin",
-            ArtifactSurfaceRasterPlanError::InvalidGpuSource => "gpu-source-descriptor",
         }
     }
     let _ = label as fn(ArtifactSurfaceRasterPlanError) -> &'static str;

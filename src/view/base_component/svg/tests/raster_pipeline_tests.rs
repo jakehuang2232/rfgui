@@ -146,9 +146,6 @@ fn prepared_svg_payload_owns_straight_srgb_upload_and_intrinsic_mapping() {
     };
     let upload = svg.upload_for_image(&image).unwrap();
     svg.frozen_paint = Some(FrozenSvgPaint {
-        document_key: svg.source_key,
-        raster_key: 0,
-        device_scale_bits: 1.0_f32.to_bits(),
         plan,
         inner_origin: [10.0, 20.0],
         upload,

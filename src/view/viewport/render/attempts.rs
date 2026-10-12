@@ -11,16 +11,3 @@ pub(super) fn record(kind: &'static str) {
         }
     });
 }
-pub(super) fn observe<T>(run: impl FnOnce() -> T) -> (T, BTreeMap<&'static str, usize>) {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            COUNTS.with(|counts| counts.replace(None));
-        }
-    }
-    COUNTS.with(|counts| assert!(counts.replace(Some(BTreeMap::new())).is_none()));
-    let _reset = Reset;
-    let value = run();
-    let counts = COUNTS.with(|counts| counts.take().unwrap());
-    (value, counts)
-}

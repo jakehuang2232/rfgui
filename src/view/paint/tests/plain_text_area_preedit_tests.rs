@@ -38,9 +38,7 @@ fn plain_text_area_preedit_variants_emit_exact_decoration() {
             preedit_cursor,
         );
         let (properties, generations) = sync_identity(&arena, &roots);
-        let (artifact, eligibility) =
-            whole_frame_artifact(&arena, &roots, &properties, &generations);
-        assert!(eligibility.eligible);
+        let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert_eq!(
             artifact
                 .chunks
@@ -124,8 +122,7 @@ fn plain_text_area_preedit_selection_glyph_underline_caret_order_and_clip_are_ex
 
     let (arena, roots, root) = make(false);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -181,8 +178,7 @@ fn plain_text_area_preedit_selection_glyph_underline_caret_order_and_clip_are_ex
 
     let (arena, roots, _) = make(true);
     let (properties, generations) = sync_identity(&arena, &roots);
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(artifact.chunks.len(), 4);
     let graph = compiled_whole_frame_graph(&artifact);
     assert!(graph.test_rect_pass_snapshots().is_empty());
@@ -246,7 +242,6 @@ fn plain_text_area_bounded_baked_scroll_is_canonical() {
     let metadata = record_coverage_manifest(
         &arena,
         &roots,
-        false,
         true,
         CoverageRecordingMode::MetadataOnly,
         &properties,
@@ -255,7 +250,6 @@ fn plain_text_area_bounded_baked_scroll_is_canonical() {
     let full = record_coverage_manifest(
         &arena,
         &roots,
-        false,
         true,
         CoverageRecordingMode::FullArtifact,
         &properties,
@@ -265,8 +259,7 @@ fn plain_text_area_bounded_baked_scroll_is_canonical() {
         &metadata, &full
     ));
 
-    let (artifact, eligibility) = whole_frame_artifact(&arena, &roots, &properties, &generations);
-    assert!(eligibility.eligible);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks
@@ -311,154 +304,6 @@ fn text_area_baked_scroll_changes_self_paint_revision_only_after_exact_replaceme
         scrolled.self_paint_revision,
         "unchanged baked scroll must keep a deterministic paint identity"
     );
-}
-
-#[test]
-fn plain_text_area_preedit_tampered_state_run_and_package_fail_before_full_hooks() {
-    for case in [
-        "ime",
-        "run_text",
-        "run_range",
-        "run_cursor",
-        "missing_run",
-        "duplicate_run",
-        "backing_range",
-        "preedit_range",
-        "caret_byte",
-        "source",
-    ] {
-        let (arena, roots, root) =
-            prepared_plain_text_area_preedit_tree("abcdef", 108.0, 3, "中🙂", Some((0, 3)));
-        let (preedit_index, preedit_key) = arena
-            .children_of(root)
-            .into_iter()
-            .enumerate()
-            .find(|(_, key)| {
-                arena
-                    .get(*key)
-                    .unwrap()
-                    .element
-                    .as_any()
-                    .downcast_ref::<TextAreaTextRun>()
-                    .is_some_and(|run| run.is_preedit_run())
-            })
-            .expect("fixture must contain one transient preedit Run");
-        match case {
-            "ime" => {
-                arena
-                    .get_mut(root)
-                    .unwrap()
-                    .element
-                    .as_any_mut()
-                    .downcast_mut::<TextArea>()
-                    .unwrap()
-                    .ime_preedit
-                    .push('!');
-            }
-            "run_text" => {
-                arena
-                    .get_mut(preedit_key)
-                    .unwrap()
-                    .element
-                    .as_any_mut()
-                    .downcast_mut::<TextAreaTextRun>()
-                    .unwrap()
-                    .text
-                    .push('!');
-            }
-            "run_range" => {
-                arena
-                    .get_mut(preedit_key)
-                    .unwrap()
-                    .element
-                    .as_any_mut()
-                    .downcast_mut::<TextAreaTextRun>()
-                    .unwrap()
-                    .char_range = 2..2;
-            }
-            "run_cursor" => {
-                arena
-                    .get_mut(preedit_key)
-                    .unwrap()
-                    .element
-                    .as_any_mut()
-                    .downcast_mut::<TextAreaTextRun>()
-                    .unwrap()
-                    .preedit_cursor = None;
-            }
-            "missing_run" => {
-                arena
-                    .get_mut(preedit_key)
-                    .unwrap()
-                    .element
-                    .as_any_mut()
-                    .downcast_mut::<TextAreaTextRun>()
-                    .unwrap()
-                    .is_preedit_run = false;
-            }
-            "duplicate_run" => {
-                let other = arena
-                    .children_of(root)
-                    .into_iter()
-                    .find(|key| *key != preedit_key)
-                    .unwrap();
-                arena
-                    .get_mut(other)
-                    .unwrap()
-                    .element
-                    .as_any_mut()
-                    .downcast_mut::<TextAreaTextRun>()
-                    .unwrap()
-                    .is_preedit_run = true;
-            }
-            "backing_range" => {
-                arena
-                    .get(root)
-                    .unwrap()
-                    .element
-                    .as_any()
-                    .downcast_ref::<TextArea>()
-                    .unwrap()
-                    .tamper_cached_unified_segment_backing_range_for_test(preedit_index, 1..1);
-            }
-            "preedit_range" => {
-                arena
-                    .get(root)
-                    .unwrap()
-                    .element
-                    .as_any()
-                    .downcast_ref::<TextArea>()
-                    .unwrap()
-                    .tamper_cached_unified_segment_preedit_range_for_test(preedit_index, None);
-            }
-            "caret_byte" => {
-                arena
-                    .get(root)
-                    .unwrap()
-                    .element
-                    .as_any()
-                    .downcast_ref::<TextArea>()
-                    .unwrap()
-                    .tamper_cached_unified_segment_preedit_caret_for_test(
-                        preedit_index,
-                        Some(usize::MAX),
-                    );
-            }
-            "source" => {
-                arena
-                    .get(root)
-                    .unwrap()
-                    .element
-                    .as_any()
-                    .downcast_ref::<TextArea>()
-                    .unwrap()
-                    .tamper_cached_unified_segment_source_for_test(preedit_index);
-            }
-            _ => unreachable!(),
-        }
-        let eligibility = assert_text_area_fallback_before_full(&arena, &roots);
-        assert!(!eligibility.eligible, "{case}");
-    }
 }
 
 #[test]
@@ -530,9 +375,7 @@ fn plain_text_area_preedit_commit_and_cancel_return_to_plain_slice() {
         }));
 
         let (properties, generations) = sync_identity(&arena, &roots);
-        let (artifact, eligibility) =
-            whole_frame_artifact(&arena, &roots, &properties, &generations);
-        assert!(eligibility.eligible);
+        let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
         assert!(
             artifact
                 .chunks
@@ -540,64 +383,4 @@ fn plain_text_area_preedit_commit_and_cancel_return_to_plain_slice() {
                 .all(|chunk| chunk.id.role != PaintChunkRole::TextDecoration)
         );
     }
-}
-
-#[test]
-fn plain_text_area_preedit_metadata_full_drift_and_boundaries_fail_closed() {
-    let (arena, roots, root) =
-        prepared_plain_text_area_preedit_tree("drift", 108.0, 2, "中", Some((0, 3)));
-    let (properties, generations) = sync_identity(&arena, &roots);
-    let metadata = record_coverage_manifest(
-        &arena,
-        &roots,
-        false,
-        true,
-        CoverageRecordingMode::MetadataOnly,
-        &properties,
-        &generations,
-    );
-    arena
-        .get_mut(root)
-        .unwrap()
-        .element
-        .as_any_mut()
-        .downcast_mut::<TextArea>()
-        .unwrap()
-        .ime_preedit
-        .push('!');
-    let full = record_coverage_manifest(
-        &arena,
-        &roots,
-        false,
-        true,
-        CoverageRecordingMode::FullArtifact,
-        &properties,
-        &generations,
-    );
-    assert!(!super::super::frame_recorder::canonical_manifest_matches(
-        &metadata, &full
-    ));
-
-    let (arena, roots, root) =
-        prepared_plain_text_area_preedit_tree("scroll", 108.0, 2, "中", None);
-    arena
-        .get_mut(root)
-        .unwrap()
-        .element
-        .as_any_mut()
-        .downcast_mut::<TextArea>()
-        .unwrap()
-        .scroll_y = 1.0;
-    assert_text_area_fallback_before_full(&arena, &roots);
-
-    let (arena, _roots, root) =
-        prepared_plain_text_area_preedit_tree("deferred", 108.0, 2, "中", None);
-    let node = arena.get(root).unwrap();
-    let text_area = node.element.as_any().downcast_ref::<TextArea>().unwrap();
-    assert_eq!(
-        text_area
-            .shadow_paint_recording_capability(&arena, true, &PaintRecordingContext::default(),),
-        ShadowPaintRecordingCapability::Legacy(ShadowPaintBlocker::Deferred)
-    );
-    drop(node);
 }

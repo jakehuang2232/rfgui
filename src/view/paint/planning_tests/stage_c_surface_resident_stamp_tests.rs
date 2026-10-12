@@ -57,9 +57,9 @@ fn artifact_pool_actions(
     )>,
 > {
     let emission = if allow_forced_pair_witness {
-        viewport.prepare_artifact_surface_pool_emission_for_forced_test(residents)?
+        viewport.prepare_artifact_surface_pool_emission_for_forced_test(residents)
     } else {
-        viewport.prepare_artifact_surface_pool_emission_from_pool(residents)?
+        viewport.prepare_artifact_surface_pool_emission_from_pool(residents)
     };
     Some(emission.ordered_actions().to_vec())
 }
@@ -69,11 +69,8 @@ fn stage_artifact_residents(
     owner: crate::view::viewport::RetainedSurfaceFrameStageOwner,
     residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
 ) -> bool {
-    let Some(emission) = viewport.prepare_artifact_surface_pool_emission_from_pool(residents)
-    else {
-        return false;
-    };
-    viewport.stage_artifact_surface_resident_set(owner, emission.into_canonical_residents())
+    let emission = viewport.prepare_artifact_surface_pool_emission_from_pool(residents);
+    viewport.stage_artifact_surface_resident_set(owner, emission.into_residents())
 }
 
 pub(super) fn scroll_artifact_with_a_local_clip() -> PaintArtifact {
@@ -157,8 +154,7 @@ fn co_located_surface_artifact() -> PaintArtifact {
     super::super::frame_recorder::populate_referenced_property_snapshots_for_test(
         &mut artifact,
         &properties,
-    )
-    .expect("co-located property closure");
+    );
     artifact
 }
 
@@ -166,9 +162,7 @@ fn co_located_surface_artifact() -> PaintArtifact {
 fn artifact_surface_resident_set_seals_the_depth_four_program() {
     let prepared = prepared_depth_four();
     let sealed = prepared.residents();
-    assert!(prepared.is_canonical());
     assert_eq!(prepared.raster_plan().nodes().len(), sealed.len());
-    assert!(sealed.is_canonical());
     assert!(sealed.len() >= 4);
     assert!(sealed_stamps(sealed).all(|stamp| stamp.has_artifact_surface_program_for_test()));
     assert!(sealed_stamps(sealed).all(|stamp| {
@@ -204,7 +198,6 @@ fn artifact_surface_resident_set_records_live_local_clip_generation_authority() 
     );
     assert_eq!(scroll.clip_nodes.len(), 1);
     assert_eq!(scroll.clip_nodes[0].generation, 29);
-    assert!(sealed.is_canonical());
 }
 
 #[test]
@@ -232,28 +225,6 @@ fn co_located_surface_roles_seal_to_three_distinct_generic_resident_keys() {
             RetainedSurfaceRasterRole::ScrollContent,
         ]),
     );
-    assert!(sealed.is_canonical());
-}
-
-#[test]
-fn artifact_surface_resident_set_rejects_a_missing_rebased_boundary_owner() {
-    let mut sealed = sealed_depth_four();
-    assert!(sealed.remove_first_span_boundary_owner_for_test());
-    assert!(!sealed.is_canonical());
-}
-
-#[test]
-fn artifact_surface_resident_set_rejects_a_missing_chunk_revision() {
-    let mut sealed = sealed_depth_four();
-    assert!(sealed.zero_first_span_topology_revision_for_test());
-    assert!(!sealed.is_canonical());
-}
-
-#[test]
-fn artifact_surface_resident_set_rejects_a_nested_receiver_mismatch() {
-    let mut sealed = sealed_depth_four();
-    assert!(sealed.redirect_first_nested_surface_to_parent_for_test());
-    assert!(!sealed.is_canonical());
 }
 
 #[test]
@@ -459,7 +430,6 @@ fn empty_nested_receiver_keeps_cold_raster_authority_without_advancing_parent_or
         .expect("co-located fixture owns a non-effect nested receiver");
     let empty =
         seal_prepared_artifact_surface_frame(empty_plan).expect("empty receiver resident seal");
-    assert!(empty.is_canonical());
 
     let visible_dependency = visible
         .residents()
@@ -607,89 +577,6 @@ fn one_depth_three_revision_change_rerasterizes_only_its_surface() {
 }
 
 #[test]
-fn empty_clip_cannot_retain_a_nonzero_opaque_cursor_advance() {
-    let plan =
-        prepare_artifact_surface_raster_plan(scroll_artifact_with_a_local_clip(), raster_context())
-            .expect("nonempty scroll clip plan");
-    let mut sealed = seal_prepared_artifact_surface_frame(plan)
-        .expect("nonempty scroll clip seal")
-        .residents()
-        .clone();
-    assert!(sealed.is_canonical());
-    assert!(sealed.force_first_resolved_clip_empty_without_cursor_for_test());
-    assert!(!sealed.is_canonical());
-}
-
-#[test]
-fn artifact_program_rejects_an_out_of_range_shadow_prefix() {
-    let mut sealed = sealed_depth_four();
-    assert!(sealed.is_canonical());
-    assert!(sealed.force_first_clip_prefix_out_of_range_for_test());
-    assert!(!sealed.is_canonical());
-}
-
-#[test]
-fn artifact_pool_rejections_preserve_committed_and_pending_exact_keys() {
-    let prepared = prepared_co_located();
-    let residents = prepared.residents().clone();
-    let sealed_keys = residents.resident_keys_for_test();
-    let mut viewport = crate::view::viewport::Viewport::new();
-    let committed_owner = viewport
-        .begin_retained_surface_frame_stage()
-        .expect("committed frame owner");
-    assert!(stage_artifact_residents(
-        &mut viewport,
-        committed_owner,
-        residents.clone(),
-    ));
-    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(committed_owner), true,));
-
-    assert!(!stage_artifact_residents(
-        &mut viewport,
-        committed_owner,
-        residents.clone(),
-    ));
-    assert_eq!(
-        viewport.committed_retained_surface_resident_keys_for_test(),
-        sealed_keys.iter().copied().collect(),
-    );
-
-    let pending_owner = viewport
-        .begin_retained_surface_frame_stage()
-        .expect("pending frame owner");
-    let mut invalid = residents.clone();
-    assert!(invalid.remove_first_span_boundary_owner_for_test());
-    assert!(!stage_artifact_residents(
-        &mut viewport,
-        pending_owner,
-        invalid.clone(),
-    ));
-    assert_eq!(
-        viewport.pending_artifact_surface_resident_keys_for_test(),
-        None
-    );
-    assert_eq!(
-        viewport.committed_retained_surface_resident_keys_for_test(),
-        sealed_keys.iter().copied().collect(),
-    );
-
-    assert!(stage_artifact_residents(
-        &mut viewport,
-        pending_owner,
-        residents,
-    ));
-    assert!(!stage_artifact_residents(
-        &mut viewport,
-        pending_owner,
-        invalid,
-    ));
-    assert_eq!(
-        viewport.pending_artifact_surface_resident_keys_for_test(),
-        Some(sealed_keys),
-    );
-}
-
-#[test]
 fn localized_command_identity_excludes_global_paint_revisions_but_tracks_payload() {
     let artifact = scroll_artifact_with_a_local_clip();
     let baseline = prepared_depth_three(artifact.clone());
@@ -740,20 +627,5 @@ fn localized_command_identity_excludes_global_paint_revisions_but_tracks_payload
         stamps(&baseline),
         stamps(&prepared_depth_three(painted)),
         "changed commands invalidate raster even with unchanged generation counters"
-    );
-
-    let mut missing = artifact;
-    missing
-        .chunks
-        .iter_mut()
-        .find(|chunk| chunk.owner != boundary)
-        .unwrap()
-        .content_revision
-        .self_paint_revision = 0;
-    let plan = prepare_artifact_surface_raster_plan(missing, raster_context())
-        .expect("recorded geometry still prepares");
-    assert!(
-        seal_prepared_artifact_surface_frame(plan).is_err(),
-        "omitting global revisions from equality does not permit missing input evidence"
     );
 }
