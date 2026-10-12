@@ -272,7 +272,7 @@ fn build_flex_item_plans(
         let (measured_w, measured_h) = child_node.element.measured_size();
         drop(child_node);
         let measured_main = if is_row { measured_w } else { measured_h };
-        let flex_base_main = resolve_flex_base_main_size(
+        let (flex_base_main, min_main, max_main) = flex_item_main_sizes(
             &props,
             measured_main,
             is_row,
@@ -280,39 +280,78 @@ fn build_flex_item_plans(
             viewport_width,
             viewport_height,
         );
-        let min_main = if props.has_explicit_min_main(is_row) {
-            resolve_flex_main_constraint(
-                props.min_main(is_row),
-                main_limit,
-                viewport_width,
-                viewport_height,
-            )
-            .unwrap_or(0.0)
-        } else {
-            props.auto_min_main(is_row).unwrap_or(0.0)
-        };
+        let hypothetical_main = clamp_flex_main(flex_base_main, min_main, max_main);
         items.push(FlexItemPlan {
             index: idx,
             flex_base_main,
-            hypothetical_main: flex_base_main,
-            used_main: flex_base_main,
+            hypothetical_main,
+            used_main: hypothetical_main,
             min_main,
-            max_main: resolve_flex_main_constraint(
-                props.max_main(is_row),
-                main_limit,
-                viewport_width,
-                viewport_height,
-            ),
+            max_main,
             grow: props.grow.max(0.0),
             shrink: props.shrink.max(0.0),
             frozen: false,
             cross: 0.0,
         });
-        let item = items.last_mut().expect("just pushed");
-        item.hypothetical_main = clamp_flex_main(item.flex_base_main, item.min_main, item.max_main);
-        item.used_main = item.hypothetical_main;
     }
     items
+}
+
+/// An item's flex base size and its min / max main-axis constraints.
+fn flex_item_main_sizes(
+    props: &FlexProps,
+    measured_main: f32,
+    is_row: bool,
+    main_limit: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> (f32, f32, Option<f32>) {
+    let flex_base_main = resolve_flex_base_main_size(
+        props,
+        measured_main,
+        is_row,
+        main_limit,
+        viewport_width,
+        viewport_height,
+    );
+    let min_main = if props.has_explicit_min_main(is_row) {
+        resolve_flex_main_constraint(
+            props.min_main(is_row),
+            main_limit,
+            viewport_width,
+            viewport_height,
+        )
+        .unwrap_or(0.0)
+    } else {
+        props.auto_min_main(is_row).unwrap_or(0.0)
+    };
+    let max_main = resolve_flex_main_constraint(
+        props.max_main(is_row),
+        main_limit,
+        viewport_width,
+        viewport_height,
+    );
+    (flex_base_main, min_main, max_main)
+}
+
+/// The main size an item enters grow / shrink distribution with.
+pub(crate) fn flex_hypothetical_main(
+    props: &FlexProps,
+    measured_main: f32,
+    is_row: bool,
+    main_limit: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> f32 {
+    let (base, min, max) = flex_item_main_sizes(
+        props,
+        measured_main,
+        is_row,
+        main_limit,
+        viewport_width,
+        viewport_height,
+    );
+    clamp_flex_main(base, min, max)
 }
 
 /// Distribute remaining free space along a real-flex line via grow/shrink.

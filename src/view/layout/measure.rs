@@ -10,7 +10,9 @@
 
 use crate::style::{Layout, SizeValue};
 use crate::view::base_component::{LayoutConstraints, Size};
-use crate::view::layout::flex_solver::{FlexSolverInputs, compute_flex_info};
+use crate::view::layout::flex_solver::{
+    FlexSolverInputs, compute_flex_info, flex_hypothetical_main,
+};
 use crate::view::layout::types::FlexLayoutInfo;
 use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -88,13 +90,18 @@ pub(crate) fn measure_child_if_needed(
     arena.with_element_taken(key, |child, arena| child.measure(constraints, arena));
 }
 
-/// Each child of a flow row is first measured against the whole row. A
-/// no-wrap row has no next line, so when its children overflow, the ones
-/// with an auto width share what the explicit widths and gaps leave. A
-/// child whose width fits an even share keeps it; wider children are
-/// measured again at the share, so wrapping content wraps there. The row
-/// still overflows when a child cannot get narrower.
-fn fit_no_wrap_flow_row(inputs: &MeasureAxisInputs<'_>, arena: &mut NodeArena) {
+/// Each child of a row is first measured against the whole row. A no-wrap
+/// row has no next line, so when its children overflow, the ones sized by
+/// their content share what the other children and gaps leave. A child
+/// whose width fits an even share keeps it; wider children are measured
+/// again at the share, so wrapping content wraps there. The row still
+/// overflows when a child cannot get narrower; a flex row then shrinks its
+/// other children as usual.
+///
+/// A flow child is sized by its content when its width is auto. A flex
+/// child is when the solver takes its measured width as its minimum; the
+/// others count with the size the solver starts them at.
+fn fit_no_wrap_row(inputs: &MeasureAxisInputs<'_>, arena: &mut NodeArena) {
     let mut in_flow = 0_usize;
     let mut fixed_width = 0.0_f32;
     let mut auto_widths = Vec::new();
@@ -107,8 +114,23 @@ fn fit_no_wrap_flow_row(inputs: &MeasureAxisInputs<'_>, arena: &mut NodeArena) {
         };
         in_flow += 1;
         let width = node.element.measured_size().0.max(0.0);
-        if node.element.flex_props().main_size(true) == SizeValue::Auto {
+        let props = node.element.flex_props();
+        let content_sized = if inputs.is_real_flex {
+            props.auto_min_main(true).is_some()
+        } else {
+            props.main_size(true) == SizeValue::Auto
+        };
+        if content_sized {
             auto_widths.push((key, width));
+        } else if inputs.is_real_flex {
+            fixed_width += flex_hypothetical_main(
+                &props,
+                width,
+                true,
+                inputs.main_limit,
+                inputs.viewport_width,
+                inputs.viewport_height,
+            );
         } else {
             fixed_width += width;
         }
@@ -193,8 +215,8 @@ pub(crate) fn measure_axis(
         },
         arena,
     );
-    if inputs.is_row && !inputs.is_real_flex && !inputs.solver_wrap {
-        fit_no_wrap_flow_row(&inputs, arena);
+    if inputs.is_row && !inputs.solver_wrap {
+        fit_no_wrap_row(&inputs, arena);
     }
 
     let flex_info = compute_flex_info(

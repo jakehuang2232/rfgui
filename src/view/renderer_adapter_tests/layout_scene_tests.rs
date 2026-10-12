@@ -362,7 +362,16 @@ fn nested_container_percent_height_without_definite_parent_does_not_keep_placeho
 // ---------- TextArea (v2 — formerly TextArea) acceptance ----------
 
 #[test]
-fn no_wrap_flow_row_fits_overflowing_children_into_the_padded_content_box() {
+fn no_wrap_rows_fit_overflowing_children_into_the_padded_content_box() {
+    for row_layout in [
+        Layout::flow().row().no_wrap().into(),
+        Layout::flex().row().into(),
+    ] {
+        assert_row_fits_padded_content_box(row_layout);
+    }
+}
+
+fn assert_row_fits_padded_content_box(row_layout: Layout) {
     let tree = rsx! {
         <HostElement style={ElementStylePropSchema {
             width: Some(Length::px(380.0)),
@@ -371,7 +380,7 @@ fn no_wrap_flow_row_fits_overflowing_children_into_the_padded_content_box() {
             ..empty_element_style()
         }}>
             <HostElement style={ElementStylePropSchema {
-                layout: Some(Layout::flow().row().no_wrap().into()),
+                layout: Some(row_layout),
                 gap: Some(Length::px(8.0)),
                 ..empty_element_style()
             }}>
@@ -406,6 +415,6 @@ fn no_wrap_flow_row_fits_overflowing_children_into_the_padded_content_box() {
         .collect::<Vec<_>>();
     // 380 - 2 * 16 padding leaves 348; the text gets what the icon, the
     // trailing group and two 8px gaps leave.
-    assert_eq!((row_box.x, row_box.width), (16.0, 348.0));
-    assert_eq!(widths, vec![20.0, 288.0, 24.0]);
+    assert_eq!((row_box.x, row_box.width), (16.0, 348.0), "{row_layout:?}");
+    assert_eq!(widths, vec![20.0, 288.0, 24.0], "{row_layout:?}");
 }
