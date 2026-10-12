@@ -8,7 +8,7 @@
 //!   returns owned outputs the caller writes back into its component
 //!   state.
 
-use crate::style::Layout;
+use crate::style::{Layout, SizeValue};
 use crate::view::base_component::{LayoutConstraints, Size};
 use crate::view::layout::flex_solver::{FlexSolverInputs, compute_flex_info};
 use crate::view::layout::types::FlexLayoutInfo;
@@ -88,6 +88,65 @@ pub(crate) fn measure_child_if_needed(
     arena.with_element_taken(key, |child, arena| child.measure(constraints, arena));
 }
 
+/// Each child of a flow row is first measured against the whole row. A
+/// no-wrap row has no next line, so when its children overflow, the ones
+/// with an auto width share what the explicit widths and gaps leave. A
+/// child whose width fits an even share keeps it; wider children are
+/// measured again at the share, so wrapping content wraps there. The row
+/// still overflows when a child cannot get narrower.
+fn fit_no_wrap_flow_row(inputs: &MeasureAxisInputs<'_>, arena: &mut NodeArena) {
+    let mut in_flow = 0_usize;
+    let mut fixed_width = 0.0_f32;
+    let mut auto_widths = Vec::new();
+    for (index, &key) in inputs.children.iter().enumerate() {
+        if inputs.absolute_mask.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some(node) = arena.get(key) else {
+            continue;
+        };
+        in_flow += 1;
+        let width = node.element.measured_size().0.max(0.0);
+        if node.element.flex_props().main_size(true) == SizeValue::Auto {
+            auto_widths.push((key, width));
+        } else {
+            fixed_width += width;
+        }
+    }
+    let gaps = inputs.solver_gap * in_flow.saturating_sub(1) as f32;
+    let natural = fixed_width + gaps + auto_widths.iter().map(|(_, w)| w).sum::<f32>();
+    if natural <= inputs.child_available_width + 0.01 {
+        return;
+    }
+
+    auto_widths.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut remaining = (inputs.child_available_width - gaps - fixed_width).max(0.0);
+    let mut unassigned = auto_widths.len();
+    for (key, width) in auto_widths {
+        let share = remaining / unassigned as f32;
+        unassigned -= 1;
+        let mut used = width;
+        if width > share + 0.01 {
+            measure_child_if_needed(
+                arena,
+                key,
+                LayoutConstraints {
+                    max_width: share,
+                    max_height: inputs.child_available_height,
+                    viewport_width: inputs.viewport_width,
+                    viewport_height: inputs.viewport_height,
+                    percent_base_width: inputs.child_percent_base_width,
+                    percent_base_height: inputs.child_percent_base_height,
+                },
+            );
+            used = arena
+                .get(key)
+                .map_or(share, |node| node.element.measured_size().0.max(0.0));
+        }
+        remaining = (remaining - used).max(0.0);
+    }
+}
+
 /// Inputs to `measure_axis`.
 pub(crate) struct MeasureAxisInputs<'a> {
     pub layout: Layout,
@@ -134,6 +193,9 @@ pub(crate) fn measure_axis(
         },
         arena,
     );
+    if inputs.is_row && !inputs.is_real_flex && !inputs.solver_wrap {
+        fit_no_wrap_flow_row(&inputs, arena);
+    }
 
     let flex_info = compute_flex_info(
         FlexSolverInputs {

@@ -360,3 +360,52 @@ fn nested_container_percent_height_without_definite_parent_does_not_keep_placeho
 }
 
 // ---------- TextArea (v2 — formerly TextArea) acceptance ----------
+
+#[test]
+fn no_wrap_flow_row_fits_overflowing_children_into_the_padded_content_box() {
+    let tree = rsx! {
+        <HostElement style={ElementStylePropSchema {
+            width: Some(Length::px(380.0)),
+            layout: Some(Layout::flow().column().into()),
+            padding: Some(Padding::uniform(Length::px(8.0)).x(Length::px(16.0))),
+            ..empty_element_style()
+        }}>
+            <HostElement style={ElementStylePropSchema {
+                layout: Some(Layout::flow().row().no_wrap().into()),
+                gap: Some(Length::px(8.0)),
+                ..empty_element_style()
+            }}>
+                <HostElement style={ElementStylePropSchema {
+                    width: Some(Length::px(20.0)),
+                    height: Some(Length::px(20.0)),
+                    ..empty_element_style()
+                }} />
+                <HostText>
+                    Offline demo: my replies here are pre-written and picked by keyword.
+                </HostText>
+                <HostElement>
+                    <HostElement style={ElementStylePropSchema {
+                        width: Some(Length::px(24.0)),
+                        height: Some(Length::px(24.0)),
+                        ..empty_element_style()
+                    }} />
+                </HostElement>
+            </HostElement>
+        </HostElement>
+    };
+    let mut arena = crate::view::test_support::new_test_arena();
+    let roots = commit_rsx_tree(&mut arena, &tree);
+    measure_and_place(&mut arena, roots[0], std_constraints(), std_placement());
+
+    let row = arena.children_of(roots[0])[0];
+    let row_box = arena.get(row).unwrap().element.box_model_snapshot();
+    let widths = arena
+        .children_of(row)
+        .into_iter()
+        .map(|child| arena.get(child).unwrap().element.box_model_snapshot().width)
+        .collect::<Vec<_>>();
+    // 380 - 2 * 16 padding leaves 348; the text gets what the icon, the
+    // trailing group and two 8px gaps leave.
+    assert_eq!((row_box.x, row_box.width), (16.0, 348.0));
+    assert_eq!(widths, vec![20.0, 288.0, 24.0]);
+}
