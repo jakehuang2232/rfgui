@@ -84,7 +84,10 @@ fn span_edge_insets_reserve_line_advance() {
         padded
             .inline_box_placements()
             .iter()
-            .all(|placement| placement.role == InlineIfcInlineBoxRole::SpanEdgeSpacer),
+            .all(|placement| matches!(
+                placement.role,
+                InlineIfcInlineBoxRole::SpanStartEdge | InlineIfcInlineBoxRole::SpanEndEdge
+            )),
         "fixture has no real atomics; only spacers may appear"
     );
     assert!(

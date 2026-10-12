@@ -418,3 +418,83 @@ fn assert_row_fits_padded_content_box(row_layout: Layout) {
     assert_eq!((row_box.x, row_box.width), (16.0, 348.0), "{row_layout:?}");
     assert_eq!(widths, vec![20.0, 288.0, 24.0], "{row_layout:?}");
 }
+
+#[test]
+fn padded_inline_span_keeps_its_padding_on_the_line_of_its_content() {
+    let padding = || ElementStylePropSchema {
+        padding: Some(Padding::uniform(Length::px(8.0)).x(Length::px(16.0))),
+        ..empty_element_style()
+    };
+    let wide_box = || {
+        rsx! {
+            <HostElement style={ElementStylePropSchema {
+                layout: Some(Layout::flow().row().into()),
+                width: Some(Length::px(370.0)),
+                height: Some(Length::px(20.0)),
+                ..empty_element_style()
+            }} />
+        }
+    };
+    // Ten leading words leave room for the start padding but not the word;
+    // nine leave room for the word but not the end padding; the 370px box
+    // does not fit a line after its start padding, so it overflows.
+    let cases = [
+        (
+            "start padding at a line end",
+            "lead ".repeat(10),
+            None,
+            true,
+        ),
+        ("end padding past a line end", "lead ".repeat(9), None, true),
+        (
+            "box wider than the line",
+            String::new(),
+            Some(wide_box()),
+            false,
+        ),
+    ];
+    for (name, lead, content, fits) in cases {
+        let span = match content {
+            Some(content) => rsx! { <HostElement style={padding()}>{content}</HostElement> },
+            None => {
+                rsx! { <HostElement style={padding()}><HostText>{"wordy"}</HostText></HostElement> }
+            }
+        };
+        let tree = rsx! {
+            <HostElement style={ElementStylePropSchema {
+                width: Some(Length::px(380.0)),
+                ..empty_element_style()
+            }}>
+                <HostText>{lead}</HostText>
+                {span}
+            </HostElement>
+        };
+        let mut arena = crate::view::test_support::new_test_arena();
+        let roots = commit_rsx_tree(&mut arena, &tree);
+        measure_and_place(&mut arena, roots[0], std_constraints(), std_placement());
+
+        let span = arena.children_of(roots[0])[1];
+        let span_box = arena.get(span).unwrap().element.box_model_snapshot();
+        let content = arena.children_of(span)[0];
+        let content_x = {
+            let node = arena.get(content).unwrap();
+            match node.element.as_any().downcast_ref::<Text>() {
+                Some(text) => text.inline_fragment_positions()[0].1.x,
+                None => node.element.box_model_snapshot().x,
+            }
+        };
+        assert!(span_box.x >= 0.0, "{name}: span at {}", span_box.x);
+        assert!(
+            (content_x - span_box.x - 16.0).abs() < 0.01,
+            "{name}: content at {content_x}, span at {}",
+            span_box.x
+        );
+        if fits {
+            assert!(
+                span_box.x + span_box.width <= 382.0,
+                "{name}: span ends at {}",
+                span_box.x + span_box.width
+            );
+        }
+    }
+}

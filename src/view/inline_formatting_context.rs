@@ -758,7 +758,10 @@ pub(crate) struct InlineIfcBoxMapping {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum InlineIfcInlineBoxRole {
     Atomic,
-    SpanEdgeSpacer,
+    /// A span's start border + padding, before its content.
+    SpanStartEdge,
+    /// A span's end border + padding, after its content.
+    SpanEndEdge,
     GapSpacer,
 }
 
@@ -1681,10 +1684,12 @@ impl InlineFormattingContext {
 
     fn reflow(&self, cache_key: InlineIfcCacheKey, options: InlineIfcLayoutOptions) -> Self {
         let mut layout = self.layout.clone();
-        layout.break_all_lines(
+        break_lines_keeping_span_edges(
+            &mut layout,
             options
                 .max_width
                 .map(|width| width + INLINE_IFC_WRAP_EPSILON),
+            &self.inline_boxes,
         );
         layout.align(
             to_parley_alignment(options.align),
@@ -3500,7 +3505,11 @@ impl InlineIfcBuilder {
             } => {
                 let resolved_style = style.clone().unwrap_or_else(|| inherited_style.clone());
                 if edge_insets[0] > 0.0 {
-                    self.push_edge_spacer(*source, edge_insets[0]);
+                    self.push_edge_spacer(
+                        *source,
+                        edge_insets[0],
+                        InlineIfcInlineBoxRole::SpanStartEdge,
+                    );
                 }
                 let start = self.backing_text.len();
                 let first_descendant_box = self.inline_boxes.len();
@@ -3523,7 +3532,11 @@ impl InlineIfcBuilder {
                     self.span_inline_box_ids.insert(*source, descendant_box_ids);
                 }
                 if edge_insets[1] > 0.0 {
-                    self.push_edge_spacer(*source, edge_insets[1]);
+                    self.push_edge_spacer(
+                        *source,
+                        edge_insets[1],
+                        InlineIfcInlineBoxRole::SpanEndEdge,
+                    );
                 }
             }
             InlineIfcItem::AtomicInlineBox {
@@ -3549,7 +3562,12 @@ impl InlineIfcBuilder {
     /// Reserve a span's horizontal border+padding as a zero-height inline
     /// box: it participates in line advance and wrapping but leaves the
     /// line height untouched (matching CSS inline-box semantics).
-    fn push_edge_spacer(&mut self, source: InlineIfcSourceId, width: f32) {
+    fn push_edge_spacer(
+        &mut self,
+        source: InlineIfcSourceId,
+        width: f32,
+        role: InlineIfcInlineBoxRole,
+    ) {
         let id = self.next_inline_box_id;
         self.next_inline_box_id += 1;
         self.inline_boxes.push(InlineIfcBoxMapping {
@@ -3560,7 +3578,7 @@ impl InlineIfcBuilder {
                 InlineIfcSize::new(width.max(0.0), 0.0),
                 InlineIfcAtomicMeasureConstraints::new(None),
             ),
-            role: InlineIfcInlineBoxRole::SpanEdgeSpacer,
+            role,
         });
     }
 
@@ -3650,10 +3668,12 @@ fn build_parley_layout(
         let mut layout = builder.build(backing_text);
         // Legacy-compatible slack: measured content that fits within a
         // couple of float-error pixels of the constraint must not wrap.
-        layout.break_all_lines(
+        break_lines_keeping_span_edges(
+            &mut layout,
             layout_options
                 .max_width
                 .map(|width| width + INLINE_IFC_WRAP_EPSILON),
+            inline_boxes,
         );
         layout.align(
             to_parley_alignment(layout_options.align),
@@ -3664,6 +3684,296 @@ fn build_parley_layout(
 }
 
 const INLINE_IFC_WRAP_EPSILON: f32 = 2.0;
+
+/// Breaks lines like `break_all_lines`, but never between a span's edge
+/// spacer and the content it borders. CSS has no soft wrap opportunity
+/// there, while parley may break after any inline box and before one that
+/// does not fit. A line that split an edge from its content is broken
+/// again with its own width limit: one that moves the edge and its content
+/// to the next line, or, when they already start the line, one that keeps
+/// them on it and lets them overflow. Alignment still uses the full width.
+fn break_lines_keeping_span_edges(
+    layout: &mut ParleyLayout<[u8; 4]>,
+    max_width: Option<f32>,
+    inline_boxes: &[InlineIfcBoxMapping],
+) {
+    let edges = inline_boxes
+        .iter()
+        .filter_map(|inline_box| match inline_box.role {
+            InlineIfcInlineBoxRole::SpanStartEdge => Some((inline_box.id, true)),
+            InlineIfcInlineBoxRole::SpanEndEdge => Some((inline_box.id, false)),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let Some(max_width) = max_width.filter(|_| !edges.is_empty()) else {
+        layout.break_all_lines(max_width);
+        return;
+    };
+
+    let mut line_limits: Vec<(usize, f32)> = Vec::new();
+    let mut attempts_per_line: HashMap<usize, usize> = HashMap::new();
+    let mut from_line = 0;
+    break_lines_with_limits(layout, max_width, &line_limits);
+    while let Some((line, limit)) = first_split_span_edge(layout, &edges, max_width, from_line) {
+        let attempts = attempts_per_line.entry(line).or_default();
+        *attempts += 1;
+        let tried = line_limits
+            .iter()
+            .any(|&(index, value)| index == line && (value - limit).abs() < 0.01);
+        if tried || *attempts > 4 {
+            from_line = line + 1;
+            continue;
+        }
+        line_limits.retain(|&(index, _)| index < line);
+        line_limits.push((line, limit));
+        break_lines_with_limits(layout, max_width, &line_limits);
+    }
+}
+
+fn break_lines_with_limits(
+    layout: &mut ParleyLayout<[u8; 4]>,
+    max_width: f32,
+    line_limits: &[(usize, f32)],
+) {
+    let mut breaker = layout.break_lines();
+    let mut line = 0;
+    loop {
+        let limit = line_limits
+            .iter()
+            .find(|&&(index, _)| index == line)
+            .map_or(max_width, |&(_, value)| value);
+        let state = breaker.state_mut();
+        // Parley requires each line's limit to stay within the layout's.
+        state.set_layout_max_advance(limit.max(max_width));
+        state.set_line_max_advance(limit);
+        if breaker.break_next().is_none() {
+            break;
+        }
+        if limit != max_width {
+            breaker.set_prior_line_width(max_width);
+        }
+        line += 1;
+    }
+    breaker.state_mut().set_layout_max_advance(max_width);
+    breaker.finish();
+}
+
+#[derive(Clone, Copy)]
+enum LineUnit {
+    Edge {
+        start: bool,
+        x: f32,
+        width: f32,
+    },
+    InlineBox {
+        x: f32,
+        width: f32,
+    },
+    /// `first_word_end` ends the run's first word when a space follows it;
+    /// `last_word_x` starts its last word when a space precedes it.
+    Text {
+        x: f32,
+        width: f32,
+        first_word_end: Option<f32>,
+        last_word_x: Option<f32>,
+        ends_with_space: bool,
+    },
+}
+
+impl LineUnit {
+    fn x(self) -> f32 {
+        match self {
+            Self::Edge { x, .. } | Self::InlineBox { x, .. } | Self::Text { x, .. } => x,
+        }
+    }
+
+    fn end(self) -> f32 {
+        match self {
+            Self::Edge { x, width, .. }
+            | Self::InlineBox { x, width }
+            | Self::Text { x, width, .. } => x + width,
+        }
+    }
+}
+
+fn line_units(line: &parley::Line<'_, [u8; 4]>, edges: &HashMap<u64, bool>) -> Vec<LineUnit> {
+    let mut units = Vec::new();
+    let mut last_run = None;
+    for item in line.items() {
+        match item {
+            PositionedLayoutItem::InlineBox(inline_box) => {
+                last_run = None;
+                units.push(match edges.get(&inline_box.id) {
+                    Some(&start) => LineUnit::Edge {
+                        start,
+                        x: inline_box.x,
+                        width: inline_box.width,
+                    },
+                    None => LineUnit::InlineBox {
+                        x: inline_box.x,
+                        width: inline_box.width,
+                    },
+                });
+            }
+            PositionedLayoutItem::GlyphRun(glyph_run) => {
+                let run = glyph_run.run();
+                // A run split by style yields several glyph runs.
+                if last_run == Some(run.index())
+                    && let Some(LineUnit::Text { width, .. }) = units.last_mut()
+                {
+                    *width += glyph_run.advance();
+                    continue;
+                }
+                last_run = Some(run.index());
+                let x = glyph_run.offset();
+                let mut cursor = x;
+                let mut first_word_end = None;
+                let mut last_word_x = None;
+                let mut after_space = false;
+                if !run.is_rtl() {
+                    for cluster in run.clusters() {
+                        let space = cluster.is_space_or_nbsp();
+                        if space && first_word_end.is_none() && cursor > x {
+                            first_word_end = Some(cursor);
+                        }
+                        if after_space && !space {
+                            last_word_x = Some(cursor);
+                        }
+                        after_space = space;
+                        cursor += cluster.advance();
+                    }
+                }
+                units.push(LineUnit::Text {
+                    x,
+                    width: glyph_run.advance(),
+                    first_word_end,
+                    last_word_x,
+                    ends_with_space: after_space,
+                });
+            }
+        }
+    }
+    units
+}
+
+/// The first wrapped line, from `from_line` on, that ends with a span's
+/// start edge or is followed by a line starting with an end edge, with the
+/// limit that keeps the edge with its content.
+fn first_split_span_edge(
+    layout: &ParleyLayout<[u8; 4]>,
+    edges: &HashMap<u64, bool>,
+    max_width: f32,
+    from_line: usize,
+) -> Option<(usize, f32)> {
+    // Whether a line's first and last items are start (true) or end edges.
+    let boundary_edges = |line: &parley::Line<'_, [u8; 4]>| {
+        let mut items = line.items().map(|item| match item {
+            PositionedLayoutItem::InlineBox(inline_box) => edges.get(&inline_box.id).copied(),
+            PositionedLayoutItem::GlyphRun(_) => None,
+        });
+        let first = items.next().flatten();
+        (first, items.last().unwrap_or(first))
+    };
+    let line_count = layout.len();
+    for index in from_line..line_count.saturating_sub(1) {
+        let line = layout.get(index)?;
+        let next_line = layout.get(index + 1)?;
+        if !matches!(
+            line.break_reason(),
+            parley::BreakReason::Regular | parley::BreakReason::Emergency
+        ) || (boundary_edges(&line).1 != Some(true)
+            && boundary_edges(&next_line).0 != Some(false))
+        {
+            continue;
+        }
+        let units = line_units(&line, edges);
+        let Some(&last) = units.last() else {
+            continue;
+        };
+        let next_units = line_units(&next_line, edges);
+
+        // A start edge left at the end of the line moves to the next line
+        // with whatever it cannot be separated from, or, starting the line,
+        // keeps the first piece of its content on it.
+        if matches!(last, LineUnit::Edge { start: true, .. }) {
+            let chain_start = units
+                .iter()
+                .rposition(|unit| !matches!(unit, LineUnit::Edge { start: true, .. }))
+                .map_or(0, |index| index + 1);
+            let limit = match last_wrap_opportunity(&units[..=chain_start]) {
+                Some(x) => x,
+                None => {
+                    let content = match next_units.first() {
+                        Some(&LineUnit::Text {
+                            x,
+                            width,
+                            first_word_end,
+                            ..
+                        }) => first_word_end.map_or(width, |end| end - x),
+                        Some(&LineUnit::InlineBox { width, .. }) => width,
+                        _ => 0.0,
+                    };
+                    (last.end() + content).max(max_width) + 0.01
+                }
+            };
+            return Some((index, limit));
+        }
+
+        // An end edge pushed to the start of the next line takes the content
+        // it borders along, or that content keeps the edge on its line.
+        let end_edges = next_units
+            .iter()
+            .take_while(|unit| matches!(unit, LineUnit::Edge { start: false, .. }))
+            .map(|unit| unit.end() - unit.x())
+            .sum::<f32>();
+        if end_edges <= 0.0 {
+            continue;
+        }
+        let limit = match last_wrap_opportunity(&units) {
+            Some(x) => x,
+            None => last.end() + end_edges + 0.01,
+        };
+        return Some((index, limit));
+    }
+    None
+}
+
+/// The x of the last soft wrap opportunity inside `units`, excluding the
+/// line start. Spans' edges join the content they border; an atomic box
+/// can wrap on either side.
+fn last_wrap_opportunity(units: &[LineUnit]) -> Option<f32> {
+    const EPSILON: f32 = 0.5;
+    for index in (0..units.len()).rev() {
+        let unit = units[index];
+        if let LineUnit::Text {
+            last_word_x: Some(x),
+            ..
+        } = unit
+        {
+            return (x > EPSILON).then_some(x);
+        }
+        let Some(&previous) = index.checked_sub(1).and_then(|i| units.get(i)) else {
+            return None;
+        };
+        let opportunity = match (previous, unit) {
+            (LineUnit::Edge { start: true, .. }, _) | (_, LineUnit::Edge { start: false, .. }) => {
+                false
+            }
+            (LineUnit::InlineBox { .. }, _) | (_, LineUnit::InlineBox { .. }) => true,
+            (
+                LineUnit::Text {
+                    ends_with_space, ..
+                },
+                _,
+            ) => ends_with_space,
+            _ => false,
+        };
+        if opportunity && unit.x() > EPSILON {
+            return Some(unit.x());
+        }
+    }
+    None
+}
 
 fn to_parley_alignment(align: InlineIfcAlignment) -> ParleyAlignment {
     match align {
