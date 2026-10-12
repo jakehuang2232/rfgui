@@ -1,4 +1,3 @@
-mod fallback_ledger;
 mod surface_acquisition;
 #[cfg(test)]
 mod attempts;
@@ -11,552 +10,6 @@ use super::*;
 mod single_viewport_frame_test_support;
 #[cfg(test)]
 pub(crate) use single_viewport_frame_test_support::SingleViewportFrameObservation;
-
-fn build_root_legacy(
-    graph: &mut FrameGraph,
-    arena: &mut crate::view::node_arena::NodeArena,
-    root_key: crate::view::node_arena::NodeKey,
-    ctx: crate::view::base_component::UiBuildContext,
-) -> crate::view::base_component::BuildState {
-    arena
-        .with_element_taken(root_key, |root, arena| root.build(graph, arena, ctx))
-        .expect("root should exist during the build walk")
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AutoAuthorityKind {
-    Artifact,
-    Legacy,
-}
-
-#[derive(Clone, Debug)]
-enum AutoAuthorityRejection {
-    ArtifactPrepare {
-        error: RecordedArtifactSurfacePrepareError,
-    },
-}
-
-/// Optional diagnostics plus the unconditional prepare-rejection stage marker.
-/// Each selection attempt records at most one rejection. Capture never changes
-/// selection or fallback stage.
-#[derive(Clone, Debug, Default)]
-struct AutoAuthorityTrace {
-    capture_rejections: bool,
-    // Frame lifecycle consumes this even when diagnostic capture is disabled.
-    artifact_prepare_rejected: bool,
-    rejections: Vec<AutoAuthorityRejection>,
-}
-
-impl AutoAuthorityTrace {
-    fn new(capture_rejections: bool) -> Self {
-        Self {
-            capture_rejections,
-            artifact_prepare_rejected: false,
-            rejections: Vec::new(),
-        }
-    }
-
-    fn reject_artifact_prepare(&mut self, error: RecordedArtifactSurfacePrepareError) {
-        self.artifact_prepare_rejected = true;
-        self.capture(|| AutoAuthorityRejection::ArtifactPrepare { error });
-    }
-
-    fn capture(&mut self, rejection: impl FnOnce() -> AutoAuthorityRejection) {
-        if self.capture_rejections {
-            self.rejections.push(rejection());
-        }
-    }
-}
-
-fn auto_artifact_legacy_fallback_stage(trace: &AutoAuthorityTrace) -> PaintAuthorityFallbackStage {
-    if trace.artifact_prepare_rejected {
-        PaintAuthorityFallbackStage::Prepare
-    } else {
-        PaintAuthorityFallbackStage::Selection
-    }
-}
-
-impl AutoAuthorityRejection {
-    fn debug_label(&self) -> String {
-        match self {
-            Self::ArtifactPrepare { error } => format!("artifact-prepare:{error:?}"),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PaintAuthorityKind {
-    Legacy,
-    Artifact,
-}
-
-impl PaintAuthorityKind {
-    fn from_auto(authority: AutoAuthorityKind) -> Self {
-        match authority {
-            AutoAuthorityKind::Artifact => Self::Artifact,
-            AutoAuthorityKind::Legacy => Self::Legacy,
-        }
-    }
-    fn from_named_mode(mode: ViewportPaintRendererMode) -> Self {
-        match mode {
-            ViewportPaintRendererMode::Legacy => Self::Legacy,
-            ViewportPaintRendererMode::RetainedAuto => {
-                unreachable!("automatic mode supplies its selected authority")
-            }
-        }
-    }
-    fn label(self) -> &'static str {
-        match self {
-            Self::Artifact => "artifact",
-            Self::Legacy => "legacy",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PaintAuthorityFallbackStage {
-    Selection,
-    Build,
-    Prepare,
-    Compile,
-    Execute,
-}
-
-impl PaintAuthorityFallbackStage {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Selection => "selection",
-            Self::Build => "build",
-            Self::Prepare => "prepare",
-            Self::Compile => "compile",
-            Self::Execute => "execute",
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-enum PaintAuthoritySelectionRejection {
-    Auto(AutoAuthorityRejection),
-}
-
-impl PaintAuthoritySelectionRejection {
-    fn debug_label(&self) -> String {
-        match self {
-            Self::Auto(r) => r.debug_label(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct PaintAuthorityTelemetry {
-    requested_mode: ViewportPaintRendererMode,
-    selected: PaintAuthorityKind,
-    selection_rejections: Vec<PaintAuthoritySelectionRejection>,
-    legacy_fallback_stage: Option<PaintAuthorityFallbackStage>,
-    terminal_failure_stage: Option<PaintAuthorityFallbackStage>,
-    resident_release_count: Option<usize>,
-    detail: String,
-}
-
-impl PaintAuthorityTelemetry {
-    fn from_selection(
-        requested_mode: ViewportPaintRendererMode,
-        _selection: &FramePaintSelection,
-        auto: Option<(AutoAuthorityKind, AutoAuthorityTrace)>,
-    ) -> Self {
-        let (selected, selection_rejections) = if let Some((authority, trace)) = auto {
-            (
-                PaintAuthorityKind::from_auto(authority),
-                trace
-                    .rejections
-                    .into_iter()
-                    .map(PaintAuthoritySelectionRejection::Auto)
-                    .collect(),
-            )
-        } else {
-            let selected = PaintAuthorityKind::from_named_mode(requested_mode);
-            (selected, Vec::new())
-        };
-        Self {
-            requested_mode,
-            selected,
-            selection_rejections,
-            legacy_fallback_stage: None,
-            terminal_failure_stage: None,
-            resident_release_count: None,
-            detail: String::new(),
-        }
-    }
-
-    fn note_legacy_fallback(&mut self, stage: PaintAuthorityFallbackStage) {
-        self.legacy_fallback_stage = Some(stage);
-    }
-
-    fn note_terminal_failure(&mut self, stage: PaintAuthorityFallbackStage) {
-        self.terminal_failure_stage = Some(stage);
-    }
-
-    fn final_authority_is_legacy(&self) -> bool {
-        self.selected == PaintAuthorityKind::Legacy || self.legacy_fallback_stage.is_some()
-    }
-
-    fn final_authority(&self) -> PaintAuthorityKind {
-        if self.final_authority_is_legacy() {
-            PaintAuthorityKind::Legacy
-        } else {
-            self.selected
-        }
-    }
-
-    fn set_detail(&mut self, detail: String) {
-        let mut detail = detail;
-        if self.requested_mode == ViewportPaintRendererMode::RetainedAuto
-            && let Some(prefix_end) = detail.find(' ')
-        {
-            detail = detail.split_off(prefix_end + 1);
-        }
-        self.detail = detail;
-    }
-
-    fn authority_label(&self) -> String {
-        match self.requested_mode {
-            ViewportPaintRendererMode::RetainedAuto => {
-                format!("retained-auto:{}", self.final_authority().label())
-            }
-            ViewportPaintRendererMode::Legacy => "legacy".to_owned(),
-        }
-    }
-
-    fn format_debug(&self) -> String {
-        let rejections = self
-            .selection_rejections
-            .iter()
-            .map(PaintAuthoritySelectionRejection::debug_label)
-            .collect::<Vec<_>>()
-            .join(";");
-        let legacy_fallback = self
-            .legacy_fallback_stage
-            .map_or("none", PaintAuthorityFallbackStage::label);
-        let terminal_failure = self
-            .terminal_failure_stage
-            .map_or("none", PaintAuthorityFallbackStage::label);
-        let releases = self
-            .resident_release_count
-            .map_or_else(|| "unavailable".to_owned(), |count| count.to_string());
-        format!(
-            "{} requested={:?} selected={} candidate-rejections=[{}] legacy-fallback-stage={} terminal-failure-stage={} resident-releases={} detail=[{}]",
-            self.authority_label(),
-            self.requested_mode,
-            self.final_authority().label(),
-            rejections,
-            legacy_fallback,
-            terminal_failure,
-            releases,
-            self.detail,
-        )
-    }
-
-    #[cfg(any(test, feature = "renderer-test-support"))]
-    fn snapshot(&self) -> PaintAuthorityTelemetrySnapshot {
-        PaintAuthorityTelemetrySnapshot {
-            authority_label: self.authority_label(),
-            selected: self.final_authority(),
-            legacy_fallback_stage: self.legacy_fallback_stage,
-            terminal_failure_stage: self.terminal_failure_stage,
-            resident_release_count: self.resident_release_count,
-        }
-    }
-
-    #[cfg(test)]
-    fn note_resident_release_delta(&mut self, before: usize, after: usize) {
-        self.resident_release_count = Some(after.saturating_sub(before));
-    }
-}
-
-fn debug_requested_mode(
-    mode: ViewportPaintRendererMode,
-) -> crate::view::debug::DebugPaintRequestedMode {
-    match mode {
-        ViewportPaintRendererMode::Legacy => crate::view::debug::DebugPaintRequestedMode::Legacy,
-        ViewportPaintRendererMode::RetainedAuto => {
-            crate::view::debug::DebugPaintRequestedMode::RetainedAuto
-        }
-    }
-}
-
-fn debug_paint_authority(
-    authority: PaintAuthorityKind,
-) -> crate::view::debug::DebugFramePaintAuthority {
-    match authority {
-        PaintAuthorityKind::Legacy => crate::view::debug::DebugFramePaintAuthority::Legacy,
-        PaintAuthorityKind::Artifact => crate::view::debug::DebugFramePaintAuthority::Artifact,
-    }
-}
-
-fn debug_fallback_stage(
-    stage: PaintAuthorityFallbackStage,
-) -> crate::view::debug::DebugFallbackStage {
-    use crate::view::debug::DebugFallbackStage as DebugStage;
-    match stage {
-        PaintAuthorityFallbackStage::Selection => DebugStage::Selection,
-        PaintAuthorityFallbackStage::Build => DebugStage::Recording,
-        PaintAuthorityFallbackStage::Prepare => DebugStage::Preparation,
-        PaintAuthorityFallbackStage::Compile => DebugStage::Compilation,
-        PaintAuthorityFallbackStage::Execute => DebugStage::Execution,
-    }
-}
-
-/// One un-staged fallback record derived from a rejection payload.
-///
-/// `owner` is `None` for whole-scene rejections that name no node.
-type RejectionDebugRecord = (
-    Option<crate::view::node_arena::NodeKey>,
-    crate::view::debug::DebugFallbackCategory,
-    crate::view::debug::DebugFallbackDetail,
-);
-
-/// One observational fallback record derived from a candidate rejection.
-struct SelectionRejectionDebugRecord {
-    stage: crate::view::debug::DebugFallbackStage,
-    owner: Option<crate::view::node_arena::NodeKey>,
-    category: crate::view::debug::DebugFallbackCategory,
-    detail: crate::view::debug::DebugFallbackDetail,
-}
-
-/// The bare code inside a debug detail, ignoring which candidate raised it.
-///
-/// `Code` and `CandidateCode` describe the same invariant; only the latter
-/// also names the grammar. Deduplication has to see through that difference.
-fn fallback_detail_code(detail: &crate::view::debug::DebugFallbackDetail) -> Option<&'static str> {
-    match detail {
-        crate::view::debug::DebugFallbackDetail::Code { code }
-        | crate::view::debug::DebugFallbackDetail::CandidateCode { code, .. } => Some(code),
-        crate::view::debug::DebugFallbackDetail::None
-        | crate::view::debug::DebugFallbackDetail::Boundary { .. }
-        | crate::view::debug::DebugFallbackDetail::Validation { .. }
-        | crate::view::debug::DebugFallbackDetail::Resource { .. }
-        | crate::view::debug::DebugFallbackDetail::Capacity { .. } => None,
-    }
-}
-
-/// Live-snapshot drift records the planners could not report.
-///
-/// A planner that rejects on the live-snapshot precondition returns before its
-/// per-node validation runs, so it reports one drifting node and nothing else
-/// from the whole scene. A census wants every drifting node, and existing
-/// records win so the one the planner already named is not repeated.
-fn census_live_snapshot_fallback_additions(
-    mismatches: &[crate::view::compositor::paint_generation::LiveSnapshotMismatch],
-    existing: &[crate::view::debug::DebugRetainedAutoFallbackCaptureInput],
-    identity: impl Fn(
-        crate::view::node_arena::NodeKey,
-    ) -> Option<(u64, &'static str, crate::view::debug::DebugRect)>,
-) -> Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> {
-    let mut additions: Vec<crate::view::debug::DebugRetainedAutoFallbackCaptureInput> = Vec::new();
-    for mismatch in mismatches {
-        let code = mismatch.field.code();
-        let detail = crate::view::debug::DebugFallbackDetail::Code { code };
-        // Compare the code, not the whole detail: a planner's record carries
-        // the candidate that raised it, so the same drift arrives here as
-        // `CandidateCode` while this pass produces a bare `Code`.
-        let already_reported = existing.iter().chain(additions.iter()).any(|fallback| {
-            fallback.owner == mismatch.owner && fallback_detail_code(&fallback.detail) == Some(code)
-        });
-        if already_reported {
-            continue;
-        }
-        let identity = mismatch.owner.and_then(&identity);
-        additions.push(crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
-            stage: crate::view::debug::DebugFallbackStage::Planning,
-            category: crate::view::debug::DebugFallbackCategory::Validation,
-            detail,
-            owner: mismatch.owner,
-            stable_id: identity.map(|identity| identity.0),
-            element_type: identity.map(|identity| identity.1),
-            bounds: identity.map(|identity| identity.2),
-        });
-    }
-    additions
-}
-
-fn selection_rejection_debug_records(
-    rejection: &PaintAuthoritySelectionRejection,
-) -> Vec<SelectionRejectionDebugRecord> {
-    use crate::view::debug::DebugFallbackStage;
-    let (stage, records): (_, Vec<RejectionDebugRecord>) = match rejection {
-        PaintAuthoritySelectionRejection::Auto(AutoAuthorityRejection::ArtifactPrepare {
-            ..
-        }) => (DebugFallbackStage::Preparation, Vec::new()),
-    };
-    records
-        .into_iter()
-        .map(|(owner, category, detail)| SelectionRejectionDebugRecord {
-            stage,
-            owner,
-            category,
-            detail,
-        })
-        .collect()
-}
-
-fn retained_auto_overlay_label(element_type: &'static str, stable_id: u64) -> String {
-    let element_type = element_type.rsplit("::").next().unwrap_or(element_type);
-    format!("{element_type}#{stable_id}")
-}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PaintAuthorityTelemetrySnapshot {
-    authority_label: String,
-    selected: PaintAuthorityKind,
-    legacy_fallback_stage: Option<PaintAuthorityFallbackStage>,
-    terminal_failure_stage: Option<PaintAuthorityFallbackStage>,
-    resident_release_count: Option<usize>,
-}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-std::thread_local! {
-    static PAINT_AUTHORITY_TEST_CAPTURE_ENABLED: std::cell::Cell<bool> =
-        std::cell::Cell::new(false);
-    static LAST_PAINT_AUTHORITY_TELEMETRY: std::cell::RefCell<Option<PaintAuthorityTelemetrySnapshot>> =
-        std::cell::RefCell::new(None);
-}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-struct PaintAuthorityTestCaptureGuard {
-    previous: bool,
-}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-impl Drop for PaintAuthorityTestCaptureGuard {
-    fn drop(&mut self) {
-        clear_paint_authority_test_snapshot();
-        PAINT_AUTHORITY_TEST_CAPTURE_ENABLED.with(|enabled| enabled.set(self.previous));
-    }
-}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-fn enable_paint_authority_test_capture() -> PaintAuthorityTestCaptureGuard {
-    let previous = PAINT_AUTHORITY_TEST_CAPTURE_ENABLED.with(|enabled| {
-        let previous = enabled.get();
-        enabled.set(true);
-        previous
-    });
-    clear_paint_authority_test_snapshot();
-    PaintAuthorityTestCaptureGuard { previous }
-}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-fn paint_authority_test_capture_enabled() -> bool {
-    PAINT_AUTHORITY_TEST_CAPTURE_ENABLED.with(std::cell::Cell::get)
-}
-
-#[cfg(not(any(test, feature = "renderer-test-support")))]
-fn paint_authority_test_capture_enabled() -> bool {
-    false
-}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-fn store_paint_authority_test_snapshot(telemetry: &PaintAuthorityTelemetry) {
-    if paint_authority_test_capture_enabled() {
-        LAST_PAINT_AUTHORITY_TELEMETRY
-            .with(|snapshot| snapshot.replace(Some(telemetry.snapshot())));
-    }
-}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-fn clear_paint_authority_test_snapshot() {
-    LAST_PAINT_AUTHORITY_TELEMETRY.with(|snapshot| snapshot.borrow_mut().take());
-}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-fn begin_paint_authority_telemetry_attempt() {
-    if paint_authority_test_capture_enabled() {
-        clear_paint_authority_test_snapshot();
-    }
-}
-
-#[cfg(not(any(test, feature = "renderer-test-support")))]
-fn begin_paint_authority_telemetry_attempt() {}
-
-#[cfg(any(test, feature = "renderer-test-support"))]
-fn take_paint_authority_test_snapshot() -> Option<PaintAuthorityTelemetrySnapshot> {
-    LAST_PAINT_AUTHORITY_TELEMETRY.with(|snapshot| snapshot.borrow_mut().take())
-}
-
-enum RecordedArtifactPayload {
-    /// Generic current-target artifact authority, fully prepared and resident
-    /// sealed before payload-dependent resident staging.
-    ArtifactSurface(crate::view::paint::PreparedArtifactSurfaceFrame),
-}
-
-struct RecordedArtifactCandidate {
-    payload: RecordedArtifactPayload,
-    chunk_count: usize,
-    op_count: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RecordedArtifactSurfacePrepareError {
-    RasterPlan(crate::view::paint::ArtifactSurfaceRasterPlanError),
-    ResidentSeal(crate::view::paint::ArtifactSurfaceResidentSealError),
-}
-
-enum RecordedArtifactCandidateRejection {
-    Prepare(RecordedArtifactSurfacePrepareError),
-}
-
-/// One complete generic attempt selects an owned sealed artifact or whole-frame Legacy.
-/// There is no property-specific retained payload that dispatch could select after rejection.
-enum RetainedAutoDecision {
-    Artifact {
-        candidate: RecordedArtifactCandidate,
-        trace: AutoAuthorityTrace,
-    },
-    Legacy {
-        trace: AutoAuthorityTrace,
-    },
-}
-
-enum FramePaintSelection {
-    Inactive,
-    Auto(RetainedAutoDecision),
-    AutoArtifact(RecordedArtifactCandidate),
-    AutoLegacy,
-}
-
-fn retained_auto_circuit_breaker_selection(
-    terminal_failure: Option<RetainedAutoTerminalFailureStage>,
-    capture_trace: bool,
-) -> Option<FramePaintSelection> {
-    terminal_failure.map(|_| {
-        FramePaintSelection::Auto(RetainedAutoDecision::Legacy {
-            trace: AutoAuthorityTrace::new(capture_trace),
-        })
-    })
-}
-
-fn retained_auto_terminal_fallback_stage(
-    stage: RetainedAutoTerminalFailureStage,
-) -> PaintAuthorityFallbackStage {
-    match stage {
-        RetainedAutoTerminalFailureStage::Compile => PaintAuthorityFallbackStage::Compile,
-        RetainedAutoTerminalFailureStage::Execute => PaintAuthorityFallbackStage::Execute,
-    }
-}
-
-fn terminal_failure_stage(
-    compiled: bool,
-    executed: bool,
-) -> Option<RetainedAutoTerminalFailureStage> {
-    if !compiled {
-        Some(RetainedAutoTerminalFailureStage::Compile)
-    } else if !executed {
-        Some(RetainedAutoTerminalFailureStage::Execute)
-    } else {
-        None
-    }
-}
 
 fn frame_disposition(compiled: bool, executed: bool) -> FrameDisposition {
     if compiled && executed {
@@ -595,11 +48,18 @@ fn artifact_surface_raster_context(
     .expect("production artifact surface raster context is canonical")
 }
 
-fn prepare_recorded_artifact_candidate(
+/// One recorded frame, planned and sealed.
+struct RecordedFrame {
+    frame: crate::view::paint::PreparedArtifactSurfaceFrame,
+    chunk_count: usize,
+    op_count: usize,
+}
+
+fn plan_recorded_frame(
     artifact: crate::view::paint::PaintArtifact,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
     planning_cache: Option<&mut crate::view::paint::PlanningCache>,
-) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
+) -> RecordedFrame {
     let chunk_count = artifact.chunks.len();
     let op_count = artifact.ops.len();
     #[cfg(test)]
@@ -612,23 +72,20 @@ fn prepare_recorded_artifact_candidate(
         ),
         None => crate::view::paint::prepare_artifact_surface_raster_plan(artifact, raster_context),
     }
-    .map_err(RecordedArtifactSurfacePrepareError::RasterPlan)
-    .map_err(RecordedArtifactCandidateRejection::Prepare)?;
+    .expect("recorded artifacts always plan");
     #[cfg(test)]
     attempts::record("resident-seal");
-    let payload = RecordedArtifactPayload::ArtifactSurface(
-        crate::view::paint::seal_prepared_artifact_surface_frame(plan)
-            .map_err(RecordedArtifactSurfacePrepareError::ResidentSeal)
-            .map_err(RecordedArtifactCandidateRejection::Prepare)?,
-    );
-    Ok(RecordedArtifactCandidate {
-        payload,
+    RecordedFrame {
+        frame: crate::view::paint::seal_prepared_artifact_surface_frame(plan)
+            .expect("raster plans always seal"),
         chunk_count,
         op_count,
-    })
+    }
 }
 
-fn record_auto_detached_surface_candidate(
+/// Records the frame's paint and plans its surfaces. The caches only reuse
+/// work: whatever they cannot replay is recorded and planned again.
+fn record_frame(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
@@ -636,7 +93,7 @@ fn record_auto_detached_surface_candidate(
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
     recording_cache: Option<&mut crate::view::paint::RecordingCache>,
     mut planning_cache: Option<&mut crate::view::paint::PlanningCache>,
-) -> Result<RecordedArtifactCandidate, RecordedArtifactCandidateRejection> {
+) -> RecordedFrame {
     #[cfg(test)]
     attempts::record("generic-record");
     let artifact = if let Some(cache) = recording_cache {
@@ -659,65 +116,27 @@ fn record_auto_detached_surface_candidate(
         cache.observe_property_changes(property_trees);
         cache.observe_recording_changes(arena);
     }
-    prepare_recorded_artifact_candidate(artifact, raster_context, planning_cache)
+    plan_recorded_frame(artifact, raster_context, planning_cache)
 }
 
-fn select_retained_auto_frame(
+#[cfg(test)]
+fn record_frame_for_test(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     ctx: &crate::view::base_component::UiBuildContext,
-    artifact_surface_max_texture_dimension_2d: u32,
-    artifact_surface_max_texture_bytes: u64,
-    capture_trace: bool,
-    recording_cache: Option<&mut crate::view::paint::RecordingCache>,
-    planning_cache: Option<&mut crate::view::paint::PlanningCache>,
-) -> RetainedAutoDecision {
-    let mut trace = AutoAuthorityTrace::new(capture_trace);
-    // Complete recording and the common plan/seal decide whether this frame
-    // can execute. Property counts, host families and topology do not gate
-    // this attempt. Every rejection selects whole-frame Legacy before graph
-    // mutation. Never retry with a planner using different coverage or accounting.
-    match record_auto_detached_surface_candidate(
+) -> RecordedFrame {
+    record_frame(
         arena,
         roots,
         property_trees,
         paint_generations,
         artifact_surface_raster_context(
             ctx,
-            artifact_surface_max_texture_dimension_2d,
-            artifact_surface_max_texture_bytes,
+            wgpu::Limits::default().max_texture_dimension_2d,
+            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
         ),
-        recording_cache,
-        planning_cache,
-    ) {
-        Ok(candidate) => return RetainedAutoDecision::Artifact { candidate, trace },
-        Err(RecordedArtifactCandidateRejection::Prepare(error)) => {
-            trace.reject_artifact_prepare(error);
-        }
-    }
-    RetainedAutoDecision::Legacy { trace }
-}
-
-#[cfg(test)]
-fn select_retained_auto_authority(
-    arena: &crate::view::node_arena::NodeArena,
-    roots: &[crate::view::node_arena::NodeKey],
-    property_trees: &crate::view::compositor::PropertyTrees,
-    paint_generations: &crate::view::compositor::PaintGenerationTracker,
-    ctx: &crate::view::base_component::UiBuildContext,
-    capture_trace: bool,
-) -> RetainedAutoDecision {
-    select_retained_auto_frame(
-        arena,
-        roots,
-        property_trees,
-        paint_generations,
-        ctx,
-        wgpu::Limits::default().max_texture_dimension_2d,
-        ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
-        capture_trace,
         None,
         None,
     )
@@ -725,14 +144,13 @@ fn select_retained_auto_authority(
 
 /// Emits the recorded frame. Without `owner` the surface cache is unavailable
 /// and every surface is drawn without being kept.
-fn compile_auto_artifact_frame(
+fn compile_recorded_frame(
     viewport: &mut Viewport,
     owner: Option<crate::view::viewport::RetainedSurfaceFrameStageOwner>,
     graph: &mut FrameGraph,
-    candidate: RecordedArtifactCandidate,
+    frame: crate::view::paint::PreparedArtifactSurfaceFrame,
     ctx: &crate::view::base_component::UiBuildContext,
 ) -> crate::view::base_component::BuildState {
-    let RecordedArtifactPayload::ArtifactSurface(frame) = candidate.payload;
     let artifact_ctx =
         crate::view::base_component::UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
     crate::view::paint::emit_prepared_artifact_surface_frame_from_pool(
@@ -766,7 +184,7 @@ pub(crate) struct AutoArtifactSurfaceEmissionForTest {
 }
 
 /// Native Stage C gate seam for both zero-resident and detached artifact
-/// surface frames. Selection and dispatch both use the production functions;
+/// surface frames. Recording and dispatch both use the production functions;
 /// each named gate owns the surface-count contract for its fixture, while only
 /// the compact observations are test-only.
 #[cfg(test)]
@@ -779,17 +197,8 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
     graph: &mut FrameGraph,
     ctx: &crate::view::base_component::UiBuildContext,
 ) -> Result<AutoArtifactSurfaceEmissionForTest, String> {
-    let decision =
-        select_retained_auto_authority(arena, roots, property_trees, paint_generations, ctx, true);
-    let RetainedAutoDecision::Artifact { candidate, trace } = decision else {
-        return Err("production selector did not choose Artifact".to_owned());
-    };
-    let RecordedArtifactCandidate {
-        payload,
-        chunk_count,
-        op_count,
-    } = candidate;
-    let RecordedArtifactPayload::ArtifactSurface(frame) = payload;
+    let RecordedFrame { frame, .. } =
+        record_frame_for_test(arena, roots, property_trees, paint_generations, ctx);
     let surface_count = frame.raster_plan().nodes().len();
     let aggregate_texture_bytes = frame
         .raster_plan()
@@ -822,36 +231,12 @@ pub(crate) fn emit_retained_auto_artifact_surface_for_test(
         .begin_retained_surface_frame_stage()
         .ok_or_else(|| "artifact surface frame stage is already active".to_owned())?;
     let _ = crate::view::paint::take_last_production_actions_for_test();
-    compile_auto_artifact_frame(
-        viewport,
-        Some(owner),
-        graph,
-        RecordedArtifactCandidate {
-            payload: RecordedArtifactPayload::ArtifactSurface(frame),
-            chunk_count,
-            op_count,
-        },
-        ctx,
-    );
+    compile_recorded_frame(viewport, Some(owner), graph, frame, ctx);
     let actions = crate::view::paint::take_last_production_actions_for_test();
     if actions.len() != surface_count {
         return Err(format!(
             "artifact action count drifted: surfaces={surface_count}, actions={}",
             actions.len()
-        ));
-    }
-    if trace
-        .rejections
-        .iter()
-        .any(|rejection| matches!(rejection, AutoAuthorityRejection::ArtifactPrepare { .. }))
-    {
-        return Err(format!(
-            "selected artifact retained a terminal prepare rejection: {:?}",
-            trace
-                .rejections
-                .iter()
-                .map(AutoAuthorityRejection::debug_label)
-                .collect::<Vec<_>>()
         ));
     }
     Ok(AutoArtifactSurfaceEmissionForTest {
@@ -1136,51 +521,22 @@ impl Viewport {
         }
     }
 
-    fn push_retained_auto_debug_overlay(
-        &mut self,
-        telemetry: Option<&PaintAuthorityTelemetry>,
-        roots: &[crate::view::node_arena::NodeKey],
-    ) {
-        if !self.debug_options.retained_auto_overlay
-            || self.paint_renderer_mode != ViewportPaintRendererMode::RetainedAuto
+    fn push_retained_auto_debug_overlay(&mut self, roots: &[crate::view::node_arena::NodeKey]) {
+        if !self.debug_options.retained_auto_overlay || !self.debug_options.retained_auto_authority
         {
             return;
         }
-        let Some(telemetry) = telemetry else {
-            return;
-        };
         let scale = self.scale_factor.max(0.0001);
         let screen_w = self.gpu.surface_config.width.max(1) as f32;
         let screen_h = self.gpu.surface_config.height.max(1) as f32;
-        let mut records = Vec::<(crate::view::node_arena::NodeKey, [f32; 4])>::new();
-        if self.debug_options.retained_auto_authority {
-            records.extend(
-                roots
-                    .iter()
-                    .copied()
-                    .map(|root| (root, [45.0 / 255.0, 140.0 / 255.0, 1.0, 242.0 / 255.0])),
-            );
-        }
-        if self.debug_options.retained_auto_fallback_reasons
-            && telemetry.final_authority_is_legacy()
-        {
-            records.extend(
-                roots
-                    .iter()
-                    .copied()
-                    .map(|root| (root, [1.0, 51.0 / 255.0, 51.0 / 255.0, 242.0 / 255.0])),
-            );
-        }
-
-        for (owner, color) in records {
+        for &owner in roots {
             let Some((snapshot, label)) = (|| {
                 let node = self.scene.node_arena.get(owner)?;
+                let element_type = node.element.element_type_name();
+                let element_type = element_type.rsplit("::").next().unwrap_or(element_type);
                 Some((
                     node.element.box_model_snapshot(),
-                    retained_auto_overlay_label(
-                        node.element.element_type_name(),
-                        node.element.stable_id(),
-                    ),
+                    format!("{element_type}#{}", node.element.stable_id()),
                 ))
             })() else {
                 continue;
@@ -1193,7 +549,7 @@ impl Viewport {
                 scale,
                 screen_w,
                 screen_h,
-                color,
+                [45.0 / 255.0, 140.0 / 255.0, 1.0, 242.0 / 255.0],
                 Some(&label),
             );
             self.push_debug_overlay_geometry(&vertices, &indices);
@@ -1220,129 +576,47 @@ impl Viewport {
 
     fn build_retained_auto_debug_capture(
         &self,
-        telemetry: &PaintAuthorityTelemetry,
         roots: &[crate::view::node_arena::NodeKey],
         compiled: bool,
         executed: bool,
     ) -> crate::view::debug::DebugRetainedAutoCaptureInput {
         use crate::view::debug::{
             DebugCoverageKind as Coverage, DebugFallbackCategory as Category,
-            DebugFallbackDetail as Detail, DebugFrameDisposition as Disposition,
+            DebugFallbackDetail as Detail, DebugFallbackStage as Stage,
+            DebugFrameDisposition as Disposition,
         };
 
         let disposition = if !compiled {
             Disposition::Rejected
         } else if !executed {
             Disposition::Aborted
-        } else if telemetry.final_authority_is_legacy() {
-            Disposition::FellBackToLegacy
         } else {
             Disposition::Presented
         };
-        let final_authority = telemetry.final_authority();
-        let root_coverage = match final_authority {
-            PaintAuthorityKind::Legacy => Coverage::LegacyBoundary,
-            PaintAuthorityKind::Artifact => Coverage::ArtifactChunk,
-        };
-        let mut nodes = FxHashMap::<
-            crate::view::node_arena::NodeKey,
-            crate::view::debug::DebugRetainedAutoNodeCaptureInput,
-        >::default();
+        let mut nodes = Vec::new();
         for &root in roots {
             if let Some((stable_id, element_type, bounds)) = self.retained_auto_debug_identity(root)
             {
-                nodes.insert(
-                    root,
-                    crate::view::debug::DebugRetainedAutoNodeCaptureInput {
-                        owner: Some(root),
-                        stable_id: Some(stable_id),
-                        element_type,
-                        bounds: Some(bounds),
-                        coverage: vec![root_coverage],
-                        resident_action: None,
-                        fallbacks: Vec::new(),
-                    },
-                );
+                nodes.push(crate::view::debug::DebugRetainedAutoNodeCaptureInput {
+                    owner: Some(root),
+                    stable_id: Some(stable_id),
+                    element_type,
+                    bounds: Some(bounds),
+                    coverage: vec![Coverage::ArtifactChunk],
+                    resident_action: None,
+                    fallbacks: Vec::new(),
+                });
             }
         }
-
-        let surfaces: Vec<crate::view::debug::DebugRetainedAutoSurfaceCaptureInput> = Vec::new();
-
-        let fallback_stage = telemetry
-            .legacy_fallback_stage
-            .map(debug_fallback_stage)
-            .unwrap_or(crate::view::debug::DebugFallbackStage::Selection);
-        let mut fallbacks = Vec::new();
-        // Plan-level candidate rejections.
-        if telemetry.final_authority_is_legacy() {
-            for rejection in &telemetry.selection_rejections {
-                for record in selection_rejection_debug_records(rejection) {
-                    let identity = record
-                        .owner
-                        .and_then(|owner| self.retained_auto_debug_identity(owner));
-                    let fallback = crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
-                        stage: record.stage,
-                        category: record.category,
-                        detail: record.detail,
-                        owner: record.owner,
-                        stable_id: identity.map(|identity| identity.0),
-                        element_type: identity.map(|identity| identity.1),
-                        bounds: identity.map(|identity| identity.2),
-                    };
-                    if let Some(node) = record.owner.and_then(|owner| nodes.get_mut(&owner)) {
-                        if !node.coverage.contains(&Coverage::LegacyBoundary) {
-                            node.coverage.push(Coverage::LegacyBoundary);
-                        }
-                        node.fallbacks.push(fallback.clone());
-                    }
-                    fallbacks.push(fallback);
-                }
-            }
-        }
-        // A census also names every node whose live snapshot drifted.
-        if self.debug_options.retained_auto_census && telemetry.final_authority_is_legacy() {
-            let live_snapshot = census_live_snapshot_fallback_additions(
-                &self.compositor.paint_generations.live_snapshot_mismatches(
-                    &self.scene.node_arena,
-                    roots,
-                    &self.compositor.property_trees,
-                ),
-                &fallbacks,
-                |owner| self.retained_auto_debug_identity(owner),
-            );
-            for fallback in live_snapshot {
-                if let Some(owner) = fallback.owner
-                    && let Some(node) = nodes.get_mut(&owner)
-                {
-                    if !node.coverage.contains(&Coverage::LegacyBoundary) {
-                        node.coverage.push(Coverage::LegacyBoundary);
-                    }
-                    node.fallbacks.push(fallback.clone());
-                }
-                fallbacks.push(fallback);
-            }
-        }
-        if telemetry.final_authority_is_legacy() && fallbacks.is_empty() {
-            fallbacks.push(crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
-                stage: fallback_stage,
-                category: Category::Unknown,
-                detail: Detail::Code {
-                    code: "whole-frame-legacy-fallback",
-                },
-                owner: None,
-                stable_id: None,
-                element_type: None,
-                bounds: None,
-            });
-        }
-        if let Some(stage) = telemetry.terminal_failure_stage {
-            let category = match stage {
-                PaintAuthorityFallbackStage::Compile => Category::Compiler,
-                PaintAuthorityFallbackStage::Execute => Category::Runtime,
-                _ => Category::ForcedFailure,
+        let mut failures = Vec::new();
+        if !compiled || !executed {
+            let (stage, category) = if compiled {
+                (Stage::Execution, Category::Runtime)
+            } else {
+                (Stage::Compilation, Category::Compiler)
             };
-            fallbacks.push(crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
-                stage: debug_fallback_stage(stage),
+            failures.push(crate::view::debug::DebugRetainedAutoFallbackCaptureInput {
+                stage,
                 category,
                 detail: Detail::Code {
                     code: "terminal-frame-failure",
@@ -1353,38 +627,18 @@ impl Viewport {
                 bounds: None,
             });
         }
-
-        let resident_reuses = surfaces
-            .iter()
-            .filter(|surface| {
-                surface.resident_action == crate::view::debug::DebugResidentAction::Reuse
-            })
-            .count() as u64;
-        let resident_rerasterizations = surfaces
-            .iter()
-            .filter(|surface| {
-                surface.resident_action == crate::view::debug::DebugResidentAction::Reraster
-            })
-            .count() as u64;
-        let mut nodes = nodes.into_iter().collect::<Vec<_>>();
-        nodes.sort_unstable_by_key(|(owner, _)| *owner);
-        let nodes = nodes.into_iter().map(|(_, node)| node).collect::<Vec<_>>();
         let statistics = crate::view::debug::DebugRetainedAutoStatistics {
             reachable_nodes: self.scene.node_arena.len() as u64,
             covered_nodes: nodes.len() as u64,
-            artifact_chunks: u64::from(final_authority == PaintAuthorityKind::Artifact),
+            artifact_chunks: 1,
             property_surfaces: 0,
-            retained_surfaces: surfaces.len() as u64,
-            legacy_nodes: if disposition == Disposition::FellBackToLegacy {
-                self.scene.node_arena.len() as u64
-            } else {
-                0
-            },
+            retained_surfaces: 0,
+            legacy_nodes: 0,
             culled_nodes: 0,
-            fallback_count: fallbacks.len() as u64,
+            fallback_count: failures.len() as u64,
             resident_commits: 0,
-            resident_reuses,
-            resident_rerasterizations,
+            resident_reuses: 0,
+            resident_rerasterizations: 0,
             transform_nodes: self.compositor.property_trees.transforms.len() as u64,
             effect_nodes: self.compositor.property_trees.effects.len() as u64,
             scroll_nodes: self.compositor.property_trees.scrolls.len() as u64,
@@ -1392,14 +646,14 @@ impl Viewport {
         crate::view::debug::DebugRetainedAutoCaptureInput {
             frame: crate::view::debug::DebugRetainedAutoFrameCaptureInput {
                 attempt_id: self.frame.frame_number,
-                requested_mode: debug_requested_mode(telemetry.requested_mode),
-                selected_authority: debug_paint_authority(final_authority),
+                requested_mode: crate::view::debug::DebugPaintRequestedMode::RetainedAuto,
+                selected_authority: crate::view::debug::DebugFramePaintAuthority::Artifact,
                 disposition,
-                fallback_stages: fallbacks,
+                fallback_stages: failures,
                 statistics,
             },
             nodes,
-            surfaces,
+            surfaces: Vec::new(),
         }
     }
 
@@ -1675,10 +929,6 @@ impl Viewport {
         let mut phase_clock = super::frame::FramePhaseClock::new(profile_start);
         self.frame.frame_number = self.frame.frame_number.saturating_add(1);
         let frame_number = self.frame.frame_number;
-        // A failed surface acquisition still represents a render attempt.
-        // Clear test-only capture before `begin_frame` so callers can never
-        // observe telemetry retained from the preceding successful frame.
-        begin_paint_authority_telemetry_attempt();
         let begin_frame_profile = match self.begin_frame() {
             Some(profile) => profile,
             None => {
@@ -1805,53 +1055,28 @@ impl Viewport {
         );
         let retained_surface_frame_owner = self.begin_retained_surface_frame_stage();
         let root_keys_for_build = self.scene.ui_root_keys.clone();
-        let capture_paint_authority_telemetry = self.debug_options.trace_render_time
-            || self.debug_options.retained_auto_overlay
-            || self.debug_options.retained_auto_census
-            || fallback_ledger::enabled()
-            || paint_authority_test_capture_enabled();
-        let artifact_surface_max_texture_dimension_2d = self.max_texture_dimension_2d();
-        let retained_auto_terminal_failure = self.retained_auto_terminal_failure;
+        self.scene
+            .node_arena
+            .sync_popup_stack(&mut self.scene.popup_stack);
         let paint_select_started = self.debug_options.trace_render_time.then(Instant::now);
-        let frame_paint_selection = if self.paint_renderer_mode == ViewportPaintRendererMode::Legacy
-        {
-            FramePaintSelection::Inactive
-        } else {
-            retained_auto_circuit_breaker_selection(
-                retained_auto_terminal_failure,
-                capture_paint_authority_telemetry,
-            )
-            .unwrap_or_else(|| {
-                FramePaintSelection::Auto(select_retained_auto_frame(
-                    &self.scene.node_arena,
-                    &root_keys_for_build,
-                    &self.compositor.property_trees,
-                    &self.compositor.paint_generations,
-                    &ctx,
-                    artifact_surface_max_texture_dimension_2d,
-                    ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
-                    capture_paint_authority_telemetry,
-                    Some(&mut self.compositor.recording_cache),
-                    Some(&mut self.compositor.planning_cache),
-                ))
-            })
-        };
+        let raster_context = artifact_surface_raster_context(
+            &ctx,
+            self.max_texture_dimension_2d(),
+            ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES,
+        );
+        let recorded = record_frame(
+            &self.scene.node_arena,
+            &root_keys_for_build,
+            &self.compositor.property_trees,
+            &self.compositor.paint_generations,
+            raster_context,
+            Some(&mut self.compositor.recording_cache),
+            Some(&mut self.compositor.planning_cache),
+        );
         if let Some(started) = paint_select_started {
             timings.paint_select_ms = started.elapsed().as_secs_f64() * 1000.0;
         }
-        let (frame_paint_selection, auto_authority_trace) = match frame_paint_selection {
-            FramePaintSelection::Auto(decision) => match decision {
-                RetainedAutoDecision::Artifact { candidate, trace } => (
-                    FramePaintSelection::AutoArtifact(candidate),
-                    Some((AutoAuthorityKind::Artifact, trace)),
-                ),
-                RetainedAutoDecision::Legacy { trace } => (
-                    FramePaintSelection::AutoLegacy,
-                    Some((AutoAuthorityKind::Legacy, trace)),
-                ),
-            },
-            selection => (selection, None),
-        };
+        let (recorded_chunks, recorded_ops) = (recorded.chunk_count, recorded.op_count);
         let clear_uses_premultiplied_alpha = matches!(
             self.gpu.surface_config.alpha_mode,
             wgpu::CompositeAlphaMode::PostMultiplied | wgpu::CompositeAlphaMode::PreMultiplied
@@ -1864,26 +1089,6 @@ impl Viewport {
             clear_rgba[2] *= a;
             clear_rgba[3] = a;
         }
-        let auto_legacy_fallback_stage = auto_authority_trace
-            .as_ref()
-            .map(|(_, trace)| auto_artifact_legacy_fallback_stage(trace));
-        let mut paint_authority_telemetry = capture_paint_authority_telemetry.then(|| {
-            PaintAuthorityTelemetry::from_selection(
-                self.paint_renderer_mode,
-                &frame_paint_selection,
-                auto_authority_trace,
-            )
-        });
-        let mut dispatch_legacy_fallback_stage = auto_legacy_fallback_stage;
-        if paint_authority_telemetry.is_some()
-            && let Some(stage) = retained_auto_terminal_failure
-        {
-            dispatch_legacy_fallback_stage = Some(retained_auto_terminal_fallback_stage(stage));
-        }
-        #[cfg(test)]
-        let retained_release_count_before = paint_authority_telemetry
-            .as_ref()
-            .map(|_| self.retained_surface_release_log_for_test().len());
         {
             let output = ctx.allocate_target(&mut graph);
             let output_handle = output.handle();
@@ -1905,85 +1110,17 @@ impl Viewport {
             graph.add_graphics_pass(clear_pass);
             ctx.set_current_target(output);
         }
-        // Take the arena out of the scene for the duration of the build
-        // walk so the build chain can thread `&mut NodeArena` through
-        // without fighting the outer `&mut self` borrow. Put it back
-        // before returning (any early-return below restores it first).
-        let mut arena = std::mem::take(&mut self.scene.node_arena);
-        // Once per frame: compact the popup stack (drop unmounted ids),
-        // auto-register newly-mounted viewport-clip nodes at the top,
-        // then seed `ctx`'s deferred list bottom → top so the top of the
-        // stack is painted last (on top visually).
-        arena.seed_defer_render_with_stack(&mut self.scene.popup_stack, &mut ctx);
-        let (build_whole_frame_legacy, mut paint_authority_trace) = match frame_paint_selection {
-            FramePaintSelection::AutoArtifact(candidate) => {
-                // A missing owner means another transaction owns the slot:
-                // draw without the surface cache rather than staging Clear.
-                let detail = format!(
-                    "retained-auto authority=artifact chunks={} ops={}",
-                    candidate.chunk_count, candidate.op_count
-                );
-                let state = compile_auto_artifact_frame(
-                    self,
-                    retained_surface_frame_owner,
-                    &mut graph,
-                    candidate,
-                    &ctx,
-                );
-                ctx.set_state(state);
-                (false, detail)
-            }
-            FramePaintSelection::AutoLegacy => {
-                self.stage_retained_surface_clear();
-                let reason = retained_auto_terminal_failure.map_or_else(
-                    || "reason=selection-rejected".to_owned(),
-                    |stage| format!("reason=terminal-circuit-breaker prior={stage:?}"),
-                );
-                (true, format!("retained-auto authority=legacy {reason}"))
-            }
-            FramePaintSelection::Auto(_) => {
-                unreachable!("automatic decision is flattened before frame-graph mutation")
-            }
-            FramePaintSelection::Inactive => {
-                self.stage_retained_surface_clear();
-                (true, "legacy authority=legacy".to_owned())
-            }
-        };
-        if build_whole_frame_legacy && self.paint_renderer_mode != ViewportPaintRendererMode::Legacy
-        {
-            if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                telemetry.note_legacy_fallback(
-                    dispatch_legacy_fallback_stage.unwrap_or(PaintAuthorityFallbackStage::Build),
-                );
-            }
-        }
-        if build_whole_frame_legacy {
-            self.compositor.recording_cache.finish(false);
-            self.compositor.planning_cache.finish(false);
-            for &root_key in &root_keys_for_build {
-                let child_ctx = crate::view::base_component::UiBuildContext::from_parts(
-                    ctx.viewport(),
-                    ctx.state_clone(),
-                );
-                let next_state = build_root_legacy(&mut graph, &mut arena, root_key, child_ctx);
-                ctx.set_state(next_state);
-            }
-            while let Some(node) = ctx.next_deferred() {
-                crate::view::base_component::build_node_by_key(
-                    node.key,
-                    node.stable_id,
-                    &mut graph,
-                    &mut arena,
-                    &mut ctx,
-                );
-            }
-        }
-        // Build walk is done — give the arena back to the scene.
-        self.scene.node_arena = arena;
-        self.push_retained_auto_debug_overlay(
-            paint_authority_telemetry.as_ref(),
-            &root_keys_for_build,
+        // A missing owner means another transaction owns the slot: draw
+        // without the surface cache.
+        let state = compile_recorded_frame(
+            self,
+            retained_surface_frame_owner,
+            &mut graph,
+            recorded.frame,
+            &ctx,
         );
+        ctx.set_state(state);
+        self.push_retained_auto_debug_overlay(&root_keys_for_build);
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
             let present_pass =
@@ -2071,7 +1208,6 @@ impl Viewport {
             .take()
             .map(|c| (c.topology_key, c.graph));
         let mut compiled_topology_key = None;
-        let mut graph_failure = None;
         let compiled = match graph.compile_with_upload_cached(self, prior_cache) {
             Ok((profile, topology_key)) => {
                 if self.debug_options.trace_render_time {
@@ -2085,9 +1221,6 @@ impl Viewport {
             }
             Err(err) => {
                 eprintln!("[warn] frame graph compile failed: {:?}", err);
-                if fallback_ledger::enabled() {
-                    graph_failure = Some(format!("compile: {err:?}"));
-                }
                 // compile_cache already cleared by take() above
                 false
             }
@@ -2099,7 +1232,6 @@ impl Viewport {
 
         // --- Execute ---
         let mut executed = false;
-        let mut surface_unavailable = false;
         if compiled {
             match graph.execute_profiled(self, self.debug_options.trace_render_time) {
                 Ok(profile) => {
@@ -2109,14 +1241,9 @@ impl Viewport {
                     timings.execute_detail_ordered_passes = profile.detail_ordered;
                     executed = true;
                 }
-                Err(crate::view::frame_graph::FrameGraphError::SurfaceUnavailable) => {
-                    surface_unavailable = true;
-                }
+                Err(crate::view::frame_graph::FrameGraphError::SurfaceUnavailable) => {}
                 Err(error) => {
                     eprintln!("[warn] frame graph execution failed: {error:?}");
-                    if fallback_ledger::enabled() {
-                        graph_failure = Some(format!("execute: {error:?}"));
-                    }
                 }
             }
         }
@@ -2136,59 +1263,17 @@ impl Viewport {
             retained_surface_frame_owner,
             compiled && executed,
         );
-        let terminal_failure = if surface_unavailable {
-            None
-        } else {
-            terminal_failure_stage(compiled, executed)
-        };
-        if let Some(stage) = terminal_failure {
-            if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-                telemetry.note_terminal_failure(retained_auto_terminal_fallback_stage(stage));
-            }
-            self.arm_retained_auto_terminal_failure(stage);
-        }
-        if !compiled || !executed {
-            paint_authority_trace.push_str(&format!(
-                " retained-state=invalidated compiled={compiled} executed={executed}"
-            ));
-        }
-        #[cfg(test)]
-        {
-            if let (Some(telemetry), Some(before)) = (
-                paint_authority_telemetry.as_mut(),
-                retained_release_count_before,
-            ) {
-                telemetry.note_resident_release_delta(
-                    before,
-                    self.retained_surface_release_log_for_test().len(),
-                );
-            }
-        }
-        if let Some(telemetry) = paint_authority_telemetry.as_ref() {
+        if self.debug_options.trace_render_time || self.debug_options.retained_auto_overlay {
             self.frame.last_retained_auto_debug = Some(self.build_retained_auto_debug_capture(
-                telemetry,
                 &root_keys_for_build,
                 compiled,
                 executed,
             ));
         }
-        if let Some(telemetry) = paint_authority_telemetry.as_mut() {
-            telemetry.set_detail(paint_authority_trace);
-            #[cfg(any(test, feature = "renderer-test-support"))]
-            store_paint_authority_test_snapshot(telemetry);
-            if fallback_ledger::enabled() {
-                fallback_ledger::record(
-                    frame_number,
-                    telemetry,
-                    self.frame.last_retained_auto_debug.as_ref(),
-                    graph_failure.as_deref(),
-                );
-            }
-        }
 
         // Never retain topology from a terminal frame. In particular, an
         // execute failure has a compiled graph but it is not a successful
-        // cross-frame cache seed; a manual circuit reset must retry cleanly.
+        // cross-frame cache seed; the next frame must retry cleanly.
         self.frame.compile_cache = None;
         if should_store_compile_cache(compiled, executed)
             && let Some(topology_key) = compiled_topology_key
@@ -2204,10 +1289,10 @@ impl Viewport {
         timings.finish_render_ms = phase_clock.checkpoint_ms();
 
         // --- Complete frame ---
-        // Transaction rollback and the retained-auto circuit breaker above
-        // must settle before the acquired frame is either submitted or
-        // discarded. A terminal compile/execute failure never submits a
-        // partially recorded encoder and never presents its surface image.
+        // Transaction rollback above must settle before the acquired frame is
+        // either submitted or discarded. A terminal compile/execute failure
+        // never submits a partially recorded encoder and never presents its
+        // surface image.
         let end_frame_profile = self.complete_frame(frame_disposition(compiled, executed));
         timings.end_frame_ms = phase_clock.checkpoint_ms();
         timings.end_frame = end_frame_profile;
@@ -2252,9 +1337,7 @@ impl Viewport {
 
         // --- Trace output ---
         if self.debug_options.trace_render_time {
-            if let Some(telemetry) = paint_authority_telemetry.as_ref() {
-                println!("paint-authority {}", telemetry.format_debug());
-            }
+            println!("paint chunks={recorded_chunks} ops={recorded_ops}");
             if !self.frame.gpu_paint_sources.is_empty() {
                 println!(
                     "gpu-paint frame={} sources={:?}",
@@ -2321,7 +1404,6 @@ impl Viewport {
         semantic_now: crate::time::Instant,
         app_profile: Option<(FrontendProfile, crate::ui::UiWorkProfile, Instant)>,
     ) -> Result<(), String> {
-        begin_paint_authority_telemetry_attempt();
         #[cfg(any(test, feature = "renderer-test-support"))]
         {
             self.frame.last_cpu_phases = [0.; 10];
@@ -2530,8 +1612,8 @@ impl Viewport {
             // Approach-C: drop the previous arena subtree and commit the
             // freshly-built descriptor trees as new arena roots. `ui_roots`
             // (the legacy boxed mirror) stays empty — arena is the source
-            // of truth; the still-legacy render/layout boxed traversal below
-            // ignores it and walks the arena via root keys instead.
+            // of truth; render and layout below walk the arena via root keys
+            // instead.
             for old_key in std::mem::take(&mut self.scene.ui_root_keys) {
                 self.scene.node_arena.remove_subtree(old_key);
             }
@@ -2845,9 +1927,6 @@ impl Viewport {
                 crate::ui::ViewportAction::SetDebugRetainedAutoReuseActions(on) => {
                     options.retained_auto_reuse_actions = on;
                 }
-                crate::ui::ViewportAction::SetDebugRetainedAutoFallbackReasons(on) => {
-                    options.retained_auto_fallback_reasons = on;
-                }
                 crate::ui::ViewportAction::SetClearColor(color) => {
                     self.set_clear_color(Box::new(color));
                 }
@@ -3154,11 +2233,11 @@ impl Viewport {
 }
 
 #[cfg(test)]
+mod frame_recording_tests;
+#[cfg(test)]
 mod frame_timing_tests;
 #[cfg(test)]
 mod incremental_layout_tests;
-#[cfg(test)]
-mod legacy_root_render_tests;
 
 /// Flatten a Fragment-at-root into its children so multi-root reconcile
 /// sees the same arity as the arena (Fragment root → N arena roots).

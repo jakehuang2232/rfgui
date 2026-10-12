@@ -1,41 +1,6 @@
 use super::*;
 
 #[test]
-fn transformed_svg_owner_scope_bounds_exclude_untransformed_media_tail() {
-    let mut parent = Element::new_with_id(0xA200, 0.0, 0.0, 10.0, 10.0);
-    parent.set_resolved_transform_for_test(Some(Mat4::from_translation(Vec3::new(
-        100.0, 0.0, 0.0,
-    ))));
-    let mut svg = Svg::new_with_id(0xA201, simple_svg());
-    svg.element = Element::new_with_id(0xA201, 100.0, 2.0, 4.0, 2.0);
-    svg.element
-        .set_resolved_transform_for_test(Some(Mat4::from_translation(Vec3::new(
-            -100.0, 0.0, 0.0,
-        ))));
-
-    let mut arena = new_test_arena();
-    let parent_key = commit_element(&mut arena, Box::new(parent));
-    let _svg_key = commit_child(&mut arena, parent_key, Box::new(svg));
-    let geometry = crate::view::test_support::get_element::<Element>(&arena, parent_key)
-        .exact_transform_surface_geometry_snapshot(&arena, [0.0, 0.0], None, 1.0)
-        .expect("Svg supplies one transformed owner scope covering its fitted media");
-    assert_eq!(
-        [
-            geometry.source_bounds.x.to_bits(),
-            geometry.source_bounds.y.to_bits(),
-            geometry.source_bounds.width.to_bits(),
-            geometry.source_bounds.height.to_bits(),
-        ],
-        [
-            0.0_f32.to_bits(),
-            0.0_f32.to_bits(),
-            10.0_f32.to_bits(),
-            10.0_f32.to_bits(),
-        ]
-    );
-}
-
-#[test]
 fn auto_size_uses_svg_intrinsic_dimensions_when_loaded() {
     let mut svg = Svg::new_with_id(1, simple_svg());
     svg.apply_style(Style::new());

@@ -51,19 +51,17 @@ use crate::view::render_pass::draw_rect_pass::{DrawRectOutput, RectPassParams};
 use crate::view::render_pass::draw_rect_pass::{RenderTargetIn, RenderTargetOut, RenderTargetTag};
 use crate::view::render_pass::render_target::{GraphicsPassContext, GraphicsPassScissor};
 use crate::view::render_pass::{
-    DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowModuleSpec, ShadowShape,
-    ShadowParams, build_shadow_module,
+    DrawRectPass, GraphicsPass, OpaqueRectPass, RectRenderMode, ShadowParams, ShadowShape,
 };
 use crate::view::viewport::ViewportControl;
 use glam::{Mat4, Vec3, Vec4};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 include!("event_target.rs");
 include!("layout_trait.rs");
-include!("render_trait.rs");
 include!("impl_core.rs");
 include!("impl_scroll.rs");
 include!("impl_render.rs");
@@ -277,7 +275,7 @@ pub enum ScrollbarPaintStateWitness {
     TranslucentNow,
 }
 
-/// Deterministic legacy scrollbar geometry plus its exact sampled paint state.
+/// Deterministic scrollbar geometry plus its exact sampled paint state.
 #[doc(hidden)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
@@ -297,8 +295,8 @@ pub(crate) const SCROLLBAR_THICKNESS: f32 = 6.0;
 pub(crate) const SCROLLBAR_MARGIN: f32 = 3.0;
 pub(crate) const SCROLLBAR_MIN_THUMB: f32 = 24.0;
 
-/// Reconstructs the exact legacy vertical scrollbar geometry without reading
-/// element state or wall-clock time. Both legacy paint and retained-scroll
+/// Reconstructs the exact vertical scrollbar geometry without reading
+/// element state or wall-clock time. Recording and retained-scroll
 /// validation use this helper so the compiler cannot accept a merely
 /// plausible track/thumb pair.
 pub(crate) fn canonical_vertical_scrollbar_geometry(
@@ -347,7 +345,7 @@ pub(crate) fn canonical_vertical_scrollbar_geometry(
     ))
 }
 
-/// Reconstructs the exact legacy horizontal scrollbar geometry without
+/// Reconstructs the exact horizontal scrollbar geometry without
 /// reading element state or wall-clock time. `configured_axis` decides
 /// whether this overlay exists; it never masks the synchronized X offset.
 pub(crate) fn canonical_horizontal_scrollbar_geometry(
@@ -423,10 +421,10 @@ pub struct ScrollGeometrySnapshot {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub enum ScrollGeometryObservation {
-    /// The declaration is valid, but legacy paint currently has no contents
+    /// The declaration is valid, but the host currently has no contents
     /// clip (for example, there is no overflow). No scroll authority is made.
     Inactive,
-    /// One complete exact rectangular legacy scroll observation.
+    /// One complete exact rectangular scroll observation.
     Exact(ScrollGeometrySnapshot),
     /// The host is active but outside the narrow M10E0 contract.
     Unsupported,
@@ -447,7 +445,7 @@ impl Rect {
     }
 }
 
-/// Canonical logical scissor conversion shared by the legacy renderer and
+/// Canonical logical scissor conversion shared by recording and
 /// observational property validation. The returned value remains the
 /// authority; callers must not rebuild and substitute their own scissor.
 pub(crate) fn exact_logical_scissor_for_rect(rect: Rect) -> Option<[u32; 4]> {
@@ -1080,13 +1078,6 @@ struct ScrollbarGeometry {
     horizontal_thumb: Option<Rect>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ChildClipScope {
-    previous_scissor: Option<[u32; 4]>,
-    parent_clip_id: u8,
-    child_clip_id: u8,
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct AncestorClipContext {
     scissor_rect: Option<[u32; 4]>,
@@ -1106,15 +1097,7 @@ pub struct ViewportContext {
     /// device's; targets built here then record it for the passes drawing
     /// into them.
     rescaled: bool,
-    render_transform: Option<Mat4>,
     paint_offset: [f32; 2],
-    host_neutral_owner_paint_offset: [f32; 2],
-}
-
-#[derive(Clone, Copy, Debug)]
-struct OwnerPaintOffsetProjection {
-    active: [f32; 2],
-    host_neutral: [f32; 2],
 }
 
 /// Mutable build state threaded through low-level render graph construction.
@@ -1122,27 +1105,6 @@ struct OwnerPaintOffsetProjection {
 pub(crate) struct DeferredRenderNode {
     pub key: crate::view::node_arena::NodeKey,
     pub stable_id: u64,
-}
-
-#[derive(Default)]
-pub(crate) struct FramePreparation {
-    deferred_nodes: Vec<DeferredRenderNode>,
-    deferred_seen: FxHashSet<crate::view::node_arena::NodeKey>,
-    deferred_cursor: usize,
-}
-
-impl FramePreparation {
-    fn register_deferred(&mut self, node: DeferredRenderNode) {
-        if self.deferred_seen.insert(node.key) {
-            self.deferred_nodes.push(node);
-        }
-    }
-
-    fn next_deferred(&mut self) -> Option<DeferredRenderNode> {
-        let node = self.deferred_nodes.get(self.deferred_cursor).copied()?;
-        self.deferred_cursor = self.deferred_cursor.saturating_add(1);
-        Some(node)
-    }
 }
 
 #[derive(Clone)]
@@ -1154,7 +1116,6 @@ pub struct BuildState {
     graphics_pass_scissor: Option<GraphicsPassScissor>,
     clip_id_stack: Vec<u8>,
     dfs_opaque_rect_order: u32,
-    frame_preparation: Arc<Mutex<FramePreparation>>,
 }
 
 const GRAPHICS_PASS_SCISSOR_SPACE_MISMATCH: &str =
@@ -1219,19 +1180,7 @@ impl BuildState {
         self.dfs_opaque_rect_order = terminal;
     }
 
-    fn rebind_frame_preparation_if_needed(&mut self, frame_build_token: u64) {
-        if self.frame_build_token == frame_build_token {
-            return;
-        }
-        self.frame_build_token = frame_build_token;
-        self.frame_preparation = Arc::new(Mutex::new(FramePreparation::default()));
-    }
-
-    fn for_layer_subtree_with_frame_preparation(
-        ancestor_clip: AncestorClipContext,
-        frame_build_token: u64,
-        frame_preparation: Arc<Mutex<FramePreparation>>,
-    ) -> Self {
+    fn for_layer_subtree(ancestor_clip: AncestorClipContext, frame_build_token: u64) -> Self {
         Self {
             frame_build_token,
             target: None,
@@ -1240,14 +1189,6 @@ impl BuildState {
             graphics_pass_scissor: ancestor_clip.scissor_rect.map(GraphicsPassScissor::Logical),
             clip_id_stack: Vec::new(),
             dfs_opaque_rect_order: 0,
-            frame_preparation,
-        }
-    }
-
-    pub(crate) fn merge_child_render_state(&mut self, child: &BuildState) {
-        self.dfs_opaque_rect_order = self.dfs_opaque_rect_order.max(child.dfs_opaque_rect_order);
-        for (&color_handle, &depth_target) in &child.target_pairs {
-            self.target_pairs.insert(color_handle, depth_target);
         }
     }
 
@@ -1287,28 +1228,12 @@ pub(crate) fn texture_desc_for_logical_bounds(
         .with_origin(origin_x, origin_y)
 }
 
-pub(crate) fn label_for_persistent_target(stable_key: PersistentTextureKey) -> String {
-    match stable_key {
-        PersistentTextureKey::Retained {
-            role: RetainedTextureRole::RootEffectColor,
-            stable_id,
-        } => format!("Root Effect [{stable_id}]"),
-        _ => format!("Persistent Render Target [{stable_key:?}]"),
-    }
-}
-
-pub(crate) fn persistent_depth_stencil_stable_key(
-    stable_key: PersistentTextureKey,
-) -> Option<PersistentTextureKey> {
-    stable_key.depth_stencil()
-}
-
 pub(crate) fn persistent_target_texture_descriptors(
     mut color: TextureDesc,
     stable_key: PersistentTextureKey,
 ) -> (TextureDesc, TextureDesc) {
     if color.label().is_none() {
-        color = color.with_label(label_for_persistent_target(stable_key));
+        color = color.with_label(format!("Persistent Render Target [{stable_key:?}]"));
     }
     let depth_label = color
         .label()
@@ -1375,9 +1300,7 @@ impl UiBuildContext {
                 target_format: viewport_format,
                 scale_factor: scale_factor.max(0.0001),
                 rescaled: false,
-                render_transform: None,
                 paint_offset: [0.0, 0.0],
-                host_neutral_owner_paint_offset: [0.0, 0.0],
             },
             state: BuildState {
                 frame_build_token,
@@ -1387,13 +1310,12 @@ impl UiBuildContext {
                 graphics_pass_scissor: None,
                 clip_id_stack: Vec::new(),
                 dfs_opaque_rect_order: 0,
-                frame_preparation: Arc::new(Mutex::new(FramePreparation::default())),
             },
         }
     }
 
     pub fn from_parts(viewport: ViewportContext, mut state: BuildState) -> Self {
-        state.rebind_frame_preparation_if_needed(viewport.frame_build_token);
+        state.frame_build_token = viewport.frame_build_token;
         Self { viewport, state }
     }
 
@@ -1402,7 +1324,7 @@ impl UiBuildContext {
     }
 
     pub fn set_state(&mut self, mut state: BuildState) {
-        state.rebind_frame_preparation_if_needed(self.viewport.frame_build_token);
+        state.frame_build_token = self.viewport.frame_build_token;
         self.state = state;
     }
 
@@ -1418,32 +1340,11 @@ impl UiBuildContext {
         &self,
         ancestor_clip: AncestorClipContext,
     ) -> BuildState {
-        BuildState::for_layer_subtree_with_frame_preparation(
-            ancestor_clip,
-            self.state.frame_build_token,
-            self.state.frame_preparation.clone(),
-        )
+        BuildState::for_layer_subtree(ancestor_clip, self.state.frame_build_token)
     }
 
     pub fn allocate_target(&mut self, graph: &mut FrameGraph) -> RenderTargetOut {
         self.next_target(graph)
-    }
-
-    pub(crate) fn allocate_persistent_target_with_key(
-        &mut self,
-        graph: &mut FrameGraph,
-        stable_key: PersistentTextureKey,
-        bounds: RetainedSurfaceBounds,
-    ) -> RenderTargetOut {
-        let desc = self
-            .viewport
-            .scaled_target_desc(texture_desc_for_logical_bounds(
-                bounds,
-                self.viewport.scale_factor,
-                self.viewport.render_transform,
-                self.viewport.target_format,
-            ));
-        self.next_persistent_target_with_desc(graph, desc, stable_key)
     }
 
     pub fn set_current_target(&mut self, target: RenderTargetOut) {
@@ -1572,29 +1473,6 @@ impl UiBuildContext {
         color
     }
 
-    fn next_persistent_target_with_desc(
-        &mut self,
-        graph: &mut FrameGraph,
-        desc: TextureDesc,
-        stable_key: PersistentTextureKey,
-    ) -> RenderTargetOut {
-        let (desc, depth_desc) = persistent_target_texture_descriptors(desc, stable_key);
-        let color =
-            graph.declare_persistent_texture_internal::<RenderTargetTag>(desc.clone(), stable_key);
-        let depth_stencil = graph.declare_persistent_texture_internal::<RenderTargetTag>(
-            depth_desc,
-            persistent_depth_stencil_stable_key(stable_key)
-                .expect("persistent color stable key must have a depth role"),
-        );
-        if let (Some(color_handle), Some(depth_handle)) = (color.handle(), depth_stencil.handle()) {
-            self.state
-                .target_pairs
-                .insert(color_handle.0, AttachmentTarget::Texture(depth_handle));
-            graph.pair_texture_attachment(color_handle, AttachmentTarget::Texture(depth_handle));
-        }
-        color
-    }
-
     pub(crate) fn depth_stencil_target(&self) -> Option<AttachmentTarget> {
         if self.state.target.is_some() {
             self.state.depth_stencil_target
@@ -1609,62 +1487,14 @@ impl UiBuildContext {
         self.viewport.color_target = color_target;
     }
 
-    pub(crate) fn current_render_transform(&self) -> Option<Mat4> {
-        self.viewport.render_transform
-    }
-
-    pub(crate) fn set_current_render_transform(&mut self, render_transform: Option<Mat4>) {
-        self.viewport.render_transform = render_transform;
-    }
-
     pub(crate) fn paint_offset(&self) -> [f32; 2] {
         self.viewport.paint_offset
-    }
-
-    fn owner_paint_offset_projection(&self) -> OwnerPaintOffsetProjection {
-        OwnerPaintOffsetProjection {
-            active: self.viewport.paint_offset,
-            host_neutral: self.viewport.host_neutral_owner_paint_offset,
-        }
-    }
-
-    fn snap_owner_paint_offset(&mut self, owner_viewport_position: [f32; 2]) {
-        let projection = self.owner_paint_offset_projection();
-        let scale_factor = self.viewport.scale_factor;
-        self.viewport.paint_offset = super::paint_offset_after_owner_snap(
-            owner_viewport_position,
-            projection.active,
-            scale_factor,
-        )
-        .expect("canonical owner placement produces a finite active paint offset");
-        self.viewport.host_neutral_owner_paint_offset = super::paint_offset_after_owner_snap(
-            owner_viewport_position,
-            projection.host_neutral,
-            scale_factor,
-        )
-        .expect("canonical owner placement produces a finite host-neutral paint offset");
-    }
-
-    fn restore_owner_paint_offset_projection(&mut self, projection: OwnerPaintOffsetProjection) {
-        self.viewport.paint_offset = projection.active;
-        self.viewport.host_neutral_owner_paint_offset = projection.host_neutral;
     }
 
     #[cfg(test)]
     pub(crate) fn translate_paint_offset(&mut self, dx: f32, dy: f32) {
         self.viewport.paint_offset[0] += dx;
         self.viewport.paint_offset[1] += dy;
-    }
-
-    pub(crate) fn set_paint_offset(&mut self, offset: [f32; 2]) {
-        self.viewport.paint_offset = offset;
-    }
-
-    pub(crate) fn paint_point(&self, x: f32, y: f32) -> [f32; 2] {
-        [
-            x + self.viewport.paint_offset[0],
-            y + self.viewport.paint_offset[1],
-        ]
     }
 
     fn scissor_rect(&self) -> Option<[u32; 4]> {
@@ -1716,42 +1546,6 @@ impl UiBuildContext {
         self.state.clip_id_stack = clip_ids;
     }
 
-    pub(crate) fn push_scissor_rect(&mut self, scissor_rect: Option<[u32; 4]>) -> Option<[u32; 4]> {
-        let previous =
-            self.push_graphics_pass_scissor(scissor_rect.map(GraphicsPassScissor::Logical));
-        match previous {
-            Some(GraphicsPassScissor::Logical(scissor_rect)) => Some(scissor_rect),
-            None => None,
-            Some(GraphicsPassScissor::TargetPhysical(_)) => {
-                unreachable!("logical scissor cannot replace a target-physical scissor")
-            }
-        }
-    }
-
-    /// Replace the active scissor rect outright, returning the previous value
-    /// for later restoration. Use this when an element with
-    /// `ClipMode::Viewport` (or similar escape-hatch semantics) must paint
-    /// outside any ancestor scissor — `push_scissor_rect` would intersect
-    /// with the ancestor and re-clip the element back into the parent box.
-    pub(crate) fn replace_scissor_rect(
-        &mut self,
-        scissor_rect: Option<[u32; 4]>,
-    ) -> Option<[u32; 4]> {
-        let previous =
-            self.replace_graphics_pass_scissor(scissor_rect.map(GraphicsPassScissor::Logical));
-        match previous {
-            Some(GraphicsPassScissor::Logical(scissor_rect)) => Some(scissor_rect),
-            None => None,
-            Some(GraphicsPassScissor::TargetPhysical(_)) => {
-                unreachable!("logical scissor cannot replace a target-physical scissor")
-            }
-        }
-    }
-
-    pub(crate) fn restore_scissor_rect(&mut self, previous: Option<[u32; 4]>) {
-        self.restore_graphics_pass_scissor(previous.map(GraphicsPassScissor::Logical));
-    }
-
     pub(crate) fn push_graphics_pass_scissor(
         &mut self,
         scissor: Option<GraphicsPassScissor>,
@@ -1794,26 +1588,6 @@ impl UiBuildContext {
             unreachable!("{}", GRAPHICS_PASS_SCISSOR_SPACE_MISMATCH);
         }
         self.state.graphics_pass_scissor = previous;
-    }
-
-    pub(crate) fn register_deferred(
-        &mut self,
-        key: crate::view::node_arena::NodeKey,
-        stable_id: u64,
-    ) {
-        self.state
-            .frame_preparation
-            .lock()
-            .expect("frame preparation lock poisoned")
-            .register_deferred(DeferredRenderNode { key, stable_id });
-    }
-
-    pub(crate) fn next_deferred(&mut self) -> Option<DeferredRenderNode> {
-        self.state
-            .frame_preparation
-            .lock()
-            .expect("frame preparation lock poisoned")
-            .next_deferred()
     }
 
     pub(crate) fn next_opaque_rect_order(&mut self) -> u32 {
@@ -2550,15 +2324,6 @@ pub trait EventTarget {
     }
 }
 
-pub trait Renderable {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState;
-}
-
 /// Dynamic type-name supertrait for [`ElementTrait`]. Implemented via a
 /// blanket `impl<T: 'static>` so every concrete element type gets a
 /// correct [`std::any::type_name`] entry in its vtable — callers holding
@@ -2631,8 +2396,8 @@ impl CustomLeafPaintRecorder {
     /// Creates an empty recorder.
     ///
     /// A conforming v1 leaf must append exactly one canonical fill before the
-    /// hook returns. Leaving it empty or appending more than one command makes
-    /// the retained candidate fail closed to whole-frame Legacy.
+    /// hook returns. Leaving it empty or appending more than one command
+    /// records no paint for the leaf.
     pub fn new() -> Self {
         Self::default()
     }
@@ -2776,37 +2541,9 @@ pub enum RetainedAbsoluteClipModeWitness {
     AnchorParentEscape,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RetainedScrollNormalizedPaintKind {
-    Element,
-    Text,
-    Image,
-    Svg,
-    TextArea,
-    TextAreaProjectionSegment,
-    TextAreaTextRun,
-    TextAreaLineBreak,
-}
-
-/// Opaque engine-native proof used by the Phase3 offset-zero stamp grammar.
-/// Third-party components can observe the return type but cannot construct a
-/// token; their default remains fail-closed until a public extension contract
-/// defines an equally strong normalized identity.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RetainedScrollNormalizedPaintCapability {
-    kind: RetainedScrollNormalizedPaintKind,
-}
-
-impl RetainedScrollNormalizedPaintCapability {
-    pub(crate) const fn native(kind: RetainedScrollNormalizedPaintKind) -> Self {
-        Self { kind }
-    }
-}
-
 /// Common contract implemented by every arena-backed UI component.
 ///
-/// `ElementTrait` participates in layout, input, Legacy rendering, retained
+/// `ElementTrait` participates in layout, input, paint recording, retained
 /// observation, dirty tracking, resource preparation, and engine-owned child
 /// traversal. Implementations must keep [`Self::stable_id`],
 /// [`Self::box_model_snapshot`], and [`Self::children`] coherent with the
@@ -2814,13 +2551,10 @@ impl RetainedScrollNormalizedPaintCapability {
 /// arena's `NodeKey` and child order remain authoritative for the current
 /// frame.
 ///
-/// Under `RetainedAuto`, one authority owns the whole frame. A host may opt
-/// into the current property-neutral adapter through
-/// [`Self::record_custom_leaf_paint`] or
-/// [`Self::record_custom_wrapper_paint`]. Unsupported or malformed output
-/// selects whole-frame Legacy before artifact emission. Arbitrary GPU hosts
-/// should keep a complete [`Renderable::build`] implementation and leave both
-/// retained hooks at their defaults.
+/// A host paints through [`Self::record_custom_leaf_paint`],
+/// [`Self::record_custom_wrapper_paint`], or a prepared GPU paint source.
+/// A host that provides none of them paints nothing itself; its children
+/// still paint.
 ///
 /// Retained hooks may be invoked repeatedly for capability, metadata, and full
 /// recording. They must be observationally pure and deterministic: do not
@@ -2829,9 +2563,7 @@ impl RetainedScrollNormalizedPaintCapability {
 /// uses the engine-supplied tick time; paint resources are frozen after final
 /// layout by [`Layoutable::prepare_paint_resources`]. Every visible mutation
 /// must invalidate all dependent dirty/property/topology state.
-pub trait ElementTrait:
-    Layoutable + EventTarget + Renderable + ElementTypeName + std::any::Any
-{
+pub trait ElementTrait: Layoutable + EventTarget + ElementTypeName + std::any::Any {
     /// Returns immutable cross-frame identity for this live component.
     ///
     /// The value must be unique among live components and must equal
@@ -2839,13 +2571,6 @@ pub trait ElementTrait:
     /// used to reconstruct current-frame ownership when an arena `NodeKey` is
     /// available.
     fn stable_id(&self) -> u64;
-
-    #[doc(hidden)]
-    fn retained_scroll_normalized_paint_capability(
-        &self,
-    ) -> Option<RetainedScrollNormalizedPaintCapability> {
-        None
-    }
 
     /// Returns the final placed box-model observation for the current frame.
     ///
@@ -2860,16 +2585,6 @@ pub trait ElementTrait:
     /// eligible only for the narrow grammar they explicitly implement.
     fn retained_paint_properties(&self) -> RetainedPaintProperties {
         RetainedPaintProperties::default()
-    }
-
-    /// Whether this native host admits the exact single-root opacity artifact
-    /// contract. The viewport still validates the complete property-tree,
-    /// child topology, recording identity, resources, and generations before
-    /// selecting that authority; this capability only replaces concrete-type
-    /// dispatch at the root boundary.
-    #[doc(hidden)]
-    fn admits_exact_retained_root_opacity_artifact(&self) -> bool {
-        false
     }
 
     /// Returns the exact native self-clip admitted by the retained property
@@ -3316,9 +3031,8 @@ pub trait ElementTrait:
     }
 
     /// The layout points, in order, where this host meets the pixel grid
-    /// when painted retained; each snaps the paint offset reaching it. They
-    /// must match the snaps the legacy renderer applies while building this
-    /// host. Unknown hosts paint at their parent's paint offset.
+    /// when painted retained; each snaps the paint offset reaching it.
+    /// Unknown hosts paint at their parent's paint offset.
     #[doc(hidden)]
     fn paint_snap_points(
         &self,
@@ -3396,73 +3110,6 @@ pub trait ElementTrait:
         false
     }
 
-    fn retained_transform_surface_bounds(
-        &self,
-        _arena: &crate::view::node_arena::NodeArena,
-        _paint_offset: [f32; 2],
-        _scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        None
-    }
-
-    /// Exact viewport-space paint coverage contributed to a transformed
-    /// ancestor surface. The default is deliberately unsupported: custom
-    /// hosts must opt in instead of being silently treated as a raw box.
-    fn retained_transform_output_bounds(
-        &self,
-        _arena: &crate::view::node_arena::NodeArena,
-        _paint_offset: [f32; 2],
-        _scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        None
-    }
-
-    /// Exact viewport-space output owned by this native host when it is
-    /// detached as a nested opacity/isolation surface.
-    ///
-    /// The default is deliberately unsupported. Built-in hosts opt in by
-    /// delegating to [`exact_native_nested_isolation_render_output_bounds`],
-    /// which proves exact retained bounds, arena ownership, and the absence
-    /// of a nested transform boundary before the effect planner can seal the
-    /// surface.
-    #[doc(hidden)]
-    fn exact_nested_isolation_render_output_bounds(
-        &self,
-        _owner: crate::view::node_arena::NodeKey,
-        _arena: &crate::view::node_arena::NodeArena,
-        _parent_snapped_paint_offset: [f32; 2],
-        _scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        None
-    }
-
-    /// Compatibility-only coverage for the legacy renderer. Unknown hosts
-    /// retain the historical raw-box fallback so an existing transformed
-    /// ancestor does not disappear; retained planning must use the exact API
-    /// above and reject this fallback.
-    fn legacy_transform_output_bounds(
-        &self,
-        _arena: &crate::view::node_arena::NodeArena,
-        _paint_offset: [f32; 2],
-        _scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        let snapshot = self.box_model_snapshot();
-        Some(RetainedSurfaceBounds {
-            x: snapshot.x,
-            y: snapshot.y,
-            width: snapshot.width.max(0.0),
-            height: snapshot.height.max(0.0),
-            corner_radii: [0.0; 4],
-        })
-    }
-
-    /// Seed used by the prospective planner's postorder transform-bounds DP.
-    /// Non-Element hosts are opaque leaves to Element's authoritative bounds
-    /// walk and therefore return `None`.
-    fn retained_transform_raster_seed_bounds(&self) -> Option<RetainedSurfaceBounds> {
-        None
-    }
-
     fn has_retained_transform_surface(&self) -> bool {
         false
     }
@@ -3519,17 +3166,6 @@ pub trait ElementTrait:
         // `translate_in_place`. Keeping the default opaque means a new
         // host type is correct-by-default (falls back to full re-place).
         crate::view::node_arena::PlacementEligibilityMetadata::opaque_to_translation()
-    }
-
-    /// Returns the exact sampled layout-transition state installed for the
-    /// current paint frame. `None` is the safe default for custom hosts and
-    /// for native hosts whose transition sample is dirty, stale, malformed,
-    /// or has not completed layout/placement.
-    #[doc(hidden)]
-    fn retained_sampled_layout_transition_snapshot(
-        &self,
-    ) -> Option<RetainedSampledLayoutTransitionSnapshot> {
-        None
     }
 
     /// Shift this node's already-placed absolute geometry by `(dx, dy)`
@@ -3736,75 +3372,6 @@ pub trait ElementTrait:
     ) -> crate::view::fiber_work::PropApplyOutcome {
         crate::view::fiber_work::PropApplyOutcome::CannotReset(name)
     }
-}
-
-/// Shared native-only proof for a nested opacity/isolation surface.
-///
-/// Opt-in stays explicit on [`ElementTrait`], while this helper keeps every
-/// built-in host on one bounds and ownership grammar. The effect surface may
-/// contain nested effect boundaries (the planner cuts those out), but a
-/// transform boundary requires a different raster-space contract and is
-/// therefore rejected here.
-pub(crate) fn exact_native_nested_isolation_render_output_bounds(
-    host: &dyn ElementTrait,
-    owner: crate::view::node_arena::NodeKey,
-    arena: &crate::view::node_arena::NodeArena,
-    parent_snapped_paint_offset: [f32; 2],
-    scale_factor: f32,
-) -> Option<RetainedSurfaceBounds> {
-    if arena
-        .get(owner)
-        .is_none_or(|node| node.element.stable_id() != host.stable_id())
-    {
-        return None;
-    }
-    if host.has_retained_transform_surface()
-        || parent_snapped_paint_offset
-            .iter()
-            .any(|value| !value.is_finite())
-    {
-        return None;
-    }
-
-    let mut seen = FxHashSet::default();
-    let mut stack = host
-        .children()
-        .iter()
-        .copied()
-        .map(|child| (child, Some(owner)))
-        .collect::<Vec<_>>();
-    while let Some((key, expected_parent)) = stack.pop() {
-        if !seen.insert(key) {
-            return None;
-        }
-        let node = arena.get(key)?;
-        if expected_parent.is_some_and(|parent| arena.parent_of(key) != Some(parent))
-            || node.children() != node.element.children()
-            || node.element.has_retained_transform_surface()
-        {
-            return None;
-        }
-        stack.extend(
-            node.element
-                .children()
-                .iter()
-                .copied()
-                .map(|child| (child, Some(key))),
-        );
-    }
-
-    let bounds =
-        host.retained_transform_output_bounds(arena, parent_snapped_paint_offset, scale_factor)?;
-    (bounds.x.is_finite()
-        && bounds.y.is_finite()
-        && bounds.width.is_finite()
-        && bounds.height.is_finite()
-        && bounds.x >= 0.0
-        && bounds.y >= 0.0
-        && bounds.width > 0.0
-        && bounds.height > 0.0
-        && bounds.corner_radii.map(f32::to_bits) == [0.0_f32.to_bits(); 4])
-        .then_some(bounds)
 }
 
 struct PreparedCustomLeafPaint {
@@ -4385,9 +3952,6 @@ pub struct SpatialPlacementSnapshot {
     /// child positions.
     child_reference_offset_at_scroll_zero: [f32; 2],
     visual_offset: [f32; 2],
-    /// Flattened legacy position retained only as a B1/B2 differential oracle.
-    /// It is not a spatial edge and must not enter V2 identity.
-    compatibility_viewport_position: [f32; 2],
 }
 
 impl SpatialPlacementSnapshot {
@@ -4396,7 +3960,6 @@ impl SpatialPlacementSnapshot {
         translation_at_scroll_zero: [f32; 2],
         viewport_translation_at_scroll_zero: [f32; 2],
         visual_offset: [f32; 2],
-        compatibility_viewport_position: [f32; 2],
     ) -> Self {
         Self {
             reference,
@@ -4405,7 +3968,6 @@ impl SpatialPlacementSnapshot {
             viewport_translation_at_scroll_zero,
             child_reference_offset_at_scroll_zero: [0.0; 2],
             visual_offset,
-            compatibility_viewport_position,
         }
     }
 
@@ -4446,10 +4008,6 @@ impl SpatialPlacementSnapshot {
 
     pub(crate) const fn visual_offset(self) -> [f32; 2] {
         self.visual_offset
-    }
-
-    pub(crate) const fn compatibility_viewport_position(self) -> [f32; 2] {
-        self.compatibility_viewport_position
     }
 }
 
@@ -4774,7 +4332,6 @@ fn install_inline_ifc_span_op(
                     [bounds.x - x, bounds.y - y],
                     position,
                     [0.0, 0.0],
-                    position,
                 )
             });
             element.inline_paint_fragments = absolute;
@@ -5754,11 +5311,6 @@ pub(crate) struct PreparedElementInlineIfcDecorationPayload {
     pub(crate) ops: Vec<crate::view::paint::PreparedInlineIfcDecorationOp>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ElementInlineIfcAtomicPlacementMetadata {
-    pub(crate) package: InlineIfcAtomicBoxPlacementPackage,
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ElementInlineIfcRolloutPackages {
     decoration_draw_rect: Option<InlineIfcElementDecorationDrawRectPackage>,
@@ -6286,7 +5838,7 @@ impl Element {
     /// the same install helpers as `apply_inline_ifc_install_plan`, so a moved
     /// root carries bit-identical geometry to a fresh install and the paint
     /// witness keeps accepting it. Accumulating per-move deltas would drift
-    /// in the last bits and send every moved frame to whole-frame Legacy.
+    /// in the last bits and re-record every moved frame.
     #[allow(clippy::too_many_arguments)]
     fn reposition_inline_ifc_install_plan(
         &mut self,
@@ -6847,187 +6399,6 @@ impl Element {
             height: frame.height.max(0.0),
         })
     }
-
-    fn untransformed_paint_bounds(&self) -> RetainedSurfaceBounds {
-        let snapshot = self.box_model_snapshot();
-        let mut min_x = snapshot.x;
-        let mut min_y = snapshot.y;
-        let mut max_x = snapshot.x + snapshot.width.max(0.0);
-        let mut max_y = snapshot.y + snapshot.height.max(0.0);
-        for shadow in &self.box_shadows {
-            if shadow.inset {
-                continue;
-            }
-            let blur_padding = shadow.blur.max(0.0) * 1.5;
-            let spread = shadow.spread.max(0.0);
-            min_x = min_x.min(snapshot.x + shadow.offset_x - spread - blur_padding);
-            min_y = min_y.min(snapshot.y + shadow.offset_y - spread - blur_padding);
-            max_x = max_x.max(
-                snapshot.x + snapshot.width.max(0.0) + shadow.offset_x + spread + blur_padding,
-            );
-            max_y = max_y.max(
-                snapshot.y + snapshot.height.max(0.0) + shadow.offset_y + spread + blur_padding,
-            );
-        }
-        RetainedSurfaceBounds {
-            x: min_x,
-            y: min_y,
-            width: (max_x - min_x).max(0.0),
-            height: (max_y - min_y).max(0.0),
-            corner_radii: [0.0; 4],
-        }
-    }
-
-    fn transform_subtree_raster_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        require_exact: bool,
-        scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        let child_paint_offset = self.paint_offset_after_own_snap(paint_offset, scale_factor)?;
-        let mut own_bounds = self.untransformed_paint_bounds();
-        if self.resolved_transform.is_none() {
-            // Without a transform this is receiver-space output, not a raw
-            // transform source. Match the snapped recording context of our
-            // own ops before unioning child output bounds: those already
-            // carry their placement and must not be translated a second time.
-            own_bounds.x += child_paint_offset[0];
-            own_bounds.y += child_paint_offset[1];
-        }
-        if !Self::is_valid_transform_surface_bounds(own_bounds) {
-            return None;
-        }
-        let mut non_empty_bounds =
-            Self::is_canonical_transform_surface_bounds(own_bounds).then_some(own_bounds);
-        for child_key in &self.children {
-            let child_node = arena.get(*child_key)?;
-            let child_bounds = if require_exact {
-                child_node.element.retained_transform_output_bounds(
-                    arena,
-                    child_paint_offset,
-                    scale_factor,
-                )?
-            } else {
-                child_node.element.legacy_transform_output_bounds(
-                    arena,
-                    child_paint_offset,
-                    scale_factor,
-                )?
-            };
-            if !Self::is_valid_transform_surface_bounds(child_bounds) {
-                return None;
-            }
-            if Self::is_canonical_transform_surface_bounds(child_bounds) {
-                non_empty_bounds = Some(match non_empty_bounds {
-                    Some(bounds) => {
-                        Self::checked_union_transform_surface_bounds(bounds, child_bounds)?
-                    }
-                    None => child_bounds,
-                });
-            }
-        }
-        // A finite zero-area box is a valid observation: it contributes no
-        // pixels to the transform surface. Preserve it only when the entire
-        // subtree is empty so callers can distinguish `Some(empty)` from an
-        // unsupported or invalid bounds calculation (`None`).
-        Some(non_empty_bounds.unwrap_or(own_bounds))
-    }
-
-    pub(crate) fn legacy_transform_surface_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        self.resolved_transform.and_then(|_| {
-            self.transform_subtree_raster_bounds(arena, paint_offset, false, scale_factor)
-        })
-    }
-
-    pub(crate) fn retained_transform_render_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        if self.resolved_transform.is_some() {
-            self.exact_transform_surface_geometry_snapshot(arena, paint_offset, None, scale_factor)?
-                .quad_aabb()
-        } else {
-            self.transform_subtree_raster_bounds(arena, paint_offset, true, scale_factor)
-        }
-    }
-
-    pub(crate) fn legacy_transform_render_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        if self.resolved_transform.is_some() {
-            self.transform_surface_geometry_snapshot(arena, paint_offset, None, scale_factor)?
-                .quad_aabb()
-        } else {
-            self.transform_subtree_raster_bounds(arena, paint_offset, false, scale_factor)
-        }
-    }
-
-    fn paint_offset_after_own_snap(&self, parent: [f32; 2], scale_factor: f32) -> Option<[f32; 2]> {
-        let position = self.layout_state.layout_position;
-        super::paint_offset_after_owner_snap([position.x, position.y], parent, scale_factor)
-    }
-
-    fn is_canonical_transform_surface_bounds(bounds: RetainedSurfaceBounds) -> bool {
-        bounds.x.is_finite()
-            && bounds.y.is_finite()
-            && bounds.width.is_finite()
-            && bounds.height.is_finite()
-            && bounds.width > 0.0
-            && bounds.height > 0.0
-    }
-
-    fn is_valid_transform_surface_bounds(bounds: RetainedSurfaceBounds) -> bool {
-        bounds.x.is_finite()
-            && bounds.y.is_finite()
-            && bounds.width.is_finite()
-            && bounds.height.is_finite()
-            && bounds.width >= 0.0
-            && bounds.height >= 0.0
-    }
-
-    pub(crate) fn checked_union_transform_surface_bounds(
-        current: RetainedSurfaceBounds,
-        next: RetainedSurfaceBounds,
-    ) -> Option<RetainedSurfaceBounds> {
-        if !Self::is_canonical_transform_surface_bounds(current)
-            || !Self::is_canonical_transform_surface_bounds(next)
-        {
-            return None;
-        }
-        let current_max_x = current.x + current.width;
-        let current_max_y = current.y + current.height;
-        let next_max_x = next.x + next.width;
-        let next_max_y = next.y + next.height;
-        if [current_max_x, current_max_y, next_max_x, next_max_y]
-            .iter()
-            .any(|value| !value.is_finite())
-        {
-            return None;
-        }
-        let min_x = current.x.min(next.x);
-        let min_y = current.y.min(next.y);
-        let max_x = current_max_x.max(next_max_x);
-        let max_y = current_max_y.max(next_max_y);
-        let union = RetainedSurfaceBounds {
-            x: min_x,
-            y: min_y,
-            width: max_x - min_x,
-            height: max_y - min_y,
-            corner_radii: [0.0; 4],
-        };
-        Self::is_canonical_transform_surface_bounds(union).then_some(union)
-    }
 }
 
 impl ElementStyleSnapshot {
@@ -7118,14 +6489,6 @@ impl ElementTrait for Element {
     }
     fn stable_id(&self) -> u64 {
         self.core.id
-    }
-
-    fn retained_scroll_normalized_paint_capability(
-        &self,
-    ) -> Option<RetainedScrollNormalizedPaintCapability> {
-        Some(RetainedScrollNormalizedPaintCapability::native(
-            RetainedScrollNormalizedPaintKind::Element,
-        ))
     }
 
     #[allow(private_interfaces)]
@@ -7432,14 +6795,6 @@ impl ElementTrait for Element {
         self.local_placement_eligibility_metadata()
     }
 
-    fn retained_sampled_layout_transition_snapshot(
-        &self,
-    ) -> Option<RetainedSampledLayoutTransitionSnapshot> {
-        self.exact_sampled_layout_transition_snapshot_for_paint_signature(
-            self.retained_paint_signature(),
-        )
-    }
-
     fn last_placement(&self) -> Option<LayoutPlacement> {
         self.last_layout_placement
     }
@@ -7669,39 +7024,6 @@ impl ElementTrait for Element {
         true
     }
 
-    fn retained_transform_surface_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        self.resolved_transform.and_then(|_| {
-            self.transform_subtree_raster_bounds(arena, paint_offset, true, scale_factor)
-        })
-    }
-
-    fn retained_transform_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        self.retained_transform_render_output_bounds(arena, paint_offset, scale_factor)
-    }
-
-    fn legacy_transform_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<RetainedSurfaceBounds> {
-        self.legacy_transform_render_output_bounds(arena, paint_offset, scale_factor)
-    }
-
-    fn retained_transform_raster_seed_bounds(&self) -> Option<RetainedSurfaceBounds> {
-        Some(self.untransformed_paint_bounds())
-    }
-
     fn has_retained_transform_surface(&self) -> bool {
         self.resolved_transform.is_some()
     }
@@ -7743,7 +7065,6 @@ impl ElementTrait for Element {
                 position,
                 position,
                 [0.0, 0.0],
-                position,
             ));
         }
         self.spatial_placement_snapshot
@@ -8046,8 +7367,6 @@ impl Element {
 #[cfg(test)]
 mod retained_test_support;
 #[cfg(test)]
-pub(crate) use retained_test_support::root_effect_stable_key;
-
 #[cfg(test)]
 mod layout_profile_tests;
 #[cfg(test)]

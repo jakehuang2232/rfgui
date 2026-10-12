@@ -72,16 +72,7 @@ fn text_area_projection_selection_is_path_scoped_and_ordered() {
     assert_eq!(text_context.text_area_selection, Some(witness));
 
     let (properties, generations) = sync_identity(&arena, &roots);
-    let artifact = crate::view::base_component::with_text_area_selection_render_context(
-        Some(
-            crate::view::base_component::TextAreaSelectionRenderContext {
-                start: 0,
-                end: 9,
-                fill: [1.0, 0.0, 0.0, 1.0],
-            },
-        ),
-        || whole_frame_artifact(&arena, &roots, &properties, &generations),
-    );
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
     assert_eq!(
         artifact
             .chunks

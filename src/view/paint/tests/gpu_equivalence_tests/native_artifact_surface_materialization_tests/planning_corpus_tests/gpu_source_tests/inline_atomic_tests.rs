@@ -30,7 +30,6 @@ fn custom_host_in_an_inline_box_paints_where_it_is_placed() -> Result<(), String
         v.install_single_viewport_scene_for_test(arena, root);
         begin(&mut v, gpu, dpr)?;
         let observed = v.render_single_viewport_scene_for_test()?;
-        assert!(observed.artifact_selected, "DPR {dpr}");
         let pixels = read_submitted_texture(&observed.texture, gpu, [80 * dpr, 64 * dpr])?;
         let b = v
             .node_arena()

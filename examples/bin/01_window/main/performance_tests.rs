@@ -54,7 +54,6 @@ fn native_complete_demo_warm_frames() -> Result<(), String> {
     let mut over_budget = Vec::new();
     for dpr in [1, 2] {
         let mut viewport = Viewport::new();
-        viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
         let root = rfgui::ui::render_root(|| rsx! { <MainScene /> });
         let now = Instant::now();
         let mut warm_build = Vec::new();
@@ -69,18 +68,13 @@ fn native_complete_demo_warm_frames() -> Result<(), String> {
                 dpr as f32,
                 now + std::time::Duration::from_millis(if static_scene { 0 } else { frame * 16 }),
             )?;
-            assert!(
-                observation.artifact_selected,
-                "the real demo must select Artifact"
-            );
             if frame >= 5 {
                 warm_build.push(observation.cpu_ms[5]);
                 warm_total.push(observation.cpu_ms[0]);
                 warm_allocations += observation.target_allocations;
             }
             println!(
-                "demo-frame dpr={dpr} frame={frame} artifact={} reuse={} reraster={} allocations={} command_replays={} localized_replays={} geometry_replays={} cpu_ms={:?}",
-                observation.artifact_selected,
+                "demo-frame dpr={dpr} frame={frame} reuse={} reraster={} allocations={} command_replays={} localized_replays={} geometry_replays={} cpu_ms={:?}",
                 observation.reuses,
                 observation.rerasterizations,
                 observation.target_allocations,
@@ -162,7 +156,6 @@ fn native_complete_demo_viewport_transitions() -> Result<(), String> {
         .map(|v| v.parse::<f64>().expect("finite positive CPU budget"));
     assert!(limit.is_none_or(|v| v.is_finite() && v > 0.0));
     let mut viewport = Viewport::new();
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
     let root = rfgui::ui::render_root(|| rsx! { <MainScene /> });
     let now = Instant::now();
     let mut over_budget = Vec::new();
@@ -190,10 +183,6 @@ fn native_complete_demo_viewport_transitions() -> Result<(), String> {
                 dpr as f32,
                 now + std::time::Duration::from_millis(if static_scene { 0 } else { tick * 16 }),
             )?;
-            assert!(
-                observation.artifact_selected,
-                "{label} frame {frame} must select Artifact"
-            );
             assert_eq!(viewport.scale_factor(), dpr as f32);
             assert_eq!(
                 viewport.logical_size(),

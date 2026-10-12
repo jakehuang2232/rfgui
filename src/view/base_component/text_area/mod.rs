@@ -1136,7 +1136,7 @@ impl ElementTrait for TextArea {
         };
         // TextArea measures its own IFC content rather than an Element sizing
         // proposal. Publish those actual inputs; a parent's paint witness must
-        // not substitute a legacy size-only measurement for this atomic host.
+        // not substitute a size-only measurement for this atomic host.
         let constraints = self.last_measure_constraints?;
         let (width, height) = super::Layoutable::measured_size(self);
         Some(InlineIfcMeasuredAtomicBox::new(
@@ -1173,14 +1173,6 @@ impl ElementTrait for TextArea {
         self.spatial_placement.map(|snapshot| {
             snapshot.with_child_reference_offset_at_scroll_zero([-self.scroll_x, -self.scroll_y])
         })
-    }
-
-    fn retained_scroll_normalized_paint_capability(
-        &self,
-    ) -> Option<super::RetainedScrollNormalizedPaintCapability> {
-        Some(super::RetainedScrollNormalizedPaintCapability::native(
-            super::RetainedScrollNormalizedPaintKind::TextArea,
-        ))
     }
 
     fn has_active_animator(&self) -> bool {
@@ -1226,8 +1218,8 @@ impl ElementTrait for TextArea {
         parent
     }
 
-    /// The legacy build snaps the owner origin, then the content box, so text
-    /// starts on the pixel grid inside a fractional frame.
+    /// Recording snaps the owner origin, then the content box, so text starts
+    /// on the pixel grid inside a fractional frame.
     fn paint_snap_points(&self, arena: &NodeArena) -> [Option<[f32; 2]>; 2] {
         let position = self.layout_state.layout_position;
         [

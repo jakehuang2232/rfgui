@@ -30,27 +30,6 @@ fn texture_desc_for_logical_bounds_keeps_logical_scale_mapping() {
 }
 
 #[test]
-fn build_context_render_transform_propagates_to_child_without_leaking_back() {
-    let mut parent_ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let parent_transform = Mat4::from_scale(Vec3::new(2.0, 1.5, 1.0));
-    parent_ctx.set_current_render_transform(Some(parent_transform));
-
-    let parent_viewport = parent_ctx.viewport();
-    let mut child_ctx =
-        UiBuildContext::from_parts(parent_viewport.clone(), parent_ctx.state_clone());
-    assert_eq!(child_ctx.current_render_transform(), Some(parent_transform));
-
-    let child_transform = Mat4::from_scale(Vec3::new(3.0, 3.0, 1.0));
-    child_ctx.set_current_render_transform(Some(child_transform));
-
-    let restored_parent = UiBuildContext::from_parts(parent_viewport, child_ctx.into_state());
-    assert_eq!(
-        restored_parent.current_render_transform(),
-        Some(parent_transform)
-    );
-}
-
-#[test]
 fn layer_subtree_does_not_inherit_ancestor_stencil_clip_id() {
     let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     assert_eq!(
@@ -70,27 +49,6 @@ fn layer_subtree_does_not_inherit_ancestor_stencil_clip_id() {
         layer_ctx.graphics_pass_context().stencil_clip_id,
         None,
         "offscreen layer subtree should not inherit ancestor stencil clip id"
-    );
-}
-
-#[test]
-fn transformed_layer_subtree_starts_without_ancestor_scissor_rect() {
-    let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let previous = ctx.push_scissor_rect(Some([10, 10, 40, 40]));
-    assert_eq!(previous, None);
-    assert_eq!(
-        ctx.graphics_pass_context().logical_scissor_rect(),
-        Some([10, 10, 40, 40])
-    );
-
-    let layer_state =
-        ctx.layer_subtree_state_with_ancestor_clip(super::super::AncestorClipContext::default());
-    let layer_ctx = UiBuildContext::from_parts(ctx.viewport(), layer_state);
-
-    assert_eq!(
-        layer_ctx.graphics_pass_context().logical_scissor_rect(),
-        None,
-        "transformed offscreen subtree should rasterize from viewport clip, not ancestor scissor"
     );
 }
 
@@ -186,33 +144,6 @@ fn transformed_bounds_are_used_for_clip_culling() {
     assert!(
         el.layout_state.should_render,
         "translate 後的 bounding box 已進入 parent clip，不應被提前剔除"
-    );
-}
-
-#[test]
-fn transform_surface_bounds_ignore_finite_zero_area_child() {
-    let mut arena = new_test_arena();
-    let mut parent = Element::new(10.0, 20.0, 120.0, 80.0);
-    parent.set_resolved_transform_for_test(Some(Mat4::IDENTITY));
-    let parent_key = commit_element(&mut arena, Box::new(parent));
-    let zero_width_text = Text::new(14.0, 28.0, 0.0, 16.0, "no paint coverage");
-    commit_child(&mut arena, parent_key, Box::new(zero_width_text));
-
-    let parent = crate::view::test_support::get_element::<Element>(&arena, parent_key);
-    let expected = [10.0_f32, 20.0, 120.0, 80.0].map(f32::to_bits);
-    let legacy = parent
-        .legacy_transform_surface_bounds(&arena, [0.0, 0.0], 1.0)
-        .expect("zero-area child is an empty contribution, not a bounds failure");
-    assert_eq!(
-        [legacy.x, legacy.y, legacy.width, legacy.height].map(f32::to_bits),
-        expected
-    );
-    let retained = parent
-        .retained_transform_surface_bounds(&arena, [0.0, 0.0], 1.0)
-        .expect("retained transform bounds use the same empty contribution semantics");
-    assert_eq!(
-        [retained.x, retained.y, retained.width, retained.height,].map(f32::to_bits),
-        expected
     );
 }
 

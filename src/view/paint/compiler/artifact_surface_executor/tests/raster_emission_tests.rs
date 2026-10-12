@@ -113,7 +113,9 @@ fn sealed_shadow_prefix_and_empty_suffix_drive_emission_without_rederivation() {
 fn sealed_terminal_clip_replaces_a_disjoint_incoming_scissor() {
     let sealed_scissor = [30, 8, 20, 16];
     let mut ctx = execution_context();
-    ctx.replace_scissor_rect(Some([0, 0, 16, 600]));
+    ctx.replace_graphics_pass_scissor(Some(
+        crate::view::render_pass::render_target::GraphicsPassScissor::Logical([0, 0, 16, 600]),
+    ));
 
     let mut viewport = Viewport::new();
     let owner = viewport

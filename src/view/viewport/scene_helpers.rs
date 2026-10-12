@@ -3,9 +3,7 @@
 use super::dispatch::local_point_for_node;
 use super::*;
 use crate::ui::{PointerEnterEvent, PointerLeaveEvent};
-use crate::view::base_component::{
-    BoxModelSnapshot, DirtyFlags, ElementTrait, RetainedSurfaceBounds, snap_to_device_pixel,
-};
+use crate::view::base_component::{BoxModelSnapshot, DirtyFlags, ElementTrait};
 
 impl Viewport {
     pub(super) fn cancel_pointer_interactions(
@@ -528,22 +526,6 @@ pub(crate) fn clear_subtree_dirty_flags_with_arena_dirty(
     arena.refresh_subtree_dirty_cache(root_key);
     arena.clear_cached_arena_dirty_subtree(root_key, flags);
     true
-}
-
-pub(crate) fn paint_snapped_retained_surface_bounds(
-    node: &dyn ElementTrait,
-    bounds: RetainedSurfaceBounds,
-    paint_offset: [f32; 2],
-    scale_factor: f32,
-) -> RetainedSurfaceBounds {
-    let snap = node.box_model_snapshot();
-    let dx = snap_to_device_pixel(snap.x + paint_offset[0], scale_factor) - snap.x;
-    let dy = snap_to_device_pixel(snap.y + paint_offset[1], scale_factor) - snap.y;
-    RetainedSurfaceBounds {
-        x: bounds.x + dx,
-        y: bounds.y + dy,
-        ..bounds
-    }
 }
 
 fn update_hover_state(

@@ -1,15 +1,14 @@
-// C-1.2c acceptance gates: Artifact and Legacy each pass four nine-frame cases.
-// Legacy previously failed frame 0 with alpha 255 instead of group alpha 64.
+// C-1.2c acceptance gates: four nine-frame cases.
 // These gates cover nonempty Loading/Error subtrees, not native Ready payloads,
 // root-owned scrollbars, IFC-owned inline paint, or deferred Viewport children.
 // The ancestor has a real style-derived translation, opacity below one, and
-// nonempty children: these gates exercise the existing transform layer's new
+// nonempty children: these gates exercise the existing transform layer's
 // group-opacity behavior. The separate overlap gate below covers opacity-only
 // grouping; older transform-only fixtures are not evidence for this change.
 // Historical 7b3702b also rejected Artifact SelfClip. Its original fixture
 // incorrectly assumed AnchorParent without an anchor clips to the parent;
 // the intermediary below now establishes the intended grandparent bounds.
-// Acceptance contract (applies equally to Artifact and Legacy):
+// Acceptance contract:
 // - Preserve the paint-order obligation exercised by
 //   paint/tests/anchor_parent_clip_tests.rs: normal blue siblings paint before
 //   overflow AnchorParent children, which occupy the late phase. The coverage
@@ -26,10 +25,9 @@
 //   its ancestor and wrapper each start at 0.5, so output alpha is 0.25,
 //   approximately 64/255 after RGBA8 quantization, at both interior probes.
 // - Expected coordinates/colors/alpha come from geometry and composition,
-//   never from a Legacy readback. A mismatch measures a renderer defect.
-//   Legacy gates may pass after a rendering fix; never redefine expected
-//   pixels to match incorrect output. Preserve every state in this sequence;
-//   the formerly red Legacy cases now execute their later-frame assertions.
+//   never from a readback. A mismatch measures a renderer defect. Never
+//   redefine expected pixels to match incorrect output. Preserve every state
+//   in this sequence.
 use super::*;
 use crate::style::{ClipMode, Position};
 use crate::view::node_arena::{Node, NodeKey};
@@ -89,50 +87,28 @@ fn slot(arena: &mut NodeArena, owner: NodeKey, id: u64, loading: bool) -> NodeKe
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_ancestor_state_nonempty_slots_image_artifact_dpr1() -> Result<(), String>
 {
-    run_ancestor_slots(ViewportPaintRendererMode::RetainedAuto, false, 1)
+    run_ancestor_slots(false, 1)
 }
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_ancestor_state_nonempty_slots_image_artifact_dpr2() -> Result<(), String>
 {
-    run_ancestor_slots(ViewportPaintRendererMode::RetainedAuto, false, 2)
-}
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_ancestor_state_nonempty_slots_image_legacy_dpr1() -> Result<(), String> {
-    run_ancestor_slots(ViewportPaintRendererMode::Legacy, false, 1)
-}
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_ancestor_state_nonempty_slots_image_legacy_dpr2() -> Result<(), String> {
-    run_ancestor_slots(ViewportPaintRendererMode::Legacy, false, 2)
+    run_ancestor_slots(false, 2)
 }
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_ancestor_state_nonempty_slots_svg_artifact_dpr1() -> Result<(), String> {
-    run_ancestor_slots(ViewportPaintRendererMode::RetainedAuto, true, 1)
+    run_ancestor_slots(true, 1)
 }
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_ancestor_state_nonempty_slots_svg_artifact_dpr2() -> Result<(), String> {
-    run_ancestor_slots(ViewportPaintRendererMode::RetainedAuto, true, 2)
+    run_ancestor_slots(true, 2)
 }
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_ancestor_state_nonempty_slots_svg_legacy_dpr1() -> Result<(), String> {
-    run_ancestor_slots(ViewportPaintRendererMode::Legacy, true, 1)
-}
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_ancestor_state_nonempty_slots_svg_legacy_dpr2() -> Result<(), String> {
-    run_ancestor_slots(ViewportPaintRendererMode::Legacy, true, 2)
-}
-
-fn run_ancestor_slots(mode: ViewportPaintRendererMode, svg: bool, dpr: u32) -> Result<(), String> {
+fn run_ancestor_slots(svg: bool, dpr: u32) -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU");
     let mut viewport = Viewport::new();
-    viewport.set_paint_renderer_mode(mode);
     let mut arena = NodeArena::new();
     let mut root = Element::new_with_id(0xc1_2300, 0.0, 0.0, WIDTH as f32, HEIGHT as f32);
     root.apply_style(sized_grid(WIDTH as f32, HEIGHT as f32));
@@ -148,7 +124,7 @@ fn run_ancestor_slots(mode: ViewportPaintRendererMode, svg: bool, dpr: u32) -> R
     let parent = commit_child(&mut arena, ancestor, Box::new(parent));
     let (owner, handle, document) = if svg {
         let source = crate::view::SvgSource::Content(format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- c12 ancestor slots {mode:?} {dpr} --></svg>"
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- c12 ancestor slots {dpr} --></svg>"
         ));
         let key = prime_svg_document_ready_for_test(&source, 20.0, 32.0);
         set_svg_document_loading_for_test(key);
@@ -277,27 +253,22 @@ fn run_ancestor_slots(mode: ViewportPaintRendererMode, svg: bool, dpr: u32) -> R
                     .into_iter()
                     .zip(color)
                     .all(|(a, e)| a.abs_diff(e) <= 1),
-                "svg={svg} {mode:?} DPR {dpr} frame {frame} @({x},{y}): {actual:?} != {color:?}"
+                "svg={svg} DPR {dpr} frame {frame} @({x},{y}): {actual:?} != {color:?}"
             );
         }
-        if mode == ViewportPaintRendererMode::RetainedAuto {
-            assert!(observed.artifact_selected);
-            assert!(!observed.actions.is_empty());
-            if matches!(frame, 1 | 6 | 8) {
-                assert!(
-                    observed
-                        .actions
-                        .iter()
-                        .all(|action| *action == RetainedSurfaceCompileAction::Reuse),
-                    "unchanged frame must reuse every raster"
-                );
-            }
-            assert!(!observed.color_targets.is_empty());
-            for (key, desc) in &observed.color_targets {
-                assert!(viewport.has_compatible_persistent_render_target(*key, desc));
-            }
-        } else {
-            assert!(observed.legacy_selected);
+        assert!(!observed.actions.is_empty());
+        if matches!(frame, 1 | 6 | 8) {
+            assert!(
+                observed
+                    .actions
+                    .iter()
+                    .all(|action| *action == RetainedSurfaceCompileAction::Reuse),
+                "unchanged frame must reuse every raster"
+            );
+        }
+        assert!(!observed.color_targets.is_empty());
+        for (key, desc) in &observed.color_targets {
+            assert!(viewport.has_compatible_persistent_render_target(*key, desc));
         }
     }
     Ok(())
@@ -308,84 +279,73 @@ fn run_ancestor_slots(mode: ViewportPaintRendererMode, svg: bool, dpr: u32) -> R
 fn native_single_viewport_group_opacity_overlap_and_sibling_scope() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU");
-    for mode in [
-        ViewportPaintRendererMode::Legacy,
-        ViewportPaintRendererMode::RetainedAuto,
-    ] {
-        for dpr in [1, 2] {
-            let mut viewport = Viewport::new();
-            viewport.set_paint_renderer_mode(mode);
-            let mut arena = NodeArena::new();
-            let mut root = Element::new_with_id(0xc1_3400, 0.0, 0.0, WIDTH as f32, HEIGHT as f32);
-            root.apply_style(sized_grid(WIDTH as f32, HEIGHT as f32));
-            let root = commit_element(&mut arena, Box::new(root));
-            let group_style = |opacity| {
-                let mut style = sized_grid(20.0, 16.0);
-                style.insert(
-                    PropertyId::Opacity,
-                    ParsedValue::Opacity(Opacity::new(opacity)),
-                );
-                style
-            };
-            let mut group = Element::new_with_id(0xc1_3401, 0.0, 0.0, 20.0, 16.0);
-            group.apply_style(group_style(0.5));
-            let group = commit_child(&mut arena, root, Box::new(group));
-            for (id, parent, x, color) in [
-                (0xc1_3402, group, 0.0, Color::rgb(255, 0, 0)),
-                (0xc1_3403, group, 4.0, Color::rgb(0, 0, 255)),
-                (0xc1_3404, root, 24.0, Color::rgb(0, 255, 0)),
+    for dpr in [1, 2] {
+        let mut viewport = Viewport::new();
+        let mut arena = NodeArena::new();
+        let mut root = Element::new_with_id(0xc1_3400, 0.0, 0.0, WIDTH as f32, HEIGHT as f32);
+        root.apply_style(sized_grid(WIDTH as f32, HEIGHT as f32));
+        let root = commit_element(&mut arena, Box::new(root));
+        let group_style = |opacity| {
+            let mut style = sized_grid(20.0, 16.0);
+            style.insert(
+                PropertyId::Opacity,
+                ParsedValue::Opacity(Opacity::new(opacity)),
+            );
+            style
+        };
+        let mut group = Element::new_with_id(0xc1_3401, 0.0, 0.0, 20.0, 16.0);
+        group.apply_style(group_style(0.5));
+        let group = commit_child(&mut arena, root, Box::new(group));
+        for (id, parent, x, color) in [
+            (0xc1_3402, group, 0.0, Color::rgb(255, 0, 0)),
+            (0xc1_3403, group, 4.0, Color::rgb(0, 0, 255)),
+            (0xc1_3404, root, 24.0, Color::rgb(0, 255, 0)),
+        ] {
+            let mut child = Element::new_with_id(id, 0.0, 0.0, 12.0, 12.0);
+            let mut style = sized_grid(12.0, 12.0);
+            style.insert(
+                PropertyId::Position,
+                ParsedValue::Position(
+                    Position::absolute()
+                        .left(Length::px(x))
+                        .top(Length::px(0.0)),
+                ),
+            );
+            style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(color));
+            child.apply_style(style);
+            commit_child(&mut arena, parent, Box::new(child));
+        }
+        viewport.install_single_viewport_scene_for_test(arena, root);
+        // Toggle isolation off and back on as well as changing its alpha.
+        // Expected alpha follows group compositing, never Legacy output.
+        for (opacity, alpha) in [(0.5, 128), (0.25, 64), (1.0, 255), (0.5, 128)] {
+            get_element_mut::<Element>(viewport.node_arena(), group)
+                .apply_style(group_style(opacity));
+            begin_resource_frame(&mut viewport, gpu, dpr)?;
+            let observed = viewport.render_single_viewport_scene_for_test()?;
+            let pixels =
+                read_submitted_texture(&observed.texture, gpu, [WIDTH * dpr, HEIGHT * dpr])?;
+            for (label, x, y, expected) in [
+                ("first child only", 2, 4, [255, 0, 0, alpha]),
+                (
+                    "overlap keeps top child's color and group alpha",
+                    6,
+                    4,
+                    [0, 0, 255, alpha],
+                ),
+                ("second child only", 14, 4, [0, 0, 255, alpha]),
+                ("following sibling remains opaque", 26, 4, [0, 255, 0, 255]),
+                ("below children remains empty", 6, 14, [0; 4]),
             ] {
-                let mut child = Element::new_with_id(id, 0.0, 0.0, 12.0, 12.0);
-                let mut style = sized_grid(12.0, 12.0);
-                style.insert(
-                    PropertyId::Position,
-                    ParsedValue::Position(
-                        Position::absolute()
-                            .left(Length::px(x))
-                            .top(Length::px(0.0)),
-                    ),
+                let i = ((y * dpr * WIDTH * dpr + x * dpr) * 4) as usize;
+                let actual: [u8; 4] = pixels[i..i + 4].try_into().unwrap();
+                assert!(
+                    actual
+                        .into_iter()
+                        .zip(expected)
+                        .all(|(a, e)| a.abs_diff(e) <= 1),
+                    "DPR {dpr} opacity {opacity}: {label}: {actual:?} != {expected:?}"
                 );
-                style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(color));
-                child.apply_style(style);
-                commit_child(&mut arena, parent, Box::new(child));
-            }
-            viewport.install_single_viewport_scene_for_test(arena, root);
-            // Toggle isolation off and back on as well as changing its alpha.
-            // Expected alpha follows group compositing, never Legacy output.
-            for (opacity, alpha) in [(0.5, 128), (0.25, 64), (1.0, 255), (0.5, 128)] {
-                get_element_mut::<Element>(viewport.node_arena(), group)
-                    .apply_style(group_style(opacity));
-                begin_resource_frame(&mut viewport, gpu, dpr)?;
-                let observed = viewport.render_single_viewport_scene_for_test()?;
-                let pixels =
-                    read_submitted_texture(&observed.texture, gpu, [WIDTH * dpr, HEIGHT * dpr])?;
-                for (label, x, y, expected) in [
-                    ("first child only", 2, 4, [255, 0, 0, alpha]),
-                    (
-                        "overlap keeps top child's color and group alpha",
-                        6,
-                        4,
-                        [0, 0, 255, alpha],
-                    ),
-                    ("second child only", 14, 4, [0, 0, 255, alpha]),
-                    ("following sibling remains opaque", 26, 4, [0, 255, 0, 255]),
-                    ("below children remains empty", 6, 14, [0; 4]),
-                ] {
-                    let i = ((y * dpr * WIDTH * dpr + x * dpr) * 4) as usize;
-                    let actual: [u8; 4] = pixels[i..i + 4].try_into().unwrap();
-                    assert!(
-                        actual
-                            .into_iter()
-                            .zip(expected)
-                            .all(|(a, e)| a.abs_diff(e) <= 1),
-                        "{mode:?} DPR {dpr} opacity {opacity}: {label}: {actual:?} != {expected:?}"
-                    );
-                }
-                if mode == ViewportPaintRendererMode::RetainedAuto {
-                    assert!(observed.artifact_selected);
-                } else {
-                    assert!(observed.legacy_selected);
-                }
             }
         }
     }

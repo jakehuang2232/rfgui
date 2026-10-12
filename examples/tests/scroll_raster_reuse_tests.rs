@@ -2,7 +2,7 @@
 use rfgui::style::{Color, Layout, Length, ScrollDirection};
 use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, rsx};
-use rfgui::view::viewport::{ViewportPaintRendererMode, set_scroll_offset_by_id};
+use rfgui::view::viewport::set_scroll_offset_by_id;
 use rfgui::view::{Element, Text, Viewport};
 
 #[path = "../../lib/rfgui-components/tests/retained_controls/gpu.rs"]
@@ -24,7 +24,6 @@ fn scene(changed: bool, rows: usize) -> RsxNode {
 /// render cache released, so nothing from an earlier frame can be reused.
 fn cold_pixels(
     gpu: &gpu::Gpu,
-    mode: ViewportPaintRendererMode,
     tree: &RsxNode,
     offset: (f32, f32),
     size: [u32; 2],
@@ -32,7 +31,6 @@ fn cold_pixels(
     now: Instant,
 ) -> Result<Vec<u8>, String> {
     let mut viewport = Viewport::new();
-    viewport.set_paint_renderer_mode(mode);
     let render = |viewport: &mut Viewport| {
         viewport.render_rsx_offscreen_for_test(
             tree,
@@ -52,9 +50,7 @@ fn cold_pixels(
     set_scroll_offset_by_id(arena, root, id, offset);
     viewport.release_render_resource_caches();
     let cold = render(&mut viewport)?;
-    if mode == ViewportPaintRendererMode::RetainedAuto {
-        assert!(cold.rerasterizations > 0);
-    }
+    assert!(cold.rerasterizations > 0);
     gpu.read(&cold.texture, size)
 }
 
@@ -83,78 +79,70 @@ fn scroll_interest_reuses_rasters_and_refreshes_exposed_or_changed_content() -> 
     ];
     for dpr in [1, 2] {
         let size = [440 * dpr, 440 * dpr];
-        for mode in [
-            ViewportPaintRendererMode::Legacy,
-            ViewportPaintRendererMode::RetainedAuto,
-        ] {
-            let mut viewport = Viewport::new();
-            viewport.set_paint_renderer_mode(mode);
-            let now = Instant::now();
-            let mut first_targets = None;
-            let mut frames = Vec::new();
-            for (frame, &(offset, changed, rows)) in cases.iter().enumerate() {
-                if frame > 0 {
-                    let arena = viewport.node_arena();
-                    let root = arena.roots()[0];
-                    let id = arena.get(root).unwrap().element.stable_id();
-                    assert!(set_scroll_offset_by_id(arena, root, id, offset));
-                }
-                let tree = scene(changed, rows);
-                let output = viewport.render_rsx_offscreen_for_test(
-                    &tree,
-                    gpu.device.clone(),
-                    gpu.queue.clone(),
-                    size,
-                    dpr as f32,
-                    now,
-                )?;
-                let pixels = gpu.read(&output.texture, size)?;
-                if let Some(dir) = std::env::var_os("RFGUI_BENCH_PIXELS") {
-                    let dir = std::path::PathBuf::from(dir);
-                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                    std::fs::write(dir.join(format!("{mode:?}-{dpr}-{frame}.rgba")), &pixels)
-                        .map_err(|e| e.to_string())?;
-                }
-                assert!(pixels.chunks_exact(4).any(|p| p[3] > 0));
-                // Expanded paint interest must never expand the receiver clip.
-                for y in 0..size[1] {
-                    for x in 0..size[0] {
-                        if x >= 400 * dpr || y >= 400 * dpr {
-                            assert_eq!(
-                                pixels[((y * size[0] + x) * 4 + 3) as usize],
-                                0,
-                                "escaped clip at {x},{y}: {mode:?} frame {frame}"
-                            );
-                        }
-                    }
-                }
-                // Whatever this frame reused must paint what a cold raster of
-                // the same state paints.
-                let cold = cold_pixels(&gpu, mode, &tree, offset, size, dpr as f32, now)?;
-                let diff = pixels.iter().zip(&cold).filter(|(a, b)| a != b).count();
-                assert_eq!(diff, 0, "warm/cold pixels {mode:?} DPR {dpr} frame {frame}");
-                frames.push(pixels);
-                if mode == ViewportPaintRendererMode::RetainedAuto {
-                    if frame == 0 {
-                        first_targets = Some(output.persistent_targets.clone());
-                    }
-                    if (1..=3).contains(&frame) {
-                        assert_eq!(output.rerasterizations, 0, "DPR {dpr} frame {frame}");
-                        assert!(output.reuses > 0);
-                        assert_eq!(output.target_allocations, 0);
-                        assert_eq!(Some(&output.persistent_targets), first_targets.as_ref());
-                    }
-                    if frame == 11 {
-                        assert!(
-                            output.rerasterizations > 0,
-                            "paint edit must invalidate raster"
+        let mut viewport = Viewport::new();
+        let now = Instant::now();
+        let mut first_targets = None;
+        let mut frames = Vec::new();
+        for (frame, &(offset, changed, rows)) in cases.iter().enumerate() {
+            if frame > 0 {
+                let arena = viewport.node_arena();
+                let root = arena.roots()[0];
+                let id = arena.get(root).unwrap().element.stable_id();
+                assert!(set_scroll_offset_by_id(arena, root, id, offset));
+            }
+            let tree = scene(changed, rows);
+            let output = viewport.render_rsx_offscreen_for_test(
+                &tree,
+                gpu.device.clone(),
+                gpu.queue.clone(),
+                size,
+                dpr as f32,
+                now,
+            )?;
+            let pixels = gpu.read(&output.texture, size)?;
+            if let Some(dir) = std::env::var_os("RFGUI_BENCH_PIXELS") {
+                let dir = std::path::PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                std::fs::write(dir.join(format!("-{dpr}-{frame}.rgba")), &pixels)
+                    .map_err(|e| e.to_string())?;
+            }
+            assert!(pixels.chunks_exact(4).any(|p| p[3] > 0));
+            // Expanded paint interest must never expand the receiver clip.
+            for y in 0..size[1] {
+                for x in 0..size[0] {
+                    if x >= 400 * dpr || y >= 400 * dpr {
+                        assert_eq!(
+                            pixels[((y * size[0] + x) * 4 + 3) as usize],
+                            0,
+                            "escaped clip at {x},{y}: frame {frame}"
                         );
                     }
                 }
             }
-            assert_ne!(frames[0], frames[1], "scroll must change pixels: {mode:?}");
-            assert_ne!(frames[10], frames[11], "edit must change pixels: {mode:?}");
+            // Whatever this frame reused must paint what a cold raster of
+            // the same state paints.
+            let cold = cold_pixels(&gpu, &tree, offset, size, dpr as f32, now)?;
+            let diff = pixels.iter().zip(&cold).filter(|(a, b)| a != b).count();
+            assert_eq!(diff, 0, "warm/cold pixels DPR {dpr} frame {frame}");
+            frames.push(pixels);
+            if frame == 0 {
+                first_targets = Some(output.persistent_targets.clone());
+            }
+            if (1..=3).contains(&frame) {
+                assert_eq!(output.rerasterizations, 0, "DPR {dpr} frame {frame}");
+                assert!(output.reuses > 0);
+                assert_eq!(output.target_allocations, 0);
+                assert_eq!(Some(&output.persistent_targets), first_targets.as_ref());
+            }
+            if frame == 11 {
+                assert!(
+                    output.rerasterizations > 0,
+                    "paint edit must invalidate raster"
+                );
+            }
         }
+        assert_ne!(frames[0], frames[1], "scroll must change pixels");
+        assert_ne!(frames[10], frames[11], "edit must change pixels");
     }
     Ok(())
 }

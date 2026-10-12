@@ -30,7 +30,6 @@ fn gpu_source_wider_than_the_texture_limit_renders_at_a_fitting_size() -> Result
         v.install_single_viewport_scene_for_test(a, root);
         begin(&mut v, gpu, dpr)?;
         let observed = v.render_single_viewport_scene_for_test()?;
-        assert!(observed.artifact_selected, "DPR {dpr}");
         let pixels = read_submitted_texture(&observed.texture, gpu, [80 * dpr, 64 * dpr])?;
         probe(&pixels, dpr, [40, 5], [255, 0, 0, 255], "inside the host");
         probe(&pixels, dpr, [40, 20], [0; 4], "below the host");
@@ -85,7 +84,6 @@ fn gpu_source_past_the_cache_budget_is_produced_every_frame() -> Result<(), Stri
     for frame in 0..2 {
         begin(&mut v, gpu, 1)?;
         let observed = v.render_single_viewport_scene_for_test()?;
-        assert!(observed.artifact_selected, "frame {frame}");
         let pixels = read_submitted_texture(&observed.texture, gpu, [80, 64])?;
         probe(&pixels, 1, [40, 32], [255, 0, 0, 255], "inside the host");
         let [source] = v

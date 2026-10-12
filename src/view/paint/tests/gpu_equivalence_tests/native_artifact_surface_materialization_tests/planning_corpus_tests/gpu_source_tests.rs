@@ -1,11 +1,10 @@
 use super::super::style_pipeline_tests::read_submitted_texture;
 use super::*;
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, PaintResourcePreparationContext, Renderable,
+    BoxModelSnapshot, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
+    Layoutable, PaintResourcePreparationContext,
 };
 use crate::view::gpu_paint::{GpuPaintProgram, GpuPaintSource, GpuPaintSourceId};
-use crate::view::viewport::ViewportPaintRendererMode;
 use std::sync::Arc;
 mod deferred_tests;
 mod inline_atomic_tests;
@@ -125,28 +124,6 @@ impl Layoutable for GpuHost {
     }
 }
 impl EventTarget for GpuHost {}
-impl Renderable for GpuHost {
-    fn build(
-        &mut self,
-        g: &mut FrameGraph,
-        _: &mut NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        if let Some(s) = &self.source {
-            s.paint(
-                g,
-                &mut ctx,
-                [
-                    self.position[0],
-                    self.position[1],
-                    self.size[0],
-                    self.size[1],
-                ],
-            );
-        }
-        ctx.into_state()
-    }
-}
 impl ElementTrait for GpuHost {
     fn stable_id(&self) -> u64 {
         self.id
@@ -273,77 +250,68 @@ fn gpu_source_recording_freezes_owner_payload_and_budget() {
 fn native_gpu_source_updates_preserve_independent_native_raster() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().unwrap();
-    for mode in [
-        ViewportPaintRendererMode::RetainedAuto,
-        ViewportPaintRendererMode::Legacy,
-    ] {
-        for dpr in [1_u32, 2] {
-            let (arena, root, host, _) = scene();
-            let mut v = Viewport::new();
-            v.set_paint_renderer_mode(mode);
-            v.install_single_viewport_scene_for_test(arena, root);
-            for frame in 0..4 {
-                if frame == 2 {
-                    let mut h = v.node_arena().get_mut(host).unwrap();
-                    let h = h.element.as_any_mut().downcast_mut::<GpuHost>().unwrap();
-                    h.color = [0., 1., 0., 1.];
-                    h.revision += 1;
-                    h.dirty = DirtyFlags::PAINT;
-                }
-                v.begin_offscreen_test_frame(
-                    gpu.device.clone(),
-                    gpu.queue.clone(),
-                    80 * dpr,
-                    64 * dpr,
-                    FORMAT,
-                )?;
-                v.set_scale_factor(dpr as f32);
-                let observed = v.render_single_viewport_scene_for_test()?;
-                let pixels = read_submitted_texture(&observed.texture, gpu, [80 * dpr, 64 * dpr])?;
-                for ([x, y], expected) in [
-                    (
-                        [8, 12],
-                        if frame < 2 {
-                            [255, 0, 0, 128]
-                        } else {
-                            [0, 255, 0, 128]
-                        },
-                    ),
-                    ([44, 12], [0, 0, 255, 128]),
-                    ([28, 12], [0; 4]),
-                ] {
-                    let at = ((y * dpr * 80 * dpr + x * dpr) * 4) as usize;
-                    assert!(
-                        pixels[at..at + 4]
-                            .iter()
-                            .zip(expected)
-                            .all(|(a, b)| a.abs_diff(b) <= 1),
-                        "{mode:?} DPR={dpr} frame={frame} ({x},{y}) {:?} expected {expected:?}",
-                        &pixels[at..at + 4]
-                    );
-                }
-                if mode == ViewportPaintRendererMode::RetainedAuto {
-                    assert!(observed.artifact_selected);
-                    assert_eq!(observed.actions.len(), 2);
-                    if frame % 2 == 1 {
-                        assert!(
-                            observed
-                                .actions
-                                .iter()
-                                .all(|a| *a == RetainedSurfaceCompileAction::Reuse)
-                        );
-                    }
-                    if frame == 2 {
-                        assert_eq!(
-                            observed
-                                .actions
-                                .iter()
-                                .filter(|a| **a == RetainedSurfaceCompileAction::Reuse)
-                                .count(),
-                            1
-                        );
-                    }
-                }
+    for dpr in [1_u32, 2] {
+        let (arena, root, host, _) = scene();
+        let mut v = Viewport::new();
+        v.install_single_viewport_scene_for_test(arena, root);
+        for frame in 0..4 {
+            if frame == 2 {
+                let mut h = v.node_arena().get_mut(host).unwrap();
+                let h = h.element.as_any_mut().downcast_mut::<GpuHost>().unwrap();
+                h.color = [0., 1., 0., 1.];
+                h.revision += 1;
+                h.dirty = DirtyFlags::PAINT;
+            }
+            v.begin_offscreen_test_frame(
+                gpu.device.clone(),
+                gpu.queue.clone(),
+                80 * dpr,
+                64 * dpr,
+                FORMAT,
+            )?;
+            v.set_scale_factor(dpr as f32);
+            let observed = v.render_single_viewport_scene_for_test()?;
+            let pixels = read_submitted_texture(&observed.texture, gpu, [80 * dpr, 64 * dpr])?;
+            for ([x, y], expected) in [
+                (
+                    [8, 12],
+                    if frame < 2 {
+                        [255, 0, 0, 128]
+                    } else {
+                        [0, 255, 0, 128]
+                    },
+                ),
+                ([44, 12], [0, 0, 255, 128]),
+                ([28, 12], [0; 4]),
+            ] {
+                let at = ((y * dpr * 80 * dpr + x * dpr) * 4) as usize;
+                assert!(
+                    pixels[at..at + 4]
+                        .iter()
+                        .zip(expected)
+                        .all(|(a, b)| a.abs_diff(b) <= 1),
+                    "DPR={dpr} frame={frame} ({x},{y}) {:?} expected {expected:?}",
+                    &pixels[at..at + 4]
+                );
+            }
+            assert_eq!(observed.actions.len(), 2);
+            if frame % 2 == 1 {
+                assert!(
+                    observed
+                        .actions
+                        .iter()
+                        .all(|a| *a == RetainedSurfaceCompileAction::Reuse)
+                );
+            }
+            if frame == 2 {
+                assert_eq!(
+                    observed
+                        .actions
+                        .iter()
+                        .filter(|a| **a == RetainedSurfaceCompileAction::Reuse)
+                        .count(),
+                    1
+                );
             }
         }
     }

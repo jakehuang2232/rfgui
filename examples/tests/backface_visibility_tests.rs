@@ -1,5 +1,5 @@
 //! `backface_visibility: Hidden` drops every transformable host while its
-//! own transform shows the viewer its back, on both renderers, and follows
+//! own transform shows the viewer its back, and follows
 //! an animated turn frame by frame.
 use rfgui::style::{
     Angle, Animation, Animator, BackfaceVisibility, Color, FillMode, Keyframe, Layout, Length,
@@ -7,9 +7,7 @@ use rfgui::style::{
 };
 use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, rsx};
-use rfgui::view::{
-    Element, Image, ImageSource, Svg, SvgSource, Text, Viewport, ViewportPaintRendererMode,
-};
+use rfgui::view::{Element, Image, ImageSource, Svg, SvgSource, Text, Viewport};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -116,43 +114,37 @@ fn count(pixels: &[u8], channel: usize) -> usize {
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
-fn hidden_backface_is_dropped_for_every_host_on_both_renderers() -> Result<(), String> {
+fn hidden_backface_is_dropped_for_every_host() -> Result<(), String> {
     let gpu = gpu::Gpu::new()?;
     let start = Instant::now();
     for host in [Host::Element, Host::Text, Host::Image, Host::Svg] {
-        for mode in [
-            ViewportPaintRendererMode::RetainedAuto,
-            ViewportPaintRendererMode::Legacy,
-        ] {
-            let mut viewport = Viewport::new();
-            viewport.set_paint_renderer_mode(mode);
-            let mut pixels = Vec::new();
-            // Image and SVG sources may arrive a frame or two late.
-            for frame in 0..4 {
-                let rendered = viewport.render_rsx_offscreen_for_test(
-                    &faces(host),
-                    gpu.device.clone(),
-                    gpu.queue.clone(),
-                    SIZE,
-                    1.0,
-                    start + Duration::from_millis(frame * 16),
-                )?;
-                pixels = gpu.read(&rendered.texture, SIZE)?;
-                assert_eq!(
-                    count(&pixels, 0),
-                    0,
-                    "{host:?} {mode:?}: the hidden back face painted"
-                );
-            }
-            assert!(
-                count(&pixels, 1) > 100,
-                "{host:?} {mode:?}: the visible back face is missing"
-            );
-            assert!(
-                count(&pixels, 2) > 100,
-                "{host:?} {mode:?}: the front-facing face is missing"
+        let mut viewport = Viewport::new();
+        let mut pixels = Vec::new();
+        // Image and SVG sources may arrive a frame or two late.
+        for frame in 0..4 {
+            let rendered = viewport.render_rsx_offscreen_for_test(
+                &faces(host),
+                gpu.device.clone(),
+                gpu.queue.clone(),
+                SIZE,
+                1.0,
+                start + Duration::from_millis(frame * 16),
+            )?;
+            pixels = gpu.read(&rendered.texture, SIZE)?;
+            assert_eq!(
+                count(&pixels, 0),
+                0,
+                "{host:?}: the hidden back face painted"
             );
         }
+        assert!(
+            count(&pixels, 1) > 100,
+            "{host:?}: the visible back face is missing"
+        );
+        assert!(
+            count(&pixels, 2) > 100,
+            "{host:?}: the front-facing face is missing"
+        );
     }
     Ok(())
 }

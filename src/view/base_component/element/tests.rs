@@ -27,7 +27,6 @@ use crate::style::{ParsedValue, PropertyId, Transition, TransitionProperty, Tran
 use crate::transition::{LayoutField, VisualField};
 use crate::view::base_component::ComputedStyleConsumer;
 use crate::view::base_component::Text;
-use crate::view::frame_graph::FrameGraph;
 use crate::view::inline_formatting_context::{
     InlineFormattingContext, InlineIfcAtomicMeasureConstraints, InlineIfcDecorationBoxInsets,
     InlineIfcElementDecorationDrawRectStyle, InlineIfcInput, InlineIfcItem,
@@ -42,10 +41,17 @@ use glam::{Mat4, Vec3};
 
 
 
-fn drain_deferred(
-    ctx: &mut UiBuildContext,
-) -> Vec<crate::view::base_component::DeferredRenderNode> {
-    std::iter::from_fn(|| ctx.next_deferred()).collect()
+/// Owners of the paint chunks the frame recorder emits for `roots`.
+fn recorded_chunk_owners(arena: &NodeArena, roots: &[NodeKey]) -> Vec<NodeKey> {
+    let mut properties = crate::view::compositor::PropertyTrees::default();
+    properties.sync(arena, roots);
+    let mut generations = crate::view::compositor::PaintGenerationTracker::default();
+    generations.sync(arena, roots, &properties);
+    crate::view::paint::record_surface_dag_frame_artifact(arena, roots, &properties, &generations)
+        .chunks
+        .iter()
+        .map(|chunk| chunk.owner)
+        .collect()
 }
 
 
@@ -436,7 +442,6 @@ mod hover_and_style_sync_tests;
 mod layout_transition_tests;
 mod transition_measure_tests;
 mod transition_clip_tests;
-mod transform_surface_placement_tests;
 mod min_max_size_tests;
 mod child_clip_scope_tests;
 mod scroll_container_tests;

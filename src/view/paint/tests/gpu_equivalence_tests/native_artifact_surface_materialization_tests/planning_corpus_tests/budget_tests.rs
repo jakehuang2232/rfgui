@@ -1,6 +1,5 @@
 use super::super::style_pipeline_tests::read_submitted_texture;
 use super::*;
-use crate::view::viewport::ViewportPaintRendererMode;
 
 const WINDOW: [u32; 2] = [1280, 720];
 const LIMIT: u64 = 128 * 1024 * 1024;
@@ -148,113 +147,99 @@ fn full_window_budget_uses_exact_aggregate_bytes_and_physical_dimensions() {
 fn native_full_window_budget_descriptors_and_reuse() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU");
-    for mode in [
-        ViewportPaintRendererMode::RetainedAuto,
-        ViewportPaintRendererMode::Legacy,
-    ] {
-        for (layers, tall) in [(1, false), (3, false), (4, false), (1, true)] {
-            for initial_dpr in [1_u32, 2] {
-                if layers == 4 && initial_dpr == 2 {
-                    continue;
-                }
-                let f = window_fixture(layers, tall);
-                let mut viewport = Viewport::new();
-                viewport.set_paint_renderer_mode(mode);
-                viewport.install_single_viewport_forest_for_test(f.arena, f.roots);
-                let mut first = std::collections::HashMap::<
-                    u32,
-                    Vec<(
-                        crate::view::frame_graph::PersistentTextureKey,
-                        crate::view::frame_graph::TextureDesc,
-                    )>,
-                >::new();
-                // Four layers cross the cache budget on DPR 1 -> 2, then return
-                // to 1. Past the budget one layer is drawn every frame without
-                // being kept; every DPR change rasters the kept layers again.
-                let sequence = if layers == 4 {
-                    vec![1, 1, 2, 2, 1, 1]
-                } else {
-                    vec![initial_dpr; 3]
-                };
-                for (frame, dpr) in sequence.iter().copied().enumerate() {
-                    let [physical_width, physical_height] = expected_physical_size(tall, dpr);
-                    let bytes =
-                        u64::from(physical_width) * u64::from(physical_height) * 12 * layers as u64;
-                    viewport.begin_offscreen_test_frame(
-                        gpu.device.clone(),
-                        gpu.queue.clone(),
-                        WINDOW[0] * dpr,
-                        WINDOW[1] * dpr,
-                        FORMAT,
-                    )?;
-                    viewport.set_scale_factor(dpr as f32);
-                    assert_eq!(viewport.logical_size(), (1280.0, 720.0));
-                    let observed = viewport.render_single_viewport_scene_for_test()?;
-                    let pixels =
-                        read_submitted_texture(&observed.texture, gpu, WINDOW.map(|v| v * dpr))?;
-                    // Repeated independent half-opacity red roots: alpha = 1 - 0.5^N.
-                    // Tall scrolling content is opaque. Probe opposite corners and center.
-                    let alpha = if tall {
-                        255
-                    } else {
-                        ((1.0 - 0.5_f32.powi(layers as i32)) * 255.0).round() as u8
-                    };
-                    for [x, y] in [[4, 4], [640, 360], [1275, 715]] {
-                        let at = ((y * dpr * WINDOW[0] * dpr + x * dpr) * 4) as usize;
-                        assert!(
-                            pixels[at..at + 4]
-                                .iter()
-                                .zip([255, 0, 0, alpha])
-                                .all(|(a, b)| a.abs_diff(b) <= 1),
-                            "{mode:?} {layers}/{tall}/{dpr}/{frame} {x},{y}: {:?}",
-                            &pixels[at..at + 4]
-                        );
-                    }
-                    if mode == ViewportPaintRendererMode::Legacy {
-                        assert!(observed.legacy_selected);
-                        assert!(observed.actions.is_empty());
-                        continue;
-                    }
-                    assert!(observed.artifact_selected);
-                    let kept = if bytes > LIMIT { layers - 1 } else { layers };
-                    assert_eq!(observed.color_targets.len(), kept);
-                    // Admission reserves color + potential depth (12 B/px); only color
-                    // is persistent now (4 B/px), even on cold raster frames.
-                    assert_eq!(
-                        observed.texture_bytes,
-                        bytes / 3 / layers as u64 * kept as u64
-                    );
-                    let cached = if frame > 0 && sequence[frame - 1] == dpr {
-                        RetainedSurfaceCompileAction::Reuse
-                    } else {
-                        RetainedSurfaceCompileAction::Reraster
-                    };
-                    assert_eq!(
-                        observed
-                            .actions
-                            .iter()
-                            .filter(|action| **action == RetainedSurfaceCompileAction::Transient)
-                            .count(),
-                        layers - kept
-                    );
-                    assert!(observed.actions.iter().all(|action| *action == cached
-                        || *action == RetainedSurfaceCompileAction::Transient));
-                    for (key, desc) in &observed.color_targets {
-                        assert_eq!(
-                            (desc.width(), desc.height()),
-                            (physical_width, physical_height)
-                        );
-                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
-                    }
-                    let first = first
-                        .entry(dpr)
-                        .or_insert_with(|| observed.color_targets.clone());
-                    assert_eq!(&observed.color_targets, first);
-                }
-                eprintln!(
-                    "full window {mode:?}: layers={layers} tall={tall} DPR sequence={sequence:?} passed"
-                );
+    for (layers, tall) in [(1, false), (3, false), (4, false), (1, true)] {
+        for initial_dpr in [1_u32, 2] {
+            if layers == 4 && initial_dpr == 2 {
+                continue;
             }
+            let f = window_fixture(layers, tall);
+            let mut viewport = Viewport::new();
+            viewport.install_single_viewport_forest_for_test(f.arena, f.roots);
+            let mut first = std::collections::HashMap::<
+                u32,
+                Vec<(
+                    crate::view::frame_graph::PersistentTextureKey,
+                    crate::view::frame_graph::TextureDesc,
+                )>,
+            >::new();
+            // Four layers cross the cache budget on DPR 1 -> 2, then return
+            // to 1. Past the budget one layer is drawn every frame without
+            // being kept; every DPR change rasters the kept layers again.
+            let sequence = if layers == 4 {
+                vec![1, 1, 2, 2, 1, 1]
+            } else {
+                vec![initial_dpr; 3]
+            };
+            for (frame, dpr) in sequence.iter().copied().enumerate() {
+                let [physical_width, physical_height] = expected_physical_size(tall, dpr);
+                let bytes =
+                    u64::from(physical_width) * u64::from(physical_height) * 12 * layers as u64;
+                viewport.begin_offscreen_test_frame(
+                    gpu.device.clone(),
+                    gpu.queue.clone(),
+                    WINDOW[0] * dpr,
+                    WINDOW[1] * dpr,
+                    FORMAT,
+                )?;
+                viewport.set_scale_factor(dpr as f32);
+                assert_eq!(viewport.logical_size(), (1280.0, 720.0));
+                let observed = viewport.render_single_viewport_scene_for_test()?;
+                let pixels =
+                    read_submitted_texture(&observed.texture, gpu, WINDOW.map(|v| v * dpr))?;
+                // Repeated independent half-opacity red roots: alpha = 1 - 0.5^N.
+                // Tall scrolling content is opaque. Probe opposite corners and center.
+                let alpha = if tall {
+                    255
+                } else {
+                    ((1.0 - 0.5_f32.powi(layers as i32)) * 255.0).round() as u8
+                };
+                for [x, y] in [[4, 4], [640, 360], [1275, 715]] {
+                    let at = ((y * dpr * WINDOW[0] * dpr + x * dpr) * 4) as usize;
+                    assert!(
+                        pixels[at..at + 4]
+                            .iter()
+                            .zip([255, 0, 0, alpha])
+                            .all(|(a, b)| a.abs_diff(b) <= 1),
+                        "{layers}/{tall}/{dpr}/{frame} {x},{y}: {:?}",
+                        &pixels[at..at + 4]
+                    );
+                }
+                let kept = if bytes > LIMIT { layers - 1 } else { layers };
+                assert_eq!(observed.color_targets.len(), kept);
+                // Admission reserves color + potential depth (12 B/px); only color
+                // is persistent now (4 B/px), even on cold raster frames.
+                assert_eq!(
+                    observed.texture_bytes,
+                    bytes / 3 / layers as u64 * kept as u64
+                );
+                let cached = if frame > 0 && sequence[frame - 1] == dpr {
+                    RetainedSurfaceCompileAction::Reuse
+                } else {
+                    RetainedSurfaceCompileAction::Reraster
+                };
+                assert_eq!(
+                    observed
+                        .actions
+                        .iter()
+                        .filter(|action| **action == RetainedSurfaceCompileAction::Transient)
+                        .count(),
+                    layers - kept
+                );
+                assert!(observed.actions.iter().all(|action| *action == cached
+                    || *action == RetainedSurfaceCompileAction::Transient));
+                for (key, desc) in &observed.color_targets {
+                    assert_eq!(
+                        (desc.width(), desc.height()),
+                        (physical_width, physical_height)
+                    );
+                    assert!(viewport.has_compatible_persistent_render_target(*key, desc));
+                }
+                let first = first
+                    .entry(dpr)
+                    .or_insert_with(|| observed.color_targets.clone());
+                assert_eq!(&observed.color_targets, first);
+            }
+            eprintln!("full window: layers={layers} tall={tall} DPR sequence={sequence:?} passed");
         }
     }
     Ok(())

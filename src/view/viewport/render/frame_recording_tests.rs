@@ -4,33 +4,22 @@ use crate::style::{
     Transform, Translate,
 };
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, DirtyPassMask, Element, ElementTrait, EventTarget,
-    Image, LayoutConstraints, LayoutPlacement, Layoutable, Renderable,
-    ShadowPaintRecordingCapability, Size, SpatialPlacementSnapshot,
-    SpatialPositionReferenceSnapshot, Svg, Text, TextArea, UiBuildContext,
+    DirtyFlags, DirtyPassMask, Element, ElementTrait, EventTarget, Image, LayoutConstraints,
+    LayoutPlacement, Size, Svg, Text, TextArea, UiBuildContext,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::{Node, NodeArena, NodeKey};
 use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
-use crate::view::viewport::ViewportPaintRendererMode;
 use crate::view::{ImageSource, SvgSource, image_resource};
-use std::any::Any;
 use std::sync::Arc;
 
+use crate::view::paint::PreparedArtifactSurfaceFrame;
+
 use super::{
-    ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES, AutoAuthorityKind, AutoAuthorityRejection,
-    AutoAuthorityTrace, CachedCompiledGraph, FrameDisposition, FramePaintSelection,
-    PaintAuthorityFallbackStage, PaintAuthorityKind, PaintAuthorityTelemetry,
-    RecordedArtifactCandidate, RecordedArtifactPayload,
-    RetainedAutoDecision as AutoAuthorityDecision, RetainedAutoTerminalFailureStage, Viewport,
-    artifact_surface_raster_context, begin_paint_authority_telemetry_attempt, build_root_legacy,
-    compile_auto_artifact_frame, enable_paint_authority_test_capture, finish_frame_dirty_lifecycle,
-    frame_disposition, paint_authority_test_capture_enabled,
-    retained_auto_circuit_breaker_selection, retained_auto_terminal_fallback_stage,
-    select_retained_auto_authority, should_store_compile_cache,
-    store_paint_authority_test_snapshot, take_paint_authority_test_snapshot,
-    terminal_failure_stage,
+    ARTIFACT_SURFACE_AGGREGATE_BUDGET_BYTES, FrameDisposition, RecordedFrame, Viewport,
+    artifact_surface_raster_context, compile_recorded_frame, finish_frame_dirty_lifecycle,
+    frame_disposition, record_frame_for_test, should_store_compile_cache,
 };
 
 fn constraints() -> (LayoutConstraints, LayoutPlacement) {
@@ -56,21 +45,6 @@ fn constraints() -> (LayoutConstraints, LayoutPlacement) {
             percent_base_height: Some(240.0),
         },
     )
-}
-
-fn seed_empty_compile_cache(viewport: &mut Viewport) {
-    let mut graph = FrameGraph::new();
-    graph
-        .compile()
-        .expect("empty graph compiles for cache fixture");
-    let topology_key = graph.topology_cache_key_for_test();
-    let compiled_graph = graph
-        .take_compiled_graph()
-        .expect("compiled empty graph owns a topology cache payload");
-    viewport.frame.compile_cache = Some(CachedCompiledGraph {
-        topology_key,
-        graph: compiled_graph,
-    });
 }
 
 fn colored_element(id: u64, x: f32, color: Color) -> Element {
@@ -521,146 +495,6 @@ fn prepared_auto_text_area_with_content(
     (arena, vec![root], root)
 }
 
-fn prepared_transform_leaf() -> (NodeArena, Vec<NodeKey>) {
-    let mut element = colored_element(0xc4_b001, 10.0, Color::rgb(230, 20, 30));
-    let mut style = Style::new();
-    style.set_transform(Transform::new([Translate::x(Length::px(6.0))]));
-    element.apply_style(style);
-    let mut arena = new_test_arena();
-    let root = commit_element(&mut arena, Box::new(element));
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    (arena, vec![root])
-}
-
-fn prepared_nested_transform_tree() -> (NodeArena, Vec<NodeKey>, NodeKey) {
-    let nested_colored = |id, x, width, height, color| {
-        let mut element = Element::new_with_id(id, x, 1.0, width, height);
-        let mut style = Style::new();
-        style.insert(
-            PropertyId::Layout,
-            ParsedValue::Layout(crate::style::Layout::Grid),
-        );
-        style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(color));
-        element.apply_style(style);
-        element
-    };
-    let mut arena = new_test_arena();
-    let root = commit_element(
-        &mut arena,
-        Box::new(nested_colored(
-            0xc5_c001,
-            4.0,
-            40.0,
-            24.0,
-            Color::rgb(20, 40, 80),
-        )),
-    );
-    let child = commit_child(
-        &mut arena,
-        root,
-        Box::new(nested_colored(
-            0xc5_c002,
-            8.0,
-            18.0,
-            10.0,
-            Color::rgb(180, 60, 20),
-        )),
-    );
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    crate::view::test_support::get_element_mut::<Element>(&arena, root)
-        .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-            10.0, 0.0, 0.0,
-        ))));
-    crate::view::test_support::get_element_mut::<Element>(&arena, child)
-        .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-            20.0, 0.0, 0.0,
-        ))));
-    (arena, vec![root], child)
-}
-
-fn prepared_general_transform_scene() -> (NodeArena, Vec<NodeKey>) {
-    let general_colored = |id, x, width, height, color| {
-        let mut element = Element::new_with_id(id, x, 4.0, width, height);
-        let mut style = Style::new();
-        style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-        style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(color));
-        element.apply_style(style);
-        element
-    };
-    let mut arena = new_test_arena();
-    let root = commit_element(
-        &mut arena,
-        Box::new(general_colored(
-            0xc5_d001,
-            4.0,
-            120.0,
-            120.0,
-            Color::rgb(20, 40, 80),
-        )),
-    );
-    let child = commit_child(
-        &mut arena,
-        root,
-        Box::new(general_colored(
-            0xc5_d002,
-            8.0,
-            70.0,
-            70.0,
-            Color::rgb(180, 60, 20),
-        )),
-    );
-    let deep = commit_child(
-        &mut arena,
-        child,
-        Box::new(general_colored(
-            0xc5_d003,
-            12.0,
-            20.0,
-            20.0,
-            Color::rgb(40, 180, 20),
-        )),
-    );
-    let sibling = commit_child(
-        &mut arena,
-        root,
-        Box::new(general_colored(
-            0xc5_d004,
-            44.0,
-            20.0,
-            20.0,
-            Color::rgb(80, 20, 180),
-        )),
-    );
-    let second_root = commit_element(
-        &mut arena,
-        Box::new(general_colored(
-            0xc5_d005,
-            140.0,
-            40.0,
-            40.0,
-            Color::rgb(200, 120, 20),
-        )),
-    );
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, root, measure, place);
-    measure_and_place(&mut arena, second_root, measure, place);
-    for (node, x) in [
-        (root, 5.0),
-        (child, 7.0),
-        (deep, 9.0),
-        (sibling, 11.0),
-        (second_root, 13.0),
-    ] {
-        crate::view::test_support::get_element_mut::<Element>(&arena, node)
-            .set_resolved_transform_for_test(Some(glam::Mat4::from_translation(glam::Vec3::new(
-                x, 0.0, 0.0,
-            ))));
-    }
-    (arena, vec![root, second_root])
-}
-
 fn prepared_transform_child_isolation_tree() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey)
 {
     let mixed_element = |id, x, y, width, height, color| {
@@ -936,82 +770,22 @@ fn assert_generic_primary(
     generations: &PaintGenerationTracker,
     ctx: &UiBuildContext,
 ) {
-    let decision = select_retained_auto_authority(arena, roots, properties, generations, ctx, true);
-    let AutoAuthorityDecision::Artifact { candidate, trace } = decision else {
-        panic!(
-            "valid complete recording must select generic Artifact: {:?}",
-            auto_authority_trace(&decision).rejections
-        );
-    };
-    assert!(trace.rejections.is_empty());
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
+    let RecordedFrame { frame, .. } =
+        record_frame_for_test(arena, roots, properties, generations, ctx);
     let count = frame.raster_plan().nodes().len();
     let mut viewport = Viewport::new();
     assert_eq!(
         emit_selected_artifact_surface(
             "generic primary",
             &mut viewport,
-            candidate,
+            frame,
             UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone())
         ),
         count
     );
 }
 
-// Direct coverage of the historical cascade, now compiled only for tests. Callers
-// use this name explicitly; the actual Auto primary is covered separately by
-// generic_selection_tests and the native single-Viewport corpus.
-
-fn auto_decision(
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    ctx: &UiBuildContext,
-) -> AutoAuthorityDecision {
-    let (properties, generations) = synced_paint_state(arena, roots);
-    select_retained_auto_authority(arena, roots, &properties, &generations, ctx, true)
-}
-
-fn telemetry_for_auto_decision(decision: AutoAuthorityDecision) -> PaintAuthorityTelemetry {
-    let (selection, authority, trace) = match decision {
-        AutoAuthorityDecision::Artifact { candidate, trace } => (
-            FramePaintSelection::AutoArtifact(candidate),
-            AutoAuthorityKind::Artifact,
-            trace,
-        ),
-        AutoAuthorityDecision::Legacy { trace } => (
-            FramePaintSelection::AutoLegacy,
-            AutoAuthorityKind::Legacy,
-            trace,
-        ),
-    };
-    PaintAuthorityTelemetry::from_selection(
-        ViewportPaintRendererMode::RetainedAuto,
-        &selection,
-        Some((authority, trace)),
-    )
-}
-
-fn auto_authority_kind(decision: &AutoAuthorityDecision) -> AutoAuthorityKind {
-    match decision {
-        AutoAuthorityDecision::Artifact { .. } => AutoAuthorityKind::Artifact,
-        AutoAuthorityDecision::Legacy { .. } => AutoAuthorityKind::Legacy,
-    }
-}
-
-fn auto_authority_trace(decision: &AutoAuthorityDecision) -> &AutoAuthorityTrace {
-    match decision {
-        AutoAuthorityDecision::Artifact { trace, .. } | AutoAuthorityDecision::Legacy { trace } => {
-            trace
-        }
-    }
-}
-
-fn assert_native_host_retained_closure(
-    host: &str,
-    arena: &NodeArena,
-    roots: &[NodeKey],
-    ctx: &UiBuildContext,
-) {
+fn assert_native_host_retained_closure(host: &str, arena: &NodeArena, roots: &[NodeKey]) {
     let (properties, generations) = synced_paint_state(arena, roots);
     let record = |mode| {
         crate::view::paint::record_coverage_manifest(
@@ -1030,19 +804,6 @@ fn assert_native_host_retained_closure(
         crate::view::paint::canonical_manifest_matches_for_test(&metadata, &full),
         "{host} metadata/full manifests must be canonical"
     );
-
-    let decision =
-        select_retained_auto_authority(arena, roots, &properties, &generations, ctx, true);
-    if let AutoAuthorityDecision::Legacy { trace } = decision {
-        panic!(
-            "native {host} must not select Legacy under RetainedAuto: {:?}",
-            trace
-                .rejections
-                .iter()
-                .map(AutoAuthorityRejection::debug_label)
-                .collect::<Vec<_>>()
-        );
-    }
 }
 
 fn assert_native_root_opacity_artifact(
@@ -1083,13 +844,8 @@ fn assert_native_root_opacity_artifact(
         );
     }
     let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let AutoAuthorityDecision::Artifact { candidate, trace } =
-        select_retained_auto_authority(arena, roots, &properties, &generations, &ctx, true)
-    else {
-        panic!("{host}: complete recording must select Artifact")
-    };
-    assert!(trace.rejections.is_empty());
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
+    let RecordedFrame { frame, .. } =
+        record_frame_for_test(arena, roots, &properties, &generations, &ctx);
     let resident_count = frame.residents().len();
     let mut viewport = Viewport::new();
     let owner = viewport.begin_retained_surface_frame_stage().unwrap();
@@ -1097,7 +853,7 @@ fn assert_native_root_opacity_artifact(
     let mut ctx = ctx;
     let target = ctx.allocate_target(&mut graph);
     ctx.set_current_target(target);
-    compile_auto_artifact_frame(&mut viewport, Some(owner), &mut graph, candidate, &ctx);
+    compile_recorded_frame(&mut viewport, Some(owner), &mut graph, frame, &ctx);
     assert_eq!(
         viewport
             .pending_artifact_surface_resident_keys_for_test()
@@ -1114,26 +870,10 @@ fn assert_native_artifact_surface_authority(
     roots: &[NodeKey],
     emit_transaction: bool,
 ) {
-    let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let recording_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let (properties, generations) = synced_paint_state(arena, roots);
-    let AutoAuthorityDecision::Artifact { candidate, trace } = select_retained_auto_authority(
-        arena,
-        roots,
-        &properties,
-        &generations,
-        &selection_ctx,
-        true,
-    ) else {
-        panic!("{host}: generic no-scroll topology must select Artifact")
-    };
-    assert!(
-        !trace
-            .rejections
-            .iter()
-            .any(|rejection| matches!(rejection, AutoAuthorityRejection::ArtifactPrepare { .. })),
-        "{host}: selected Artifact cannot contain its own terminal rejection: {trace:?}"
-    );
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
+    let RecordedFrame { frame, .. } =
+        record_frame_for_test(arena, roots, &properties, &generations, &recording_ctx);
     assert!(
         !frame.raster_plan().nodes().is_empty(),
         "{host}: detached surfaces"
@@ -1155,20 +895,20 @@ fn assert_native_artifact_surface_authority(
     let mut execution_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let target = execution_ctx.allocate_target(&mut graph);
     execution_ctx.set_current_target(target);
-    compile_auto_artifact_frame(
+    compile_recorded_frame(
         &mut viewport,
         Some(frame_owner),
         &mut graph,
-        candidate,
+        frame,
         &execution_ctx,
     );
-    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true,));
+    assert!(viewport.finish_retained_surface_transaction_for_frame(Some(frame_owner), true));
 }
 
 fn emit_selected_artifact_surface(
     host: &str,
     viewport: &mut Viewport,
-    candidate: RecordedArtifactCandidate,
+    frame: PreparedArtifactSurfaceFrame,
     ctx: UiBuildContext,
 ) -> usize {
     let owner = viewport
@@ -1178,168 +918,12 @@ fn emit_selected_artifact_surface(
     let mut ctx = ctx;
     let target = ctx.allocate_target(&mut graph);
     ctx.set_current_target(target);
-    compile_auto_artifact_frame(viewport, Some(owner), &mut graph, candidate, &ctx);
+    compile_recorded_frame(viewport, Some(owner), &mut graph, frame, &ctx);
     let pending = viewport
         .pending_artifact_surface_resident_keys_for_test()
         .unwrap_or_else(|| panic!("{host}: artifact transaction must be staged"));
     assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
     pending.len()
-}
-
-struct TransparentContentsClipParent {
-    id: u64,
-    scissor: [u32; 4],
-    children: Vec<NodeKey>,
-}
-
-impl Layoutable for TransparentContentsClipParent {
-    fn measure(&mut self, _constraints: LayoutConstraints, _arena: &mut NodeArena) {}
-    fn place(&mut self, _placement: LayoutPlacement, _arena: &mut NodeArena) {}
-    fn measured_size(&self) -> (f32, f32) {
-        (1.0, 1.0)
-    }
-    fn set_layout_width(&mut self, _width: f32) {}
-    fn set_layout_height(&mut self, _height: f32) {}
-}
-
-impl EventTarget for TransparentContentsClipParent {}
-
-impl Renderable for TransparentContentsClipParent {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        ctx.into_state()
-    }
-}
-
-impl ElementTrait for TransparentContentsClipParent {
-    fn stable_id(&self) -> u64 {
-        self.id
-    }
-
-    fn box_model_snapshot(&self) -> BoxModelSnapshot {
-        BoxModelSnapshot {
-            node_id: self.id,
-            parent_id: None,
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-            border_radius: 0.0,
-            should_render: true,
-        }
-    }
-
-    fn compositor_spatial_placement_snapshot(&self) -> Option<SpatialPlacementSnapshot> {
-        Some(SpatialPlacementSnapshot::new(
-            SpatialPositionReferenceSnapshot::LayoutParent(None),
-            [0.0; 2],
-            [0.0; 2],
-            [0.0; 2],
-            [0.0; 2],
-        ))
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn shadow_paint_recording_capability(
-        &self,
-        _arena: &NodeArena,
-        _deferred_phase_root: bool,
-        _recording_context: &crate::view::paint::PaintRecordingContext,
-    ) -> ShadowPaintRecordingCapability {
-        ShadowPaintRecordingCapability::Transparent
-    }
-
-    fn contents_clip_geometry(
-        &self,
-    ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
-        Some(crate::view::compositor::property_tree::ClipGeometry::Viewport(self.scissor))
-    }
-
-    fn children(&self) -> &[NodeKey] {
-        &self.children
-    }
-
-    fn sync_children_mirror(&mut self, children: &[NodeKey]) {
-        self.children.clear();
-        self.children.extend_from_slice(children);
-    }
-}
-
-fn prepared_contents_clipped_leaf() -> (NodeArena, Vec<NodeKey>) {
-    let mut arena = new_test_arena();
-    let parent = commit_element(
-        &mut arena,
-        Box::new(TransparentContentsClipParent {
-            id: 0x8c20,
-            scissor: [4, 6, 24, 18],
-            children: Vec::new(),
-        }),
-    );
-    let child = commit_child(
-        &mut arena,
-        parent,
-        Box::new(colored_element(0x8c21, 10.0, Color::rgb(230, 20, 30))),
-    );
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, child, measure, place);
-    (arena, vec![parent])
-}
-
-fn prepared_mixed_eligibility_roots() -> (NodeArena, Vec<NodeKey>) {
-    let mut arena = new_test_arena();
-    let safe_leaf = commit_element(
-        &mut arena,
-        Box::new(colored_element(10, 10.0, Color::rgb(230, 20, 30))),
-    );
-    let legacy_subtree = commit_element(
-        &mut arena,
-        Box::new(colored_element(20, 110.0, Color::rgb(20, 210, 40))),
-    );
-    commit_child(
-        &mut arena,
-        legacy_subtree,
-        Box::new(colored_element(21, 10.0, Color::rgb(30, 40, 220))),
-    );
-    let (measure, place) = constraints();
-    measure_and_place(&mut arena, safe_leaf, measure, place);
-    measure_and_place(&mut arena, legacy_subtree, measure, place);
-    (arena, vec![safe_leaf, legacy_subtree])
-}
-
-fn build_roots_graph(
-    mut arena: NodeArena,
-    roots: &[NodeKey],
-    through_production_dispatch: bool,
-) -> FrameGraph {
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    for &root_key in roots {
-        let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-        let next_state = if through_production_dispatch {
-            build_root_legacy(&mut graph, &mut arena, root_key, child_ctx)
-        } else {
-            arena
-                .with_element_taken(root_key, |root, arena| {
-                    root.build(&mut graph, arena, child_ctx)
-                })
-                .expect("legacy root should exist")
-        };
-        ctx.set_state(next_state);
-    }
-    graph
 }
 
 fn observe_compositor_state(
@@ -1395,42 +979,25 @@ fn assert_composite_dirty_preserved(arena: &NodeArena, key: NodeKey) {
     );
 }
 
-mod authority_deletion_inventory_tests;
-
 mod composite_dirty_tests;
-mod mode_and_failure_tests;
+mod frame_failure_tests;
+mod generic_selection_tests;
 mod native_authority_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_component_inventory_tests;
-
-mod production_artifact_tests;
-
+mod nested_scroll_tests;
+mod property_boundary_forest_branching_tests;
+mod property_boundary_forest_depth_three_tests;
+mod property_boundary_forest_linear_tests;
+mod property_boundary_forest_multi_root_tests;
+mod property_boundary_forest_plain_root_tests;
+mod property_boundary_forest_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod stage_c_surface_dag_producer_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod stage_c_surface_materialization_tests;
 mod stage_c_zero_surface_v2_tests;
-mod telemetry_tests;
-
-mod generic_selection_tests;
-
 mod text_transform_tests;
-
-mod property_boundary_forest_branching_tests;
-
-mod property_boundary_forest_depth_three_tests;
-
-mod property_boundary_forest_linear_tests;
-
-mod property_boundary_forest_multi_root_tests;
-
-mod property_boundary_forest_plain_root_tests;
-
-mod property_boundary_forest_tests;
-
-mod nested_scroll_tests;
-
-mod window_showcase_tests;
 
 fn prepared_sampled_inline_span_layout_transition() -> (NodeArena, Vec<NodeKey>) {
     let mut arena = new_test_arena();
@@ -1536,85 +1103,6 @@ fn prepared_native_text_transform(
     (arena, vec![root], child)
 }
 
-fn prepared_nested_opacity_tree() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey) {
-    let (arena, roots, root, child, descendant) = prepared_transform_child_isolation_tree();
-    crate::view::test_support::get_element_mut::<Element>(&arena, root)
-        .set_resolved_transform_for_test(None);
-    crate::view::test_support::get_element_mut::<Element>(&arena, root).set_opacity(0.5);
-    crate::view::test_support::get_element_mut::<Element>(&arena, child).set_opacity(0.25);
-    crate::view::test_support::get_element_mut::<Element>(&arena, descendant).set_opacity(0.75);
-    (arena, roots, root, child, descendant)
-}
-
-fn prepared_exact_depth_three_nested_scroll_scene() -> (
-    NodeArena,
-    Vec<NodeKey>,
-    PropertyTrees,
-    PaintGenerationTracker,
-) {
-    let (mut arena, outer, _inner, third_scroll, _properties, _generations) =
-        crate::view::paint::nested_scroll_plan_fixture();
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(ScrollDirection::Vertical),
-    );
-    style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
-    {
-        let mut element =
-            crate::view::test_support::get_element_mut::<Element>(&arena, third_scroll);
-        element.apply_style(style);
-        element.layout_state.layout_position.x = 10.0;
-        element.layout_state.layout_position.y = 20.0;
-        element.layout_state.layout_size = Size {
-            width: 100.0,
-            height: 600.0,
-        };
-        element.layout_state.layout_inner_position.x = 10.0;
-        element.layout_state.layout_inner_position.y = 20.0;
-        element.layout_state.layout_inner_size = Size {
-            width: 100.0,
-            height: 600.0,
-        };
-        element.layout_state.content_size = Size {
-            width: 100.0,
-            height: 900.0,
-        };
-        element.set_scroll_offset((0.0, 0.0));
-        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-    let leaf = arena.insert(Node::new(Box::new(Element::new_with_id(
-        0xe2_b3f0, 10.0, 20.0, 100.0, 900.0,
-    ))));
-    arena.set_parent(leaf, Some(third_scroll));
-    arena.push_child(third_scroll, leaf);
-    {
-        let mut element = crate::view::test_support::get_element_mut::<Element>(&arena, leaf);
-        element.layout_state.layout_position.x = 10.0;
-        element.layout_state.layout_position.y = 20.0;
-        element.layout_state.layout_size = Size {
-            width: 100.0,
-            height: 900.0,
-        };
-        element.layout_state.layout_inner_position.x = 10.0;
-        element.layout_state.layout_inner_position.y = 20.0;
-        element.layout_state.layout_inner_size = Size {
-            width: 100.0,
-            height: 900.0,
-        };
-        element.layout_state.content_size = Size {
-            width: 100.0,
-            height: 900.0,
-        };
-        element.set_background_color_value(Color::rgb(24, 48, 72));
-        element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
-    }
-    arena.refresh_subtree_dirty_cache(outer);
-    let roots = vec![outer];
-    let (properties, generations) = synced_paint_state(&arena, &roots);
-    (arena, roots, properties, generations)
-}
-
 fn selected_artifact_surface(
     host: &str,
     arena: &NodeArena,
@@ -1622,16 +1110,9 @@ fn selected_artifact_surface(
     properties: &PropertyTrees,
     generations: &PaintGenerationTracker,
     ctx: &UiBuildContext,
-) -> (RecordedArtifactCandidate, AutoAuthorityTrace, usize) {
-    let decision = select_retained_auto_authority(arena, roots, properties, generations, ctx, true);
-    let AutoAuthorityDecision::Artifact { candidate, trace } = decision else {
-        panic!(
-            "{host}: production selector must choose Artifact, got {:?}: {:?}",
-            auto_authority_kind(&decision),
-            auto_authority_trace(&decision).rejections
-        )
-    };
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
+) -> (PreparedArtifactSurfaceFrame, usize) {
+    let RecordedFrame { frame, .. } =
+        record_frame_for_test(arena, roots, properties, generations, ctx);
     let surface_count = frame.raster_plan().nodes().len();
     assert_ne!(surface_count, 0, "{host}: detached surface count");
     assert!(frame.raster_plan().nodes().iter().all(|node| matches!(
@@ -1639,5 +1120,5 @@ fn selected_artifact_surface(
         crate::view::paint::RetainedSurfaceRasterRole::Transform
             | crate::view::paint::RetainedSurfaceRasterRole::PropertyEffect
     )));
-    (candidate, trace, surface_count)
+    (frame, surface_count)
 }

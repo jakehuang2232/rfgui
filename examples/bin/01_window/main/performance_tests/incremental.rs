@@ -29,7 +29,6 @@ fn native_incremental_demo_frames() -> Result<(), String> {
     })?;
     for dpr in [1, 2] {
         let mut viewport = Viewport::new();
-        viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
         let root = rfgui::ui::render_root(|| rsx! { <MainScene /> });
         let now = Instant::now();
         let mut samples = Vec::new();
@@ -42,7 +41,6 @@ fn native_incremental_demo_frames() -> Result<(), String> {
                 dpr as f32,
                 now + std::time::Duration::from_millis(frame * 16),
             )?;
-            assert!(result.artifact_selected);
             if frame >= 30 {
                 samples.push(result.cpu_ms);
                 if updates == "idle" {

@@ -84,7 +84,6 @@ fn transformed_span_turns_its_content_about_its_box() -> Result<(), String> {
             dpr as f32,
             Instant::now(),
         )?;
-        assert!(frame.artifact_selected);
         let pixels = gpu.read(&frame.texture, size)?;
         let arena = viewport.node_arena();
         let red = find(arena, |b| b.width == 40.0 && b.height == 40.0);

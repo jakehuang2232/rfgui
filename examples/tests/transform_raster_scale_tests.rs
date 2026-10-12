@@ -55,7 +55,6 @@ fn render(gpu: &gpu::Gpu, tree: &RsxNode, dpr: u32) -> Result<Vec<u8>, String> {
         dpr as f32,
         Instant::now(),
     )?;
-    assert!(frame.artifact_selected);
     gpu.read(&frame.texture, size)
 }
 

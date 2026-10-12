@@ -265,8 +265,7 @@ impl RetainedSurfaceRasterStamp {
 /// Private two-step artifact raster program stored inside the one retained
 /// resident stamp type. A surface's own composite geometry is deliberately
 /// absent: top-level placement is a sealed plan fact, while surface-receiver
-/// placement belongs to the parent's nested dependency. Exact-shape legacy
-/// dependencies cannot be represented here.
+/// placement belongs to the parent's nested dependency.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ArtifactSurfaceRasterProgramStamp {
     window: Option<raster_window::RasterWindow>,
@@ -3578,9 +3577,8 @@ pub(crate) enum ArtifactSurfaceResidentSealError {
 /// Graph-inert full-set identity for every resident in one artifact Surface
 /// DAG. It deliberately reuses [`RetainedSurfaceRasterStamp`], because the
 /// resident pool and [`RetainedSurfaceResidentKey`] type must remain a single
-/// authority across legacy and artifact producers. Artifact residents use the
-/// generic role-tagged `Surface` variant; the legacy property-effect variant
-/// remains confined to the retained planner until cutover.
+/// authority. Artifact residents use the generic role-tagged `Surface`
+/// variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SealedArtifactSurfaceResidentEntry {
     resident_key: RetainedSurfaceResidentKey,
@@ -3960,9 +3958,9 @@ fn retained_surface_rect_is_opaque(
 }
 
 /// Emits one already-prepared paint operation without deriving clip, mask, or
-/// surface ownership. The legacy artifact compiler and the Surface DAG
-/// executor share this exhaustive seven-variant primitive so their payload
-/// behavior cannot drift while their sealed scheduling remains independent.
+/// surface ownership. The Surface DAG executor and the direct-command test
+/// compiler share this exhaustive primitive so their payload behavior cannot
+/// drift while their scheduling remains independent.
 fn emit_artifact_surface_paint_op(op: &PaintOp, graph: &mut FrameGraph, ctx: &mut UiBuildContext) {
     match op {
         PaintOp::PreparedGpu(op) => op.source.emit(graph, ctx, op.params),
@@ -4114,7 +4112,7 @@ fn emit_artifact_surface_paint_op(op: &PaintOp, graph: &mut FrameGraph, ctx: &mu
 /// shadows paint against the incoming parent scissor; the owner's exact
 /// `Replace` self clip begins at decoration/media.  Keeping this proof strict
 /// prevents a fragmented or incomplete clip store from silently changing
-/// legacy paint order.
+/// paint order.
 fn exact_self_clip_shadow_prefix_len(
     artifact: &PaintArtifact,
     chunk: &super::PaintChunk,

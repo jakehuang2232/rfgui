@@ -51,27 +51,7 @@ fn text_caret_position_uses_screen_coordinates_once() {
 }
 
 #[test]
-fn retained_transform_text_bounds_apply_nonzero_inherited_paint_offset() {
-    let text = Text::new(3.25, 4.5, 10.0, 5.0, "offset bounds");
-    let arena = arena();
-    let exact = text
-        .retained_transform_output_bounds(&arena, [0.2, -0.3], 1.0)
-        .expect("Text explicitly owns exact transformed-ancestor coverage");
-    assert_eq!(
-        [exact.x, exact.y, exact.width, exact.height].map(f32::to_bits),
-        [3.45, 4.2, 10.0, 5.0].map(f32::to_bits)
-    );
-    let legacy = text
-        .legacy_transform_output_bounds(&arena, [0.2, -0.3], 1.0)
-        .expect("legacy Text coverage");
-    assert_eq!(
-        [legacy.x, legacy.y, legacy.width, legacy.height].map(f32::to_bits),
-        [exact.x, exact.y, exact.width, exact.height].map(f32::to_bits)
-    );
-}
-
-#[test]
-fn text_build_emits_prepared_input_pass_from_shaped_context() {
+fn text_records_one_prepared_text_op_from_shaped_context() {
     let mut text = Text::new(0.0, 0.0, 92.0, 80.0, "prepared text");
     place_text_for_read_only_ifc_test(&mut text, 92.0, 120.0);
 
@@ -95,26 +75,7 @@ fn text_build_emits_prepared_input_pass_from_shaped_context() {
         "live color must be injected at bridge time"
     );
 
-    let pass_names = build_text_for_read_only_ifc_test(&mut text);
-    assert_eq!(pass_names.len(), 1);
-    assert!(pass_names[0].ends_with("render_pass::text_pass::TextPreparedInputPass"));
-}
-
-#[test]
-fn text_build_skips_non_renderable_text() {
-    let mut empty = Text::new(0.0, 0.0, 92.0, 80.0, "");
-    place_text_for_read_only_ifc_test(&mut empty, 92.0, 120.0);
-    assert!(build_text_for_read_only_ifc_test(&mut empty).is_empty());
-
-    let mut transparent = Text::new(0.0, 0.0, 92.0, 80.0, "transparent candidate text");
-    transparent.set_opacity(0.0);
-    place_text_for_read_only_ifc_test(&mut transparent, 92.0, 120.0);
-    assert!(build_text_for_read_only_ifc_test(&mut transparent).is_empty());
-
-    let mut hidden = Text::new(0.0, 0.0, 92.0, 80.0, "hidden candidate text");
-    place_text_for_read_only_ifc_test(&mut hidden, 92.0, 120.0);
-    hidden.layout_state.should_render = false;
-    assert!(build_text_for_read_only_ifc_test(&mut hidden).is_empty());
+    assert_eq!(recorded_text_op_count_for_read_only_ifc_test(text), 1);
 }
 
 #[test]

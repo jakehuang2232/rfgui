@@ -23,10 +23,7 @@ use crate::view::svg_resource::{
     set_svg_raster_loading_for_test, set_svg_raster_ready_for_test, snapshot_svg_document,
     snapshot_svg_raster, svg_raster_ref_count_for_test,
 };
-use crate::view::test_support::{
-    commit_child, commit_element, measure_and_place, new_test_arena,
-};
-use glam::{Mat4, Vec3};
+use crate::view::test_support::{commit_element, measure_and_place, new_test_arena};
 
 mod prepared_request_state_tests;
 

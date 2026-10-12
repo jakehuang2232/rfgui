@@ -47,7 +47,6 @@ fn deferred_custom_leaves_paint_over_later_siblings() -> Result<(), String> {
             begin(&mut v, gpu, dpr)?;
             let label = if fill { "fill" } else { "GPU source" };
             let observed = v.render_single_viewport_scene_for_test()?;
-            assert!(observed.artifact_selected, "{label} DPR {dpr}");
             let pixels = read_submitted_texture(&observed.texture, gpu, [80 * dpr, 64 * dpr])?;
             probe(&pixels, dpr, center, [255, 0, 0, 255], label);
             probe(

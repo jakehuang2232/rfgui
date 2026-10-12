@@ -126,7 +126,7 @@ fn native_text_globals_reuse_buffers_without_overwriting_other_passes() -> Resul
                 // image, or two passes overwriting one another, from becoming
                 // a valid temporal reference. Font raster shape itself is not
                 // this gate's oracle: translations/duplication below use the
-                // first frame of this same path, never Legacy output.
+                // first frame of this same path.
                 let mut coverage = [[0; 2]; 2];
                 for y in 0..size[1] {
                     for x in 0..size[0] {

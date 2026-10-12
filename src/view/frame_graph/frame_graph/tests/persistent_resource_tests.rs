@@ -74,7 +74,7 @@ fn persistent_read_without_current_frame_producer_compiles() {
     let mut graph = FrameGraph::new();
     let texture = graph.declare_persistent_texture_internal::<()>(
         test_texture_desc(),
-        PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, 17),
+        PersistentTextureKey::retained(RetainedTextureRole::TransformedColor, 17),
     );
     graph.add_graphics_pass(ReadPass {
         input: InSlot::with_handle(texture.handle().expect("persistent texture handle")),
@@ -86,13 +86,15 @@ fn persistent_read_without_current_frame_producer_compiles() {
 }
 
 #[test]
-fn root_effect_color_maps_to_distinct_depth_stencil_role() {
-    let color =
-        PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, 0xABCD_EF01_2345_6789);
+fn transformed_color_maps_to_distinct_depth_stencil_role() {
+    let color = PersistentTextureKey::retained(
+        RetainedTextureRole::TransformedColor,
+        0xABCD_EF01_2345_6789,
+    );
     assert_eq!(
         color.depth_stencil(),
         Some(PersistentTextureKey::retained(
-            RetainedTextureRole::RootEffectDepthStencil,
+            RetainedTextureRole::TransformedDepthStencil,
             0xABCD_EF01_2345_6789,
         ))
     );

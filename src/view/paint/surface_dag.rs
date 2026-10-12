@@ -482,7 +482,7 @@ impl SurfaceDagClipRebase {
 /// union. An empty `local_clips` union
 /// retains `receiver_clip`, but carries no local generation authority: the
 /// eventual raster-generation semantics is not applicable (`None`), rather
-/// than either `ArtifactLive` or `LegacyDetached`.
+/// than `ArtifactLive`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SurfaceDagClipClosureProjection {
     receiver_clip: Option<ClipNodeId>,
@@ -539,9 +539,7 @@ impl ArtifactSurfaceCoverageSpan {
     }
 }
 
-/// The complete generic coverage vocabulary. The five exact-shape retained
-/// raster dependencies remain live in the legacy executor, but cannot be
-/// represented by this Stage C ownership forest.
+/// The complete generic coverage vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ArtifactSurfaceCoverageStep {
     ArtifactSpan(ArtifactSurfaceCoverageSpan),
@@ -1141,7 +1139,7 @@ impl SurfaceDag {
     }
 
     /// Resolves a generic receiver to its surface node. This is why collapsing
-    /// legacy `Surface(id)` and `ScrollContent(id)` receiver variants loses no
+    /// the former `Surface(id)` and `ScrollContent(id)` receiver variants loses no
     /// information: the referenced node's own `kind` retains that distinction.
     #[cfg(test)]
     pub(crate) fn receiver_node(

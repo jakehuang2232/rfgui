@@ -45,10 +45,10 @@ pub(crate) fn snap_to_device_pixel(value: f32, scale_factor: f32) -> f32 {
 }
 
 /// Paint offset inherited past one snap point: the incoming paint offset plus
-/// the correction that moves the point onto the physical pixel grid. The
-/// legacy build and the compiler's owner snap chain both use this one
-/// derivation, so they agree bit for bit. The correction is added as a
-/// whole, so a point already on the grid leaves the offset unchanged.
+/// the correction that moves the point onto the physical pixel grid. Hosts
+/// and the compiler's owner snap chain both use this one derivation, so they
+/// agree bit for bit. The correction is added as a whole, so a point already
+/// on the grid leaves the offset unchanged.
 pub(crate) fn paint_offset_after_owner_snap(
     owner_viewport_position: [f32; 2],
     parent_paint_offset: [f32; 2],
@@ -72,57 +72,6 @@ pub(crate) fn paint_offset_after_owner_snap(
         parent_paint_offset[1] + (snap_to_device_pixel(paint[1], scale_factor) - paint[1]),
     ];
     next.into_iter().all(f32::is_finite).then_some(next)
-}
-
-pub(crate) fn build_node_by_id(
-    node: &mut dyn ElementTrait,
-    node_id: u64,
-    graph: &mut crate::view::frame_graph::FrameGraph,
-    arena: &mut crate::view::node_arena::NodeArena,
-    ctx: &mut UiBuildContext,
-) -> bool {
-    if node.stable_id() == node_id {
-        let next_state = node.build(
-            graph,
-            arena,
-            UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone()),
-        );
-        ctx.set_state(next_state);
-        return true;
-    }
-    // Recurse into arena-resident children. The current `node` is already
-    // out of the arena (taken by our caller via `with_element_taken`), so
-    // we clone the child-key list and reborrow the arena per child.
-    let child_keys: Vec<crate::view::node_arena::NodeKey> = node
-        .as_any()
-        .downcast_ref::<Element>()
-        .map(|el| el.children().to_vec())
-        .unwrap_or_default();
-    for child_key in child_keys {
-        let found = arena
-            .with_element_taken(child_key, |child, arena| {
-                build_node_by_id(child.as_mut(), node_id, graph, arena, ctx)
-            })
-            .unwrap_or(false);
-        if found {
-            return true;
-        }
-    }
-    false
-}
-
-pub(crate) fn build_node_by_key(
-    node_key: crate::view::node_arena::NodeKey,
-    stable_id: u64,
-    graph: &mut crate::view::frame_graph::FrameGraph,
-    arena: &mut crate::view::node_arena::NodeArena,
-    ctx: &mut UiBuildContext,
-) -> bool {
-    arena
-        .with_element_taken(node_key, |node, arena| {
-            build_node_by_id(node.as_mut(), stable_id, graph, arena, ctx)
-        })
-        .unwrap_or(false)
 }
 
 pub fn get_ime_cursor_rect_by_id(

@@ -642,8 +642,6 @@ impl OffscreenRenderTargetPool {
         if let Some(entry) = self.entries.remove(&entry_id) {
             // Removing residency must be immediate, but an attachment used
             // this frame may still be referenced by an unsubmitted encoder.
-            // This includes selection fallback: Legacy can render into the
-            // same key before the retained transaction releases old stamps.
             if entry.frame_busy_epoch == self.frame_epoch {
                 self.retired_frame_entries.push(entry);
             } else {

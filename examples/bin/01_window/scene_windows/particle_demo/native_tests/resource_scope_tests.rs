@@ -38,42 +38,35 @@ fn independent_devices_keep_pass_resources_and_survive_other_viewport_release() 
     // IDs can coincide, unlike two devices allocated from one shared Instance.
     let first_gpu = gpu::Gpu::new()?;
     let second_gpu = gpu::Gpu::new()?;
-    for mode in [
-        ViewportPaintRendererMode::RetainedAuto,
-        ViewportPaintRendererMode::Legacy,
-    ] {
-        for dpr in [1, 2] {
-            let root = static_tree();
-            let mut first = Viewport::new();
-            let mut second = Viewport::new();
-            first.set_paint_renderer_mode(mode);
-            second.set_paint_renderer_mode(mode);
-            let expected = pixels(&mut first, &first_gpu, &root, dpr)?;
-            assert!(
-                expected
-                    .chunks_exact(4)
-                    .any(|p| p[0] > 150 && p[1] > 150 && p[2] > 150),
-                "text must actually draw"
-            );
-            assert_eq!(pixels(&mut second, &second_gpu, &root, dpr)?, expected);
-            first.release_render_resource_caches();
-            assert_eq!(
-                pixels(&mut second, &second_gpu, &root, dpr)?,
-                expected,
-                "releasing A preserves B"
-            );
-            assert_eq!(
-                pixels(&mut first, &first_gpu, &root, dpr)?,
-                expected,
-                "A rebuilds its own resources"
-            );
-            drop(first);
-            assert_eq!(
-                pixels(&mut second, &second_gpu, &root, dpr)?,
-                expected,
-                "dropping A preserves B"
-            );
-        }
+    for dpr in [1, 2] {
+        let root = static_tree();
+        let mut first = Viewport::new();
+        let mut second = Viewport::new();
+        let expected = pixels(&mut first, &first_gpu, &root, dpr)?;
+        assert!(
+            expected
+                .chunks_exact(4)
+                .any(|p| p[0] > 150 && p[1] > 150 && p[2] > 150),
+            "text must actually draw"
+        );
+        assert_eq!(pixels(&mut second, &second_gpu, &root, dpr)?, expected);
+        first.release_render_resource_caches();
+        assert_eq!(
+            pixels(&mut second, &second_gpu, &root, dpr)?,
+            expected,
+            "releasing A preserves B"
+        );
+        assert_eq!(
+            pixels(&mut first, &first_gpu, &root, dpr)?,
+            expected,
+            "A rebuilds its own resources"
+        );
+        drop(first);
+        assert_eq!(
+            pixels(&mut second, &second_gpu, &root, dpr)?,
+            expected,
+            "dropping A preserves B"
+        );
     }
     Ok(())
 }

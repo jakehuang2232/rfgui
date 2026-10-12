@@ -1,5 +1,5 @@
-//! An `AnchorParent` child paints after its normal siblings, as in Legacy,
-//! whatever its arena position, and the frame stays on the retained renderer.
+//! An `AnchorParent` child paints after its normal siblings, whatever its
+//! arena position.
 use rfgui::style::{ClipMode, Color, Length, Position};
 use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, rsx};
@@ -63,10 +63,6 @@ fn anchor_parent_child_paints_over_its_normal_sibling_in_either_arena_order() ->
                 dpr as f32,
                 Instant::now(),
             )?;
-            assert!(
-                frame.artifact_selected,
-                "anchor_first={anchor_first} DPR {dpr} fell back to Legacy"
-            );
             let pixels = gpu.read(&frame.texture, size)?;
             let [x, y] = [50 * dpr, 39 * dpr];
             let at = ((y * size[0] + x) * 4) as usize;

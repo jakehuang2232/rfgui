@@ -3,7 +3,7 @@ use super::*;
 use crate::platform::input::{Key, Modifiers};
 use crate::ui::{InputType, KeyEventData, KeyLocation};
 use crate::view::test_support::{commit_child, commit_element, get_element, get_element_mut};
-use crate::view::viewport::{PointerButton, ViewportPaintRendererMode};
+use crate::view::viewport::PointerButton;
 
 const SIZE: [u32; 2] = [220, 96];
 const FRAME_COUNT: usize = 33;
@@ -185,181 +185,170 @@ fn native_text_area_ime_event_lifecycle_stays_retained() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU");
     let _cleanup = TextGpuCleanup;
-    for mode in [
-        ViewportPaintRendererMode::RetainedAuto,
-        ViewportPaintRendererMode::Legacy,
-    ] {
-        for dpr in [1_u32, 2] {
-            let (mut viewport, owner) = scene(dpr);
-            viewport.set_paint_renderer_mode(mode);
-            let start = crate::time::Instant::now();
-            let mut previous_pixels = None;
-            let mut previous_caret = None;
-            let mut selection_probe = None;
-            let mut targets = None;
-            let mut cancel_baseline = None;
-            let mut initial_focused_pixels = None;
-            for frame in 0..FRAME_COUNT {
-                let now = start + std::time::Duration::from_millis(time_ms(frame));
-                apply_event(&mut viewport, owner, frame, now);
-                viewport.begin_offscreen_test_frame(
-                    gpu.device.clone(),
-                    gpu.queue.clone(),
-                    SIZE[0] * dpr,
-                    SIZE[1] * dpr,
-                    FORMAT,
-                )?;
-                viewport.set_scale_factor(dpr as f32);
-                assert_eq!(viewport.logical_size(), (220.0, 96.0));
-                let observed = viewport.render_single_viewport_interaction_frame_for_test(now)?;
-                let caret = assert_state(&viewport, owner, frame);
-                let pixels = read_submitted_texture(&observed.texture, gpu, SIZE.map(|v| v * dpr))?;
-                if matches!(frame, 6 | 11 | 14 | 19 | 26 | 29) {
-                    let before: [f32; 3] = previous_caret.unwrap();
-                    // Before composition this interval is blank. Sample glyph
-                    // interiors, excluding the caret and bottom underline;
-                    // checking only the caret would allow missing preedit ink.
-                    let left = ((before[0] + 1.0) * dpr as f32).ceil() as u32;
-                    let right = ((caret[0] - 2.0) * dpr as f32).floor() as u32;
-                    let top = ((caret[1] + 2.0) * dpr as f32).ceil() as u32;
-                    let bottom = ((caret[1] + caret[2] - 4.0) * dpr as f32).floor() as u32;
-                    assert!(left < right && top < bottom);
-                    assert!(right < SIZE[0] * dpr && bottom < SIZE[1] * dpr);
-                    let mut ink = 0;
-                    for y in top..bottom {
-                        for x in left..right {
-                            let i = ((y * SIZE[0] * dpr + x) * 4) as usize;
-                            ink += usize::from(pixels[i] >= 254 && pixels[i + 3] >= 64);
-                        }
+    for dpr in [1_u32, 2] {
+        let (mut viewport, owner) = scene(dpr);
+        let start = crate::time::Instant::now();
+        let mut previous_pixels = None;
+        let mut previous_caret = None;
+        let mut selection_probe = None;
+        let mut targets = None;
+        let mut cancel_baseline = None;
+        let mut initial_focused_pixels = None;
+        for frame in 0..FRAME_COUNT {
+            let now = start + std::time::Duration::from_millis(time_ms(frame));
+            apply_event(&mut viewport, owner, frame, now);
+            viewport.begin_offscreen_test_frame(
+                gpu.device.clone(),
+                gpu.queue.clone(),
+                SIZE[0] * dpr,
+                SIZE[1] * dpr,
+                FORMAT,
+            )?;
+            viewport.set_scale_factor(dpr as f32);
+            assert_eq!(viewport.logical_size(), (220.0, 96.0));
+            let observed = viewport.render_single_viewport_interaction_frame_for_test(now)?;
+            let caret = assert_state(&viewport, owner, frame);
+            let pixels = read_submitted_texture(&observed.texture, gpu, SIZE.map(|v| v * dpr))?;
+            if matches!(frame, 6 | 11 | 14 | 19 | 26 | 29) {
+                let before: [f32; 3] = previous_caret.unwrap();
+                // Before composition this interval is blank. Sample glyph
+                // interiors, excluding the caret and bottom underline;
+                // checking only the caret would allow missing preedit ink.
+                let left = ((before[0] + 1.0) * dpr as f32).ceil() as u32;
+                let right = ((caret[0] - 2.0) * dpr as f32).floor() as u32;
+                let top = ((caret[1] + 2.0) * dpr as f32).ceil() as u32;
+                let bottom = ((caret[1] + caret[2] - 4.0) * dpr as f32).floor() as u32;
+                assert!(left < right && top < bottom);
+                assert!(right < SIZE[0] * dpr && bottom < SIZE[1] * dpr);
+                let mut ink = 0;
+                for y in top..bottom {
+                    for x in left..right {
+                        let i = ((y * SIZE[0] * dpr + x) * 4) as usize;
+                        ink += usize::from(pixels[i] >= 254 && pixels[i + 3] >= 64);
                     }
-                    assert!(ink > 2, "preedit glyphs must paint at frame {frame}");
                 }
-                if frame == 4 {
-                    initial_focused_pixels = Some(pixels.clone());
-                } else if frame == 27 {
-                    // External replacement restores the original committed
-                    // value: no stale preedit glyphs, underline or caret offset.
-                    assert_eq!(Some(&pixels), initial_focused_pixels.as_ref());
-                }
-                if matches!(frame, 10 | 18 | 28) {
-                    cancel_baseline = Some(pixels.clone());
-                } else if matches!(frame, 12 | 20 | 31) {
-                    // The same renderer before and after cancellation must
-                    // recover identical pixels; Legacy is never the oracle.
-                    assert_eq!(
-                        Some(&pixels),
-                        cancel_baseline.as_ref(),
-                        "cancel at frame {frame}"
-                    );
-                }
-                assert!(
-                    pixels
-                        .chunks_exact(4)
-                        .filter(|p| p[0] >= 254 && p[3] >= 127)
-                        .count()
-                        > 20,
-                    "committed glyphs must remain visible"
-                );
-                expect_pixel(
-                    pixel(&pixels, [210.0, 20.0], dpr),
-                    [0; 4],
-                    "outside right",
-                    frame,
-                    dpr,
-                );
-                expect_pixel(
-                    pixel(&pixels, [20.0, 90.0], dpr),
-                    [0; 4],
-                    "outside bottom",
-                    frame,
-                    dpr,
-                );
-                if frame == 3 {
-                    let previous: [f32; 3] = previous_caret.unwrap();
-                    assert!(
-                        previous[0] - caret[0] > 3.0,
-                        "selected blank must contain an interior sample"
-                    );
-                    selection_probe = Some([(previous[0] + caret[0]) * 0.5, caret[1] + 2.0]);
-                }
-                if let Some(at) = selection_probe {
-                    expect_pixel(
-                        pixel(&pixels, at, dpr),
-                        if frame == 3 { [0, 0, 255, 128] } else { [0; 4] },
-                        "selection over the trailing blank",
-                        frame,
-                        dpr,
-                    );
-                }
-                if frame != 0 && frame != 3 {
-                    let physical_x = (caret[0] * dpr as f32 + 0.5).floor();
-                    let center_x = (physical_x + 0.5) / dpr as f32;
-                    assert!(center_x >= caret[0] && center_x < caret[0] + 1.0);
-                    let visible = !matches!(frame, 15 | 16 | 22 | 23);
-                    let expected = if visible {
-                        // Same analytic rectangle coverage and RGBA8/group
-                        // quantization as the existing caret geometry gates.
-                        let distance = (center_x - (caret[0] + 0.5)).abs() - 0.5;
-                        let aa = 1.0 / dpr as f32;
-                        let t = ((aa - distance) / (2.0 * aa)).clamp(0.0, 1.0);
-                        let coverage = t * t * (3.0 - 2.0 * t);
-                        [255, 0, 0, ((coverage * 255.0).round() * 0.5).round() as u8]
-                    } else {
-                        [0; 4]
-                    };
-                    expect_pixel(
-                        pixel(&pixels, [center_x, caret[1] + 2.0], dpr),
-                        expected,
-                        "caret visibility",
-                        frame,
-                        dpr,
-                    );
-                }
-                if is_warm(frame) {
-                    assert_eq!(
-                        Some(&pixels),
-                        previous_pixels.as_ref(),
-                        "unchanged frame {frame}"
-                    );
-                }
-                previous_pixels = Some(pixels);
-                previous_caret = Some(caret);
-                if mode == ViewportPaintRendererMode::RetainedAuto {
-                    assert!(observed.artifact_selected);
-                    assert_eq!(
-                        observed.actions,
-                        [if is_warm(frame) {
-                            RetainedSurfaceCompileAction::Reuse
-                        } else {
-                            RetainedSurfaceCompileAction::Reraster
-                        }],
-                        "frame {frame} DPR {dpr}"
-                    );
-                    assert_eq!(observed.color_targets.len(), 1);
-                    // This gate proves stable allocation through interactions,
-                    // not an exact text-envelope policy. The measured target
-                    // must contain the 200x80 owner and fit this fixture's
-                    // 220x96 extent; target identity and descriptors stay fixed.
-                    for (key, desc) in &observed.color_targets {
-                        assert_eq!(desc.origin(), (0, 0));
-                        assert!((200 * dpr..=SIZE[0] * dpr).contains(&desc.width()));
-                        assert!((80 * dpr..=SIZE[1] * dpr).contains(&desc.height()));
-                        assert_eq!(
-                            observed.texture_bytes,
-                            u64::from(desc.width()) * u64::from(desc.height()) * 4
-                        );
-                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
-                    }
-                    if let Some(first) = &targets {
-                        assert_eq!(first, &observed.color_targets);
-                    } else {
-                        targets = Some(observed.color_targets);
-                    }
-                } else {
-                    assert!(observed.legacy_selected);
-                }
-                eprintln!("IME lifecycle {mode:?} dpr={dpr} frame={frame} passed");
+                assert!(ink > 2, "preedit glyphs must paint at frame {frame}");
             }
+            if frame == 4 {
+                initial_focused_pixels = Some(pixels.clone());
+            } else if frame == 27 {
+                // External replacement restores the original committed
+                // value: no stale preedit glyphs, underline or caret offset.
+                assert_eq!(Some(&pixels), initial_focused_pixels.as_ref());
+            }
+            if matches!(frame, 10 | 18 | 28) {
+                cancel_baseline = Some(pixels.clone());
+            } else if matches!(frame, 12 | 20 | 31) {
+                // The same renderer before and after cancellation must
+                // recover identical pixels.
+                assert_eq!(
+                    Some(&pixels),
+                    cancel_baseline.as_ref(),
+                    "cancel at frame {frame}"
+                );
+            }
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .filter(|p| p[0] >= 254 && p[3] >= 127)
+                    .count()
+                    > 20,
+                "committed glyphs must remain visible"
+            );
+            expect_pixel(
+                pixel(&pixels, [210.0, 20.0], dpr),
+                [0; 4],
+                "outside right",
+                frame,
+                dpr,
+            );
+            expect_pixel(
+                pixel(&pixels, [20.0, 90.0], dpr),
+                [0; 4],
+                "outside bottom",
+                frame,
+                dpr,
+            );
+            if frame == 3 {
+                let previous: [f32; 3] = previous_caret.unwrap();
+                assert!(
+                    previous[0] - caret[0] > 3.0,
+                    "selected blank must contain an interior sample"
+                );
+                selection_probe = Some([(previous[0] + caret[0]) * 0.5, caret[1] + 2.0]);
+            }
+            if let Some(at) = selection_probe {
+                expect_pixel(
+                    pixel(&pixels, at, dpr),
+                    if frame == 3 { [0, 0, 255, 128] } else { [0; 4] },
+                    "selection over the trailing blank",
+                    frame,
+                    dpr,
+                );
+            }
+            if frame != 0 && frame != 3 {
+                let physical_x = (caret[0] * dpr as f32 + 0.5).floor();
+                let center_x = (physical_x + 0.5) / dpr as f32;
+                assert!(center_x >= caret[0] && center_x < caret[0] + 1.0);
+                let visible = !matches!(frame, 15 | 16 | 22 | 23);
+                let expected = if visible {
+                    // Same analytic rectangle coverage and RGBA8/group
+                    // quantization as the existing caret geometry gates.
+                    let distance = (center_x - (caret[0] + 0.5)).abs() - 0.5;
+                    let aa = 1.0 / dpr as f32;
+                    let t = ((aa - distance) / (2.0 * aa)).clamp(0.0, 1.0);
+                    let coverage = t * t * (3.0 - 2.0 * t);
+                    [255, 0, 0, ((coverage * 255.0).round() * 0.5).round() as u8]
+                } else {
+                    [0; 4]
+                };
+                expect_pixel(
+                    pixel(&pixels, [center_x, caret[1] + 2.0], dpr),
+                    expected,
+                    "caret visibility",
+                    frame,
+                    dpr,
+                );
+            }
+            if is_warm(frame) {
+                assert_eq!(
+                    Some(&pixels),
+                    previous_pixels.as_ref(),
+                    "unchanged frame {frame}"
+                );
+            }
+            previous_pixels = Some(pixels);
+            previous_caret = Some(caret);
+            assert_eq!(
+                observed.actions,
+                [if is_warm(frame) {
+                    RetainedSurfaceCompileAction::Reuse
+                } else {
+                    RetainedSurfaceCompileAction::Reraster
+                }],
+                "frame {frame} DPR {dpr}"
+            );
+            assert_eq!(observed.color_targets.len(), 1);
+            // This gate proves stable allocation through interactions,
+            // not an exact text-envelope policy. The measured target
+            // must contain the 200x80 owner and fit this fixture's
+            // 220x96 extent; target identity and descriptors stay fixed.
+            for (key, desc) in &observed.color_targets {
+                assert_eq!(desc.origin(), (0, 0));
+                assert!((200 * dpr..=SIZE[0] * dpr).contains(&desc.width()));
+                assert!((80 * dpr..=SIZE[1] * dpr).contains(&desc.height()));
+                assert_eq!(
+                    observed.texture_bytes,
+                    u64::from(desc.width()) * u64::from(desc.height()) * 4
+                );
+                assert!(viewport.has_compatible_persistent_render_target(*key, desc));
+            }
+            if let Some(first) = &targets {
+                assert_eq!(first, &observed.color_targets);
+            } else {
+                targets = Some(observed.color_targets);
+            }
+            eprintln!("IME lifecycle dpr={dpr} frame={frame} passed");
         }
     }
     Ok(())

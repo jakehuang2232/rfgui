@@ -270,16 +270,10 @@ fn local_transform_composes_after_layout_and_visual_position() {
     let mut trees = PropertyTrees::default();
     trees.sync(&arena, &[root]);
     let transform = trees.transforms[&TransformNodeId(root)];
-    let spatial = arena
-        .get(root)
-        .expect("root")
-        .element
-        .compositor_spatial_placement_snapshot()
-        .expect("spatial placement");
-    let viewport_position = spatial.compatibility_viewport_position();
+    let placed = arena.get(root).expect("root").element.box_model_snapshot();
     let origin_world = glam::Vec3::new(
-        viewport_position[0] + transform.local_origin.x,
-        viewport_position[1] + transform.local_origin.y,
+        placed.x + transform.local_origin.x,
+        placed.y + transform.local_origin.y,
         transform.local_origin.z,
     );
     let recomposed = crate::view::base_component::compose_transform_about_origin(

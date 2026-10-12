@@ -759,10 +759,6 @@ impl Element {
                 self.layout_transition_visual_offset_x,
                 self.layout_transition_visual_offset_y,
             ],
-            [
-                self.layout_state.layout_position.x,
-                self.layout_state.layout_position.y,
-            ],
         ));
         self.layout_state.layout_size = Size {
             width: frame.width,
@@ -1096,10 +1092,6 @@ impl Element {
         if let Some(placement) = self.last_layout_placement.as_mut() {
             placement.parent_x += dx;
             placement.parent_y += dy;
-        }
-        if let Some(spatial) = self.spatial_placement_snapshot.as_mut() {
-            spatial.compatibility_viewport_position[0] += dx;
-            spatial.compatibility_viewport_position[1] += dy;
         }
         // The resolved transform bakes the absolute layout origin (see
         // `compute_transform_matrix`), so refresh it after the shift. Cheap

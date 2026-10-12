@@ -1,20 +1,13 @@
 use super::super::style_pipeline_tests::read_submitted_texture;
 use super::*;
-use crate::view::viewport::ViewportPaintRendererMode;
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_planning_corpus_artifact_selection_and_reuse() -> Result<(), String> {
-    run(ViewportPaintRendererMode::RetainedAuto)
+    run()
 }
 
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_planning_corpus_legacy_pixels() -> Result<(), String> {
-    run(ViewportPaintRendererMode::Legacy)
-}
-
-fn run(mode: ViewportPaintRendererMode) -> Result<(), String> {
+fn run() -> Result<(), String> {
     let _text_cleanup = crate::view::paint::tests::gpu_equivalence_tests::native_artifact_scroll_content_tests::NativeArtifactTextThreadCacheCleanup;
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU");
@@ -24,11 +17,10 @@ fn run(mode: ViewportPaintRendererMode) -> Result<(), String> {
             // derive everything from the installed styles in this Viewport.
             let fixture = unlaid_out_fixture(scene);
             let mut viewport = Viewport::new();
-            viewport.set_paint_renderer_mode(mode);
             viewport.install_single_viewport_forest_for_test(fixture.arena, fixture.roots);
             let mut first_targets = None;
             for frame in 0..3 {
-                eprintln!("single Viewport corpus {scene:?} {mode:?} DPR={dpr} frame={frame}");
+                eprintln!("single Viewport corpus {scene:?} DPR={dpr} frame={frame}");
                 viewport.begin_offscreen_test_frame(
                     gpu.device.clone(),
                     gpu.queue.clone(),
@@ -52,19 +44,11 @@ fn run(mode: ViewportPaintRendererMode) -> Result<(), String> {
                             .iter()
                             .zip(expected)
                             .all(|(a, b)| a.abs_diff(*b) <= 1),
-                        "{scene:?} {mode:?} DPR={dpr} frame={frame} {name}: actual={:?} expected={expected:?}",
+                        "{scene:?} DPR={dpr} frame={frame} {name}: actual={:?} expected={expected:?}",
                         &pixels[at..at + 4]
                     );
                 }
                 assert_eq!(observed.frame_number, frame + 1);
-                if mode == ViewportPaintRendererMode::Legacy {
-                    assert!(observed.legacy_selected);
-                    continue;
-                }
-                assert!(
-                    observed.artifact_selected,
-                    "the valid corpus must select Artifact"
-                );
                 assert!(
                     !observed.actions.is_empty(),
                     "must use the generic retained pool executor"

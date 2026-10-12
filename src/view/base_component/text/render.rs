@@ -1,65 +1,14 @@
 //! `Renderable` impl for Text: emits the prepared glyph pass + selection
 //! rects, consuming the same shaped context measure produced.
 
-use crate::view::base_component::{BuildState, Renderable, UiBuildContext};
-use crate::view::frame_graph::FrameGraph;
-use crate::view::node_arena::NodeArena;
-use crate::view::render_pass::DrawRectPass;
-use crate::view::render_pass::draw_rect_pass::{
-    DrawRectInput, DrawRectOutput, RectPassParams, RectRenderMode,
-};
-use crate::view::render_pass::text_pass::TextPreparedInputPass;
-use crate::view::render_pass::text_pass::{
-    TextInput, TextOutput, TextPassPreparedFragment, TextPassPreparedParams,
-};
+use crate::view::render_pass::text_pass::{TextPassPreparedFragment, TextPassPreparedParams};
 
 use super::Text;
-use super::hit_test::current_text_area_selection_render_context;
 use super::paint_cache::{TextPaintKey, TextPaintMemo};
 use std::sync::Arc;
 
-impl Renderable for Text {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        let opacity = self.opacity.clamp(0.0, 1.0);
-        if !self.is_paint_visible(opacity) {
-            return ctx.into_state();
-        }
-
-        let Some(input_target) = ctx.current_target() else {
-            return ctx.into_state();
-        };
-        self.emit_selection_underlay(graph, &mut ctx);
-        // Both renderers consume the same immutable, memoized text payload.
-        // Rebuilding a Vec here would defeat the prepared-input warm lookup.
-        let Some(payload) = self.prepared_shadow_text_payload(ctx.paint_offset(), opacity) else {
-            return ctx.into_state();
-        };
-        let Some(op) = &payload.op else {
-            return ctx.into_state();
-        };
-        let pass = TextPreparedInputPass::new(
-            op.params.clone(),
-            TextInput {
-                pass_context: ctx.graphics_pass_context(),
-            },
-            TextOutput {
-                render_target: input_target,
-                ..Default::default()
-            },
-        );
-        graph.add_graphics_pass(pass);
-        ctx.set_current_target(input_target);
-        ctx.into_state()
-    }
-}
-
 impl Text {
-    /// Exact visibility gate shared by legacy build and retained recording.
+    /// Exact visibility gate for retained recording.
     /// Callers supply the effective opacity. Neutral root-effect recording
     /// uses 1.0, while baked paths use the clamped local opacity.
     pub(super) fn is_paint_visible(&self, effective_opacity: f32) -> bool {
@@ -159,39 +108,6 @@ impl Text {
             payload: payload.clone(),
         });
         Some(payload)
-    }
-
-    /// Emit the TextArea-selection underlay rects for this Text when a
-    /// selection render context is active. Works for both self-rendered
-    /// and inline-IFC-owned texts (owned geometry answers the local
-    /// selection query per fragment).
-    fn emit_selection_underlay(
-        &self,
-        graph: &mut crate::view::frame_graph::FrameGraph,
-        ctx: &mut UiBuildContext,
-    ) {
-        let Some(selection) = current_text_area_selection_render_context() else {
-            return;
-        };
-        if ctx.current_target().is_none() {
-            return;
-        }
-        for rect in self.local_selection_screen_rects(selection.start, selection.end) {
-            let [rect_x, rect_y] = ctx.paint_point(rect.x, rect.y);
-            let mut selection_pass = DrawRectPass::new(
-                RectPassParams {
-                    position: [rect_x, rect_y],
-                    size: [rect.width.max(1.0), rect.height.max(1.0)],
-                    fill_color: selection.fill,
-                    opacity: 1.0,
-                    ..Default::default()
-                },
-                DrawRectInput::default(),
-                DrawRectOutput::default(),
-            );
-            selection_pass.set_render_mode(RectRenderMode::FillOnly);
-            ctx.emit_draw_rect_pass(graph, selection_pass);
-        }
     }
 
     /// Staging input for the prepared glyph pass, built from the shaped

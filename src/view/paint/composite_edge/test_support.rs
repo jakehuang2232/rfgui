@@ -31,9 +31,12 @@ pub(crate) fn emit_paint_composite_edges(
         let pass = edge
             .draw_pass()
             .expect("prepared composite edge must remain canonical");
-        let previous = ctx.replace_scissor_rect(edge.logical_scissor);
+        let previous = ctx.replace_graphics_pass_scissor(
+            (edge.logical_scissor)
+                .map(crate::view::render_pass::render_target::GraphicsPassScissor::Logical),
+        );
         ctx.emit_draw_rect_pass(graph, pass);
-        ctx.replace_scissor_rect(previous);
+        ctx.replace_graphics_pass_scissor(previous);
     }
 }
 

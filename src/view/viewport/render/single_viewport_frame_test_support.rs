@@ -2,8 +2,6 @@ use super::*;
 
 pub(crate) struct SingleViewportFrameObservation {
     pub(crate) texture: wgpu::Texture,
-    pub(crate) artifact_selected: bool,
-    pub(crate) legacy_selected: bool,
     pub(crate) actions: Vec<crate::view::paint::RetainedSurfaceCompileAction>,
     pub(crate) color_targets: Vec<(
         crate::view::frame_graph::PersistentTextureKey,
@@ -42,12 +40,12 @@ impl Viewport {
 
     /// Only window-surface acquisition is supplied by begin_offscreen_test_frame.
     /// The production frame entry owns layout, resource preparation, property
-    /// observation, selection, graph execution, pool commit, and submission.
+    /// observation, recording, graph execution, pool commit, and submission.
     /// The returned texture handle survives submission for independent readback.
     pub(crate) fn render_single_viewport_scene_for_test(
         &mut self,
     ) -> Result<SingleViewportFrameObservation, String> {
-        self.render_single_viewport_observed_frame_for_test(None, crate::time::Instant::now())
+        self.render_single_viewport_observed_frame_for_test(crate::time::Instant::now())
     }
 
     /// Match render_rsx's focus dispatch and animation sampling before layout.
@@ -72,24 +70,11 @@ impl Viewport {
         now: crate::time::Instant,
     ) -> Result<SingleViewportFrameObservation, String> {
         self.sample_single_viewport_interaction_for_test(now);
-        self.render_single_viewport_observed_frame_for_test(None, now)
-    }
-
-    pub(crate) fn render_single_viewport_legacy_recovery_for_test(
-        &mut self,
-    ) -> Result<SingleViewportFrameObservation, String> {
-        if self.retained_auto_terminal_failure != Some(RetainedAutoTerminalFailureStage::Execute) {
-            return Err("Legacy recovery requires a latched execute failure".into());
-        }
-        self.render_single_viewport_observed_frame_for_test(
-            Some(PaintAuthorityFallbackStage::Execute),
-            crate::time::Instant::now(),
-        )
+        self.render_single_viewport_observed_frame_for_test(now)
     }
 
     fn render_single_viewport_observed_frame_for_test(
         &mut self,
-        expected_fallback: Option<PaintAuthorityFallbackStage>,
         semantic_now: crate::time::Instant,
     ) -> Result<SingleViewportFrameObservation, String> {
         let texture = self
@@ -98,26 +83,15 @@ impl Viewport {
             .as_ref()
             .and_then(|frame| frame.offscreen_texture.clone())
             .ok_or("single-viewport test requires an active offscreen frame")?;
-        let _capture = enable_paint_authority_test_capture();
         let _ = crate::view::paint::take_last_production_actions_for_test();
         let before = self.frame_completion_counts_for_test();
         // The bool reports transition/animation redraw demand, not render
-        // success. Submission/abort counts and authority telemetry below
-        // establish success. Event-loop redraw scheduling is outside this harness.
+        // success. Submission/abort counts below establish success. Event-loop redraw scheduling is outside this harness.
         let _ = self.render_render_tree(0.0, 0.0, semantic_now, true);
         let after = self.frame_completion_counts_for_test();
         if self.frame.frame_state.is_some() || after.0 != before.0 + 1 || after.2 != before.2 {
             return Err(format!(
                 "frame did not submit cleanly: before={before:?}, after={after:?}"
-            ));
-        }
-        let snapshot = take_paint_authority_test_snapshot().ok_or("missing frame authority")?;
-        if snapshot.legacy_fallback_stage != expected_fallback
-            || snapshot.terminal_failure_stage.is_some()
-            || (expected_fallback.is_some() && snapshot.selected != PaintAuthorityKind::Legacy)
-        {
-            return Err(format!(
-                "unexpected frame outcome: {snapshot:?}, expected fallback {expected_fallback:?}"
             ));
         }
         let graph = self
@@ -144,8 +118,6 @@ impl Viewport {
         }
         Ok(SingleViewportFrameObservation {
             texture,
-            artifact_selected: snapshot.selected == PaintAuthorityKind::Artifact,
-            legacy_selected: snapshot.selected == PaintAuthorityKind::Legacy,
             actions: crate::view::paint::take_last_production_actions_for_test(),
             color_targets,
             texture_bytes,
@@ -163,7 +135,6 @@ impl Viewport {
         if self.frame.frame_state.is_none() {
             return Err("failure test requires an acquired frame".into());
         }
-        let _capture = enable_paint_authority_test_capture();
         let before = self.frame_completion_counts_for_test();
         let _ = self.render_render_tree(0.0, 0.0, crate::time::Instant::now(), true);
         let after = self.frame_completion_counts_for_test();
@@ -172,21 +143,10 @@ impl Viewport {
                 "failed frame must abort without submission: {before:?} -> {after:?}"
             ));
         }
-        let snapshot =
-            take_paint_authority_test_snapshot().ok_or("missing failed-frame authority")?;
-        if snapshot.selected != PaintAuthorityKind::Artifact
-            || snapshot.terminal_failure_stage != Some(PaintAuthorityFallbackStage::Execute)
-            || snapshot.legacy_fallback_stage.is_some()
-        {
-            return Err(format!("unexpected failed-frame authority: {snapshot:?}"));
-        }
-        if self.retained_auto_terminal_failure != Some(RetainedAutoTerminalFailureStage::Execute)
-            || self.frame.compile_cache.is_some()
+        if self.frame.compile_cache.is_some()
             || self.retained_surface_transaction_shape_for_test() != (0, None)
         {
-            return Err(
-                "failed frame left a cache/transaction or did not latch execute failure".into(),
-            );
+            return Err("failed frame left a compile cache or surface transaction".into());
         }
         Ok(())
     }

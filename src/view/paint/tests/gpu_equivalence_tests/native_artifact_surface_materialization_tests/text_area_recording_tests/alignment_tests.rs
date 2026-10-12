@@ -2,7 +2,6 @@ use super::super::style_pipeline_tests::read_submitted_texture;
 use super::*;
 use crate::style::{Border, FontSize, Length, Padding, VerticalAlign};
 use crate::view::test_support::{commit_element, get_element};
-use crate::view::viewport::ViewportPaintRendererMode;
 
 const SIZE: [u32; 2] = [342, 240];
 const CONTENT: &str = "First line with a long value that can wrap when auto wrap is enabled.{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/a/very/long/path\nTail line";
@@ -121,40 +120,38 @@ fn native_projected_text_area_vertical_alignment_has_independent_pixel_bands() -
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().unwrap();
     let _cleanup = TextGpuCleanup;
-    for mode in [
-        ViewportPaintRendererMode::Legacy,
-        ViewportPaintRendererMode::RetainedAuto,
-    ] {
-        for dpr in [1, 2] {
-            for align in [
-                VerticalAlign::Baseline,
-                VerticalAlign::Top,
-                VerticalAlign::Middle,
-                VerticalAlign::Bottom,
-            ] {
-                for wrap in [true, false] {
-                    let (mut viewport, owner) = scene(align, wrap);
-                    viewport.set_paint_renderer_mode(mode);
-                    let mut previous = None;
-                    for frame in 0..2 {
-                        viewport.begin_offscreen_test_frame(
-                            gpu.device.clone(),
-                            gpu.queue.clone(),
-                            SIZE[0] * dpr,
-                            SIZE[1] * dpr,
-                            FORMAT,
-                        )?;
-                        viewport.set_scale_factor(dpr as f32);
-                        let observed = viewport.render_single_viewport_scene_for_test()
-                            .map_err(|error| format!("{mode:?} {align:?} DPR={dpr} wrap={wrap} frame={frame}: {error}"))?;
-                        let pixels =
-                            read_submitted_texture(&observed.texture, gpu, SIZE.map(|v| v * dpr))?;
-                        assert_pixels(&viewport, owner, &pixels, align, dpr);
-                        if let Some(previous) = previous {
-                            assert_eq!(pixels, previous, "stable aligned frame");
-                        }
-                        previous = Some(pixels);
+    for dpr in [1, 2] {
+        for align in [
+            VerticalAlign::Baseline,
+            VerticalAlign::Top,
+            VerticalAlign::Middle,
+            VerticalAlign::Bottom,
+        ] {
+            for wrap in [true, false] {
+                let (mut viewport, owner) = scene(align, wrap);
+                let mut previous = None;
+                for frame in 0..2 {
+                    viewport.begin_offscreen_test_frame(
+                        gpu.device.clone(),
+                        gpu.queue.clone(),
+                        SIZE[0] * dpr,
+                        SIZE[1] * dpr,
+                        FORMAT,
+                    )?;
+                    viewport.set_scale_factor(dpr as f32);
+                    let observed =
+                        viewport
+                            .render_single_viewport_scene_for_test()
+                            .map_err(|error| {
+                                format!("{align:?} DPR={dpr} wrap={wrap} frame={frame}: {error}")
+                            })?;
+                    let pixels =
+                        read_submitted_texture(&observed.texture, gpu, SIZE.map(|v| v * dpr))?;
+                    assert_pixels(&viewport, owner, &pixels, align, dpr);
+                    if let Some(previous) = previous {
+                        assert_eq!(pixels, previous, "stable aligned frame");
                     }
+                    previous = Some(pixels);
                 }
             }
         }

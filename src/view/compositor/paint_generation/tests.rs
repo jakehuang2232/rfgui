@@ -1,10 +1,9 @@
 use super::*;
 use crate::style::{Length, ParsedValue, PropertyId, ScrollDirection, Style, Transform, Translate};
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyPassMask, Element, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, Renderable, Size, UiBuildContext,
+    BoxModelSnapshot, DirtyPassMask, Element, EventTarget, LayoutConstraints, LayoutPlacement,
+    Layoutable, Size,
 };
-use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::Node;
 
 fn insert_element(arena: &mut NodeArena, id: u64) -> NodeKey {
@@ -297,17 +296,6 @@ impl Layoutable for CustomHost {
 }
 
 impl EventTarget for CustomHost {}
-
-impl Renderable for CustomHost {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        ctx.into_state()
-    }
-}
 
 impl ElementTrait for CustomHost {
     fn stable_id(&self) -> u64 {

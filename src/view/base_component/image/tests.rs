@@ -5,17 +5,13 @@ use crate::style::{Layout, ScrollDirection};
 use crate::view::ImageSource;
 use crate::view::base_component::{
     ComputedStyleConsumer, DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, ShadowPaintRecordingCapability, Size, UiBuildContext,
+    LayoutPlacement, Layoutable, ShadowPaintRecordingCapability, Size,
 };
 use crate::view::compositor::{PaintGenerationTracker, PropertyTrees};
-use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::{ImageSnapshot, ReadyImage};
 use crate::view::node_arena::{Node, NodeArena, NodeKey};
 use crate::view::sampled_texture::{ImageAssetId, SampledTextureId};
-use crate::view::test_support::{
-    commit_child, commit_element, measure_and_place, new_test_arena,
-};
-use glam::{Mat4, Vec3};
+use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
 
 fn rgba_source(width: u32, height: u32) -> ImageSource {
     ImageSource::Rgba {

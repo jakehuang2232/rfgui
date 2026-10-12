@@ -3,7 +3,6 @@
 use rfgui::style::{Layout, Length, Padding};
 use rfgui::ui::{PointerEnterHandlerProp, PointerLeaveHandlerProp, RsxNode, rsx};
 use rfgui::view::base_component::BoxModelSnapshot;
-use rfgui::view::viewport::ViewportPaintRendererMode;
 use rfgui::view::{Element, NodeArena, NodeKey, Text, Viewport};
 use rfgui_components::material_symbol::FavoriteIcon;
 use rfgui_components::{Accordion, Button, Tooltip, TooltipPlacement, Window, use_tooltip_ref};
@@ -147,76 +146,70 @@ fn tooltip_glyphs_survive_nested_clips_and_hover_remounts() -> Result<(), String
     let gpu = gpu::Gpu::new()?;
     let mut cases = 0;
     let mut visible_frames = 0;
-    for mode in [
-        ViewportPaintRendererMode::Legacy,
-        ViewportPaintRendererMode::RetainedAuto,
-    ] {
-        for dpr in [1, 2] {
-            for placement in PLACEMENTS {
-                for rich in [false, true] {
-                    let case = format!("{mode:?} {placement:?} DPR={dpr} rich={rich}");
-                    let mut viewport = Viewport::new();
-                    viewport.set_paint_renderer_mode(mode);
-                    let now = rfgui::time::Instant::now();
-                    let mut previous = None;
-                    for frame in 0..7 {
-                        if frame == 1 || frame == 4 {
-                            let b = text_bounds(&viewport, "Hover target").expect("trigger exists");
-                            viewport.set_pointer_position_viewport(
-                                b.x + b.width / 2.0,
-                                b.y + b.height / 2.0,
-                            );
-                            viewport.dispatch_pointer_move_event();
-                        } else if frame == 3 || frame == 6 {
-                            viewport.set_pointer_position_viewport(630.0, 470.0);
-                            viewport.dispatch_pointer_move_event();
-                        }
-                        let output = viewport
-                            .render_rsx_offscreen_for_test(
-                                &scene(placement, rich),
-                                gpu.device.clone(),
-                                gpu.queue.clone(),
-                                SIZE.map(|s| s * dpr),
-                                dpr as f32,
-                                now + std::time::Duration::from_secs(frame),
-                            )
-                            .map_err(|error| format!("{case} frame={frame}: {error}"))?;
-                        if frame == 0 || frame == 3 || frame == 6 {
-                            assert!(
-                                text_bounds(&viewport, LABEL).is_none(),
-                                "{case}: hidden tooltip must unmount"
-                            );
-                            continue;
-                        }
-                        let pixels = gpu.read(&output.texture, SIZE.map(|s| s * dpr))?;
-                        let context = format!("{case} frame={frame}");
+    for dpr in [1, 2] {
+        for placement in PLACEMENTS {
+            for rich in [false, true] {
+                let case = format!("{placement:?} DPR={dpr} rich={rich}");
+                let mut viewport = Viewport::new();
+                let now = rfgui::time::Instant::now();
+                let mut previous = None;
+                for frame in 0..7 {
+                    if frame == 1 || frame == 4 {
+                        let b = text_bounds(&viewport, "Hover target").expect("trigger exists");
+                        viewport.set_pointer_position_viewport(
+                            b.x + b.width / 2.0,
+                            b.y + b.height / 2.0,
+                        );
+                        viewport.dispatch_pointer_move_event();
+                    } else if frame == 3 || frame == 6 {
+                        viewport.set_pointer_position_viewport(630.0, 470.0);
+                        viewport.dispatch_pointer_move_event();
+                    }
+                    let output = viewport
+                        .render_rsx_offscreen_for_test(
+                            &scene(placement, rich),
+                            gpu.device.clone(),
+                            gpu.queue.clone(),
+                            SIZE.map(|s| s * dpr),
+                            dpr as f32,
+                            now + std::time::Duration::from_secs(frame),
+                        )
+                        .map_err(|error| format!("{case} frame={frame}: {error}"))?;
+                    if frame == 0 || frame == 3 || frame == 6 {
+                        assert!(
+                            text_bounds(&viewport, LABEL).is_none(),
+                            "{case}: hidden tooltip must unmount"
+                        );
+                        continue;
+                    }
+                    let pixels = gpu.read(&output.texture, SIZE.map(|s| s * dpr))?;
+                    let context = format!("{case} frame={frame}");
+                    assert_glyph_pixels(
+                        &pixels,
+                        text_bounds(&viewport, LABEL).expect("tooltip text exists"),
+                        dpr,
+                        20,
+                        &context,
+                    );
+                    if rich {
                         assert_glyph_pixels(
                             &pixels,
-                            text_bounds(&viewport, LABEL).expect("tooltip text exists"),
+                            text_bounds(&viewport, FAVORITE).expect("tooltip icon exists"),
                             dpr,
-                            20,
+                            8,
                             &context,
                         );
-                        if rich {
-                            assert_glyph_pixels(
-                                &pixels,
-                                text_bounds(&viewport, FAVORITE).expect("tooltip icon exists"),
-                                dpr,
-                                8,
-                                &context,
-                            );
-                        }
-                        if frame == 2 || frame == 5 {
-                            assert!(
-                                previous.as_ref() == Some(&pixels),
-                                "{context}: settled pixels must remain stable"
-                            );
-                        }
-                        previous = Some(pixels);
-                        visible_frames += 1;
                     }
-                    cases += 1;
+                    if frame == 2 || frame == 5 {
+                        assert!(
+                            previous.as_ref() == Some(&pixels),
+                            "{context}: settled pixels must remain stable"
+                        );
+                    }
+                    previous = Some(pixels);
+                    visible_frames += 1;
                 }
+                cases += 1;
             }
         }
     }

@@ -12,10 +12,6 @@ fn scroll_content_pair_and_failed_execution_cleanup_roles_are_exact() {
     ));
     assert_ne!(
         color,
-        PersistentTextureKey::retained(RetainedTextureRole::ScrollHostColor, 41)
-    );
-    assert_ne!(
-        color,
         PersistentTextureKey::retained(RetainedTextureRole::TransformedColor, 41)
     );
 
@@ -49,7 +45,7 @@ fn scroll_content_pair_and_failed_execution_cleanup_roles_are_exact() {
     assert_ne!(tile, color);
     assert!(
         PersistentTextureKey::retained_scroll_content_tile(
-            RetainedTextureRole::ScrollHostColor,
+            RetainedTextureRole::TransformedColor,
             41,
             3,
             7,

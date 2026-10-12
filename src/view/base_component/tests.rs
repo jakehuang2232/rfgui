@@ -8,11 +8,9 @@ use crate::ui::{
     ClickEvent, EventMeta, Modifiers, NodeId, PointerButton, PointerButtons, PointerEventData,
 };
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, Element, ElementTrait, EventTarget,
-    LayoutConstraints, LayoutPlacement, Layoutable, PaintResourcePreparationContext, Renderable,
-    UiBuildContext,
+    BoxModelSnapshot, DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints,
+    LayoutPlacement, Layoutable, PaintResourcePreparationContext,
 };
-use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::test_support::{commit_child, commit_element, measure_and_place, new_test_arena};
 use crate::view::viewport::dispatch::dispatch_click_from_hit_test;
@@ -50,17 +48,6 @@ impl EventTarget for AnimationTickProbe {
     fn animation_frame_request(&self, _now: crate::time::Instant) -> super::AnimationFrameRequest {
         self.request_checks.set(self.request_checks.get() + 1);
         super::AnimationFrameRequest::None
-    }
-}
-
-impl Renderable for AnimationTickProbe {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        ctx.into_state()
     }
 }
 

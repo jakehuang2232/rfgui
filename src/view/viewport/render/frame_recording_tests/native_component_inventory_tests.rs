@@ -1,10 +1,7 @@
-//! Diagnostic baseline for native hosts, not a permanent rejection allowlist.
-//! Use actual layout + property sync + the production Auto selector (record,
-//! plan, seal). No GPU execution, pixel correctness or reuse is claimed here.
-//! When a normal-state gap is fixed, retain its scene and update its expectation.
-//! BeforePreparation rows deliberately call the low-level selector between a
-//! source mutation and frame preparation. Their rejection guards stale data;
-//! it is not an acceptable fallback outcome for a complete production frame.
+//! Diagnostic baseline for native hosts. Use actual layout + property sync +
+//! the production frame recording (record, plan, seal). No GPU execution,
+//! pixel correctness or reuse is claimed here. BeforePreparation rows
+//! deliberately record between a source mutation and frame preparation.
 use super::*;
 use crate::view::test_support::get_element_mut;
 
@@ -59,7 +56,7 @@ impl Scene {
         );
         self.frame_number += 1;
         // Same order as render_render_tree: final layout, registered resource
-        // preparation, property/generation observation, then Auto selection.
+        // preparation, property/generation observation, then recording.
         self.arena.prepare_registered_paint_resources(
             crate::view::base_component::PaintResourcePreparationContext {
                 frame_number: self.frame_number,
@@ -79,79 +76,48 @@ impl Scene {
 
     fn observe(&self, state: &str, status: Status) -> [usize; 7] {
         let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, self.dpr);
-        let selected = select_retained_auto_authority(
+        let RecordedFrame { frame, .. } = record_frame_for_test(
             &self.arena,
             &[self.root],
             &self.properties,
             &self.generations,
             &ctx,
-            true,
         );
         let node = self.arena.get(self.root).unwrap();
         let host = node.element.element_type_name();
-        let selected_name = if matches!(selected, AutoAuthorityDecision::Artifact { .. }) {
-            "Artifact"
-        } else {
-            "Legacy"
-        };
         let mut commands = [0; 7];
-        if let AutoAuthorityDecision::Artifact { candidate, .. } = &selected {
-            let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
-            let plan = frame.raster_plan();
-            for step in plan
-                .roots()
-                .iter()
-                .flat_map(|root| root.steps())
-                .chain(plan.nodes().iter().flat_map(|node| node.steps()))
+        let plan = frame.raster_plan();
+        for step in plan
+            .roots()
+            .iter()
+            .flat_map(|root| root.steps())
+            .chain(plan.nodes().iter().flat_map(|node| node.steps()))
+        {
+            if let crate::view::paint::PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) = step
             {
-                if let crate::view::paint::PreparedArtifactSurfaceRasterStep::ArtifactSpan(span) =
-                    step
-                {
-                    for op in span.chunks().iter().flat_map(|chunk| chunk.localized_ops()) {
-                        use crate::view::paint::PaintOp;
-                        commands[match op {
-                            PaintOp::DrawRect(_) => 0,
-                            PaintOp::PreparedInlineIfcDecoration(_) => 1,
-                            PaintOp::PreparedShadow(_) => 2,
-                            PaintOp::PreparedScrollbarOverlay(_) => 3,
-                            PaintOp::PreparedText(_) => 4,
-                            PaintOp::PreparedImage(_) => 5,
-                            PaintOp::PreparedSvg(_) => 6,
-                            PaintOp::PreparedGpu(_) => {
-                                panic!("native inventory must not include custom GPU hosts")
-                            }
-                        }] += 1;
-                    }
+                for op in span.chunks().iter().flat_map(|chunk| chunk.localized_ops()) {
+                    use crate::view::paint::PaintOp;
+                    commands[match op {
+                        PaintOp::DrawRect(_) => 0,
+                        PaintOp::PreparedInlineIfcDecoration(_) => 1,
+                        PaintOp::PreparedShadow(_) => 2,
+                        PaintOp::PreparedScrollbarOverlay(_) => 3,
+                        PaintOp::PreparedText(_) => 4,
+                        PaintOp::PreparedImage(_) => 5,
+                        PaintOp::PreparedSvg(_) => 6,
+                        PaintOp::PreparedGpu(_) => {
+                            panic!("native inventory must not include custom GPU hosts")
+                        }
+                    }] += 1;
                 }
             }
         }
-        let trace = auto_authority_trace(&selected);
         println!(
-            "NATIVE_INVENTORY\t{host}\t{state}\t{}\t{status:?}\t{selected_name}\towner={:?}\tstable_id={}\tcommands={commands:?}\t{:?}",
+            "NATIVE_INVENTORY\t{host}\t{state}\t{}\t{status:?}\towner={:?}\tstable_id={}\tcommands={commands:?}",
             self.dpr,
             self.root,
             node.element.stable_id(),
-            trace.rejections
         );
-        // Capture is optional telemetry; it must not affect the actual decision.
-        let quiet = select_retained_auto_authority(
-            &self.arena,
-            &[self.root],
-            &self.properties,
-            &self.generations,
-            &ctx,
-            false,
-        );
-        assert_eq!(
-            std::mem::discriminant(&selected),
-            std::mem::discriminant(&quiet)
-        );
-        assert!(
-            matches!(selected, AutoAuthorityDecision::Artifact { .. }),
-            "{host}/{state}: {:?}",
-            trace.rejections
-        );
-        assert!(trace.rejections.is_empty());
         commands
     }
 }

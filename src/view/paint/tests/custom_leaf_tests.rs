@@ -35,9 +35,3 @@ fn custom_leaf_typed_adapter_records_canonical_fill_and_compiles() {
     assert_eq!(rect.opacity_bits, 1.0_f32.to_bits());
     assert_eq!(rect.fill_color_bits[3], 0.75_f32.to_bits());
 }
-
-#[test]
-fn custom_leaf_cannot_forge_scroll_placement_normalization_capability() {
-    let host = CustomLeafPaintHost::fill(0x8f2f);
-    assert!(host.retained_scroll_normalized_paint_capability().is_none());
-}

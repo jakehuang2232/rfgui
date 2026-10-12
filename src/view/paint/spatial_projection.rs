@@ -74,8 +74,7 @@ impl OwnerSnapPoints {
 
 /// Every owner's paint offset after its ancestors' snaps and its own onto the
 /// physical pixel grid of `scale_factor`, starting from `start` at the owner
-/// roots. This is the legacy renderer's owner snap chain, so placement
-/// reproduces its pixel positions.
+/// roots.
 pub(crate) fn snapped_owner_paint_offsets(
     owners: &[OwnerSnapPoints],
     start: [f32; 2],

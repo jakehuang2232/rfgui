@@ -44,7 +44,7 @@ fn recorded_zero_surface_artifact(
     crate::view::paint::record_surface_dag_frame_artifact(arena, roots, &properties, &generations)
 }
 
-fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
+fn recorded_zero_surface_child_mask_frame() -> PreparedArtifactSurfaceFrame {
     use crate::style::BorderRadius;
 
     let mut root_element = zero_surface_element(0xc3_a010, 0.0, Color::rgb(40, 80, 160));
@@ -66,7 +66,6 @@ fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
     let (measure, place) = constraints();
     measure_and_place(&mut arena, root, measure, place);
     let artifact = recorded_zero_surface_artifact(&arena, &[root]);
-    let (chunk_count, op_count) = (artifact.chunks.len(), artifact.ops.len());
     assert_eq!(
         artifact
             .chunks
@@ -86,13 +85,8 @@ fn recorded_zero_surface_child_mask_candidate() -> RecordedArtifactCandidate {
     )
     .expect("zero-surface child-mask artifact must prepare");
     assert!(plan.nodes().is_empty());
-    let frame = crate::view::paint::seal_prepared_artifact_surface_frame(plan)
-        .expect("zero-surface child-mask resident set must seal");
-    RecordedArtifactCandidate {
-        payload: RecordedArtifactPayload::ArtifactSurface(frame),
-        chunk_count,
-        op_count,
-    }
+    crate::view::paint::seal_prepared_artifact_surface_frame(plan)
+        .expect("zero-surface child-mask resident set must seal")
 }
 
 #[test]
@@ -160,11 +154,11 @@ fn stage_c_zero_surface_child_mask_compiles_at_254_and_isolates_past_a_full_sten
         .begin_retained_surface_frame_stage()
         .expect("accepted frame owns one resident transaction");
     crate::view::paint::take_artifact_compile_count();
-    compile_auto_artifact_frame(
+    compile_recorded_frame(
         &mut accepted_viewport,
         Some(accepted_owner),
         &mut accepted_graph,
-        recorded_zero_surface_child_mask_candidate(),
+        recorded_zero_surface_child_mask_frame(),
         &accepted_ctx,
     );
     assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
@@ -195,11 +189,11 @@ fn stage_c_zero_surface_child_mask_compiles_at_254_and_isolates_past_a_full_sten
     let full_owner = full_viewport
         .begin_retained_surface_frame_stage()
         .expect("full-stencil frame owns one resident transaction");
-    compile_auto_artifact_frame(
+    compile_recorded_frame(
         &mut full_viewport,
         Some(full_owner),
         &mut full_graph,
-        recorded_zero_surface_child_mask_candidate(),
+        recorded_zero_surface_child_mask_frame(),
         &full_ctx,
     );
     assert!(full_viewport.finish_retained_surface_transaction_for_frame(Some(full_owner), true));
@@ -209,20 +203,13 @@ fn stage_c_zero_surface_child_mask_compiles_at_254_and_isolates_past_a_full_sten
 fn stage_c_zero_surface_retained_auto_emits_the_leaf_fill_once() {
     let (arena, roots) = prepared_safe_leaf();
     let (properties, generations) = synced_paint_state(&arena, &roots);
-    let selection_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let AutoAuthorityDecision::Artifact { candidate, trace } = select_retained_auto_authority(
-        &arena,
-        &roots,
-        &properties,
-        &generations,
-        &selection_ctx,
-        true,
-    ) else {
-        panic!("property-neutral frame must select artifact authority")
-    };
-    assert!(trace.rejections.is_empty());
-    assert_eq!((candidate.chunk_count, candidate.op_count), (1, 1),);
-    let RecordedArtifactPayload::ArtifactSurface(frame) = &candidate.payload;
+    let recording_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
+    let RecordedFrame {
+        frame,
+        chunk_count,
+        op_count,
+    } = record_frame_for_test(&arena, &roots, &properties, &generations, &recording_ctx);
+    assert_eq!((chunk_count, op_count), (1, 1));
     assert!(frame.raster_plan().nodes().is_empty());
     assert!(frame.residents().is_empty());
 
@@ -235,13 +222,7 @@ fn stage_c_zero_surface_retained_auto_emits_the_leaf_fill_once() {
     let mut compile_ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
     let target = compile_ctx.allocate_target(&mut graph);
     compile_ctx.set_current_target(target);
-    compile_auto_artifact_frame(
-        &mut viewport,
-        Some(owner),
-        &mut graph,
-        candidate,
-        &compile_ctx,
-    );
+    compile_recorded_frame(&mut viewport, Some(owner), &mut graph, frame, &compile_ctx);
     assert_eq!(crate::view::paint::take_artifact_compile_count(), 0);
     assert_eq!(
         viewport.pending_artifact_surface_resident_keys_for_test(),

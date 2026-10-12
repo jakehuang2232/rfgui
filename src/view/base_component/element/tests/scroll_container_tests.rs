@@ -270,66 +270,6 @@ fn scrollbar_hover_resolves_against_same_frame_final_layout_geometry() {
 }
 
 #[test]
-fn scroll_container_build_restores_scissor_and_clip_state() {
-    let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
-    let mut parent_style = Style::new();
-    parent_style.insert(
-        PropertyId::ScrollDirection,
-        ParsedValue::ScrollDirection(crate::style::ScrollDirection::Vertical),
-    );
-    parent.apply_style(parent_style);
-    let child = Element::new(0.0, 0.0, 120.0, 360.0);
-
-    let mut arena = new_test_arena();
-    let parent_key = commit_element(&mut arena, Box::new(parent));
-    let _ = commit_child(&mut arena, parent_key, Box::new(child));
-
-    measure_and_place(
-        &mut arena,
-        parent_key,
-        LayoutConstraints {
-            max_width: 120.0,
-            max_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        },
-        LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 120.0,
-            available_height: 120.0,
-            viewport_width: 120.0,
-            viewport_height: 120.0,
-            percent_base_width: Some(120.0),
-            percent_base_height: Some(120.0),
-        },
-    );
-
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(120, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-
-    let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let next_state = arena
-        .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
-        .expect("parent build returns state");
-
-    assert_eq!(
-        next_state.graphics_pass_scissor, None,
-        "scroll container build should not leak scissor rect to sibling roots"
-    );
-    assert!(
-        next_state.clip_id_stack.is_empty(),
-        "scroll container build should not leak clip ids to sibling roots"
-    );
-}
-
-#[test]
 fn vertical_scroll_container_does_not_expand_auto_height_flex_row_child() {
     let mut parent = Element::new(0.0, 0.0, 120.0, 120.0);
     let mut parent_style = Style::new();

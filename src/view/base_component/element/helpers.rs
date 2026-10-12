@@ -237,11 +237,6 @@ pub(crate) fn baseline_cross_offset(
     }
 }
 
-fn trace_layout_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("RFGUI_TRACE_LAYOUT").is_ok())
-}
-
 pub(crate) fn resolve_px(
     length: Length,
     base: f32,

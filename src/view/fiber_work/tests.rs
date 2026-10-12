@@ -19,16 +19,6 @@ impl crate::view::base_component::Layoutable for TestElement {
     fn set_layout_height(&mut self, _h: f32) {}
 }
 impl crate::view::base_component::EventTarget for TestElement {}
-impl crate::view::base_component::Renderable for TestElement {
-    fn build(
-        &mut self,
-        _g: &mut crate::view::frame_graph::FrameGraph,
-        _a: &mut NodeArena,
-        ctx: crate::view::base_component::UiBuildContext,
-    ) -> crate::view::base_component::BuildState {
-        ctx.into_state()
-    }
-}
 impl ElementTrait for TestElement {
     fn stable_id(&self) -> u64 {
         self.sid

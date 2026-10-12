@@ -2,13 +2,11 @@ use super::*;
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_execute_failure_legacy_recovery_and_explicit_retry() -> Result<(), String>
-{
+fn native_single_viewport_execute_failure_retries_next_frame() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native hardware graphics context");
     for dpr in [1_u32, 2] {
         let mut viewport = Viewport::new();
-        viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
         let (root, mut style) = install_translucent_scene(&mut viewport);
         style.set_transform(Transform::new([Translate::xy(
             Length::px(9.0),
@@ -16,12 +14,9 @@ fn native_single_viewport_execute_failure_legacy_recovery_and_explicit_retry() -
         )]));
         get_element_mut::<Element>(viewport.node_arena(), root).apply_style(style);
         let mut target = None;
-        // Ordered sequence: cold, warm, execute failure, two Legacy frames,
-        // explicit circuit reset, warm retry. Scene content never changes.
-        for frame in 0..7 {
-            if frame == 5 {
-                viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
-            }
+        // Ordered sequence: cold, warm, execute failure, cold retry, warm.
+        // Scene content never changes.
+        for frame in 0..5 {
             viewport.begin_offscreen_test_frame(
                 gpu.device.clone(),
                 gpu.queue.clone(),
@@ -41,11 +36,7 @@ fn native_single_viewport_execute_failure_legacy_recovery_and_explicit_retry() -
                 assert!(!viewport.has_compatible_persistent_render_target(*key, desc));
                 continue;
             }
-            let observed = if frame == 3 || frame == 4 {
-                viewport.render_single_viewport_legacy_recovery_for_test()?
-            } else {
-                viewport.render_single_viewport_scene_for_test()?
-            };
+            let observed = viewport.render_single_viewport_scene_for_test()?;
             let pixels =
                 read_submitted_texture(&observed.texture, gpu, [WIDTH * dpr, HEIGHT * dpr])?;
             validate_style_pixels(
@@ -56,20 +47,9 @@ fn native_single_viewport_execute_failure_legacy_recovery_and_explicit_retry() -
                 dpr,
                 frame,
             )?;
-            // The requested mode remains Auto while its latched breaker selects
-            // Legacy. A successful Legacy frame must not automatically retry.
-            assert_eq!(
-                viewport.paint_renderer_mode(),
-                ViewportPaintRendererMode::RetainedAuto
-            );
-            if frame == 3 || frame == 4 {
-                assert!(observed.legacy_selected);
-                continue;
-            }
-            assert!(observed.artifact_selected);
             assert_eq!(
                 observed.actions,
-                [if frame == 0 || frame == 5 {
+                [if frame == 0 || frame == 3 {
                     RetainedSurfaceCompileAction::Reraster
                 } else {
                     RetainedSurfaceCompileAction::Reuse
@@ -89,9 +69,6 @@ fn native_single_viewport_execute_failure_legacy_recovery_and_explicit_retry() -
             }
         }
     }
-    eprintln!(
-        "execution failure and explicit retry passed on {}",
-        gpu.label()
-    );
+    eprintln!("execution failure and retry passed on {}", gpu.label());
     Ok(())
 }

@@ -1,7 +1,6 @@
 use super::super::style_pipeline_tests::read_submitted_texture;
 use super::*;
 use crate::view::frame_graph::execution_failure_test_support::arm_after;
-use crate::view::viewport::ViewportPaintRendererMode;
 
 const SIZE: [u32; 2] = [96, 64];
 
@@ -135,7 +134,6 @@ fn surface_with_a_taken_color_or_depth_key_alone_is_drawn_without_being_kept() {
 fn install() -> Viewport {
     let f = forest();
     let mut viewport = Viewport::new();
-    viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
     viewport.install_single_viewport_forest_for_test(f.arena, f.roots);
     viewport
 }
@@ -239,41 +237,29 @@ fn native_multi_target_failure_at_every_execution_step_recovers_the_whole_forest
                         "every physical pair must be discarded, including unexecuted targets"
                     );
                 }
-                // The execute failure latches Legacy until explicit reset.
+                // The next frame redraws every surface, then reuses them.
                 // All outputs still have independent geometry/color probes.
-                for recovery in 0..4 {
-                    if recovery == 2 {
-                        viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
-                    }
+                for recovery in 0..2 {
                     begin(&mut viewport, gpu, dpr)?;
-                    let observed = if recovery < 2 {
-                        viewport.render_single_viewport_legacy_recovery_for_test()?
-                    } else {
-                        viewport.render_single_viewport_scene_for_test()?
-                    };
+                    let observed = viewport.render_single_viewport_scene_for_test()?;
                     pixels(
                         &read_submitted_texture(&observed.texture, gpu, SIZE.map(|v| v * dpr))?,
                         dpr,
                     );
-                    if recovery < 2 {
-                        assert!(observed.legacy_selected);
-                    } else {
-                        assert!(observed.artifact_selected);
-                        assert_eq!(
-                            observed.actions,
-                            vec![
-                                if recovery == 2 {
-                                    RetainedSurfaceCompileAction::Reraster
-                                } else {
-                                    RetainedSurfaceCompileAction::Reuse
-                                };
-                                4
-                            ]
-                        );
-                        assert_eq!(observed.color_targets, targets);
-                        for (key, desc) in &observed.color_targets {
-                            assert!(viewport.has_compatible_persistent_render_target(*key, desc));
-                        }
+                    assert_eq!(
+                        observed.actions,
+                        vec![
+                            if recovery == 0 {
+                                RetainedSurfaceCompileAction::Reraster
+                            } else {
+                                RetainedSurfaceCompileAction::Reuse
+                            };
+                            4
+                        ]
+                    );
+                    assert_eq!(observed.color_targets, targets);
+                    for (key, desc) in &observed.color_targets {
+                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
                     }
                 }
             }

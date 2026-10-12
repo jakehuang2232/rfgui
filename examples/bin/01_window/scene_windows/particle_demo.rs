@@ -5,10 +5,9 @@ use crate::rfgui::ui::{
 };
 use crate::rfgui::view::base_component::PaintResourcePreparationContext;
 use crate::rfgui::view::base_component::{
-    AnimationFrameRequest, BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget,
-    LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
+    AnimationFrameRequest, BoxModelSnapshot, DirtyFlags, ElementTrait, EventTarget,
+    LayoutConstraints, LayoutPlacement, Layoutable,
 };
-use crate::rfgui::view::frame_graph::FrameGraph;
 use crate::rfgui::view::gpu_paint::{GpuPaintProgram, GpuPaintSource, GpuPaintSourceId};
 use crate::rfgui::view::viewport::ViewportControl;
 use crate::rfgui::view::{BuildCtx, ElementDescriptor, HostBuilder, host_builder_node};
@@ -571,26 +570,6 @@ impl EventTarget for ParticleCanvas {
             });
         }
         false
-    }
-}
-
-impl Renderable for ParticleCanvas {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        _arena: &mut rfgui::view::NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        if self.should_render {
-            if let Some(source) = &self.source {
-                source.paint(
-                    graph,
-                    &mut ctx,
-                    [self.layout_x, self.layout_y, self.layout_w, self.layout_h],
-                );
-            }
-        }
-        ctx.into_state()
     }
 }
 

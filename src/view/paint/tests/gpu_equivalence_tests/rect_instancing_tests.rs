@@ -104,9 +104,11 @@ fn native_rect_runs_break_at_scissor_changes() -> Result<(), String> {
     let (mut graph, mut ctx, target) = primed_prelude(SIZE);
     ctx.emit_draw_rect_pass(&mut graph, rect([0.0, 0.0], [8.0, 8.0], RED));
     ctx.emit_draw_rect_pass(&mut graph, rect([8.0, 0.0], [8.0, 8.0], RED));
-    let previous = ctx.push_scissor_rect(Some([16, 0, 4, SIZE[1]]));
+    let previous = ctx.push_graphics_pass_scissor(Some(
+        crate::view::render_pass::render_target::GraphicsPassScissor::Logical([16, 0, 4, SIZE[1]]),
+    ));
     ctx.emit_draw_rect_pass(&mut graph, rect([16.0, 0.0], [8.0, 8.0], BLUE));
-    ctx.restore_scissor_rect(previous);
+    ctx.restore_graphics_pass_scissor(previous);
     ctx.emit_draw_rect_pass(&mut graph, rect([24.0, 0.0], [8.0, 8.0], RED));
     let (pixels, draws, instances) = render_rect_frame(graph, target, gpu)?;
     assert_eq!(

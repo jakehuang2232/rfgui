@@ -216,14 +216,11 @@ fn viewport_anchored_child_through_deep_offscreen_chain() {
     );
 }
 
-/// Render-level repro: drive Element::build through the deep-offscreen
-/// ancestor chain, then run the deferred build for the snackbar's
-/// node id. Inspect the recorded FrameGraph pass count to confirm the
-/// snackbar actually emitted draw passes.
+/// Render-level repro: record the deep-offscreen ancestor chain and
+/// confirm the snackbar actually paints.
 #[test]
 fn viewport_anchored_child_renders_passes_through_offscreen_ancestor() {
-    // Same scene as the layout-only test, but exercise the build/defer
-    // pipeline.
+    // Same scene as the layout-only test, but exercise recording.
     let mut window = Element::new(0.0, 0.0, 460.0, 380.0);
     let mut window_style = Style::new();
     window_style.insert(
@@ -263,7 +260,6 @@ fn viewport_anchored_child_renders_passes_through_offscreen_ancestor() {
     let mut arena = new_test_arena();
     let win_k = commit_element(&mut arena, Box::new(window));
     let snackbar_k = commit_child(&mut arena, win_k, Box::new(snackbar));
-    let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
 
     measure_and_place(
         &mut arena,
@@ -290,43 +286,10 @@ fn viewport_anchored_child_renders_passes_through_offscreen_ancestor() {
         },
     );
 
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-
-    // Main walk.
-    let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let next_state = arena
-        .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
-        .expect("window build returns state");
-    ctx.set_state(next_state);
-
-    let pass_count_before_defer = graph.pass_descriptors().len();
-
-    // Defer pass.
-    let deferred = drain_deferred(&mut ctx);
+    let recorded = recorded_chunk_owners(&arena, &[win_k]);
     assert!(
-        deferred.iter().any(|node| node.stable_id == snackbar_id),
-        "snackbar should be in deferred list, got {:?}",
-        deferred
-    );
-    for node in &deferred {
-        crate::view::base_component::build_node_by_key(
-            node.key,
-            node.stable_id,
-            &mut graph,
-            &mut arena,
-            &mut ctx,
-        );
-    }
-
-    let pass_count_after_defer = graph.pass_descriptors().len();
-    assert!(
-        pass_count_after_defer > pass_count_before_defer,
-        "deferred snackbar should emit at least one render pass (before={}, after={})",
-        pass_count_before_defer,
-        pass_count_after_defer
+        recorded.contains(&snackbar_k),
+        "snackbar must paint, got {recorded:?}"
     );
 }
 
@@ -369,7 +332,6 @@ fn viewport_anchored_child_renders_when_ancestor_fully_offscreen() {
     let mut arena = new_test_arena();
     let win_k = commit_element(&mut arena, Box::new(window));
     let snackbar_k = commit_child(&mut arena, win_k, Box::new(snackbar));
-    let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
 
     measure_and_place(
         &mut arena,
@@ -412,45 +374,9 @@ fn viewport_anchored_child_renders_when_ancestor_fully_offscreen() {
     );
     drop(snackbar_el);
 
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    // Mirror `Viewport::render_rsx`: seed the ctx defer list once
-    // from the arena.
-    let mut popup_stack = crate::view::popup_stack::PopupStack::new();
-    arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
-
-    let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let next_state = arena
-        .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
-        .expect("window build returns state");
-    ctx.set_state(next_state);
-
-    // Window's build with should_render=false should still collect
-    // viewport-anchored descendants into the deferred list.
-    let deferred = drain_deferred(&mut ctx);
+    let recorded = recorded_chunk_owners(&arena, &[win_k]);
     assert!(
-        deferred.iter().any(|node| node.stable_id == snackbar_id),
-        "snackbar should be deferred even when window not rendered, got {:?}",
-        deferred
-    );
-
-    let pass_count_before_defer = graph.pass_descriptors().len();
-    for node in &deferred {
-        crate::view::base_component::build_node_by_key(
-            node.key,
-            node.stable_id,
-            &mut graph,
-            &mut arena,
-            &mut ctx,
-        );
-    }
-    let pass_count_after_defer = graph.pass_descriptors().len();
-    assert!(
-        pass_count_after_defer > pass_count_before_defer,
-        "snackbar should emit passes even when ancestor is offscreen (before={}, after={})",
-        pass_count_before_defer,
-        pass_count_after_defer
+        recorded.contains(&snackbar_k),
+        "snackbar must paint even when window is not rendered, got {recorded:?}"
     );
 }

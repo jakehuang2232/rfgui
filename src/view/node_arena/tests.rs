@@ -1,10 +1,9 @@
 use super::*;
 use crate::style::Color;
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, Element, ElementTrait, EventTarget,
-    LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
+    BoxModelSnapshot, DirtyFlags, Element, ElementTrait, EventTarget, LayoutConstraints,
+    LayoutPlacement, Layoutable,
 };
-use crate::view::frame_graph::FrameGraph;
 
 struct TestElement {
     stable_id: u64,
@@ -58,17 +57,6 @@ impl Layoutable for TestElement {
 
 impl EventTarget for TestElement {}
 
-impl Renderable for TestElement {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        ctx.into_state()
-    }
-}
-
 impl ElementTrait for TestElement {
     fn stable_id(&self) -> u64 {
         self.stable_id
@@ -121,18 +109,6 @@ impl Layoutable for RecordingElement {
 }
 
 impl EventTarget for RecordingElement {}
-
-impl Renderable for RecordingElement {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        RECORDED_BUILDS.with(|builds| builds.borrow_mut().push(self.label));
-        ctx.into_state()
-    }
-}
 
 impl ElementTrait for RecordingElement {
     fn stable_id(&self) -> u64 {
@@ -219,9 +195,9 @@ fn assert_cached_paint_clean(arena: &NodeArena, key: NodeKey) {
     );
 }
 
-mod deferred_queue_tests;
 mod dirty_propagation_tests;
 mod invalidation_tests;
 mod topology_tests;
+mod viewport_clip_collection_tests;
 
 mod dirty_observation_tests;

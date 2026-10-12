@@ -17,16 +17,6 @@ impl Layoutable for External {
     fn set_layout_height(&mut self, _: f32) {}
 }
 impl EventTarget for External {}
-impl Renderable for External {
-    fn build(
-        &mut self,
-        _: &mut crate::view::frame_graph::FrameGraph,
-        _: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        ctx.into_state()
-    }
-}
 impl ElementTrait for External {
     fn stable_id(&self) -> u64 {
         self.id.get()

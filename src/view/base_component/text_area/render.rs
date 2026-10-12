@@ -12,19 +12,10 @@ use std::time::Duration;
 
 use crate::style::ColorLike;
 use crate::ui::Rect;
-use crate::view::base_component::{
-    BuildState, DirtyFlags, ElementTrait, Renderable, TextAreaSelectionRenderContext,
-    UiBuildContext, with_text_area_selection_render_context,
-};
-use crate::view::frame_graph::FrameGraph;
+use crate::view::base_component::DirtyFlags;
 use crate::view::node_arena::{NodeArena, NodeKey};
-use crate::view::render_pass::DrawRectPass;
-use crate::view::render_pass::draw_rect_pass::{
-    DrawRectInput, DrawRectOutput, RectPassParams, RectRenderMode, RenderTargetIn,
-};
-use crate::view::render_pass::text_pass::{
-    TextInput, TextOutput, TextPassPreparedFragment, TextPassPreparedParams, TextPreparedInputPass,
-};
+use crate::view::render_pass::draw_rect_pass::{RectPassParams, RectRenderMode};
+use crate::view::render_pass::text_pass::{TextPassPreparedFragment, TextPassPreparedParams};
 
 use super::TextArea;
 use super::inline_ifc::TextAreaUnifiedIfcSourceKind;
@@ -177,28 +168,6 @@ impl TextArea {
                 target_caret_char,
             },
         })
-    }
-
-    /// The paint offset of this TextArea's content: the owner snap, then the
-    /// content anchor snap, over `parent`. It walks the same snap points
-    /// `paint_snap_points` hands the compiler.
-    fn effective_paint_offset(
-        &self,
-        arena: &NodeArena,
-        parent: [f32; 2],
-        scale_factor: f32,
-    ) -> [f32; 2] {
-        self.paint_snap_points(arena)
-            .into_iter()
-            .flatten()
-            .try_fold(parent, |offset, point| {
-                crate::view::base_component::paint_offset_after_owner_snap(
-                    point,
-                    offset,
-                    scale_factor,
-                )
-            })
-            .unwrap_or([f32::NAN; 2])
     }
 
     /// The content's origin: its box scrolled by the current offset.
@@ -885,37 +854,6 @@ impl TextArea {
         None
     }
 
-    pub(super) fn projection_selection_context_for_child(
-        &self,
-        idx: usize,
-        child_key: NodeKey,
-        arena: &NodeArena,
-    ) -> Option<TextAreaSelectionRenderContext> {
-        let (sel_start, sel_end) = self.selection_range_chars()?;
-        let range = self.child_char_ranges.get(idx)?;
-        if range.end <= sel_start || range.start >= sel_end {
-            return None;
-        }
-        let is_projection = arena
-            .with_element_taken_ref(child_key, |el, _| !el.as_any().is::<TextAreaTextRun>())
-            .unwrap_or(false);
-        if !is_projection {
-            return None;
-        }
-        let local_start = sel_start.saturating_sub(range.start);
-        let local_end = sel_end
-            .saturating_sub(range.start)
-            .min(range.end.saturating_sub(range.start));
-        if local_start >= local_end {
-            return None;
-        }
-        Some(TextAreaSelectionRenderContext {
-            start: local_start,
-            end: local_end,
-            fill: self.selection_background_color.to_rgba_f32(),
-        })
-    }
-
     pub(super) fn content_paint_anchor(&self, arena: &NodeArena) -> Option<(f32, f32)> {
         self.children.iter().find_map(|&child_key| {
             arena.with_element_taken_ref(child_key, |el, _| {
@@ -926,195 +864,7 @@ impl TextArea {
     }
 }
 
-impl Renderable for TextArea {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        arena: &mut NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        let parent_paint_offset = ctx.paint_offset();
-        let scale_factor = ctx.viewport().scale_factor();
-        ctx.set_paint_offset(self.effective_paint_offset(arena, parent_paint_offset, scale_factor));
-
-        let previous_scissor = ctx.push_scissor_rect(self.viewport_scissor_rect());
-        let unified_render_package = self.unified_inline_ifc_render_package(arena);
-        let text_origin = ctx.paint_point(
-            self.layout_state.layout_position.x - self.scroll_x,
-            self.layout_state.layout_position.y - self.scroll_y,
-        );
-        let mut preedit_underline_ops = unified_render_package
-            .as_ref()
-            .and_then(|package| self.preedit_decoration_payload(package, text_origin))
-            .map(|decoration| decoration.ops)
-            .unwrap_or_default();
-
-        // Layer 0 — selection background. Drawn under children so glyphs
-        // overlay the highlight.
-        if let (Some(package), Some(target)) = (&unified_render_package, ctx.current_target()) {
-            for op in self
-                .selection_payload(package, text_origin)
-                .map(|selection| selection.ops)
-                .unwrap_or_default()
-            {
-                let mut sel_pass = DrawRectPass::new(
-                    op.params,
-                    DrawRectInput {
-                        pass_context: ctx.graphics_pass_context(),
-                        ..Default::default()
-                    },
-                    DrawRectOutput {
-                        render_target: target,
-                        ..Default::default()
-                    },
-                );
-                sel_pass.set_render_mode(op.mode);
-                sel_pass.set_scissor_rect(ctx.graphics_pass_context().logical_scissor_rect());
-                sel_pass.set_input(
-                    target
-                        .handle()
-                        .map(RenderTargetIn::with_handle)
-                        .unwrap_or_default(),
-                );
-                graph.add_graphics_pass(sel_pass);
-            }
-            ctx.set_current_target(target);
-        }
-
-        if let (Some(package), Some(target)) = (&unified_render_package, ctx.current_target()) {
-            let [origin_x, origin_y] = text_origin;
-            let staging_input = package.text_pass_staging_input([origin_x, origin_y], 1.0, 0, 1.0);
-            if !staging_input.glyphs.is_empty() {
-                let content_rect = package.content_rect();
-                let size = content_rect
-                    .map(|rect| [rect.width.max(1.0), rect.height.max(1.0)])
-                    .unwrap_or([
-                        self.layout_state.layout_size.width.max(1.0),
-                        self.layout_state.layout_size.height.max(1.0),
-                    ]);
-                let pass = TextPreparedInputPass::new(
-                    TextPassPreparedParams {
-                        staging_input,
-                        fragments: vec![TextPassPreparedFragment {
-                            origin: [origin_x, origin_y],
-                            size,
-                        }],
-                        scissor_rect: None,
-                        stencil_clip_id: None,
-                    },
-                    TextInput {
-                        pass_context: ctx.graphics_pass_context(),
-                    },
-                    TextOutput {
-                        render_target: target,
-                        ..Default::default()
-                    },
-                );
-                graph.add_graphics_pass(pass);
-                ctx.set_current_target(target);
-            }
-        }
-
-        // Layer 1 — walk arena children (Run / projection self-render).
-        let child_keys: Vec<NodeKey> = self.children.clone();
-        for (idx, child_key) in child_keys.into_iter().enumerate() {
-            if unified_render_package.is_some()
-                && arena
-                    .with_element_taken_ref(child_key, |el, _| {
-                        el.as_any().is::<TextAreaTextRun>() || el.as_any().is::<TextAreaLineBreak>()
-                    })
-                    .unwrap_or(false)
-            {
-                continue;
-            }
-            let selection_context =
-                self.projection_selection_context_for_child(idx, child_key, arena);
-            let viewport = ctx.viewport();
-            let taken_state = ctx.state_clone();
-            let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
-            let next_ctx = with_text_area_selection_render_context(selection_context, || {
-                arena.with_element_taken(child_key, |child, arena| {
-                    let ctx_local = ctx_in;
-                    let vp = ctx_local.viewport();
-                    let next_state = child.build(graph, arena, ctx_local);
-                    UiBuildContext::from_parts(vp, next_state)
-                })
-            });
-            if let Some(c) = next_ctx {
-                ctx = c;
-            }
-        }
-        drop(unified_render_package);
-
-        // Layer 1.5 — IME preedit underline (above glyphs, below caret).
-        if preedit_underline_ops.is_empty()
-            && !self.ime_preedit.is_empty()
-            && let Some(rects) = self.projection_preedit_underline_screen_rects(arena)
-        {
-            let fill = self.color.to_rgba_f32();
-            preedit_underline_ops = rects
-                .into_iter()
-                .filter_map(|rect| {
-                    let position = ctx.paint_point(rect.x, rect.y);
-                    position
-                        .iter()
-                        .chain([rect.width, rect.height].iter())
-                        .chain(fill.iter())
-                        .all(|value| value.is_finite())
-                        .then_some(crate::view::paint::DrawRectOp {
-                            params: RectPassParams {
-                                position,
-                                size: [rect.width.max(1.0), rect.height.max(1.0)],
-                                fill_color: fill,
-                                opacity: 1.0,
-                                ..Default::default()
-                            },
-                            mode: RectRenderMode::FillOnly,
-                        })
-                })
-                .collect();
-        }
-        if ctx.current_target().is_some() {
-            for op in preedit_underline_ops {
-                let mut underline_pass = DrawRectPass::new(
-                    op.params,
-                    DrawRectInput {
-                        pass_context: ctx.graphics_pass_context(),
-                        ..Default::default()
-                    },
-                    DrawRectOutput::default(),
-                );
-                underline_pass.set_render_mode(op.mode);
-                ctx.emit_draw_rect_pass(graph, underline_pass);
-            }
-        }
-
-        // Layer 2 — caret.
-        if let Some(caret) = self.caret_draw_rect_payload(arena, ctx.paint_offset()) {
-            let mut caret_pass = DrawRectPass::new(
-                caret.op.params,
-                DrawRectInput {
-                    pass_context: ctx.graphics_pass_context(),
-                    ..Default::default()
-                },
-                DrawRectOutput::default(),
-            );
-            caret_pass.set_render_mode(caret.op.mode);
-            ctx.emit_draw_rect_pass(graph, caret_pass);
-        }
-
-        self.dirty_flags = self.dirty_flags.without(DirtyFlags::PAINT);
-        ctx.restore_scissor_rect(previous_scissor);
-        ctx.set_paint_offset(parent_paint_offset);
-        ctx.into_state()
-    }
-}
-
 impl TextArea {
-    fn viewport_scissor_rect(&self) -> Option<[u32; 4]> {
-        Some(self.viewport_logical_scissor_rect())
-    }
-
     pub(super) fn viewport_logical_scissor_rect(&self) -> [u32; 4] {
         let rect = Rect {
             x: self.layout_state.layout_position.x,
@@ -1364,6 +1114,6 @@ fn draw_rect_union(
         .then_some(bounds)
 }
 
-/// The retained grammar oracles below the legacy build describe recorded
-/// TextArea geometry on the logical grid, where their fixtures place it.
+/// The retained grammar oracles below describe recorded TextArea geometry on
+/// the logical grid, where their fixtures place it.
 const ORACLE_SCALE_FACTOR: f32 = 1.0;

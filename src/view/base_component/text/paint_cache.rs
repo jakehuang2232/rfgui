@@ -1,8 +1,8 @@
 //! Single-entry memos for immutable text inputs, never for live tree authority.
 //! Holding strong Arcs prevents address reuse and forces copy-on-write mutations
 //! to acquire a different identity. Dirty flags are not an invalidation key.
-//! This keeps one CPU payload per Text, including while a whole frame falls
-//! back to Legacy; it trades bounded per-owner storage for warm-frame work.
+//! This keeps one CPU payload per Text; it trades bounded per-owner storage
+//! for warm-frame work.
 //! A successful payload miss replaces the paint entry; hidden/empty paint or
 //! preparation failure leaves it intact. The install entry is replaced only
 //! when a new input pair reaches structural comparison. Both release their

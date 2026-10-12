@@ -53,12 +53,7 @@ impl Viewport {
             self.compositor
                 .pending_retained_surfaces
                 .as_ref()
-                .map(|pending| match pending {
-                    PendingRetainedSurfaceTransaction::Clear => 0,
-                    PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents } => {
-                        residents.len()
-                    }
-                }),
+                .map(|residents| residents.len()),
         )
     }
 
@@ -66,11 +61,7 @@ impl Viewport {
     pub(crate) fn pending_artifact_surface_resident_keys_for_test(
         &self,
     ) -> Option<Vec<crate::view::paint::RetainedSurfaceResidentKey>> {
-        let PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents } =
-            self.compositor.pending_retained_surfaces.as_ref()?
-        else {
-            return None;
-        };
+        let residents = self.compositor.pending_retained_surfaces.as_ref()?;
         Some(
             residents
                 .ordered_entries()
@@ -218,8 +209,7 @@ impl Viewport {
             return false;
         }
         debug_assert!(self.compositor.pending_retained_surfaces.is_none());
-        self.compositor.pending_retained_surfaces =
-            Some(PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents });
+        self.compositor.pending_retained_surfaces = Some(residents);
         self.compositor.pending_retained_surface_owner = Some(owner.generation);
         true
     }
@@ -260,38 +250,13 @@ impl Viewport {
             && self.compositor.pending_retained_surfaces.is_none()
     }
 
-    /// Every retained producer shares one transaction slot. Replacing a
-    /// pending owner would orphan its graph-declared persistent pairs, so the
-    /// only legal cancellation path is the explicit finish/invalidate
-    /// lifecycle.
-    fn try_stage_retained_surface_transaction(
-        &mut self,
-        pending: PendingRetainedSurfaceTransaction,
-    ) -> bool {
-        if self.compositor.pending_retained_surfaces.is_some() {
-            return false;
-        }
-        let owner = self
-            .compositor
-            .active_retained_surface_frame_owner
-            .unwrap_or_else(|| self.allocate_retained_surface_owner());
-        self.compositor.pending_retained_surfaces = Some(pending);
-        self.compositor.pending_retained_surface_owner = Some(owner);
-        true
-    }
-
-    #[allow(dead_code)] // C4A staging authority; production dispatch lands in C4B.
-    pub(crate) fn stage_retained_surface_clear(&mut self) -> bool {
-        self.try_stage_retained_surface_transaction(PendingRetainedSurfaceTransaction::Clear)
-    }
-
     pub(crate) fn finish_retained_surface_transaction(&mut self, succeeded: bool) {
         if !succeeded {
             self.invalidate_retained_surfaces();
             return;
         }
         match self.compositor.pending_retained_surfaces.take() {
-            Some(PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents }) => {
+            Some(residents) => {
                 let ordered_entries = residents.into_ordered_entries();
                 let next_color_keys = ordered_entries
                     .iter()
@@ -317,9 +282,7 @@ impl Viewport {
                     .retained_surface_pair_witnesses
                     .extend(next_color_keys);
             }
-            Some(PendingRetainedSurfaceTransaction::Clear) | None => {
-                self.invalidate_retained_surfaces()
-            }
+            None => self.invalidate_retained_surfaces(),
         }
         self.compositor.pending_retained_surface_owner = None;
     }
@@ -357,9 +320,7 @@ impl Viewport {
             .values()
             .map(|stamp| stamp.identity.color_key)
             .collect::<FxHashSet<_>>();
-        if let Some(PendingRetainedSurfaceTransaction::CommitArtifactSurfaceSet { residents }) =
-            self.compositor.pending_retained_surfaces.as_ref()
-        {
+        if let Some(residents) = self.compositor.pending_retained_surfaces.as_ref() {
             color_keys.extend(
                 residents
                     .ordered_entries()

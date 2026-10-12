@@ -2,7 +2,6 @@
 use rfgui::app::{App, AppConfig, AppContext};
 use rfgui::style::{Color, Length, Transition, TransitionProperty};
 use rfgui::ui::{RsxNode, rsx};
-use rfgui::view::viewport::ViewportPaintRendererMode;
 use rfgui::view::{Element, TextArea};
 
 struct Probe(RsxNode);
@@ -13,12 +12,6 @@ impl App for Probe {
     }
 
     fn on_ready(&mut self, ctx: &mut AppContext<'_>) {
-        let mode = if std::env::var("RFGUI_PROBE_RENDERER").as_deref() == Ok("legacy") {
-            ViewportPaintRendererMode::Legacy
-        } else {
-            ViewportPaintRendererMode::RetainedAuto
-        };
-        ctx.viewport.set_paint_renderer_mode(mode);
         if std::env::var("RFGUI_PROBE_TRACE").as_deref() == Ok("1") {
             let mut options = rfgui::view::viewport::ViewportDebugOptions::default();
             options.trace_render_time = true;

@@ -1,44 +1,9 @@
 //! Text hit-test + caret + selection-rect computation.
 
-use std::cell::RefCell;
-
 use crate::ui::Rect;
 use crate::view::inline_formatting_context::InlineIfcCaretAffinity;
 
 use super::Text;
-
-// ---------------------------------------------------------------------------
-// TextArea selection render context (thread-local)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug)]
-pub(crate) struct TextAreaSelectionRenderContext {
-    pub start: usize,
-    pub end: usize,
-    pub fill: [f32; 4],
-}
-
-thread_local! {
-    static TEXT_AREA_SELECTION_RENDER_CONTEXT: RefCell<Option<TextAreaSelectionRenderContext>> =
-        const { RefCell::new(None) };
-}
-
-pub(crate) fn with_text_area_selection_render_context<R>(
-    context: Option<TextAreaSelectionRenderContext>,
-    f: impl FnOnce() -> R,
-) -> R {
-    TEXT_AREA_SELECTION_RENDER_CONTEXT.with(|slot| {
-        let previous = slot.replace(context);
-        let out = f();
-        slot.replace(previous);
-        out
-    })
-}
-
-pub(super) fn current_text_area_selection_render_context() -> Option<TextAreaSelectionRenderContext>
-{
-    TEXT_AREA_SELECTION_RENDER_CONTEXT.with(|slot| slot.borrow().clone())
-}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TextCaretStop {

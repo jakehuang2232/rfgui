@@ -202,7 +202,9 @@ fn graph_prelude_with_format(
 
 fn self_clip_graph_prelude() -> (FrameGraph, UiBuildContext, RenderTargetOut) {
     let (graph, mut ctx, target) = graph_prelude();
-    ctx.replace_scissor_rect(Some([0, 0, 16, HEIGHT]));
+    ctx.replace_graphics_pass_scissor(Some(
+        crate::view::render_pass::render_target::GraphicsPassScissor::Logical([0, 0, 16, HEIGHT]),
+    ));
     (graph, ctx, target)
 }
 
@@ -335,7 +337,9 @@ fn transformed_graph_prelude_with_size(
     if let Some(handle) = target.handle() {
         ctx.set_color_target(Some(handle));
     }
-    ctx.push_scissor_rect(outer_scissor);
+    ctx.push_graphics_pass_scissor(
+        (outer_scissor).map(crate::view::render_pass::render_target::GraphicsPassScissor::Logical),
+    );
     ctx.set_current_target(target);
     (graph, ctx, target)
 }
@@ -1006,17 +1010,17 @@ struct PixelDiff {
 }
 
 fn compare_pixels(
-    legacy: &[u8],
-    artifact: &[u8],
+    expected: &[u8],
+    actual: &[u8],
     exact_interior: [u32; 4],
     adapter: &str,
     case: &str,
 ) -> Result<(), String> {
-    if legacy.len() != artifact.len() {
+    if expected.len() != actual.len() {
         return Err(format!(
-            "{case}: pixel buffer lengths differ on {adapter}: legacy={}, artifact={}",
-            legacy.len(),
-            artifact.len()
+            "{case}: pixel buffer lengths differ on {adapter}: expected={}, actual={}",
+            expected.len(),
+            actual.len()
         ));
     }
     let [ix, iy, iw, ih] = exact_interior;
@@ -1028,7 +1032,7 @@ fn compare_pixels(
         let offset = pixel_index * BYTES_PER_PIXEL as usize;
         let mut pixel_failed = false;
         for channel in 0..BYTES_PER_PIXEL as usize {
-            let delta = legacy[offset + channel].abs_diff(artifact[offset + channel]);
+            let delta = expected[offset + channel].abs_diff(actual[offset + channel]);
             diff.max_channel_delta = diff.max_channel_delta.max(delta);
             if delta > 1 || (inside && delta != 0) {
                 pixel_failed = true;
@@ -1049,7 +1053,7 @@ fn compare_pixels(
         return Ok(());
     }
     Err(format!(
-        "{case}: legacy/artifact pixel mismatch on {adapter}: mismatched_pixels={}, max_channel_delta={}, bounds={:?}, rule=interior exact and whole-frame delta<=1",
+        "{case}: pixel mismatch on {adapter}: mismatched_pixels={}, max_channel_delta={}, bounds={:?}, rule=interior exact and whole-frame delta<=1",
         diff.mismatched_pixels, diff.max_channel_delta, diff.bounds
     ))
 }

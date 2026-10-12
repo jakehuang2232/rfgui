@@ -717,7 +717,7 @@ where
 pub(crate) enum PropertyTreeValidationError {
     NonFiniteTransform(NodeKey),
     /// The host is a legitimate scroll container, but the narrow M10E0 slice
-    /// cannot yet prove an exact legacy rectangular contents clip.
+    /// cannot yet prove an exact rectangular contents clip.
     ScrollContractUnavailable(NodeKey),
     /// A host returned a snapshot, but its fields do not form one complete,
     /// internally consistent scroll observation.
@@ -1172,10 +1172,8 @@ impl PropertyChangeFlags {
 
 /// Retained shadow property trees owned by the viewport compositor.
 ///
-/// Transform nodes remain observational. Clip authority is intentionally
-/// limited to the exact legacy-resolved `AnchorParent` scissor of a leaf
-/// `Element`; broader self/contents/deferred scopes remain legacy. Effect
-/// opacity and scroll identity continue to mirror the existing contracts.
+/// Transform nodes remain observational. Clip, effect opacity and scroll
+/// nodes mirror each host's resolved clip, opacity and scroll contracts.
 #[derive(Default)]
 pub(crate) struct PropertyTrees {
     native_subtrees: incremental::NativeSubtrees,
@@ -2136,13 +2134,11 @@ impl PropertyTrees {
         let viewport_translation = snapshot.viewport_translation_at_scroll_zero();
         let child_reference_offset = snapshot.child_reference_offset_at_scroll_zero();
         let visual_offset = snapshot.visual_offset();
-        let viewport_position = snapshot.compatibility_viewport_position();
         if translation
             .iter()
             .chain(viewport_translation.iter())
             .chain(child_reference_offset.iter())
             .chain(visual_offset.iter())
-            .chain(viewport_position.iter())
             .any(|value| !value.is_finite())
         {
             self.spatial_validation_errors

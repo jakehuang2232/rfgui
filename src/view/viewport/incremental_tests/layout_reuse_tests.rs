@@ -1,4 +1,4 @@
-use super::super::{Viewport, ViewportPaintRendererMode};
+use super::super::Viewport;
 use crate::style::{Color, Layout, Length};
 use crate::ui::{RsxNode, profile_ui_work, rsx};
 use crate::view::{Element, Text};
@@ -40,36 +40,30 @@ fn warm(v: &mut Viewport, tree: &RsxNode) {
 
 #[test]
 fn color_update_does_not_measure_and_unchanged_geometry_reuses_box_models() {
-    for mode in [
-        ViewportPaintRendererMode::Legacy,
-        ViewportPaintRendererMode::RetainedAuto,
-    ] {
-        let mut v = Viewport::new();
-        v.set_paint_renderer_mode(mode);
-        warm(&mut v, &scene("before", false, 400., 16., true));
-        v.render_rsx(&scene("before", true, 400., 16., true))
-            .unwrap();
-        let (_, p) = profile_ui_work(|| v.run_layout_pass());
-        assert_eq!(p.measure_calls, 0);
-        // Layout leaves diagnostic snapshots lazy. A later explicit read
-        // can still reuse clean root geometry without rereading every host.
-        let before = v.frame_box_models().to_vec();
-        let (_, clean) = profile_ui_work(|| v.run_layout_pass());
-        assert_eq!(clean.measure_calls, 0);
-        assert_eq!(clean.place_calls, 0);
-        assert_eq!(clean.box_model_reads, 0);
-        assert_eq!(clean.box_model_reused_snapshots, 0);
-        let (_, requested) = profile_ui_work(|| v.frame_box_models());
-        assert_eq!(requested.box_model_reads, 0);
-        assert_eq!(requested.box_model_reused_snapshots, before.len());
-        assert_eq!(
-            v.frame_box_models()
-                .iter()
-                .map(geometry)
-                .collect::<Vec<_>>(),
-            before.iter().map(geometry).collect::<Vec<_>>()
-        );
-    }
+    let mut v = Viewport::new();
+    warm(&mut v, &scene("before", false, 400., 16., true));
+    v.render_rsx(&scene("before", true, 400., 16., true))
+        .unwrap();
+    let (_, p) = profile_ui_work(|| v.run_layout_pass());
+    assert_eq!(p.measure_calls, 0);
+    // Layout leaves diagnostic snapshots lazy. A later explicit read
+    // can still reuse clean root geometry without rereading every host.
+    let before = v.frame_box_models().to_vec();
+    let (_, clean) = profile_ui_work(|| v.run_layout_pass());
+    assert_eq!(clean.measure_calls, 0);
+    assert_eq!(clean.place_calls, 0);
+    assert_eq!(clean.box_model_reads, 0);
+    assert_eq!(clean.box_model_reused_snapshots, 0);
+    let (_, requested) = profile_ui_work(|| v.frame_box_models());
+    assert_eq!(requested.box_model_reads, 0);
+    assert_eq!(requested.box_model_reused_snapshots, before.len());
+    assert_eq!(
+        v.frame_box_models()
+            .iter()
+            .map(geometry)
+            .collect::<Vec<_>>(),
+        before.iter().map(geometry).collect::<Vec<_>>()
+    );
 }
 
 #[test]

@@ -5,7 +5,6 @@
 use rfgui::style::{BorderRadius, Color, Layout, Length, Position};
 use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, rsx};
-use rfgui::view::viewport::ViewportPaintRendererMode;
 use rfgui::view::{Element, Text, Viewport};
 
 #[path = "../../lib/rfgui-components/tests/retained_controls/gpu.rs"]
@@ -63,36 +62,30 @@ fn child_masks_beyond_the_top_left_edge_render_as_a_fresh_viewport_does() -> Res
     for at in [[10.0, -30.0], [-30.0, 10.0], [-30.0, -30.0]] {
         for dpr in [1_u32, 2] {
             let size = [SIZE[0] * dpr, SIZE[1] * dpr];
-            for mode in [
-                ViewportPaintRendererMode::Legacy,
-                ViewportPaintRendererMode::RetainedAuto,
-            ] {
-                let mut frames = Vec::new();
-                let mut viewport = Viewport::new();
-                // Moved there from inside the viewport, as a drag does, then
-                // rendered fresh.
-                for (fresh, at) in [(false, [10.0, 10.0]), (false, at), (true, at)] {
-                    if fresh {
-                        viewport = Viewport::new();
-                    }
-                    viewport.set_paint_renderer_mode(mode);
-                    let frame = viewport
-                        .render_rsx_offscreen_for_test(
-                            &window_at(at),
-                            gpu.device.clone(),
-                            gpu.queue.clone(),
-                            size,
-                            dpr as f32,
-                            Instant::now(),
-                        )
-                        .map_err(|error| format!("{mode:?} at {at:?} DPR {dpr}: {error}"))?;
-                    frames.push(gpu.read(&frame.texture, size)?);
+            let mut frames = Vec::new();
+            let mut viewport = Viewport::new();
+            // Moved there from inside the viewport, as a drag does, then
+            // rendered fresh.
+            for (fresh, at) in [(false, [10.0, 10.0]), (false, at), (true, at)] {
+                if fresh {
+                    viewport = Viewport::new();
                 }
-                assert!(
-                    frames[1] == frames[2],
-                    "{mode:?} pixels after moving to {at:?} differ from a fresh frame, DPR {dpr}"
-                );
+                let frame = viewport
+                    .render_rsx_offscreen_for_test(
+                        &window_at(at),
+                        gpu.device.clone(),
+                        gpu.queue.clone(),
+                        size,
+                        dpr as f32,
+                        Instant::now(),
+                    )
+                    .map_err(|error| format!("at {at:?} DPR {dpr}: {error}"))?;
+                frames.push(gpu.read(&frame.texture, size)?);
             }
+            assert!(
+                frames[1] == frames[2],
+                "pixels after moving to {at:?} differ from a fresh frame, DPR {dpr}"
+            );
         }
     }
     Ok(())

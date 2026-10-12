@@ -77,7 +77,6 @@ fn surface_turned_in_perspective_keeps_lines_straight() -> Result<(), String> {
             dpr as f32,
             Instant::now(),
         )?;
-        assert!(frame.artifact_selected);
         let pixels = gpu.read(&frame.texture, size)?;
         // Rotated edges step a pixel at a time, so a straight bar still
         // wanders by under a pixel; the per-triangle kink bent it by 17.

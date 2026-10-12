@@ -17,10 +17,10 @@ use crate::style::{
 };
 use crate::view::base_component::text_area::{TextAreaProjectionSegment, TextAreaTextRun};
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, CustomLeafPaintContext, CustomLeafPaintRecorder,
-    CustomWrapperPaintContext, CustomWrapperPaintRecorder, DirtyFlags, Element, ElementTrait,
-    EventTarget, Image, LayoutConstraints, LayoutPlacement, Layoutable, Rect, Renderable,
-    ShadowPaintRecordingCapability, Svg, Text, TextArea, UiBuildContext,
+    BoxModelSnapshot, CustomLeafPaintContext, CustomLeafPaintRecorder, CustomWrapperPaintContext,
+    CustomWrapperPaintRecorder, DirtyFlags, Element, ElementTrait, EventTarget, Image,
+    LayoutConstraints, LayoutPlacement, Layoutable, Rect, ShadowPaintRecordingCapability, Svg,
+    Text, TextArea, UiBuildContext,
 };
 use crate::view::compositor::property_tree::{
     ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, PropertyTreeState,
@@ -607,17 +607,6 @@ impl Layoutable for TransparentContentsClipParent {
 
 impl EventTarget for TransparentContentsClipParent {}
 
-impl Renderable for TransparentContentsClipParent {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        ctx.into_state()
-    }
-}
-
 impl ElementTrait for TransparentContentsClipParent {
     fn stable_id(&self) -> u64 {
         self.id
@@ -666,7 +655,6 @@ impl ElementTrait for TransparentContentsClipParent {
     ) -> Option<crate::view::base_component::SpatialPlacementSnapshot> {
         Some(crate::view::base_component::SpatialPlacementSnapshot::new(
             crate::view::base_component::SpatialPositionReferenceSnapshot::Viewport,
-            [0.0, 0.0],
             [0.0, 0.0],
             [0.0, 0.0],
             [0.0, 0.0],
@@ -721,12 +709,6 @@ fn bare_image_fixture(
     (arena, vec![root])
 }
 
-struct RecordingHost {
-    id: u64,
-    builds: Arc<AtomicUsize>,
-    fill: Option<[f32; 4]>,
-}
-
 enum CustomLeafRecordMode {
     Fill { rgba: [f32; 4], opacity: f32 },
 }
@@ -767,29 +749,6 @@ impl CustomWrapperPaintHost {
             children: Vec::new(),
         }
     }
-
-    fn emit_legacy_fill(
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-        bounds: Rect,
-        mut rgba: [f32; 4],
-        opacity: f32,
-    ) {
-        rgba[3] *= opacity;
-        let mut pass = DrawRectPass::new(
-            RectPassParams {
-                position: [bounds.x, bounds.y],
-                size: [bounds.width, bounds.height],
-                fill_color: rgba,
-                opacity: 1.0,
-                ..Default::default()
-            },
-            DrawRectInput::default(),
-            DrawRectOutput::default(),
-        );
-        pass.set_render_mode(RectRenderMode::FillOnly);
-        ctx.emit_draw_rect_pass(graph, pass);
-    }
 }
 
 impl Layoutable for CustomWrapperPaintHost {
@@ -807,31 +766,6 @@ impl Layoutable for CustomWrapperPaintHost {
 }
 
 impl EventTarget for CustomWrapperPaintHost {}
-
-impl Renderable for CustomWrapperPaintHost {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        arena: &mut NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        for (rgba, opacity) in [([0.8, 0.0, 0.0, 1.0], 1.0), ([0.0, 0.8, 0.0, 1.0], 0.5)] {
-            Self::emit_legacy_fill(graph, &mut ctx, self.bounds, rgba, opacity);
-        }
-        for child_key in self.children.clone() {
-            let child_ctx = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-            if let Some(state) = arena.with_element_taken(child_key, |child, arena| {
-                child.build(graph, arena, child_ctx)
-            }) {
-                ctx.set_state(state);
-            }
-        }
-        for (rgba, opacity) in [([0.0, 0.0, 0.8, 1.0], 1.0), ([0.8, 0.8, 0.0, 1.0], 0.25)] {
-            Self::emit_legacy_fill(graph, &mut ctx, self.bounds, rgba, opacity);
-        }
-        ctx.into_state()
-    }
-}
 
 impl ElementTrait for CustomWrapperPaintHost {
     fn stable_id(&self) -> u64 {
@@ -924,30 +858,6 @@ impl Layoutable for CustomLeafPaintHost {
 
 impl EventTarget for CustomLeafPaintHost {}
 
-impl Renderable for CustomLeafPaintHost {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        let CustomLeafRecordMode::Fill { rgba, opacity } = &self.mode;
-        let pass = DrawRectPass::new(
-            RectPassParams {
-                position: [self.bounds.x, self.bounds.y],
-                size: [self.bounds.width, self.bounds.height],
-                fill_color: *rgba,
-                opacity: *opacity,
-                ..Default::default()
-            },
-            DrawRectInput::default(),
-            DrawRectOutput::default(),
-        );
-        ctx.emit_draw_rect_pass(graph, pass);
-        ctx.into_state()
-    }
-}
-
 impl ElementTrait for CustomLeafPaintHost {
     fn stable_id(&self) -> u64 {
         self.id
@@ -1037,17 +947,6 @@ impl Layoutable for MalformedRecordingHost {
 }
 
 impl EventTarget for MalformedRecordingHost {}
-
-impl Renderable for MalformedRecordingHost {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        ctx.into_state()
-    }
-}
 
 impl MalformedRecordingHost {
     fn metadata(
@@ -1157,68 +1056,6 @@ impl ElementTrait for MalformedRecordingHost {
             owner_property_states: Vec::new(),
             owner_nodes: Vec::new(),
         })
-    }
-}
-
-impl Layoutable for RecordingHost {
-    fn measure(&mut self, _constraints: LayoutConstraints, _arena: &mut NodeArena) {}
-    fn place(&mut self, _placement: LayoutPlacement, _arena: &mut NodeArena) {}
-    fn measured_size(&self) -> (f32, f32) {
-        (1.0, 1.0)
-    }
-    fn set_layout_width(&mut self, _width: f32) {}
-    fn set_layout_height(&mut self, _height: f32) {}
-}
-
-impl EventTarget for RecordingHost {}
-
-impl Renderable for RecordingHost {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        self.builds.fetch_add(1, Ordering::Relaxed);
-        if let Some(fill_color) = self.fill {
-            let pass = DrawRectPass::new(
-                RectPassParams {
-                    position: [0.0, 0.0],
-                    size: [1.0, 1.0],
-                    fill_color,
-                    opacity: 1.0,
-                    ..Default::default()
-                },
-                DrawRectInput::default(),
-                DrawRectOutput::default(),
-            );
-            ctx.emit_draw_rect_pass(_graph, pass);
-        }
-        ctx.into_state()
-    }
-}
-
-impl ElementTrait for RecordingHost {
-    fn stable_id(&self) -> u64 {
-        self.id
-    }
-    fn box_model_snapshot(&self) -> BoxModelSnapshot {
-        BoxModelSnapshot {
-            node_id: self.id,
-            parent_id: None,
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-            border_radius: 0.0,
-            should_render: true,
-        }
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
 
@@ -1573,7 +1410,9 @@ fn compiled_whole_frame_graph_with_config(
     graph.add_graphics_pass(clear);
     ctx.set_current_target(target);
     if let Some(scissor) = config.initial_scissor {
-        ctx.replace_scissor_rect(Some(scissor));
+        ctx.replace_graphics_pass_scissor(Some(
+            crate::view::render_pass::render_target::GraphicsPassScissor::Logical(scissor),
+        ));
     }
     let _ = compile_artifact(artifact, &mut graph, ctx);
     graph
@@ -2774,11 +2613,5 @@ mod text_artifact_tests;
 mod translation_invariance_tests;
 mod whole_frame_rect_tests;
 mod whole_frame_tests;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod legacy_group_opacity_tests;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod legacy_native_scope_tests;
 
 mod incremental_cache_tests;

@@ -1,5 +1,5 @@
 //! Shared geometry and absolute pixel expectations for native and browser acceptance.
-//! Neither renderer supplies the other renderer's expected values.
+//! No readback supplies an expected value.
 use super::*;
 use crate::style::{AnchorName, Angle, Rotate, Scale, TransformOrigin};
 use crate::view::test_support::get_element_mut;

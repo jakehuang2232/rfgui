@@ -62,7 +62,7 @@ impl StyleFixture {
                 let mut content = Element::new_with_id(0xb4_8102, 0.0, 0.0, 48.0, 120.0);
                 let mut style = sized_grid(48.0, 120.0);
                 // Keep this a gradient-only background, even if style defaults
-                // change: both renderers must paint it without a solid fill.
+                // change: it must paint without a solid fill.
                 style.insert(
                     PropertyId::BackgroundColor,
                     ParsedValue::color_like(Color::rgba(0, 0, 0, 0)),
@@ -309,7 +309,7 @@ fn run_style_pipeline_pixels_and_reuse(scene: StyleScene) -> Result<(), String> 
     Ok(())
 }
 
-// Absolute expectations are derived from fixture geometry, not a legacy render.
+// Absolute expectations are derived from fixture geometry, not a readback.
 fn style_pixel_probes(
     scene: StyleScene,
     translation: [f32; 2],
@@ -379,47 +379,6 @@ fn validate_style_pixels(
             return Err(format!(
                 "{scene:?} DPR {dpr} frame {frame} @({x},{y}): {actual:?}, expected {expected:?}, visible extent={extent:?}"
             ));
-        }
-    }
-    Ok(())
-}
-
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_materialization_style_pipeline_legacy_pixels() -> Result<(), String> {
-    // ScrollingGradient explicitly has transparent background-color and a
-    // visible gradient. This tests the population affected by shared culling
-    // via Element::build, independently of artifact recording/execution.
-    let gpu = native_gpu_test_context()?;
-    let gpu = gpu.as_ref().expect("native hardware graphics context");
-    for scene in [StyleScene::ScrollingGradient, StyleScene::TranslucentFill] {
-        for dpr in [1_u32, 2] {
-            let mut fixture = StyleFixture::new(scene);
-            let mut viewport = Viewport::new();
-            for (frame, (translation, scroll_y)) in scene.states().into_iter().enumerate() {
-                fixture.update(translation, scroll_y);
-                let (mut graph, ctx, target) = transformed_graph_prelude_with_size(
-                    dpr as f32,
-                    None,
-                    [WIDTH * dpr, HEIGHT * dpr],
-                );
-                fixture
-                    .arena
-                    .with_element_taken(fixture.root, |element, arena| {
-                        element.build(&mut graph, arena, ctx)
-                    })
-                    .ok_or("legacy style root disappeared")?;
-                add_present(&mut graph, &target)?;
-                let pixels = render_on_viewport_with_size(
-                    graph,
-                    gpu,
-                    &mut viewport,
-                    dpr as f32,
-                    FORMAT,
-                    [WIDTH * dpr, HEIGHT * dpr],
-                )?;
-                validate_style_pixels(&pixels, scene, translation, scroll_y, dpr, frame)?;
-            }
         }
     }
     Ok(())

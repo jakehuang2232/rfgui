@@ -3,7 +3,6 @@ use super::*;
 #[derive(Clone, Copy)]
 struct FrameChange {
     label: &'static str,
-    mode: ViewportPaintRendererMode,
     tx: f32,
     rgb: [u8; 3],
     opacity: f32,
@@ -14,7 +13,6 @@ struct FrameChange {
 
 const BASE: FrameChange = FrameChange {
     label: "cold red",
-    mode: ViewportPaintRendererMode::RetainedAuto,
     tx: 9.0,
     rgb: [224, 36, 28],
     opacity: 0.5,
@@ -85,55 +83,6 @@ fn native_single_viewport_content_opacity_and_dpr_invalidation() -> Result<(), S
     run_changes(&content_and_scale_changes())
 }
 
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_legacy_content_opacity_and_dpr_pixels() -> Result<(), String> {
-    let mut changes = content_and_scale_changes();
-    for change in &mut changes {
-        change.mode = ViewportPaintRendererMode::Legacy;
-    }
-    run_changes(&changes)
-}
-
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_mode_switch_discards_stale_retained_content() -> Result<(), String> {
-    let legacy_blue = FrameChange {
-        label: "legacy blue",
-        mode: ViewportPaintRendererMode::Legacy,
-        rgb: [24, 72, 224],
-        expected_pixel: [2, 17, 190, 128],
-        ..BASE
-    };
-    let mut changes = [
-        BASE,
-        FrameChange {
-            label: "warm retained red",
-            expected_action: RetainedSurfaceCompileAction::Reuse,
-            ..BASE
-        },
-        legacy_blue,
-        FrameChange {
-            label: "return to retained blue",
-            mode: ViewportPaintRendererMode::RetainedAuto,
-            ..legacy_blue
-        },
-        FrameChange {
-            label: "warm retained blue",
-            mode: ViewportPaintRendererMode::RetainedAuto,
-            expected_action: RetainedSurfaceCompileAction::Reuse,
-            ..legacy_blue
-        },
-    ];
-    for dpr in [1, 2] {
-        for change in &mut changes {
-            change.dpr = dpr;
-        }
-        run_changes(&changes)?;
-    }
-    Ok(())
-}
-
 // These are ordered frames on one persistent viewport, not independent cases.
 // Labels and expected actions describe changes relative to the preceding frame;
 // inserting or reordering a frame requires rechecking both adjacent transitions.
@@ -143,9 +92,6 @@ fn run_changes(changes: &[FrameChange]) -> Result<(), String> {
     let mut viewport = Viewport::new();
     let (root, mut style) = install_translucent_scene(&mut viewport);
     for (frame, change) in changes.iter().enumerate() {
-        if viewport.paint_renderer_mode() != change.mode {
-            viewport.set_paint_renderer_mode(change.mode);
-        }
         style.set_transform(Transform::new([Translate::xy(
             Length::px(change.tx),
             Length::px(4.0),
@@ -199,41 +145,32 @@ fn run_changes(changes: &[FrameChange]) -> Result<(), String> {
                 .any(|(a, e)| a.abs_diff(e) > 1)
             {
                 return Err(format!(
-                    "{} {:?} frame {frame} @({x},{y}): {actual:?}, expected {expected:?}",
-                    change.label, change.mode
+                    "{} frame {frame} @({x},{y}): {actual:?}, expected {expected:?}",
+                    change.label
                 ));
             }
         }
-        if change.mode == ViewportPaintRendererMode::RetainedAuto {
-            assert!(
-                observed.artifact_selected,
-                "{}: must select artifact",
-                change.label
-            );
-            assert_eq!(
-                observed.actions,
-                [change.expected_action],
-                "{}",
-                change.label
-            );
-            assert_eq!(
-                observed.texture_bytes,
-                20 * 16 * 4 * u64::from(change.dpr * change.dpr),
-                "{}",
-                change.label
-            );
-            assert_eq!(observed.color_targets.len(), 1);
-            let (key, desc) = &observed.color_targets[0];
-            assert_eq!(
-                (desc.width(), desc.height()),
-                (20 * change.dpr, 16 * change.dpr),
-                "{}",
-                change.label
-            );
-            assert!(viewport.has_compatible_persistent_render_target(*key, desc));
-        } else {
-            assert!(observed.legacy_selected, "{}", change.label);
-        }
+        assert_eq!(
+            observed.actions,
+            [change.expected_action],
+            "{}",
+            change.label
+        );
+        assert_eq!(
+            observed.texture_bytes,
+            20 * 16 * 4 * u64::from(change.dpr * change.dpr),
+            "{}",
+            change.label
+        );
+        assert_eq!(observed.color_targets.len(), 1);
+        let (key, desc) = &observed.color_targets[0];
+        assert_eq!(
+            (desc.width(), desc.height()),
+            (20 * change.dpr, 16 * change.dpr),
+            "{}",
+            change.label
+        );
+        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
     }
     eprintln!(
         "single Viewport invalidation sequence passed on {}",

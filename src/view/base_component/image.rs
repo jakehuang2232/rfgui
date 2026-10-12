@@ -1,5 +1,4 @@
 use crate::style::{ComputedStyle, ParsedValue, PropertyId, Style};
-use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::{
     ImageHandle, ImageSnapshot, acquire_image_resource, snapshot_image,
 };
@@ -11,7 +10,7 @@ use crate::view::{ImageFit, ImageSampling, ImageSource};
 use super::round_layout_value;
 use super::{
     BoxModelSnapshot, ComputedStyleConsumer, Element, ElementStyleSnapshot, ElementTrait,
-    EventTarget, LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
+    EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
 };
 use crate::view::node_arena::{NodeArena, NodeKey};
 use std::hash::{Hash, Hasher};
@@ -86,7 +85,7 @@ pub struct Image {
     active_slot: ActiveSlot,
     slot_inputs: super::resource_slot::SlotInputs,
     /// Frame-frozen resource truth. The viewport refreshes this once from the
-    /// pre-layout arena sync hook; layout, recording and legacy build all read
+    /// pre-layout arena sync hook; layout and recording both read
     /// the same immutable snapshot for the rest of that frame.
     frozen_snapshot: Option<ImageSnapshot>,
     prepared_by_arena_sync: bool,
@@ -449,14 +448,6 @@ impl ElementTrait for Image {
         self.element.stable_id()
     }
 
-    fn retained_scroll_normalized_paint_capability(
-        &self,
-    ) -> Option<super::RetainedScrollNormalizedPaintCapability> {
-        Some(super::RetainedScrollNormalizedPaintCapability::native(
-            super::RetainedScrollNormalizedPaintKind::Image,
-        ))
-    }
-
     #[allow(private_interfaces)]
     fn exact_generic_subtree_self_clip_geometry(
         &self,
@@ -500,10 +491,6 @@ impl ElementTrait for Image {
         self.element.retained_paint_properties()
     }
 
-    fn admits_exact_retained_root_opacity_artifact(&self) -> bool {
-        true
-    }
-
     fn tick_post_layout_animation_frame(&mut self, now: crate::time::Instant) -> super::DirtyFlags {
         self.element.tick_post_layout_animation_frame(now)
     }
@@ -512,15 +499,6 @@ impl ElementTrait for Image {
         &self,
     ) -> crate::view::node_arena::PlacementEligibilityMetadata {
         self.element.placement_eligibility_metadata()
-    }
-
-    fn retained_sampled_layout_transition_snapshot(
-        &self,
-    ) -> Option<super::RetainedSampledLayoutTransitionSnapshot> {
-        self.element
-            .exact_sampled_layout_transition_snapshot_for_paint_signature(
-                self.retained_paint_signature(),
-            )
     }
 
     fn last_placement(&self) -> Option<crate::view::base_component::LayoutPlacement> {
@@ -759,58 +737,6 @@ impl ElementTrait for Image {
 
     fn retained_paint_signature_is_complete(&self) -> bool {
         true
-    }
-
-    fn retained_transform_surface_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        self.element
-            .retained_transform_surface_bounds(arena, paint_offset, scale_factor)
-    }
-
-    fn retained_transform_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        // The fitted texture is inside the owner's content box and now
-        // follows the owner's transform; no untransformed media tail remains.
-        self.element
-            .retained_transform_render_output_bounds(arena, paint_offset, scale_factor)
-    }
-
-    fn exact_nested_isolation_render_output_bounds(
-        &self,
-        owner: crate::view::node_arena::NodeKey,
-        arena: &crate::view::node_arena::NodeArena,
-        parent_snapped_paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        super::exact_native_nested_isolation_render_output_bounds(
-            self,
-            owner,
-            arena,
-            parent_snapped_paint_offset,
-            scale_factor,
-        )
-    }
-
-    fn legacy_transform_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        self.element
-            .legacy_transform_render_output_bounds(arena, paint_offset, scale_factor)
-    }
-
-    fn retained_transform_raster_seed_bounds(&self) -> Option<super::RetainedSurfaceBounds> {
-        self.element.retained_transform_raster_seed_bounds()
     }
 
     fn has_retained_transform_surface(&self) -> bool {
@@ -1124,24 +1050,6 @@ fn paint_adjusted_offset(element: &Element, parent_paint_offset: [f32; 2]) -> [f
         parent_paint_offset[0] + round_layout_value(paint_x) - paint_x,
         parent_paint_offset[1] + round_layout_value(paint_y) - paint_y,
     ]
-}
-
-impl Renderable for Image {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        ctx: UiBuildContext,
-    ) -> super::BuildState {
-        let opacity = self.element.retained_paint_properties().opacity;
-        // Keep the frozen payload separate from owner placement. Element
-        // applies its paint snap and composite scope exactly once.
-        let Some(prepared) = self.prepared_image_op([0.0, 0.0], opacity) else {
-            return self.element.build_base_only(graph, arena, ctx);
-        };
-        self.element
-            .build_base_with_texture(graph, arena, ctx, prepared.params, prepared.upload)
-    }
 }
 
 pub(crate) fn compute_image_mapping(

@@ -3,13 +3,10 @@ use super::*;
 /// Repro for the user's video bug: when a tree-ancestor's inner area
 /// lies entirely outside the viewport (e.g. a Window dragged so its
 /// content area sits below viewport), a viewport-anchored
-/// `clip:Viewport` descendant gets dropped from the deferred list and
-/// never rendered. The ancestor itself still passes
-/// `should_render` (its frame intersects viewport at the top edge),
-/// but `has_visible_inner_render_area` returns false because the
-/// inner rect's intersection with the current scissor is empty —
-/// the overflow loop is skipped and the descendant is never appended
-/// via `register_deferred`.
+/// `clip:Viewport` descendant must still paint. The ancestor itself
+/// still passes `should_render` (its frame intersects viewport at the
+/// top edge), but its inner rect's intersection with the viewport is
+/// empty.
 #[test]
 fn viewport_anchored_descendant_collected_when_ancestor_inner_below_viewport() {
     // Window: clip:Viewport, top in viewport, content stretches below.
@@ -54,7 +51,6 @@ fn viewport_anchored_descendant_collected_when_ancestor_inner_below_viewport() {
     let win_k = commit_element(&mut arena, Box::new(window));
     let section_k = commit_child(&mut arena, win_k, Box::new(section));
     let snackbar_k = commit_child(&mut arena, section_k, Box::new(snackbar));
-    let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
 
     // Viewport 1280x800.
     measure_and_place(
@@ -91,27 +87,10 @@ fn viewport_anchored_descendant_collected_when_ancestor_inner_below_viewport() {
         snap.y
     );
 
-    // Build via FrameGraph.
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    // Mirror `Viewport::render_rsx`: seed the ctx defer list once
-    // from the arena.
-    let mut popup_stack = crate::view::popup_stack::PopupStack::new();
-    arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
-
-    let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let next_state = arena
-        .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
-        .expect("window build returns state");
-    ctx.set_state(next_state);
-
-    let deferred = drain_deferred(&mut ctx);
+    let recorded = recorded_chunk_owners(&arena, &[win_k]);
     assert!(
-        deferred.iter().any(|node| node.stable_id == snackbar_id),
-        "BUG: snackbar should be in deferred list when ancestor inner is below viewport, got {:?}",
-        deferred
+        recorded.contains(&snackbar_k),
+        "BUG: snackbar must paint when ancestor inner is below viewport, got {recorded:?}"
     );
 }
 
@@ -172,7 +151,6 @@ fn viewport_anchored_snackbar_through_flow_column_below_viewport() {
     let _s2_k = commit_child(&mut arena, win_k, Box::new(section2));
     let s3_k = commit_child(&mut arena, win_k, Box::new(section3));
     let snackbar_k = commit_child(&mut arena, s3_k, Box::new(snackbar));
-    let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
 
     measure_and_place(
         &mut arena,
@@ -221,28 +199,10 @@ fn viewport_anchored_snackbar_through_flow_column_below_viewport() {
         snap.y
     );
 
-    // Check render path: build then defer.
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    // Mirror `Viewport::render_rsx`: seed the ctx defer list once
-    // from the arena.
-    let mut popup_stack = crate::view::popup_stack::PopupStack::new();
-    arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
-
-    let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let next_state = arena
-        .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
-        .expect("window build returns state");
-    ctx.set_state(next_state);
-
-    let deferred = drain_deferred(&mut ctx);
-    eprintln!("[deferred ids] {:?}", deferred);
-    eprintln!("[snackbar id] {}", snackbar_id);
+    let recorded = recorded_chunk_owners(&arena, &[win_k]);
     assert!(
-        deferred.iter().any(|node| node.stable_id == snackbar_id),
-        "BUG: snackbar must be deferred when its tree-ancestor section is below viewport"
+        recorded.contains(&snackbar_k),
+        "BUG: snackbar must paint when its tree-ancestor section is below viewport"
     );
 }
 
@@ -307,7 +267,6 @@ fn viewport_anchored_snackbar_deeply_nested_under_offscreen_section() {
     let acc_k = commit_child(&mut arena, s2_k, Box::new(accordion));
     let acc_content_k = commit_child(&mut arena, acc_k, Box::new(accordion_content));
     let snackbar_k = commit_child(&mut arena, acc_content_k, Box::new(snackbar));
-    let snackbar_id = arena.get(snackbar_k).unwrap().element.stable_id();
 
     measure_and_place(
         &mut arena,
@@ -342,27 +301,10 @@ fn viewport_anchored_snackbar_deeply_nested_under_offscreen_section() {
         snap.y
     );
 
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(1280, 800, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    // Mirror `Viewport::render_rsx`: seed the ctx defer list once
-    // from the arena.
-    let mut popup_stack = crate::view::popup_stack::PopupStack::new();
-    arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
-
-    let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let next_state = arena
-        .with_element_taken(win_k, |el, a| el.build(&mut graph, a, ctx_for_build))
-        .expect("window build returns state");
-    ctx.set_state(next_state);
-
-    let deferred = drain_deferred(&mut ctx);
+    let recorded = recorded_chunk_owners(&arena, &[win_k]);
     assert!(
-        deferred.iter().any(|node| node.stable_id == snackbar_id),
-        "BUG: deeply nested snackbar must still be deferred. defer={:?} snackbar_id={}",
-        deferred,
-        snackbar_id
+        recorded.contains(&snackbar_k),
+        "BUG: deeply nested snackbar must still paint, got {recorded:?}"
     );
 }
 

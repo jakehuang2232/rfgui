@@ -144,7 +144,6 @@ impl Layoutable for TextArea {
                 placement.parent_y + self.flow_offset.y,
             ],
             [0.0, 0.0],
-            [x, y],
         ));
         self.layout_state.layout_position = Position { x, y };
         self.layout_state.layout_inner_position = Position { x, y };

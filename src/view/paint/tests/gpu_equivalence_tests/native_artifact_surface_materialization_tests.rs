@@ -181,8 +181,7 @@ fn native_materialized_direct_scroll_transform_scrolls_rigidly_and_reuses_one_pa
     Ok(())
 }
 
-// This gate deliberately has no legacy graph/oracle dependency. All probes and
-// resource expectations come from the fixture's authored geometry and colors.
+// All probes and resource expectations come from the fixture's authored geometry and colors.
 // FORMAT is linear RGBA8: authored sRGB bytes are independently converted by
 // round(255 * ((c/255 + .055)/1.055)^2.4) (all nonzero channels exceed .04045).
 // Thus red [224,36,28] -> [190,4,3], blue [24,72,224] -> [2,17,190].

@@ -97,17 +97,6 @@ impl crate::view::base_component::EventTarget for PaintDirtyOnClickElement {
     }
 }
 
-impl crate::view::base_component::Renderable for PaintDirtyOnClickElement {
-    fn build(
-        &mut self,
-        graph: &mut crate::view::frame_graph::FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        ctx: crate::view::base_component::UiBuildContext,
-    ) -> crate::view::base_component::BuildState {
-        self.element.build(graph, arena, ctx)
-    }
-}
-
 impl crate::view::base_component::ElementTrait for PaintDirtyOnClickElement {
     fn stable_id(&self) -> u64 {
         self.element.stable_id()

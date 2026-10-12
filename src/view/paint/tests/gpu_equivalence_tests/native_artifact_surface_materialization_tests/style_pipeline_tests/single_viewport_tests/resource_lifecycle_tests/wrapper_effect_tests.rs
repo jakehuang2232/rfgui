@@ -26,28 +26,21 @@ fn effect_style(opacity: f32, blue: bool) -> Style {
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_resource_wrapper_effect_and_reuse() -> Result<(), String> {
-    run_wrapper_effect(ViewportPaintRendererMode::RetainedAuto)
+    run_wrapper_effect()
 }
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_legacy_resource_wrapper_effect_pixels() -> Result<(), String> {
-    run_wrapper_effect(ViewportPaintRendererMode::Legacy)
-}
-
-fn run_wrapper_effect(mode: ViewportPaintRendererMode) -> Result<(), String> {
+fn run_wrapper_effect() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU");
     for svg in [false, true] {
         for dpr in [1, 2] {
             let mut viewport = Viewport::new();
-            viewport.set_paint_renderer_mode(mode);
             let mut arena = NodeArena::new();
             let mut root = Element::new_with_id(0xc1_2200, 0.0, 0.0, 20.0, 32.0);
             root.apply_style(sized_grid(20.0, 32.0));
             let root = commit_element(&mut arena, Box::new(root));
             let (owner, image_handle, document) = if svg {
                 let source = crate::view::SvgSource::Content(format!(
-                    "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- c12 wrapper {mode:?} {dpr} --></svg>"
+                    "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- c12 wrapper {dpr} --></svg>"
                 ));
                 let key = prime_svg_document_ready_for_test(&source, 20.0, 32.0);
                 set_svg_document_loading_for_test(key);
@@ -130,27 +123,23 @@ fn run_wrapper_effect(mode: ViewportPaintRendererMode) -> Result<(), String> {
                             .into_iter()
                             .zip(color)
                             .all(|(a, e)| a.abs_diff(e) <= 1),
-                        "svg={svg} {mode:?} DPR {dpr} frame {frame} @({x},{y}): {actual:?} != {color:?}"
+                        "svg={svg} DPR {dpr} frame {frame} @({x},{y}): {actual:?} != {color:?}"
                     );
                 }
-                if mode == ViewportPaintRendererMode::RetainedAuto {
-                    check_resource_retention(
-                        &viewport,
-                        &observed,
-                        dpr,
-                        if frame == 0 || frame == 4 {
-                            RetainedSurfaceCompileAction::Reraster
-                        } else {
-                            RetainedSurfaceCompileAction::Reuse
-                        },
-                    );
-                } else {
-                    assert!(observed.legacy_selected);
-                }
+                check_resource_retention(
+                    &viewport,
+                    &observed,
+                    dpr,
+                    if frame == 0 || frame == 4 {
+                        RetainedSurfaceCompileAction::Reraster
+                    } else {
+                        RetainedSurfaceCompileAction::Reuse
+                    },
+                );
             }
         }
     }
-    eprintln!("resource wrapper effect {mode:?} passed on {}", gpu.label());
+    eprintln!("resource wrapper effect passed on {}", gpu.label());
     Ok(())
 }
 

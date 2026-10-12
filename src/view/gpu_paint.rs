@@ -305,27 +305,6 @@ impl GpuPaintSource {
         )
         .with_label("GPU Paint Source")
     }
-    /// Legacy and Artifact consume the same preparation. This does not advance
-    /// simulation or expose the parent target to producer code.
-    pub fn paint(
-        &self,
-        graph: &mut crate::view::frame_graph::FrameGraph,
-        ctx: &mut crate::view::base_component::UiBuildContext,
-        mut bounds: [f32; 4],
-    ) {
-        let offset = ctx.paint_offset();
-        bounds[0] += offset[0];
-        bounds[1] += offset[1];
-        self.emit(
-            graph,
-            ctx,
-            crate::view::render_pass::texture_composite_pass::TextureCompositeParams {
-                bounds,
-                source_is_premultiplied: true,
-                ..Default::default()
-            },
-        );
-    }
 }
 
 mod interface;

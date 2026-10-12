@@ -7,7 +7,7 @@ use rfgui::style::{
 };
 use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, rsx};
-use rfgui::view::viewport::{ViewportPaintRendererMode, set_scroll_offset_by_id};
+use rfgui::view::viewport::set_scroll_offset_by_id;
 use rfgui::view::{Element, Text, Viewport};
 
 #[path = "../../lib/rfgui-components/tests/retained_controls/gpu.rs"]
@@ -150,56 +150,43 @@ fn moved_up(content: Vec<RsxNode>, offset: f32) -> RsxNode {
     }
 }
 
-const BOTH_RENDERERS: &[ViewportPaintRendererMode] = &[
-    ViewportPaintRendererMode::Legacy,
-    ViewportPaintRendererMode::RetainedAuto,
-];
-
 /// Scrolls `content` through offsets in one viewport and requires each frame
 /// to equal `content` moved up by the offset in a fresh viewport.
-fn assert_scrolled_in_place(
-    content: fn() -> Vec<RsxNode>,
-    offsets: &[f32],
-    modes: &[ViewportPaintRendererMode],
-) -> Result<(), String> {
+fn assert_scrolled_in_place(content: fn() -> Vec<RsxNode>, offsets: &[f32]) -> Result<(), String> {
     let gpu = gpu::Gpu::new()?;
     for dpr in [1, 2] {
         let size = [400 * dpr, 400 * dpr];
-        for &mode in modes {
-            let render = |viewport: &mut Viewport, tree: &RsxNode| -> Result<Vec<u8>, String> {
-                let output = viewport.render_rsx_offscreen_for_test(
-                    tree,
-                    gpu.device.clone(),
-                    gpu.queue.clone(),
-                    size,
-                    dpr as f32,
-                    Instant::now(),
-                )?;
-                gpu.read(&output.texture, size)
-            };
-            let mut viewport = Viewport::new();
-            viewport.set_paint_renderer_mode(mode);
-            for (frame, &offset) in offsets.iter().enumerate() {
-                if frame > 0 {
-                    let arena = viewport.node_arena();
-                    let root = arena.roots()[0];
-                    let id = arena.get(root).unwrap().element.stable_id();
-                    assert!(set_scroll_offset_by_id(arena, root, id, (0., offset)));
-                }
-                let pixels = render(&mut viewport, &scrolled(content()))?;
-                let mut fresh = Viewport::new();
-                fresh.set_paint_renderer_mode(mode);
-                let expected = render(&mut fresh, &moved_up(content(), offset))?;
-                let differing = pixels
-                    .chunks_exact(4)
-                    .zip(expected.chunks_exact(4))
-                    .filter(|(a, b)| a != b)
-                    .count();
-                assert_eq!(
-                    differing, 0,
-                    "{mode:?} pixels differ from the moved-up content at DPR {dpr} offset {offset}"
-                );
+        let render = |viewport: &mut Viewport, tree: &RsxNode| -> Result<Vec<u8>, String> {
+            let output = viewport.render_rsx_offscreen_for_test(
+                tree,
+                gpu.device.clone(),
+                gpu.queue.clone(),
+                size,
+                dpr as f32,
+                Instant::now(),
+            )?;
+            gpu.read(&output.texture, size)
+        };
+        let mut viewport = Viewport::new();
+        for (frame, &offset) in offsets.iter().enumerate() {
+            if frame > 0 {
+                let arena = viewport.node_arena();
+                let root = arena.roots()[0];
+                let id = arena.get(root).unwrap().element.stable_id();
+                assert!(set_scroll_offset_by_id(arena, root, id, (0., offset)));
             }
+            let pixels = render(&mut viewport, &scrolled(content()))?;
+            let mut fresh = Viewport::new();
+            let expected = render(&mut fresh, &moved_up(content(), offset))?;
+            let differing = pixels
+                .chunks_exact(4)
+                .zip(expected.chunks_exact(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(
+                differing, 0,
+                "pixels differ from the moved-up content at DPR {dpr} offset {offset}"
+            );
         }
     }
     Ok(())
@@ -208,35 +195,23 @@ fn assert_scrolled_in_place(
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn surfaces_nested_in_scrolled_content_stay_in_place() -> Result<(), String> {
-    assert_scrolled_in_place(nested_surfaces, &[0., 300., 500., 640.], BOTH_RENDERERS)
+    assert_scrolled_in_place(nested_surfaces, &[0., 300., 500., 640.])
 }
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn clipped_chunks_in_scrolled_content_stay_in_place() -> Result<(), String> {
-    assert_scrolled_in_place(clipped_chunks, &[0., 300., 500., 640.], BOTH_RENDERERS)
+    assert_scrolled_in_place(clipped_chunks, &[0., 300., 500., 640.])
 }
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn sole_opacity_group_in_scrolled_content_stays_in_place() -> Result<(), String> {
-    assert_scrolled_in_place(
-        sole_opacity_group,
-        &[0., 400., 1900., 3100., 1910.],
-        // Legacy rasters the whole 9000px tall group at DPR 2, beyond the
-        // texture limit.
-        &[ViewportPaintRendererMode::RetainedAuto],
-    )
+    assert_scrolled_in_place(sole_opacity_group, &[0., 400., 1900., 3100., 1910.])
 }
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn sole_scaled_group_in_scrolled_content_stays_in_place() -> Result<(), String> {
-    assert_scrolled_in_place(
-        sole_scaled_group,
-        &[0., 400., 1900., 3100., 1910.],
-        // Legacy rasters the whole 9000px tall group at DPR 2, beyond the
-        // texture limit.
-        &[ViewportPaintRendererMode::RetainedAuto],
-    )
+    assert_scrolled_in_place(sole_scaled_group, &[0., 400., 1900., 3100., 1910.])
 }

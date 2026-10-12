@@ -1,5 +1,4 @@
 use super::*;
-use crate::view::viewport::ViewportPaintRendererMode;
 
 mod execution_failure_tests;
 mod invalidation_tests;
@@ -9,21 +8,14 @@ mod resource_lifecycle_tests;
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_artifact_layout_paint_and_pool_reuse() -> Result<(), String> {
-    run_single_viewport_frames(ViewportPaintRendererMode::RetainedAuto)
+    run_single_viewport_frames()
 }
 
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_legacy_layout_and_paint() -> Result<(), String> {
-    run_single_viewport_frames(ViewportPaintRendererMode::Legacy)
-}
-
-fn run_single_viewport_frames(mode: ViewportPaintRendererMode) -> Result<(), String> {
+fn run_single_viewport_frames() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native hardware graphics context");
     for dpr in [1_u32, 2] {
         let mut viewport = Viewport::new();
-        viewport.set_paint_renderer_mode(mode);
         let (root, mut style) = install_translucent_scene(&mut viewport);
         let mut first_target = None;
         for (frame, (translation, scroll_y)) in
@@ -50,28 +42,20 @@ fn run_single_viewport_frames(mode: ViewportPaintRendererMode) -> Result<(), Str
             let observed = viewport.render_single_viewport_scene_for_test()?;
             assert_eq!(observed.frame_number, frame as u64 + 1);
             assert!(viewport.node_arena().get(root).is_some());
-            if mode == ViewportPaintRendererMode::RetainedAuto {
-                assert!(
-                    observed.artifact_selected,
-                    "must not pass through an old retained authority"
-                );
-                let expected = if frame == 0 {
-                    RetainedSurfaceCompileAction::Reraster
-                } else {
-                    RetainedSurfaceCompileAction::Reuse
-                };
-                assert_eq!(observed.actions, [expected]);
-                assert_eq!(observed.texture_bytes, 20 * 16 * 4 * u64::from(dpr * dpr));
-                assert_eq!(observed.color_targets.len(), 1);
-                let target = &observed.color_targets[0];
-                assert!(viewport.has_compatible_persistent_render_target(target.0, &target.1));
-                if let Some(first) = &first_target {
-                    assert_eq!(target, first);
-                } else {
-                    first_target = Some(target.clone());
-                }
+            let expected = if frame == 0 {
+                RetainedSurfaceCompileAction::Reraster
             } else {
-                assert!(observed.legacy_selected);
+                RetainedSurfaceCompileAction::Reuse
+            };
+            assert_eq!(observed.actions, [expected]);
+            assert_eq!(observed.texture_bytes, 20 * 16 * 4 * u64::from(dpr * dpr));
+            assert_eq!(observed.color_targets.len(), 1);
+            let target = &observed.color_targets[0];
+            assert!(viewport.has_compatible_persistent_render_target(target.0, &target.1));
+            if let Some(first) = &first_target {
+                assert_eq!(target, first);
+            } else {
+                first_target = Some(target.clone());
             }
             let pixels =
                 read_submitted_texture(&observed.texture, gpu, [WIDTH * dpr, HEIGHT * dpr])?;
@@ -86,7 +70,7 @@ fn run_single_viewport_frames(mode: ViewportPaintRendererMode) -> Result<(), Str
         }
     }
     eprintln!(
-        "single Viewport production frames {mode:?} passed on {}",
+        "single Viewport production frames passed on {}",
         gpu.label()
     );
     Ok(())

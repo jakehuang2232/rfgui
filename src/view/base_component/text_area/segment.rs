@@ -14,10 +14,9 @@ use std::ops::Range;
 
 use crate::style::VerticalAlign;
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, Position, Rect, Renderable, Size, UiBuildContext,
+    BoxModelSnapshot, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
+    Layoutable, Position, Rect, Size,
 };
-use crate::view::frame_graph::FrameGraph;
 use crate::view::layout::{FlexLayoutInfo, LayoutState};
 use crate::view::node_arena::{NodeArena, NodeKey};
 
@@ -269,7 +268,6 @@ impl Layoutable for TextAreaProjectionSegment {
                 placement.parent_y + self.flow_offset.y,
             ],
             [0.0, 0.0],
-            [x, y],
         ));
         self.layout_state.layout_position = Position { x, y };
         self.layout_state.layout_inner_position = Position { x, y };
@@ -350,32 +348,6 @@ fn merge_rect(current: Option<Rect>, next: Rect) -> Rect {
     }
 }
 
-impl Renderable for TextAreaProjectionSegment {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        mut ctx: UiBuildContext,
-    ) -> BuildState {
-        // Transparent: no self paint. TextArea calls build() only on its
-        // direct children, so this wrapper must explicitly forward rendering
-        // into the projection subtree.
-        let child_keys = self.children.clone();
-        for child_key in child_keys {
-            let viewport = ctx.viewport();
-            let taken_state = ctx.state_clone();
-            let ctx_in = UiBuildContext::from_parts(viewport.clone(), taken_state);
-            if let Some(next_state) = arena.with_element_taken(child_key, |child, arena| {
-                let next_state = child.build(graph, arena, ctx_in);
-                UiBuildContext::from_parts(viewport, next_state)
-            }) {
-                ctx = next_state;
-            }
-        }
-        ctx.into_state()
-    }
-}
-
 impl EventTarget for TextAreaProjectionSegment {
     fn hover_update_needed(&self, _hovered: bool) -> bool {
         false
@@ -396,14 +368,6 @@ impl ElementTrait for TextAreaProjectionSegment {
         &self,
     ) -> Option<crate::view::base_component::SpatialPlacementSnapshot> {
         self.spatial_placement
-    }
-
-    fn retained_scroll_normalized_paint_capability(
-        &self,
-    ) -> Option<crate::view::base_component::RetainedScrollNormalizedPaintCapability> {
-        Some(crate::view::base_component::RetainedScrollNormalizedPaintCapability::native(
-            crate::view::base_component::RetainedScrollNormalizedPaintKind::TextAreaProjectionSegment,
-        ))
     }
 
     #[allow(private_interfaces)]

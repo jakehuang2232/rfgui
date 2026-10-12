@@ -3,8 +3,8 @@ use std::any::Any;
 
 use crate::style::{Layout, ParsedValue, PropertyId, Style};
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, Element, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, Renderable, ShadowPaintRecordingCapability, UiBuildContext,
+    BoxModelSnapshot, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
+    Layoutable, ShadowPaintRecordingCapability, UiBuildContext,
 };
 use crate::view::frame_graph::FrameGraph;
 use crate::view::node_arena::Node;
@@ -202,17 +202,6 @@ impl Layoutable for PlanHost {
 }
 
 impl EventTarget for PlanHost {}
-
-impl Renderable for PlanHost {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        ctx.into_state()
-    }
-}
 
 impl ElementTrait for PlanHost {
     fn stable_id(&self) -> u64 {

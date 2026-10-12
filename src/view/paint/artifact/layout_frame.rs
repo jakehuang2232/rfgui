@@ -410,8 +410,7 @@ impl PaintChunk {
     /// This chunk and its commands in viewport space: a layout-frame chunk
     /// first moves to its frame's `origin`, then every chunk takes its
     /// owner's pixel snap `snap`. The two translations stay separate so each
-    /// coordinate is the recorded value plus the snap, exactly as the legacy
-    /// renderer adds its paint offset.
+    /// coordinate is the recorded value plus the snap.
     pub(crate) fn placed(
         &self,
         ops: impl IntoIterator<Item = PaintOp>,

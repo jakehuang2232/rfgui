@@ -1,8 +1,8 @@
 // C-1.2d: Ready payload and decoration share the owner's composition scope.
 // Geometry and opaque-source-over-background determine expected pixels;
-// neither renderer is an oracle. Keep failures visible until the renderer is
+// no readback is an oracle. Keep failures visible until the renderer is
 // fixed. SVG's initial acquisition frame is setup, not Ready acceptance.
-// Both renderers pass eight accepted frames per case at DPR1/2. The sequence
+// The renderer passes eight accepted frames per case at DPR1/2. The sequence
 // covers opacity, translation, and a non-transformed AnchorParent self clip;
 // it does not prove arbitrary transform+clip combinations, inline ownership,
 // native scrollbars, deferred viewport painting, or all fit/filter variants.
@@ -29,15 +29,10 @@ fn ready_style(opacity: f32, tx: Option<f32>) -> Style {
     style
 }
 
-fn run_ready_owner_scope(
-    mode: ViewportPaintRendererMode,
-    svg: bool,
-    dpr: u32,
-) -> Result<(), String> {
+fn run_ready_owner_scope(svg: bool, dpr: u32) -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native hardware adapter");
     let mut viewport = Viewport::new();
-    viewport.set_paint_renderer_mode(mode);
     let mut arena = NodeArena::new();
     let mut root = Element::new_with_id(0xc1_4100, 0.0, 0.0, WIDTH as f32, HEIGHT as f32);
     root.apply_style(sized_grid(WIDTH as f32, HEIGHT as f32));
@@ -49,7 +44,7 @@ fn run_ready_owner_scope(
     let parent = commit_child(&mut arena, root, Box::new(parent));
     let owner = if svg {
         let source = crate::view::SvgSource::Content(format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- ready scope {mode:?} {dpr} --></svg>"
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- ready scope {dpr} --></svg>"
         ));
         let doc = prime_svg_document_ready_for_test(&source, 20.0, 32.0);
         let width = (20 * dpr).div_ceil(32) * 32;
@@ -84,13 +79,8 @@ fn run_ready_owner_scope(
     if svg {
         begin_resource_frame(&mut viewport, gpu, dpr)?;
         // First acquisition records the frozen Loading state, even when the
-        // shared raster is already ready. No setup frame may bypass Artifact.
-        let observed = viewport.render_single_viewport_scene_for_test()?;
-        if mode == ViewportPaintRendererMode::RetainedAuto {
-            assert!(observed.artifact_selected);
-        } else {
-            assert!(observed.legacy_selected);
-        }
+        // shared raster is already ready.
+        viewport.render_single_viewport_scene_for_test()?;
     }
     // Ordered sequence: cold/warm, opacity only, add transform, move/warm,
     // then remove transform and add a 20x16 grandparent self clip / warm.
@@ -196,25 +186,21 @@ fn run_ready_owner_scope(
                     .into_iter()
                     .zip(expected)
                     .all(|(a, e)| a.abs_diff(e) <= 1),
-                "{mode:?} svg={svg} DPR{dpr} frame{frame} {label} @({px},{py}): {actual:?} != {expected:?}"
+                "svg={svg} DPR{dpr} frame{frame} {label} @({px},{py}): {actual:?} != {expected:?}"
             );
         }
-        if mode == ViewportPaintRendererMode::RetainedAuto {
-            check_resource_retention(
-                &viewport,
-                &observed,
-                dpr,
-                // Adding the pure-translation boundary changes graph ordinals,
-                // not owner pixels. Reuse now ignores only those frame-local IDs.
-                if frame == 0 || frame == 6 {
-                    RetainedSurfaceCompileAction::Reraster
-                } else {
-                    RetainedSurfaceCompileAction::Reuse
-                },
-            );
-        } else {
-            assert!(observed.legacy_selected);
-        }
+        check_resource_retention(
+            &viewport,
+            &observed,
+            dpr,
+            // Adding the pure-translation boundary changes graph ordinals,
+            // not owner pixels. Reuse now ignores only those frame-local IDs.
+            if frame == 0 || frame == 6 {
+                RetainedSurfaceCompileAction::Reraster
+            } else {
+                RetainedSurfaceCompileAction::Reuse
+            },
+        );
     }
     Ok(())
 }
@@ -222,40 +208,20 @@ fn run_ready_owner_scope(
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_ready_owner_scope_image_artifact_dpr1() -> Result<(), String> {
-    run_ready_owner_scope(ViewportPaintRendererMode::RetainedAuto, false, 1)
+    run_ready_owner_scope(false, 1)
 }
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_ready_owner_scope_image_artifact_dpr2() -> Result<(), String> {
-    run_ready_owner_scope(ViewportPaintRendererMode::RetainedAuto, false, 2)
-}
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_ready_owner_scope_image_legacy_dpr1() -> Result<(), String> {
-    run_ready_owner_scope(ViewportPaintRendererMode::Legacy, false, 1)
-}
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_ready_owner_scope_image_legacy_dpr2() -> Result<(), String> {
-    run_ready_owner_scope(ViewportPaintRendererMode::Legacy, false, 2)
+    run_ready_owner_scope(false, 2)
 }
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_ready_owner_scope_svg_artifact_dpr1() -> Result<(), String> {
-    run_ready_owner_scope(ViewportPaintRendererMode::RetainedAuto, true, 1)
+    run_ready_owner_scope(true, 1)
 }
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_ready_owner_scope_svg_artifact_dpr2() -> Result<(), String> {
-    run_ready_owner_scope(ViewportPaintRendererMode::RetainedAuto, true, 2)
-}
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_ready_owner_scope_svg_legacy_dpr1() -> Result<(), String> {
-    run_ready_owner_scope(ViewportPaintRendererMode::Legacy, true, 1)
-}
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_ready_owner_scope_svg_legacy_dpr2() -> Result<(), String> {
-    run_ready_owner_scope(ViewportPaintRendererMode::Legacy, true, 2)
+    run_ready_owner_scope(true, 2)
 }

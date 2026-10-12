@@ -1,4 +1,4 @@
-//! Per-thread observations of executed selector work, never production telemetry.
+//! Per-thread observations of executed recording work, never production telemetry.
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 thread_local! {

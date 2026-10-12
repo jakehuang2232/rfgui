@@ -51,7 +51,6 @@ fn plane_reaching_the_eye_plane_is_not_composited() {
                 Instant::now(),
             )
             .unwrap();
-        assert!(frame.artifact_selected, "dpr {dpr}");
         let pixels = gpu.read(&frame.texture, size).unwrap();
         assert!(
             pixels

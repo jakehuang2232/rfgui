@@ -62,7 +62,7 @@ pub(super) fn production_artifact_graph(
     let roots = [root];
     let (properties, generations) = sync_identity(&arena, &roots);
     let (mut graph, mut ctx, target) = transformed_graph_prelude(1.0, None);
-    ctx.set_paint_offset(paint_offset);
+    ctx.translate_paint_offset(paint_offset[0], paint_offset[1]);
     let trace = emit_retained_auto_artifact_surface_for_test(
         viewport,
         &arena,

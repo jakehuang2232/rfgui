@@ -89,7 +89,7 @@ fn selected(
     fixture: &RetainedAutoPlainRootFixture,
     roots: &[NodeKey],
     dpr: f32,
-) -> (RecordedArtifactCandidate, AutoAuthorityTrace, usize) {
+) -> (PreparedArtifactSurfaceFrame, usize) {
     let reordered_state;
     let (properties, generations) = if roots == fixture.roots {
         (&fixture.properties, &fixture.generations)
@@ -107,15 +107,11 @@ fn selected(
     )
 }
 
-fn build_selected(
-    viewport: &mut Viewport,
-    candidate: RecordedArtifactCandidate,
-    dpr: f32,
-) -> usize {
+fn build_selected(viewport: &mut Viewport, frame: PreparedArtifactSurfaceFrame, dpr: f32) -> usize {
     emit_selected_artifact_surface(
         "plain-root property forest",
         viewport,
-        candidate,
+        frame,
         selection_context(dpr),
     )
 }
@@ -127,49 +123,11 @@ fn retained_auto_selects_artifact_for_plain_roots_in_both_orders() {
         (fixture.roots.clone(), 1.0),
         (fixture.roots.iter().copied().rev().collect::<Vec<_>>(), 2.0),
     ] {
-        let (candidate, trace, surface_count) = selected(&fixture, &roots, dpr);
-        assert!(
-            !trace.rejections.iter().any(|rejection| matches!(
-                rejection,
-                AutoAuthorityRejection::ArtifactPrepare { .. }
-            )),
-            "selected authority cannot reject itself: {trace:?}",
-        );
+        let (cold, surface_count) = selected(&fixture, &roots, dpr);
         let mut viewport = Viewport::new();
         assert_eq!(surface_count, 4);
-        assert_eq!(build_selected(&mut viewport, candidate, dpr), 4);
+        assert_eq!(build_selected(&mut viewport, cold, dpr), 4);
+        let (warm, _) = selected(&fixture, &roots, dpr);
+        assert_eq!(build_selected(&mut viewport, warm, dpr), 4);
     }
-}
-
-#[test]
-fn plain_root_debug_is_presented_retained_without_any_fallback_overlay() {
-    let fixture = fixture();
-    let (telemetry_candidate, trace, surface_count) = selected(&fixture, &fixture.roots, 1.0);
-    let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::Artifact {
-        candidate: telemetry_candidate,
-        trace,
-    });
-    assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Artifact);
-
-    let mut viewport = Viewport::new();
-    assert_eq!(surface_count, 4);
-    let (cold, _, _) = selected(&fixture, &fixture.roots, 1.0);
-    assert_eq!(build_selected(&mut viewport, cold, 1.0), 4);
-    let (warm, _, _) = selected(&fixture, &fixture.roots, 1.0);
-    assert_eq!(build_selected(&mut viewport, warm, 1.0), 4);
-
-    viewport.scene.node_arena = fixture.arena;
-    let capture =
-        viewport.build_retained_auto_debug_capture(&telemetry, &fixture.roots, true, true);
-    assert_eq!(
-        capture.frame.selected_authority,
-        crate::view::debug::DebugFramePaintAuthority::Artifact
-    );
-    assert_eq!(
-        capture.frame.disposition,
-        crate::view::debug::DebugFrameDisposition::Presented
-    );
-    assert_eq!(capture.frame.statistics.fallback_count, 0);
-    assert!(capture.frame.fallback_stages.is_empty());
-    assert!(capture.nodes.iter().all(|node| node.fallbacks.is_empty()));
 }

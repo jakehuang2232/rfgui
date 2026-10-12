@@ -16,7 +16,6 @@ pub fn build(theme: &Theme, animation_on: Binding<bool>) -> RsxNode {
     let debug_retained_auto = use_state(|| false);
     let retained_auto_authority = use_state(|| true);
     let retained_auto_reuse_actions = use_state(|| true);
-    let retained_auto_fallback_reasons = use_state(|| true);
 
     let show_render_detail = debug_render_time.get();
     let show_retained_auto_detail = debug_retained_auto.get();
@@ -68,10 +67,6 @@ pub fn build(theme: &Theme, animation_on: Binding<bool>) -> RsxNode {
     let on_retained_auto_reuse_actions = {
         let vp = viewport;
         Rc::new(move |on: bool| vp.set_debug_retained_auto_reuse_actions(on)) as Rc<dyn Fn(bool)>
-    };
-    let on_retained_auto_fallback_reasons = {
-        let vp = viewport;
-        Rc::new(move |on: bool| vp.set_debug_retained_auto_fallback_reasons(on)) as Rc<dyn Fn(bool)>
     };
 
     rsx! {
@@ -161,11 +156,6 @@ pub fn build(theme: &Theme, animation_on: Binding<bool>) -> RsxNode {
                         binding={retained_auto_reuse_actions.binding()}
                         on_change={on_retained_auto_reuse_actions}
                     />
-                    <Checkbox
-                        label="Fallback Reasons"
-                        binding={retained_auto_fallback_reasons.binding()}
-                        on_change={on_retained_auto_fallback_reasons}
-                    />
                     <Element style={{
                         layout: Layout::flow().column().no_wrap(),
                         gap: theme.spacing.xs,
@@ -197,14 +187,6 @@ pub fn build(theme: &Theme, animation_on: Binding<bool>) -> RsxNode {
                                 background: Color::hex("#ff731a"),
                             }} />
                             <Element>"Orange: reraster action"</Element>
-                        </Element>
-                        <Element style={{ layout: Layout::flow().row().no_wrap(), gap: theme.spacing.xs, width: Length::percent(100.0) }}>
-                            <Element style={{
-                                width: Length::px(12.0),
-                                height: Length::px(12.0),
-                                background: Color::hex("#ff3333"),
-                            }} />
-                            <Element>"Red: fallback reason"</Element>
                         </Element>
                     </Element>
                 </Element>

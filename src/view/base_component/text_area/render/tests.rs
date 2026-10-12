@@ -7,12 +7,32 @@ use crate::view::base_component::{
     DirtyPassMask, Element, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement, Size,
     Text,
 };
-use crate::view::frame_graph::FrameGraph;
 use std::cell::Cell;
 use std::rc::Rc;
 
+/// Ops matching `keep` that the frame recorder emits for the subtree at `root`.
+fn recorded_op_count(
+    arena: &NodeArena,
+    root: NodeKey,
+    keep: impl Fn(&crate::view::paint::PaintOp) -> bool,
+) -> usize {
+    let roots = [root];
+    let mut properties = crate::view::compositor::PropertyTrees::default();
+    properties.sync(arena, &roots);
+    let mut generations = crate::view::compositor::PaintGenerationTracker::default();
+    generations.sync(arena, &roots, &properties);
+    crate::view::paint::record_surface_dag_frame_artifact(arena, &roots, &properties, &generations)
+        .ops
+        .iter()
+        .filter(|op| keep(op))
+        .count()
+}
 
-
+fn recorded_text_op_count(arena: &NodeArena, root: NodeKey) -> usize {
+    recorded_op_count(arena, root, |op| {
+        matches!(op, crate::view::paint::PaintOp::PreparedText(_))
+    })
+}
 
 fn projection_fixture(cursor_char: usize, with_text_child: bool) -> (NodeArena, NodeKey) {
     let mut text_area = TextArea::new();

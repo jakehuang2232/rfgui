@@ -202,16 +202,6 @@ impl crate::view::base_component::EventTarget for UnknownHoverHost {
         false
     }
 }
-impl crate::view::base_component::Renderable for UnknownHoverHost {
-    fn build(
-        &mut self,
-        _: &mut crate::view::frame_graph::FrameGraph,
-        _: &mut crate::view::node_arena::NodeArena,
-        ctx: crate::view::base_component::UiBuildContext,
-    ) -> crate::view::base_component::BuildState {
-        ctx.into_state()
-    }
-}
 impl crate::view::base_component::ElementTrait for UnknownHoverHost {
     fn dirty_observation_is_tracked(&self) -> bool {
         true

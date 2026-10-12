@@ -1,5 +1,5 @@
-//! Opt-in downstream integration-test observation. No selector overrides or
-//! fallback exemptions: controls run their real RSX reconciliation and renderer.
+//! Opt-in downstream integration-test observation: controls run their real RSX
+//! reconciliation and renderer.
 use super::*;
 mod diagnostics;
 pub use diagnostics::RendererTestDiagnostics;
@@ -19,7 +19,6 @@ pub struct RendererTestFrame {
     pub localized_replays: usize,
     pub geometry_replays: usize,
     pub texture: wgpu::Texture,
-    pub artifact_selected: bool,
     pub rerasterizations: usize,
     pub reuses: usize,
     pub resident_rasters: usize,
@@ -55,18 +54,8 @@ impl Viewport {
             texture: None,
         });
         let before = self.frame.completion_counts;
-        let _capture = enable_paint_authority_test_capture();
         self.render_rsx_at(root, now, None)?;
         let target = self.frame.offscreen_redraw_target.take().unwrap();
-        if let Some(snapshot) = take_paint_authority_test_snapshot() {
-            if snapshot.legacy_fallback_stage.is_some()
-                || snapshot.terminal_failure_stage.is_some()
-                || (snapshot.selected == PaintAuthorityKind::Artifact)
-                    != (self.paint_renderer_mode() == ViewportPaintRendererMode::RetainedAuto)
-            {
-                return Err(format!("unexpected authority: {snapshot:?}"));
-            }
-        }
         let after = self.frame.completion_counts;
         let frames = u64::from(target.texture.is_some());
         if after.aborts == before.aborts + 1
@@ -75,7 +64,6 @@ impl Viewport {
             && frames == 0
             && self.frame.render_required
             && self.frame.frame_state.is_none()
-            && self.retained_auto_terminal_failure.is_none()
         {
             return Ok(None);
         }
@@ -130,28 +118,14 @@ impl Viewport {
         self.frame.last_diagnostics = None;
     }
 
-    /// Exercise the native entry while checking the authority actually selected.
-    /// Surface acquisition retries remain normal host behavior and yield no sample.
+    /// Exercise the native entry. Surface acquisition retries remain normal
+    /// host behavior and yield no sample.
     #[doc(hidden)]
     pub fn render_frame_for_performance(
         &mut self,
         services: crate::platform::PlatformServices<'_>,
     ) -> RenderFrameResult {
-        let _capture = enable_paint_authority_test_capture();
-        let result = self.render_frame(services);
-        if let Some(snapshot) = take_paint_authority_test_snapshot() {
-            assert!(
-                snapshot.legacy_fallback_stage.is_none()
-                    && snapshot.terminal_failure_stage.is_none(),
-                "unexpected native window fallback/failure: {snapshot:?}"
-            );
-            assert_eq!(
-                snapshot.selected == PaintAuthorityKind::Artifact,
-                self.paint_renderer_mode() == ViewportPaintRendererMode::RetainedAuto,
-                "unexpected native window authority: {snapshot:?}"
-            );
-        }
-        result
+        self.render_frame(services)
     }
     /// Last production frame's CPU phases and cumulative completion counts.
     /// Completion phases: staging, encoder finish, submit, cleanup, present, wait.
@@ -202,7 +176,6 @@ impl Viewport {
             .offscreen_texture
             .clone()
             .unwrap();
-        let _capture = enable_paint_authority_test_capture();
         let _ = crate::view::paint::take_last_production_actions_for_test();
         let before = self.frame_completion_counts_for_test();
         self.render_rsx_at(root, now, None)?;
@@ -211,16 +184,6 @@ impl Viewport {
             return Err(format!(
                 "frame did not submit cleanly: {before:?} -> {after:?}"
             ));
-        }
-        let snapshot = take_paint_authority_test_snapshot().ok_or("missing authority")?;
-        if snapshot.legacy_fallback_stage.is_some() || snapshot.terminal_failure_stage.is_some() {
-            return Err(format!("unexpected fallback/failure: {snapshot:?}"));
-        }
-        let artifact_selected = snapshot.selected == PaintAuthorityKind::Artifact;
-        if artifact_selected
-            != (self.paint_renderer_mode() == ViewportPaintRendererMode::RetainedAuto)
-        {
-            return Err(format!("unexpected authority: {snapshot:?}"));
         }
         let actions = crate::view::paint::take_last_production_actions_for_test();
         let mut resident_rasters = 0;
@@ -271,7 +234,6 @@ impl Viewport {
             localized_replays: self.compositor.planning_cache.localized_hits,
             geometry_replays: self.compositor.planning_cache.geometry_hits,
             texture,
-            artifact_selected,
             resident_rasters,
             texture_bytes,
             persistent_targets,

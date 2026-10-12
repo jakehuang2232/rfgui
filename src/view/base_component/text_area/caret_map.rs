@@ -229,8 +229,7 @@ impl CaretNavigationMap {
     /// Find the visual line index that owns `char_index`. Boundary
     /// chars shared by two lines (soft-wrap point) resolve via
     /// `affinity`: `Upstream` → upper line, `Downstream` → lower line
-    /// (matches the legacy renderer rule that `cursor == range.end`
-    /// belongs to the following sibling).
+    /// (`cursor == range.end` belongs to the following sibling).
     pub(super) fn line_index_for_char(
         &self,
         char_index: usize,

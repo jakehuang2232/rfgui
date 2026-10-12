@@ -791,7 +791,7 @@ pub(crate) struct PreparedShadowIdentity {
     clip_to_geometry: bool,
 }
 
-/// One indivisible legacy-order scrollbar overlay. Keeping the two shadows
+/// One indivisible, fixed-order scrollbar overlay. Keeping the two shadows
 /// and two fills behind one typed op prevents generic shadow/rect grammar from
 /// being widened for the retained scroll-host canary.
 #[derive(Clone, Debug)]

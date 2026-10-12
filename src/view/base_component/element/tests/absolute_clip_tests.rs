@@ -56,7 +56,7 @@ fn absolute_clip_viewport_allows_render_outside_parent_bounds() {
 }
 
 #[test]
-fn viewport_clipped_absolute_descendant_is_deferred_even_if_parent_is_not_rendered() {
+fn viewport_clipped_absolute_descendant_paints_even_if_parent_is_not_rendered() {
     let mut parent = Element::new(0.0, 0.0, 100.0, 80.0);
     let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
     let mut child_style = Style::new();
@@ -69,6 +69,10 @@ fn viewport_clipped_absolute_descendant_is_deferred_even_if_parent_is_not_render
                 .clip(ClipMode::Viewport),
         ),
     );
+    child_style.insert(
+        PropertyId::BackgroundColor,
+        ParsedValue::color_like(Color::hex("#ff0000")),
+    );
     child.apply_style(child_style);
     parent.layout_state.should_render = false;
 
@@ -76,29 +80,11 @@ fn viewport_clipped_absolute_descendant_is_deferred_even_if_parent_is_not_render
     let parent_key = commit_element(&mut arena, Box::new(parent));
     let child_k = commit_child(&mut arena, parent_key, Box::new(child));
 
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(400, 300, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    // Mirror `Viewport::render_rsx`: seed the ctx defer list once
-    // from the arena.
-    let mut popup_stack = crate::view::popup_stack::PopupStack::new();
-    arena.seed_defer_render_with_stack(&mut popup_stack, &mut ctx);
-    let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    let next_state = arena
-        .with_element_taken(parent_key, |el, a| el.build(&mut graph, a, ctx_for_build))
-        .expect("parent build returns state");
-    ctx.set_state(next_state);
-
-    let deferred = drain_deferred(&mut ctx);
-    let child_id = arena.get(child_k).unwrap().element.stable_id();
+    let recorded = recorded_chunk_owners(&arena, &[parent_key]);
     assert_eq!(
-        deferred
-            .iter()
-            .filter(|node| node.key == child_k && node.stable_id == child_id)
-            .count(),
+        recorded.iter().filter(|&&owner| owner == child_k).count(),
         1,
-        "canonical pre-seed and build-time registration must deduplicate by NodeKey"
+        "the viewport-clipped child paints exactly once"
     );
 }
 

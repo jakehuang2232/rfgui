@@ -31,10 +31,6 @@ use self::cache::TextLayoutCache;
 
 pub(in crate::view::base_component) use self::measure::measure_text_layout;
 
-pub(crate) use self::hit_test::{
-    TextAreaSelectionRenderContext, with_text_area_selection_render_context,
-};
-
 /// Per-visual-line geometry installed by an inline IFC root that owns this
 /// Text node's glyphs. `rect` is the full line box (layout bounds, caret
 /// height); `text_rect` is the baseline-aligned glyph box (where text
@@ -290,24 +286,6 @@ impl Text {
         ))
     }
 
-    fn untransformed_retained_paint_bounds(&self) -> super::RetainedSurfaceBounds {
-        let bounds = self
-            .inline_ifc_owned_paint_bounds()
-            .unwrap_or(crate::ui::Rect {
-                x: self.layout_state.layout_position.x,
-                y: self.layout_state.layout_position.y,
-                width: self.layout_state.layout_size.width,
-                height: self.layout_state.layout_size.height,
-            });
-        super::RetainedSurfaceBounds {
-            x: bounds.x,
-            y: bounds.y,
-            width: bounds.width.max(0.0),
-            height: bounds.height.max(0.0),
-            corner_radii: [0.0; 4],
-        }
-    }
-
     /// Shell placement for a node whose geometry is owned by an inline
     /// IFC root: adopt the bounding box so arena hit-testing and bbox
     /// queries see the fragment union, without running a layout pass.
@@ -540,14 +518,6 @@ impl ElementTrait for Text {
     }
     fn stable_id(&self) -> u64 {
         self.node_id
-    }
-
-    fn retained_scroll_normalized_paint_capability(
-        &self,
-    ) -> Option<super::RetainedScrollNormalizedPaintCapability> {
-        Some(super::RetainedScrollNormalizedPaintCapability::native(
-            super::RetainedScrollNormalizedPaintKind::Text,
-        ))
     }
 
     #[allow(private_interfaces)]
@@ -901,72 +871,6 @@ impl ElementTrait for Text {
         }
     }
 
-    fn admits_exact_retained_root_opacity_artifact(&self) -> bool {
-        true
-    }
-
-    fn retained_transform_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        if let Some(matrix) = self.resolved_transform {
-            let source_bounds =
-                self.retained_transform_surface_bounds(arena, paint_offset, scale_factor)?;
-            let visual_bounds =
-                crate::view::viewport::scene_helpers::paint_snapped_retained_surface_bounds(
-                    self,
-                    source_bounds,
-                    paint_offset,
-                    scale_factor,
-                );
-            return super::TransformSurfaceGeometrySnapshot::new(
-                source_bounds,
-                visual_bounds,
-                matrix,
-                None,
-            )?
-            .quad_aabb();
-        }
-        let mut bounds = self.untransformed_retained_paint_bounds();
-        if paint_offset.iter().any(|value| !value.is_finite()) {
-            return None;
-        }
-        bounds.x += paint_offset[0];
-        bounds.y += paint_offset[1];
-        (bounds.x.is_finite()
-            && bounds.y.is_finite()
-            && bounds.width.is_finite()
-            && bounds.height.is_finite())
-        .then_some(bounds)
-    }
-
-    fn exact_nested_isolation_render_output_bounds(
-        &self,
-        owner: crate::view::node_arena::NodeKey,
-        arena: &crate::view::node_arena::NodeArena,
-        parent_snapped_paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        super::exact_native_nested_isolation_render_output_bounds(
-            self,
-            owner,
-            arena,
-            parent_snapped_paint_offset,
-            scale_factor,
-        )
-    }
-
-    fn legacy_transform_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        self.retained_transform_output_bounds(arena, paint_offset, scale_factor)
-    }
-
     fn has_active_animator(&self) -> bool {
         false
     }
@@ -1026,20 +930,6 @@ impl ElementTrait for Text {
         true
     }
 
-    fn retained_transform_surface_bounds(
-        &self,
-        _arena: &crate::view::node_arena::NodeArena,
-        _paint_offset: [f32; 2],
-        _scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        self.resolved_transform
-            .map(|_| self.untransformed_retained_paint_bounds())
-    }
-
-    fn retained_transform_raster_seed_bounds(&self) -> Option<super::RetainedSurfaceBounds> {
-        Some(self.untransformed_retained_paint_bounds())
-    }
-
     fn has_retained_transform_surface(&self) -> bool {
         self.resolved_transform.is_some()
     }
@@ -1062,10 +952,6 @@ impl ElementTrait for Text {
                 self.layout_state.layout_position.y,
             ],
             [0.0, 0.0],
-            [
-                self.layout_state.layout_position.x,
-                self.layout_state.layout_position.y,
-            ],
         ))
     }
 

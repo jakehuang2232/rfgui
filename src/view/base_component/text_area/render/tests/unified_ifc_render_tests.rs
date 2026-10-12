@@ -99,57 +99,21 @@ fn unified_ifc_staging_applies_vertical_align_to_paint_local_pos() {
 }
 
 #[test]
-fn text_area_inline_ifc_projection_unified_render_skips_per_run_text_passes() {
-    let (mut arena, root) = projection_fixture(3, false);
-
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(320, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    arena
-        .with_element_taken(root, |el, a| el.build(&mut graph, a, ctx_for_build))
-        .expect("TextArea build returns state");
-
-    let pass_names = graph
-        .pass_descriptors()
-        .into_iter()
-        .map(|desc| desc.name.to_string())
-        .collect::<Vec<_>>();
-    let prepared_text_pass_count = pass_names
-        .iter()
-        .filter(|name| name.ends_with("render_pass::text_pass::TextPreparedInputPass"))
-        .count();
+fn text_area_inline_ifc_projection_records_glyphs_once() {
+    let (arena, root) = projection_fixture(3, false);
     assert_eq!(
-        prepared_text_pass_count, 1,
-        "projection TextArea should render plain glyphs once from the TextArea-level unified IFC package, got {pass_names:?}"
+        recorded_text_op_count(&arena, root),
+        1,
+        "projection TextArea should render plain glyphs once from the TextArea-level unified IFC package"
     );
 }
 
 #[test]
-fn text_area_inline_ifc_plain_unified_render_skips_per_run_text_passes() {
-    let (mut arena, root) = wrapped_plain_fixture("plain root render", 240.0);
-
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(320, 200, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
-    let ctx_for_build = UiBuildContext::from_parts(ctx.viewport(), ctx.state_clone());
-    arena
-        .with_element_taken(root, |el, a| el.build(&mut graph, a, ctx_for_build))
-        .expect("TextArea build returns state");
-
-    let pass_names = graph
-        .pass_descriptors()
-        .into_iter()
-        .map(|desc| desc.name.to_string())
-        .collect::<Vec<_>>();
-    let prepared_text_pass_count = pass_names
-        .iter()
-        .filter(|name| name.ends_with("render_pass::text_pass::TextPreparedInputPass"))
-        .count();
+fn text_area_inline_ifc_plain_records_glyphs_once() {
+    let (arena, root) = wrapped_plain_fixture("plain root render", 240.0);
     assert_eq!(
-        prepared_text_pass_count, 1,
-        "plain TextArea should render glyphs once from the TextArea-level unified IFC package, got {pass_names:?}"
+        recorded_text_op_count(&arena, root),
+        1,
+        "plain TextArea should render glyphs once from the TextArea-level unified IFC package"
     );
 }

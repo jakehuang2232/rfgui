@@ -129,7 +129,11 @@ fn compile_validated_artifact_segment(
     resolved_clips: Vec<ResolvedClip>,
     graph: &mut FrameGraph,
     ctx: &mut UiBuildContext,
-    child_mask_scopes: &mut Vec<(crate::view::node_arena::NodeKey, u8, Option<[u32; 4]>)>,
+    child_mask_scopes: &mut Vec<(
+        crate::view::node_arena::NodeKey,
+        u8,
+        Option<crate::view::render_pass::render_target::GraphicsPassScissor>,
+    )>,
 ) {
     let max_mask_depth = artifact_child_mask_max_depth(
         artifact.chunks.iter().map(|chunk| chunk.id),
@@ -154,7 +158,9 @@ fn compile_validated_artifact_segment(
                     // the target keeps the incoming one and clips by stencil.
                     let logical_scissor =
                         crate::view::base_component::exact_logical_scissor_for_rect(chunk.bounds);
-                    let previous_scissor = ctx.push_scissor_rect(logical_scissor);
+                    let previous_scissor = ctx.push_graphics_pass_scissor((logical_scissor).map(
+                        crate::view::render_pass::render_target::GraphicsPassScissor::Logical,
+                    ));
                     let mut pass = DrawRectPass::new(
                         mask.params.clone(),
                         DrawRectInput::default(),
@@ -181,7 +187,7 @@ fn compile_validated_artifact_segment(
                     pass.set_color_write_enabled(false);
                     ctx.emit_draw_rect_pass(graph, pass);
                     ctx.pop_clip_id();
-                    ctx.restore_scissor_rect(previous_scissor);
+                    ctx.restore_graphics_pass_scissor(previous_scissor);
                 }
             }
             continue;
@@ -189,7 +195,9 @@ fn compile_validated_artifact_segment(
         let shadow_prefix_len = exact_self_clip_shadow_prefix_len(artifact, chunk).unwrap_or(0);
         let previous_scissor = match (shadow_prefix_len, resolved_clip) {
             (0, ResolvedClip::Unclipped) => None,
-            (0, ResolvedClip::Scissor(scissor)) => Some(ctx.replace_scissor_rect(Some(scissor))),
+            (0, ResolvedClip::Scissor(scissor)) => Some(ctx.replace_graphics_pass_scissor(Some(
+                crate::view::render_pass::render_target::GraphicsPassScissor::Logical(scissor),
+            ))),
             // Do not enter a graphics scope for an empty clip: in particular,
             // opaque rectangles must not consume DFS depth order.
             (0, ResolvedClip::Empty) => continue,
@@ -204,7 +212,11 @@ fn compile_validated_artifact_segment(
                 match resolved_clip {
                     ResolvedClip::Unclipped => {}
                     ResolvedClip::Scissor(scissor) => {
-                        split_previous_scissor = Some(ctx.replace_scissor_rect(Some(scissor)));
+                        split_previous_scissor = Some(ctx.replace_graphics_pass_scissor(Some(
+                            crate::view::render_pass::render_target::GraphicsPassScissor::Logical(
+                                scissor,
+                            ),
+                        )));
                     }
                     ResolvedClip::Empty => break,
                 }
@@ -212,7 +224,7 @@ fn compile_validated_artifact_segment(
             emit_artifact_surface_paint_op(op, graph, ctx);
         }
         if let Some(previous) = split_previous_scissor.or(previous_scissor) {
-            ctx.restore_scissor_rect(previous);
+            ctx.restore_graphics_pass_scissor(previous);
         }
     }
 }

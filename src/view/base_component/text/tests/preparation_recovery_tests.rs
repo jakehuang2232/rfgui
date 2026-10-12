@@ -21,7 +21,7 @@ fn missing_standalone_preparation_recovers_without_an_edit_or_constraint_change(
     assert_eq!(text.measured_size(), size);
     assert_eq!(text.retained_paint_signature(), signature);
     assert!(!text.local_dirty_flags().intersects(DirtyFlags::LAYOUT));
-    assert!(!build_text_for_read_only_ifc_test(&mut text).is_empty());
+    assert_eq!(recorded_text_op_count_for_read_only_ifc_test(text), 1);
 }
 
 #[test]

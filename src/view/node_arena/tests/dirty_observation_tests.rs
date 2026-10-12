@@ -162,11 +162,6 @@ impl Layoutable for ExternalHost {
     fn set_layout_height(&mut self, _: f32) {}
 }
 impl EventTarget for ExternalHost {}
-impl Renderable for ExternalHost {
-    fn build(&mut self, _: &mut FrameGraph, _: &mut NodeArena, ctx: UiBuildContext) -> BuildState {
-        ctx.into_state()
-    }
-}
 impl ElementTrait for ExternalHost {
     fn stable_id(&self) -> u64 {
         999

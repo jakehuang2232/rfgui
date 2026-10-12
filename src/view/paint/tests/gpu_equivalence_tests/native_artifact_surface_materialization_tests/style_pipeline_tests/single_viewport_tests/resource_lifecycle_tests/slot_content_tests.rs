@@ -51,12 +51,7 @@ fn colored_element(id: u64, width: f32, height: f32, rgb: [u8; 3], absolute: boo
     element
 }
 
-fn install_slots(
-    viewport: &mut Viewport,
-    host: Host,
-    dpr: u32,
-    mode: ViewportPaintRendererMode,
-) -> SlotScene {
+fn install_slots(viewport: &mut Viewport, host: Host, dpr: u32) -> SlotScene {
     let mut arena = NodeArena::new();
     let mut root = Element::new_with_id(0xc1_1100, 0.0, 0.0, 20.0, 16.0);
     let mut style = sized_grid(20.0, 16.0);
@@ -90,7 +85,7 @@ fn install_slots(
         }
         Host::Svg => {
             let source = crate::view::SvgSource::Content(format!(
-                "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- slots {mode:?} {dpr} --></svg>"
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"><!-- slots {dpr} --></svg>"
             ));
             let doc = prime_svg_document_ready_for_test(&source, 20.0, 32.0);
             let request = SvgRasterRequest::new(extent[0], extent[1], SvgRasterMode::Fill);
@@ -199,23 +194,16 @@ impl SlotScene {
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_nonempty_resource_slots() -> Result<(), String> {
-    run_slots(ViewportPaintRendererMode::RetainedAuto)
+    run_slots()
 }
 
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_legacy_nonempty_resource_slots() -> Result<(), String> {
-    run_slots(ViewportPaintRendererMode::Legacy)
-}
-
-fn run_slots(mode: ViewportPaintRendererMode) -> Result<(), String> {
+fn run_slots() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native hardware graphics context");
     for host in [Host::Image, Host::Svg] {
         for dpr in [1, 2] {
             let mut viewport = Viewport::new();
-            viewport.set_paint_renderer_mode(mode);
-            let scene = install_slots(&mut viewport, host, dpr, mode);
+            let scene = install_slots(&mut viewport, host, dpr);
             // Ordered sequence: loading bootstrap/warm, content edit/warm,
             // sibling reorder/warm, ready/warm, error/warm, ready/warm,
             // return to loading/warm. Expectations depend on this order.
@@ -279,7 +267,7 @@ fn run_slots(mode: ViewportPaintRendererMode) -> Result<(), String> {
                             .into_iter()
                             .zip(expected)
                             .all(|(a, e)| a.abs_diff(e) <= 1),
-                        "{host:?} {mode:?} DPR {dpr} frame {frame} @({x},{y}): {actual:?} != {expected:?}"
+                        "{host:?} DPR {dpr} frame {frame} @({x},{y}): {actual:?} != {expected:?}"
                     );
                 }
                 let expected_children = if ready {
@@ -294,25 +282,21 @@ fn run_slots(mode: ViewportPaintRendererMode) -> Result<(), String> {
                     expected_children
                 );
                 check_recorded_slot_owners(&viewport, &scene, frame, ready, error);
-                if mode == ViewportPaintRendererMode::RetainedAuto {
-                    let reraster = matches!(frame, 0 | 3 | 5 | 7 | 9 | 11 | 13);
-                    check_resource_retention(
-                        &viewport,
-                        &observed,
-                        dpr,
-                        if reraster {
-                            RetainedSurfaceCompileAction::Reraster
-                        } else {
-                            RetainedSurfaceCompileAction::Reuse
-                        },
-                    );
-                } else {
-                    assert!(observed.legacy_selected);
-                }
+                let reraster = matches!(frame, 0 | 3 | 5 | 7 | 9 | 11 | 13);
+                check_resource_retention(
+                    &viewport,
+                    &observed,
+                    dpr,
+                    if reraster {
+                        RetainedSurfaceCompileAction::Reraster
+                    } else {
+                        RetainedSurfaceCompileAction::Reuse
+                    },
+                );
             }
         }
     }
-    eprintln!("Nonempty slots {mode:?} passed on {}", gpu.label());
+    eprintln!("Nonempty slots passed on {}", gpu.label());
     Ok(())
 }
 

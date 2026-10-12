@@ -4,13 +4,10 @@
 
 use super::{ElementTrait, Text, measure_text_size};
 use crate::style::{
-    Color, ColorLike, FontFamily, FontSize, FontWeight, Length, ParsedValue, PropertyId, Rotate,
-    Scale, Style, TextWrap, Transform, TransformEntry, TransformOrigin, Translate, VerticalAlign,
+    Color, ColorLike, FontFamily, FontSize, FontWeight, Length, ParsedValue, PropertyId, Scale,
+    Style, TextWrap, Transform, TransformOrigin, Translate, VerticalAlign,
 };
-use crate::view::base_component::{
-    DirtyFlags, LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
-};
-use crate::view::frame_graph::FrameGraph;
+use crate::view::base_component::{DirtyFlags, LayoutConstraints, LayoutPlacement, Layoutable};
 use crate::view::inline_formatting_context::InlineIfcAlignment;
 use crate::view::node_arena::NodeArena;
 
@@ -48,20 +45,22 @@ fn place_text_for_read_only_ifc_test(text: &mut Text, width: f32, height: f32) {
     );
 }
 
-fn build_text_for_read_only_ifc_test(text: &mut Text) -> Vec<String> {
-    let mut graph = FrameGraph::new();
-    let mut ctx = UiBuildContext::new(200, 120, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let target = ctx.allocate_target(&mut graph);
-    ctx.set_current_target(target);
+/// Glyph ops the frame recorder emits for `text` as the only root.
+fn recorded_text_op_count_for_read_only_ifc_test(text: Text) -> usize {
     let mut arena = arena();
-
-    text.build(&mut graph, &mut arena, ctx);
-
-    graph
-        .pass_descriptors()
-        .into_iter()
-        .map(|descriptor| descriptor.name.to_string())
-        .collect()
+    let roots = [crate::view::test_support::commit_element(
+        &mut arena,
+        Box::new(text),
+    )];
+    let mut properties = crate::view::compositor::PropertyTrees::default();
+    properties.sync(&arena, &roots);
+    let mut generations = crate::view::compositor::PaintGenerationTracker::default();
+    generations.sync(&arena, &roots, &properties);
+    crate::view::paint::record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations)
+        .ops
+        .iter()
+        .filter(|op| matches!(op, crate::view::paint::PaintOp::PreparedText(_)))
+        .count()
 }
 
 mod style_tests;

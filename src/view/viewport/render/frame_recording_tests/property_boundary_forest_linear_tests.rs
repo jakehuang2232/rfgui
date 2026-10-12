@@ -93,15 +93,11 @@ fn context(dpr: f32) -> UiBuildContext {
     UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, dpr)
 }
 
-fn build_selected(
-    viewport: &mut Viewport,
-    candidate: RecordedArtifactCandidate,
-    dpr: f32,
-) -> usize {
+fn build_selected(viewport: &mut Viewport, frame: PreparedArtifactSurfaceFrame, dpr: f32) -> usize {
     emit_selected_artifact_surface(
         "arbitrary-depth linear forest",
         viewport,
-        candidate,
+        frame,
         context(dpr),
     )
 }
@@ -136,7 +132,7 @@ fn retained_auto_linear_depth_four_and_five_are_retained_and_never_red() {
         ),
     ] {
         let fixture = linear_fixture(&roles, neutral, stable_id_base);
-        let (telemetry_candidate, trace, surface_count) = selected_artifact_surface(
+        let (_, surface_count) = selected_artifact_surface(
             "arbitrary-depth linear forest",
             &fixture.arena,
             &fixture.roots,
@@ -145,21 +141,9 @@ fn retained_auto_linear_depth_four_and_five_are_retained_and_never_red() {
             &context(dpr),
         );
         assert_eq!(surface_count, fixture.surface_count);
-        assert!(
-            !trace.rejections.iter().any(|rejection| matches!(
-                rejection,
-                AutoAuthorityRejection::ArtifactPrepare { .. }
-            )),
-            "selected authority cannot reject itself: {trace:?}",
-        );
-        let telemetry = telemetry_for_auto_decision(AutoAuthorityDecision::Artifact {
-            candidate: telemetry_candidate,
-            trace,
-        });
-        assert_eq!(telemetry.final_authority(), PaintAuthorityKind::Artifact);
 
         let mut viewport = Viewport::new();
-        let (cold, _, _) = selected_artifact_surface(
+        let (cold, _) = selected_artifact_surface(
             "arbitrary-depth linear forest",
             &fixture.arena,
             &fixture.roots,
@@ -168,7 +152,7 @@ fn retained_auto_linear_depth_four_and_five_are_retained_and_never_red() {
             &context(dpr),
         );
         assert_eq!(build_selected(&mut viewport, cold, dpr), surface_count);
-        let (warm, _, _) = selected_artifact_surface(
+        let (warm, _) = selected_artifact_surface(
             "arbitrary-depth linear forest",
             &fixture.arena,
             &fixture.roots,
@@ -177,20 +161,5 @@ fn retained_auto_linear_depth_four_and_five_are_retained_and_never_red() {
             &context(dpr),
         );
         assert_eq!(build_selected(&mut viewport, warm, dpr), surface_count);
-
-        viewport.scene.node_arena = fixture.arena;
-        let capture =
-            viewport.build_retained_auto_debug_capture(&telemetry, &fixture.roots, true, true);
-        assert_eq!(
-            capture.frame.selected_authority,
-            crate::view::debug::DebugFramePaintAuthority::Artifact
-        );
-        assert_eq!(
-            capture.frame.disposition,
-            crate::view::debug::DebugFrameDisposition::Presented
-        );
-        assert_eq!(capture.frame.statistics.fallback_count, 0);
-        assert!(capture.frame.fallback_stages.is_empty());
-        assert!(capture.nodes.iter().all(|node| node.fallbacks.is_empty()));
     }
 }

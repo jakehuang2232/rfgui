@@ -1,6 +1,5 @@
 use crate::style::{ComputedStyle, ParsedValue, PropertyId, Style};
 use crate::time::{Duration, Instant};
-use crate::view::frame_graph::FrameGraph;
 use crate::view::image_resource::ImageSnapshot;
 use crate::view::render_pass::texture_composite_pass::TextureCompositeParams;
 use crate::view::sampled_texture::{SampledTextureAlphaMode, SampledTextureUpload};
@@ -16,7 +15,7 @@ use std::hash::{Hash, Hasher};
 use super::resource_slot::{self, ActiveSlot, SlotReplacementError};
 use super::{
     BoxModelSnapshot, ComputedStyleConsumer, Element, ElementStyleSnapshot, ElementTrait,
-    EventTarget, LayoutConstraints, LayoutPlacement, Layoutable, Renderable, UiBuildContext,
+    EventTarget, LayoutConstraints, LayoutPlacement, Layoutable,
 };
 
 const PLACEHOLDER_SIZE: f32 = 120.0;
@@ -745,7 +744,7 @@ impl Svg {
 
         // A post-layout resource completion must never rewrite the child slot
         // selected before layout. If the frozen resource now implies a
-        // different topology, this frame stays legacy and the next frame's
+        // different topology, this frame keeps its slot and the next frame's
         // pre-layout sync performs the slot transition.
         if Self::resolve_frozen_slot(
             self.frozen_document.as_ref().expect("document was frozen"),
@@ -1007,14 +1006,6 @@ impl ElementTrait for Svg {
         self.element.stable_id()
     }
 
-    fn retained_scroll_normalized_paint_capability(
-        &self,
-    ) -> Option<super::RetainedScrollNormalizedPaintCapability> {
-        Some(super::RetainedScrollNormalizedPaintCapability::native(
-            super::RetainedScrollNormalizedPaintKind::Svg,
-        ))
-    }
-
     #[allow(private_interfaces)]
     fn exact_generic_subtree_self_clip_geometry(
         &self,
@@ -1058,10 +1049,6 @@ impl ElementTrait for Svg {
         self.element.retained_paint_properties()
     }
 
-    fn admits_exact_retained_root_opacity_artifact(&self) -> bool {
-        true
-    }
-
     fn tick_post_layout_animation_frame(&mut self, now: crate::time::Instant) -> super::DirtyFlags {
         self.element.tick_post_layout_animation_frame(now)
     }
@@ -1070,15 +1057,6 @@ impl ElementTrait for Svg {
         &self,
     ) -> crate::view::node_arena::PlacementEligibilityMetadata {
         self.element.placement_eligibility_metadata()
-    }
-
-    fn retained_sampled_layout_transition_snapshot(
-        &self,
-    ) -> Option<super::RetainedSampledLayoutTransitionSnapshot> {
-        self.element
-            .exact_sampled_layout_transition_snapshot_for_paint_signature(
-                self.retained_paint_signature(),
-            )
     }
 
     fn last_placement(&self) -> Option<crate::view::base_component::LayoutPlacement> {
@@ -1355,57 +1333,6 @@ impl ElementTrait for Svg {
 
     fn retained_paint_signature_is_complete(&self) -> bool {
         true
-    }
-
-    fn retained_transform_surface_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        self.element
-            .retained_transform_surface_bounds(arena, paint_offset, scale_factor)
-    }
-
-    fn retained_transform_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        // Ready raster paint shares the owner's transform and fits its box.
-        self.element
-            .retained_transform_render_output_bounds(arena, paint_offset, scale_factor)
-    }
-
-    fn exact_nested_isolation_render_output_bounds(
-        &self,
-        owner: crate::view::node_arena::NodeKey,
-        arena: &crate::view::node_arena::NodeArena,
-        parent_snapped_paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        super::exact_native_nested_isolation_render_output_bounds(
-            self,
-            owner,
-            arena,
-            parent_snapped_paint_offset,
-            scale_factor,
-        )
-    }
-
-    fn legacy_transform_output_bounds(
-        &self,
-        arena: &crate::view::node_arena::NodeArena,
-        paint_offset: [f32; 2],
-        scale_factor: f32,
-    ) -> Option<super::RetainedSurfaceBounds> {
-        self.element
-            .legacy_transform_render_output_bounds(arena, paint_offset, scale_factor)
-    }
-
-    fn retained_transform_raster_seed_bounds(&self) -> Option<super::RetainedSurfaceBounds> {
-        self.element.retained_transform_raster_seed_bounds()
     }
 
     fn has_retained_transform_surface(&self) -> bool {
@@ -1716,27 +1643,6 @@ impl Drop for Svg {
             release_svg_raster(raster_key);
         }
         release_svg_document(self.source_key);
-    }
-}
-
-impl Renderable for Svg {
-    fn build(
-        &mut self,
-        graph: &mut FrameGraph,
-        arena: &mut crate::view::node_arena::NodeArena,
-        ctx: UiBuildContext,
-    ) -> super::BuildState {
-        let opacity = self
-            .frozen_paint
-            .as_ref()
-            .map_or(0.0, |paint| paint.opacity);
-        // Retain SVG's frozen upload/identity. Only Legacy execution joins
-        // the owner's scope; the distinct artifact SVG op is unchanged.
-        let Some(prepared) = self.prepared_svg_op([0.0, 0.0], opacity) else {
-            return self.element.build_base_only(graph, arena, ctx);
-        };
-        self.element
-            .build_base_with_texture(graph, arena, ctx, prepared.params, prepared.upload)
     }
 }
 

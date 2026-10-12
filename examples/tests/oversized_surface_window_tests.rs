@@ -162,7 +162,6 @@ fn render_counting_rasters(
         dpr as f32,
         Instant::now(),
     )?;
-    assert!(frame.artifact_selected);
     Ok((gpu.read(&frame.texture, size)?, frame.resident_rasters))
 }
 

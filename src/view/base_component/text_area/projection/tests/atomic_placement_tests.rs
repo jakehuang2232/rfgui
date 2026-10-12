@@ -211,24 +211,20 @@ fn text_area_inline_ifc_projection_overlay_sources_match_unified_atomic_placemen
         overlay_source.backing_byte_range.end
     );
 
-    let selection_context = arena
+    let selection = arena
         .with_element_taken_ref(root, |el, arena| {
             el.as_any()
                 .downcast_ref::<TextArea>()
                 .expect("TextArea root")
-                .projection_selection_context_for_child(
-                    projection_child_index,
-                    projection_key,
-                    arena,
-                )
+                .projection_selection_witness_for_child(projection_key, arena)
         })
         .expect("root exists")
-        .expect("projection selection context should remain available");
-    assert_eq!(selection_context.start, 1);
-    assert_eq!(selection_context.end, 2);
+        .expect("projection selection witness should remain available");
+    assert_eq!(selection.local_start, 1);
+    assert_eq!(selection.local_end, 2);
     assert_eq!(
-        overlay_source.char_range.start + selection_context.start
-            ..overlay_source.char_range.start + selection_context.end,
+        overlay_source.char_range.start + selection.local_start
+            ..overlay_source.char_range.start + selection.local_end,
         char_range_of(content, "{{API_HOST}}").start + 1
             ..char_range_of(content, "{{API_HOST}}").start + 2,
         "projection selection overlay should map through the same TextArea source range as unified IFC"

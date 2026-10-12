@@ -4,7 +4,7 @@
 use super::retained_acceptance_fixtures::*;
 use super::*;
 use crate::view::paint::RetainedSurfaceCompileAction;
-use crate::view::viewport::{Viewport, ViewportPaintRendererMode};
+use crate::view::viewport::Viewport;
 use std::sync::Mutex;
 use std::task::{Poll, Waker};
 
@@ -210,69 +210,57 @@ async fn run() -> Result<String, String> {
     let info = adapter.get_info();
     let gpu = request_gpu(&adapter).await?;
     let mut frames = 0;
-    for mode in [
-        ViewportPaintRendererMode::RetainedAuto,
-        ViewportPaintRendererMode::Legacy,
-    ] {
-        for scene in Scene::ALL {
-            for dpr in [1, 2] {
-                let fixture = unlaid_out_fixture(scene);
-                let mut viewport = Viewport::new();
-                viewport.set_paint_renderer_mode(mode);
-                viewport.install_single_viewport_forest_for_test(fixture.arena, fixture.roots);
-                let mut first_targets = None;
-                for frame in 0..3 {
-                    let label = format!("{mode:?} {scene:?} DPR={dpr} frame={frame}");
-                    progress(&label);
-                    begin(&mut viewport, &gpu, EXTENT, dpr)?;
-                    let observed = viewport
-                        .render_single_viewport_scene_for_test()
+    for scene in Scene::ALL {
+        for dpr in [1, 2] {
+            let fixture = unlaid_out_fixture(scene);
+            let mut viewport = Viewport::new();
+            viewport.install_single_viewport_forest_for_test(fixture.arena, fixture.roots);
+            let mut first_targets = None;
+            for frame in 0..3 {
+                let label = format!("{scene:?} DPR={dpr} frame={frame}");
+                progress(&label);
+                begin(&mut viewport, &gpu, EXTENT, dpr)?;
+                let observed = viewport
+                    .render_single_viewport_scene_for_test()
+                    .map_err(|e| format!("{label}: {e}"))?;
+                let pixels = read_pixels(&gpu, &observed.texture, EXTENT.map(|v| v * dpr)).await?;
+                for (name, at, expected) in &fixture.probes {
+                    probe(&pixels, EXTENT, dpr, name, *at, *expected)
                         .map_err(|e| format!("{label}: {e}"))?;
-                    let pixels =
-                        read_pixels(&gpu, &observed.texture, EXTENT.map(|v| v * dpr)).await?;
-                    for (name, at, expected) in &fixture.probes {
-                        probe(&pixels, EXTENT, dpr, name, *at, *expected)
-                            .map_err(|e| format!("{label}: {e}"))?;
-                    }
-                    assert_eq!(observed.frame_number, frame + 1);
-                    if mode == ViewportPaintRendererMode::RetainedAuto {
-                        assert!(observed.artifact_selected);
-                        assert!(!observed.actions.is_empty());
-                        assert_eq!(observed.actions.len(), observed.color_targets.len());
-                        assert!(observed.actions.iter().all(|a| *a
-                            == if frame == 0 {
-                                RetainedSurfaceCompileAction::Reraster
-                            } else {
-                                RetainedSurfaceCompileAction::Reuse
-                            }));
-                        let mut bytes = 0;
-                        for (key, desc) in &observed.color_targets {
-                            assert!(viewport.has_compatible_persistent_render_target(*key, desc));
-                            // Only color survives across frames; raster depth is transient.
-                            bytes += u64::from(desc.width()) * u64::from(desc.height()) * 4;
-                        }
-                        assert_eq!(observed.texture_bytes, bytes);
-                        if let Some(first) = &first_targets {
-                            assert_eq!(&observed.color_targets, first);
-                        } else {
-                            first_targets = Some(observed.color_targets);
-                        }
-                    } else {
-                        assert!(observed.legacy_selected);
-                    }
-                    frames += 1;
                 }
+                assert_eq!(observed.frame_number, frame + 1);
+                assert!(!observed.actions.is_empty());
+                assert_eq!(observed.actions.len(), observed.color_targets.len());
+                assert!(observed.actions.iter().all(|a| *a
+                    == if frame == 0 {
+                        RetainedSurfaceCompileAction::Reraster
+                    } else {
+                        RetainedSurfaceCompileAction::Reuse
+                    }));
+                let mut bytes = 0;
+                for (key, desc) in &observed.color_targets {
+                    assert!(viewport.has_compatible_persistent_render_target(*key, desc));
+                    // Only color survives across frames; raster depth is transient.
+                    bytes += u64::from(desc.width()) * u64::from(desc.height()) * 4;
+                }
+                assert_eq!(observed.texture_bytes, bytes);
+                if let Some(first) = &first_targets {
+                    assert_eq!(&observed.color_targets, first);
+                } else {
+                    first_targets = Some(observed.color_targets);
+                }
+                frames += 1;
             }
         }
     }
-    assert_eq!(frames, 192);
+    assert_eq!(frames, 96);
     let lifecycle_frames = lifecycle_tests::run(&gpu).await?;
     let scroll_forest_frames = scroll_forest_tests::run(&gpu).await?;
     let inactive_scroll_frames = inactive_scroll_tests::run(&gpu).await?;
     let (device_switch_frames, initialization_adapter) =
         device_switch_tests::run(&instance, &gpu).await?;
     Ok(format!(
-        "adapter={info:?}; corpus_frames={frames}; lifecycle_frames={lifecycle_frames}; device_switch_frames={device_switch_frames}; scroll_forest_frames={scroll_forest_frames}; inactive_scroll_frames={inactive_scroll_frames}; initialization_adapter={initialization_adapter:?}; renderers=2; dprs=1,2"
+        "adapter={info:?}; corpus_frames={frames}; lifecycle_frames={lifecycle_frames}; device_switch_frames={device_switch_frames}; scroll_forest_frames={scroll_forest_frames}; inactive_scroll_frames={inactive_scroll_frames}; initialization_adapter={initialization_adapter:?}; dprs=1,2"
     ))
 }
 

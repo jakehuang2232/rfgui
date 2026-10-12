@@ -37,7 +37,6 @@ pub enum ViewportAction {
     SetDebugRetainedAutoOverlay(bool),
     SetDebugRetainedAutoAuthority(bool),
     SetDebugRetainedAutoReuseActions(bool),
-    SetDebugRetainedAutoFallbackReasons(bool),
     SetClearColor(Color),
     SetCursor(Option<Cursor>),
     RequestRedraw,
@@ -88,10 +87,6 @@ impl ViewportHandle {
 
     pub fn set_debug_retained_auto_reuse_actions(&self, enabled: bool) {
         Self::push(ViewportAction::SetDebugRetainedAutoReuseActions(enabled));
-    }
-
-    pub fn set_debug_retained_auto_fallback_reasons(&self, enabled: bool) {
-        Self::push(ViewportAction::SetDebugRetainedAutoFallbackReasons(enabled));
     }
 
     pub fn set_clear_color(&self, color: Color) {

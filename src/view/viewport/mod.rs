@@ -22,8 +22,6 @@ mod render;
 pub(crate) use render::{
     AutoArtifactSurfaceEmissionForTest, emit_retained_auto_artifact_surface_for_test,
 };
-#[cfg(test)]
-mod retained_auto_census_tests;
 pub(crate) mod scene_helpers;
 mod scroll_transfer;
 #[cfg(test)]
@@ -111,25 +109,6 @@ impl Default for SurfaceFormatPreference {
     }
 }
 
-/// Selects the complete recorded-artifact renderer or the original Legacy renderer.
-/// RetainedAuto falls back to whole-frame Legacy when recording or preparation
-/// cannot certify the complete frame.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum ViewportPaintRendererMode {
-    Legacy,
-    #[default]
-    RetainedAuto,
-}
-
-/// Terminal frame-graph failure that permanently routes a requested
-/// `RetainedAuto` viewport through whole-frame Legacy until an explicit mode
-/// setter call resets the circuit breaker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RetainedAutoTerminalFailureStage {
-    Compile,
-    Execute,
-}
-
 pub struct ViewportControl<'a> {
     viewport: &'a mut Viewport,
 }
@@ -191,10 +170,6 @@ impl<'a> ViewportControl<'a> {
         self.viewport.set_debug_options(options);
     }
 
-    pub fn set_paint_renderer_mode(&mut self, mode: ViewportPaintRendererMode) {
-        self.viewport.set_paint_renderer_mode(mode);
-    }
-
     pub fn set_msaa_sample_count(&mut self, sample_count: u32) {
         self.viewport.set_msaa_sample_count(sample_count);
     }
@@ -222,11 +197,6 @@ pub struct Viewport {
     needs_reconfigure: bool,
     redraw_requested: bool,
     debug_options: ViewportDebugOptions,
-    paint_renderer_mode: ViewportPaintRendererMode,
-    /// First terminal RetainedAuto failure. Selection observes this before any
-    /// authority-specific graph mutation; it is never cleared by a successful
-    /// Legacy recovery frame.
-    retained_auto_terminal_failure: Option<RetainedAutoTerminalFailureStage>,
     compositor: CompositorState,
     input_state: InputState,
     clipboard_fallback: Option<String>,
@@ -568,15 +538,6 @@ pub(crate) fn retained_surface_compile_action_against_resident_for_test(
     state.compile_action(candidate, candidate.identity.color_key, true)
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum PendingRetainedSurfaceTransaction {
-    /// Compiler-sealed keys are preserved through pool staging and commit.
-    CommitArtifactSurfaceSet {
-        residents: crate::view::paint::SealedArtifactSurfaceResidentSet,
-    },
-    Clear,
-}
-
 /// Opaque per-frame ownership proof for the shared retained staging slot.
 /// The generation is private so a renderer can only finish the transaction
 /// reserved by its matching `begin_retained_surface_frame_stage` call.
@@ -595,7 +556,9 @@ struct CompositorState {
         FxHashMap<crate::view::node_arena::NodeKey, Vec<super::base_component::BoxModelSnapshot>>,
     >,
     retained_surfaces: RetainedSurfaceResidentState,
-    pending_retained_surfaces: Option<PendingRetainedSurfaceTransaction>,
+    /// Compiler-sealed residents staged by this frame, committed once its
+    /// graph executes.
+    pending_retained_surfaces: Option<crate::view::paint::SealedArtifactSurfaceResidentSet>,
     pending_retained_surface_owner: Option<u64>,
     active_retained_surface_frame_owner: Option<u64>,
     next_retained_surface_owner: u64,
@@ -729,8 +692,6 @@ impl Viewport {
             needs_reconfigure: false,
             redraw_requested: false,
             debug_options,
-            paint_renderer_mode: ViewportPaintRendererMode::default(),
-            retained_auto_terminal_failure: None,
             compositor: CompositorState::new(),
             input_state: InputState::default(),
             clipboard_fallback: None,
@@ -776,45 +737,6 @@ impl Viewport {
         self.debug_options
     }
 
-    /// Returns the current production paint rollout mode.
-    pub fn paint_renderer_mode(&self) -> ViewportPaintRendererMode {
-        self.paint_renderer_mode
-    }
-
-    /// Selects the production paint renderer mode. The default is
-    /// [`ViewportPaintRendererMode::RetainedAuto`], while explicit Legacy mode
-    /// remains available as a diagnostic and compatibility override. Automatic
-    /// retained authority never permits per-root mixing with the legacy
-    /// renderer. Calling this with the already-requested `RetainedAuto` mode
-    /// manually resets an open terminal circuit breaker; ordinary same-mode
-    /// calls remain no-ops.
-    pub fn set_paint_renderer_mode(&mut self, mode: ViewportPaintRendererMode) {
-        if self.paint_renderer_mode == mode && self.retained_auto_terminal_failure.is_none() {
-            return;
-        }
-        self.invalidate_retained_surfaces();
-        self.frame.compile_cache = None;
-        self.frame.last_retained_auto_debug = None;
-        self.paint_renderer_mode = mode;
-        self.frame.render_required = true;
-        self.retained_auto_terminal_failure = None;
-        self.request_redraw();
-    }
-
-    fn arm_retained_auto_terminal_failure(
-        &mut self,
-        stage: RetainedAutoTerminalFailureStage,
-    ) -> bool {
-        if self.paint_renderer_mode != ViewportPaintRendererMode::RetainedAuto
-            || self.retained_auto_terminal_failure.is_some()
-        {
-            return false;
-        }
-        self.retained_auto_terminal_failure = Some(stage);
-        self.request_redraw();
-        true
-    }
-
     pub fn capture_debug(
         &self,
         options: crate::view::debug::DebugCaptureOptions,
@@ -839,37 +761,6 @@ impl Viewport {
             },
             retained_auto,
         )
-    }
-
-    /// Aggregate the last captured `RetainedAuto` attempt into a fallback
-    /// census.
-    ///
-    /// Returns `None` when no attempt has been captured. Capture requires one
-    /// of `retained_auto_census`, `retained_auto_overlay`, or
-    /// `trace_render_time` in [`ViewportDebugOptions`]; the census-only flag
-    /// exists so the overlay does not cover the scene being censused.
-    ///
-    /// The result describes the last attempt known to the viewport, which is
-    /// independent from the frame currently on screen.
-    pub fn capture_retained_auto_census(
-        &self,
-    ) -> Option<crate::view::debug::census::DebugFallbackCensus> {
-        let options = crate::view::debug::DebugCaptureOptions {
-            include_arena: false,
-            include_layout: false,
-            include_style: false,
-            include_interaction: false,
-            include_dirty: false,
-            include_render: false,
-            include_retained_auto: true,
-            include_component: false,
-        };
-        self.capture_debug(options)
-            .document()
-            .viewport
-            .retained_auto
-            .as_ref()
-            .map(crate::view::debug::census::DebugFallbackCensus::from_snapshot)
     }
 
     pub fn msaa_sample_count(&self) -> u32 {

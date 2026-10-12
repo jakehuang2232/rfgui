@@ -16,7 +16,7 @@ fn generic_primary_replaces_bridge_selection_for_complete_recordings() {
 }
 
 #[test]
-fn generic_primary_accepts_heterogeneous_roots_but_rejects_invalid_snapshot_generations() {
+fn generic_primary_accepts_heterogeneous_roots() {
     let (mut arena, mut roots, _, _) = crate::view::paint::native_scroll_forest_plan_fixture();
     let plain = commit_element(
         &mut arena,
@@ -28,19 +28,4 @@ fn generic_primary_accepts_heterogeneous_roots_but_rejects_invalid_snapshot_gene
     // This was a grammar restriction in the old forest planner, not malformed
     // recording. A plain root coexists with detached surfaces in the new path.
     assert_generic_primary(&arena, &roots, &properties, &generations, &ctx);
-    for clip in [true, false] {
-        let (mut invalid, _) = synced_paint_state(&arena, &roots);
-        if clip {
-            invalid.clips.values_mut().next().unwrap().generation = 0;
-        } else {
-            invalid.scrolls.values_mut().next().unwrap().generation = 0;
-        }
-        let selected =
-            select_retained_auto_authority(&arena, &roots, &invalid, &generations, &ctx, true);
-        assert!(
-            matches!(selected, AutoAuthorityDecision::Legacy { .. }),
-            "zero generation must not gain authority: {:?}",
-            auto_authority_trace(&selected).rejections
-        );
-    }
 }

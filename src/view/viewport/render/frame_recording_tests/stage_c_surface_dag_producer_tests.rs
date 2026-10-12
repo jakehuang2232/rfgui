@@ -557,8 +557,7 @@ fn surface_dag_producer_records_five_real_scroll_property_trees_and_freezes_down
 #[test]
 fn effect_scroll_stencil_mask_stays_neutral_while_color_opacity_is_rebased() {
     let (arena, roots, properties, generations) = prepared_same_owner_effect_scroll_scene();
-    // Directly exercises the unwired generic producer seam; production scroll
-    // dispatch returns from the existing selector before reaching it.
+    // Directly exercises the generic producer.
     let artifact = record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
     let effect = artifact
         .effect_nodes

@@ -81,7 +81,7 @@ fn text_style_transform_lifecycle_resolves_and_resets_real_state() {
 }
 
 #[test]
-fn text_transform_setters_mark_runtime_and_update_exact_bounds() {
+fn text_transform_setter_marks_runtime() {
     let mut text = Text::new(10.0, 20.0, 80.0, 24.0, "transform");
     place_text_for_read_only_ifc_test(&mut text, 320.0, 240.0);
     text.clear_local_dirty_flags(DirtyFlags::ALL);
@@ -89,64 +89,6 @@ fn text_transform_setters_mark_runtime_and_update_exact_bounds() {
     text.set_transform(Transform::new([Scale::uniform(2.0)]));
 
     assert!(text.local_dirty_flags().contains(DirtyFlags::RUNTIME));
-    let arena = arena();
-    let source = text
-        .retained_transform_surface_bounds(&arena, [0.0, 0.0], 1.0)
-        .expect("direct Text transform source bounds");
-    let output = text
-        .retained_transform_output_bounds(&arena, [0.0, 0.0], 1.0)
-        .expect("direct Text transform output bounds");
-    assert_eq!(source.width.to_bits(), 80.0_f32.to_bits());
-    assert_eq!(source.height.to_bits(), 24.0_f32.to_bits());
-    assert_eq!(output.width.to_bits(), 160.0_f32.to_bits());
-    assert_eq!(output.height.to_bits(), 48.0_f32.to_bits());
-    let seed = text
-        .retained_transform_raster_seed_bounds()
-        .expect("direct Text transform raster seed");
-    assert_eq!(
-        [seed.x, seed.y, seed.width, seed.height].map(f32::to_bits),
-        [source.x, source.y, source.width, source.height].map(f32::to_bits)
-    );
-}
-
-#[test]
-fn text_rotate_matrix_and_nonfinite_transform_observations_fail_closed() {
-    let mut text = Text::new(10.0, 20.0, 80.0, 24.0, "transform");
-    place_text_for_read_only_ifc_test(&mut text, 320.0, 240.0);
-    let arena = arena();
-
-    text.set_transform(Transform::new([Rotate::deg(90.0)]));
-    let rotated = text
-        .retained_transform_output_bounds(&arena, [0.0, 0.0], 1.0)
-        .expect("finite rotation bounds");
-    assert!((rotated.width - 24.0).abs() < 0.001);
-    assert!((rotated.height - 80.0).abs() < 0.001);
-
-    text.set_transform(Transform::new([TransformEntry::from_matrix([
-        1.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0,
-        f32::NAN,
-        0.0,
-        0.0,
-        1.0,
-    ])]));
-    assert!(text.has_retained_transform_surface());
-    assert!(text.compositor_local_transform_snapshot().is_some());
-    assert!(
-        text.retained_transform_output_bounds(&arena, [0.0, 0.0], 1.0)
-            .is_none(),
-        "non-finite geometry must not produce a sealable output bound"
-    );
 }
 
 #[test]

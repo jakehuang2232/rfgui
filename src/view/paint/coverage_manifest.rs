@@ -1079,8 +1079,8 @@ pub(super) fn record_cached_coverage_manifest(
 }
 
 /// For a parent that paints in phases, which children escape its inner clip:
-/// they paint after every normal sibling, in arena order, as Legacy Element
-/// parents do. Deferred Viewport children are included but skip themselves in
+/// they paint after every normal sibling, in arena order. Deferred Viewport
+/// children are included but skip themselves in
 /// the walk; the late phase records them. `None` when no child escapes, so the
 /// walk keeps plain arena order without allocating.
 fn escaping_child_phases(

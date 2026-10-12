@@ -64,7 +64,6 @@ fn render(gpu: &gpu::Gpu, bodies: &[RsxNode], dpr: u32) -> Result<Vec<u8>, Strin
             dpr as f32,
             Instant::now(),
         )?;
-        assert!(frame.artifact_selected);
         for (target, extent) in &frame.persistent_targets {
             assert!(
                 extent[0] <= size[0] && extent[1] <= size[1],

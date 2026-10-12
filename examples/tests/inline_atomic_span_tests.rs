@@ -79,7 +79,6 @@ fn atomic_box_in_an_inline_span_paints_where_it_is_placed() -> Result<(), String
                 dpr as f32,
                 Instant::now(),
             )?;
-            assert!(frame.artifact_selected);
             let pixels = gpu.read(&frame.texture, size)?;
             let b = red_box(viewport.node_arena());
             assert!(b.y + b.height <= 200.0, "DPR {dpr} scroll {scroll}: {b:?}");

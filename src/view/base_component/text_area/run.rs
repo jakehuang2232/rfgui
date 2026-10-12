@@ -16,11 +16,9 @@ use crate::style::Cursor;
 use crate::ui::Rect;
 use crate::view::base_component::text::measure_text_layout;
 use crate::view::base_component::{
-    BoxModelSnapshot, BuildState, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints,
-    LayoutPlacement, Layoutable, Position, Renderable, ShadowPaintRecordingCapability, Size,
-    UiBuildContext,
+    BoxModelSnapshot, DirtyFlags, ElementTrait, EventTarget, LayoutConstraints, LayoutPlacement,
+    Layoutable, Position, ShadowPaintRecordingCapability, Size,
 };
-use crate::view::frame_graph::FrameGraph;
 use crate::view::inline_formatting_context::InlineIfcAlignment;
 use crate::view::layout::LayoutState;
 use crate::view::node_arena::NodeKey;
@@ -536,33 +534,6 @@ impl TextAreaLineBreak {
     }
 }
 
-impl Renderable for TextAreaTextRun {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut crate::view::node_arena::NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        // TextArea editable glyphs are emitted by the owning TextArea's
-        // unified IFC root package. Runs keep layout/audit helpers, but
-        // they no longer own a render pass in the editable path.
-        self.dirty_flags = self.dirty_flags.without(DirtyFlags::PAINT);
-        ctx.into_state()
-    }
-}
-
-impl Renderable for TextAreaLineBreak {
-    fn build(
-        &mut self,
-        _graph: &mut FrameGraph,
-        _arena: &mut crate::view::node_arena::NodeArena,
-        ctx: UiBuildContext,
-    ) -> BuildState {
-        self.dirty_flags = self.dirty_flags.without(DirtyFlags::PAINT);
-        ctx.into_state()
-    }
-}
-
 impl EventTarget for TextAreaTextRun {
     fn hover_update_needed(&self, _hovered: bool) -> bool {
         false
@@ -585,16 +556,6 @@ impl ElementTrait for TextAreaTextRun {
         // proves its live TextArea ownership/scope. Glyph commands belong to
         // the TextArea's prepared Text projection, not this source wrapper.
         true
-    }
-
-    fn retained_scroll_normalized_paint_capability(
-        &self,
-    ) -> Option<crate::view::base_component::RetainedScrollNormalizedPaintCapability> {
-        Some(
-            crate::view::base_component::RetainedScrollNormalizedPaintCapability::native(
-                crate::view::base_component::RetainedScrollNormalizedPaintKind::TextAreaTextRun,
-            ),
-        )
     }
 
     #[allow(private_interfaces)]
@@ -724,16 +685,6 @@ impl ElementTrait for TextAreaLineBreak {
         // proves its live TextArea ownership/scope. Glyph commands belong to
         // the TextArea's prepared Text projection, not this source wrapper.
         true
-    }
-
-    fn retained_scroll_normalized_paint_capability(
-        &self,
-    ) -> Option<crate::view::base_component::RetainedScrollNormalizedPaintCapability> {
-        Some(
-            crate::view::base_component::RetainedScrollNormalizedPaintCapability::native(
-                crate::view::base_component::RetainedScrollNormalizedPaintKind::TextAreaLineBreak,
-            ),
-        )
     }
 
     #[allow(private_interfaces)]

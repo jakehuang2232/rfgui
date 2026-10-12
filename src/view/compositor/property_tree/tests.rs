@@ -50,17 +50,6 @@ impl crate::view::base_component::Layoutable for NeutralCustomHost {
 
 impl crate::view::base_component::EventTarget for NeutralCustomHost {}
 
-impl crate::view::base_component::Renderable for NeutralCustomHost {
-    fn build(
-        &mut self,
-        _graph: &mut crate::view::frame_graph::FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: crate::view::base_component::UiBuildContext,
-    ) -> crate::view::base_component::BuildState {
-        ctx.into_state()
-    }
-}
-
 impl crate::view::base_component::ElementTrait for NeutralCustomHost {
     fn stable_id(&self) -> u64 {
         99
@@ -119,17 +108,6 @@ impl crate::view::base_component::Layoutable for ContentsClipHost {
 }
 
 impl crate::view::base_component::EventTarget for ContentsClipHost {}
-
-impl crate::view::base_component::Renderable for ContentsClipHost {
-    fn build(
-        &mut self,
-        _graph: &mut crate::view::frame_graph::FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: crate::view::base_component::UiBuildContext,
-    ) -> crate::view::base_component::BuildState {
-        ctx.into_state()
-    }
-}
 
 impl crate::view::base_component::ElementTrait for ContentsClipHost {
     fn stable_id(&self) -> u64 {

@@ -1,20 +1,13 @@
 use super::super::style_pipeline_tests::read_submitted_texture;
 use super::*;
-use crate::view::viewport::ViewportPaintRendererMode;
 
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_text_area_caret_selection_ime_artifact() -> Result<(), String> {
-    run_frames(ViewportPaintRendererMode::RetainedAuto)
+    run_frames()
 }
 
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_text_area_caret_selection_ime_legacy() -> Result<(), String> {
-    run_frames(ViewportPaintRendererMode::Legacy)
-}
-
-fn run_frames(mode: ViewportPaintRendererMode) -> Result<(), String> {
+fn run_frames() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native GPU");
     let _cleanup = TextGpuCleanup;
@@ -38,11 +31,10 @@ fn run_frames(mode: ViewportPaintRendererMode) -> Result<(), String> {
             crate::view::test_support::get_element_mut::<Element>(&arena, roots[0])
                 .apply_style(outer_style);
             let mut viewport = Viewport::new();
-            viewport.set_paint_renderer_mode(mode);
             viewport.install_single_viewport_forest_for_test(arena, roots);
             let mut targets = None;
             for frame in 0..3 {
-                eprintln!("single Viewport TextArea {mode:?} case={case} DPR={dpr} frame={frame}");
+                eprintln!("single Viewport TextArea case={case} DPR={dpr} frame={frame}");
                 viewport.begin_offscreen_test_frame(
                     gpu.device.clone(),
                     gpu.queue.clone(),
@@ -70,33 +62,28 @@ fn run_frames(mode: ViewportPaintRendererMode) -> Result<(), String> {
                 // Colors and rectangle coverage still come from the same
                 // independent oracle; no recorded op/readback supplies them.
                 check_pixels(&pixels, current_caret, dpr, case);
-                if mode == ViewportPaintRendererMode::Legacy {
-                    assert!(observed.legacy_selected);
+                assert!(
+                    !observed.actions.is_empty(),
+                    "must use common artifact pool execution"
+                );
+                assert!(
+                    observed.actions.iter().all(|a| *a
+                        == if frame == 0 {
+                            RetainedSurfaceCompileAction::Reraster
+                        } else {
+                            RetainedSurfaceCompileAction::Reuse
+                        }),
+                    "{case}/{dpr}/{frame}: {:?}",
+                    observed.actions
+                );
+                assert_eq!(observed.actions.len(), observed.color_targets.len());
+                for (key, desc) in &observed.color_targets {
+                    assert!(viewport.has_compatible_persistent_render_target(*key, desc));
+                }
+                if let Some(first) = &targets {
+                    assert_eq!(first, &observed.color_targets);
                 } else {
-                    assert!(observed.artifact_selected);
-                    assert!(
-                        !observed.actions.is_empty(),
-                        "must use common artifact pool execution"
-                    );
-                    assert!(
-                        observed.actions.iter().all(|a| *a
-                            == if frame == 0 {
-                                RetainedSurfaceCompileAction::Reraster
-                            } else {
-                                RetainedSurfaceCompileAction::Reuse
-                            }),
-                        "{case}/{dpr}/{frame}: {:?}",
-                        observed.actions
-                    );
-                    assert_eq!(observed.actions.len(), observed.color_targets.len());
-                    for (key, desc) in &observed.color_targets {
-                        assert!(viewport.has_compatible_persistent_render_target(*key, desc));
-                    }
-                    if let Some(first) = &targets {
-                        assert_eq!(first, &observed.color_targets);
-                    } else {
-                        targets = Some(observed.color_targets);
-                    }
+                    targets = Some(observed.color_targets);
                 }
             }
         }

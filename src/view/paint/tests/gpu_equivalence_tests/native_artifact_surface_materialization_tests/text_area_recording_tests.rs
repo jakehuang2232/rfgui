@@ -15,9 +15,9 @@ impl Drop for TextGpuCleanup {
 }
 
 // These gates exercise generic recording/planning/execution, independently of
-// the production selector. viewport_tests separately exercises C-3 takeover.
+// the production frame entry, which viewport_tests exercises separately.
 // Expected caret coordinates come from layout's navigation geometry, not a
-// recorded op or a Legacy readback. Glyph shapes remain font-dependent.
+// recorded op or a readback. Glyph shapes remain font-dependent.
 fn fixture(case: u8) -> (NodeArena, Vec<NodeKey>, [f32; 2]) {
     let (mut arena, _, text) = if case == 3 {
         let (arena, roots, root, _, _) =
@@ -146,83 +146,51 @@ fn check_pixels(pixels: &[u8], caret: [f32; 2], dpr: u32, case: u8) {
     );
 }
 
-fn run(legacy: bool) -> Result<(), String> {
+fn run() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().unwrap();
     let _cleanup = TextGpuCleanup;
     // Empty caret, selection over spaces, plain IME, projected IME.
     for case in 0..4 {
         for dpr in [1_u32, 2] {
-            let (mut arena, roots, caret) = fixture(case);
-            let artifact = if legacy {
-                None
-            } else {
-                let (properties, generations) = sync_identity(&arena, &roots);
-                let artifact =
-                    record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
-                Some(artifact)
-            };
+            let (arena, roots, caret) = fixture(case);
+            let (properties, generations) = sync_identity(&arena, &roots);
+            let artifact =
+                record_surface_dag_frame_artifact(&arena, &roots, &properties, &generations);
             let mut viewport = Viewport::new();
-            let mut graphs = Vec::new();
-            if legacy {
-                for _ in 0..2 {
-                    let (mut graph, ctx, target) = transformed_graph_prelude_with_size(
-                        dpr as f32,
-                        None,
-                        EXTENT.map(|v| v * dpr),
-                    );
-                    arena
-                        .with_element_taken(roots[0], |el, arena| el.build(&mut graph, arena, ctx))
-                        .unwrap();
-                    add_present(&mut graph, &target)?;
-                    graphs.push(graph);
-                }
-            }
-            // Both recorders have finished. No live layout, IME host, or
-            // projection authority is available during compilation/execution.
+            // Recording has finished. No live layout, IME host, or projection
+            // authority is available during compilation/execution.
             drop(arena);
             for frame in 0..2 {
-                let (graph, owner, actions) = if legacy {
-                    (graphs.remove(0), None, Vec::new())
-                } else {
-                    let (mut graph, ctx, target) = transformed_graph_prelude_with_size(
-                        dpr as f32,
-                        None,
-                        EXTENT.map(|v| v * dpr),
-                    );
-                    let context = ArtifactSurfaceRasterContext::new(
-                        dpr as f32,
-                        FORMAT,
-                        ctx.paint_offset(),
-                        None,
-                        [4096, 4096],
-                        8192,
-                        128 * 1024 * 1024,
-                    )
-                    .unwrap();
-                    let plan = prepare_artifact_surface_raster_plan(
-                        artifact.as_ref().unwrap().clone(),
-                        context,
-                    )
+                let (mut graph, ctx, target) =
+                    transformed_graph_prelude_with_size(dpr as f32, None, EXTENT.map(|v| v * dpr));
+                let context = ArtifactSurfaceRasterContext::new(
+                    dpr as f32,
+                    FORMAT,
+                    ctx.paint_offset(),
+                    None,
+                    [4096, 4096],
+                    8192,
+                    128 * 1024 * 1024,
+                )
+                .unwrap();
+                let plan = prepare_artifact_surface_raster_plan(artifact.clone(), context)
                     .map_err(|error| format!("plan case {case}: {error:?}"))?;
-                    assert_eq!(plan.nodes().len(), 1);
-                    let frame_plan =
-                        seal_prepared_artifact_surface_frame(plan).map_err(|error| {
-                            format!("seal case {case}, DPR {dpr}, frame {frame}: {error:?}")
-                        })?;
-                    let owner = viewport.begin_retained_surface_frame_stage().unwrap();
-                    let _ = take_last_production_actions_for_test();
-                    emit_prepared_artifact_surface_frame_from_pool(
-                        &mut viewport,
-                        Some(owner),
-                        frame_plan,
-                        &mut graph,
-                        ctx,
-                    );
-                    let actions = take_last_production_actions_for_test();
-                    add_present(&mut graph, &target)?;
-                    (graph, Some(owner), actions)
-                };
+                assert_eq!(plan.nodes().len(), 1);
+                let frame_plan = seal_prepared_artifact_surface_frame(plan).map_err(|error| {
+                    format!("seal case {case}, DPR {dpr}, frame {frame}: {error:?}")
+                })?;
+                let owner = viewport.begin_retained_surface_frame_stage().unwrap();
+                let _ = take_last_production_actions_for_test();
+                emit_prepared_artifact_surface_frame_from_pool(
+                    &mut viewport,
+                    Some(owner),
+                    frame_plan,
+                    &mut graph,
+                    ctx,
+                );
+                let actions = take_last_production_actions_for_test();
+                add_present(&mut graph, &target)?;
                 let pixels = render_on_viewport_with_size(
                     graph,
                     gpu,
@@ -232,24 +200,20 @@ fn run(legacy: bool) -> Result<(), String> {
                     EXTENT.map(|v| v * dpr),
                 )?;
                 check_pixels(&pixels, caret, dpr, case);
-                if let Some(owner) = owner {
-                    assert_eq!(
-                        actions,
-                        [if frame == 0 {
-                            RetainedSurfaceCompileAction::Reraster
-                        } else {
-                            RetainedSurfaceCompileAction::Reuse
-                        }]
-                    );
-                    assert!(
-                        viewport.finish_retained_surface_transaction_for_frame(Some(owner), true)
-                    );
-                }
+                assert_eq!(
+                    actions,
+                    [if frame == 0 {
+                        RetainedSurfaceCompileAction::Reraster
+                    } else {
+                        RetainedSurfaceCompileAction::Reuse
+                    }]
+                );
+                assert!(viewport.finish_retained_surface_transaction_for_frame(Some(owner), true));
             }
         }
     }
     eprintln!(
-        "generic TextArea frozen IME/caret, legacy={legacy}, passed on {}",
+        "generic TextArea frozen IME/caret passed on {}",
         gpu.label()
     );
     Ok(())
@@ -258,13 +222,7 @@ fn run(legacy: bool) -> Result<(), String> {
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_generic_text_area_frozen_ime_caret_and_reuse() -> Result<(), String> {
-    run(false)
-}
-
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_legacy_text_area_frozen_ime_caret_pixels() -> Result<(), String> {
-    run(true)
+    run()
 }
 
 #[test]

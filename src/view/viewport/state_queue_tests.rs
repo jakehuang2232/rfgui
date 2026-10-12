@@ -4,19 +4,13 @@ use crate::view::TextArea;
 
 #[test]
 fn bound_textarea_keeps_sequential_input_and_ime_across_one_frame() {
-    for mode in [
-        ViewportPaintRendererMode::Legacy,
-        ViewportPaintRendererMode::RetainedAuto,
-    ] {
-        check_text_input(mode);
-    }
+    check_text_input();
 }
 
-fn check_text_input(mode: ViewportPaintRendererMode) {
+fn check_text_input() {
     let binding = Binding::new(String::new());
     let mut viewport = Viewport::new();
     viewport.set_size(320, 100);
-    viewport.set_paint_renderer_mode(mode);
     let build = || rsx! { <TextArea binding={binding.clone()} /> };
     viewport.render_rsx(&build()).unwrap();
     let owner = viewport.scene.ui_root_keys[0];

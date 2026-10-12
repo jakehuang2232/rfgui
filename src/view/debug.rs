@@ -5,8 +5,6 @@
 //! reads consistent while keeping [`crate::view::node_arena::NodeArena`] as an
 //! engine storage detail rather than the public document model.
 
-pub mod census;
-
 use std::collections::HashMap;
 
 use bitflags::bitflags;

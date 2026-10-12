@@ -6,7 +6,7 @@ impl Element {
     fn has_visible_background(&self) -> bool {
         self.computed_style.background_color.to_rgba_f32()[3] > 0.0
             // A gradient paints independently of background-color. Do not
-            // cull its commands before either renderer can consume them.
+            // cull its commands before the recorder can consume them.
             || self.computed_style.background_image.is_some()
     }
 
@@ -93,15 +93,6 @@ impl Element {
         inner.width > 0.0 && inner.height > 0.0
     }
 
-    fn has_visible_inner_render_area(&self, ctx: &UiBuildContext) -> bool {
-        self.has_inner_render_area()
-            && intersect_scissor_rects(
-                ctx.scissor_rect(),
-                self.inner_clip_scissor_rect_with_paint_offset(ctx.paint_offset()),
-            )
-            .is_some()
-    }
-
     pub(crate) fn absolute_clip_scissor_rect(&self) -> Option<[u32; 4]> {
         if self.computed_style.position.mode() != PositionMode::Absolute {
             return None;
@@ -151,9 +142,9 @@ impl Element {
         }
     }
 
-    /// Exact resolved self-clip payload admitted by the first clip-authority
-    /// slice. Keep this deliberately narrower than `self_clip_geometry`:
-    /// viewport/deferred clips and non-leaf contents scopes remain legacy.
+    /// Exact resolved self-clip payload of an `AnchorParent` leaf. Keep this
+    /// deliberately narrower than `self_clip_geometry`: viewport/deferred
+    /// clips and non-leaf contents scopes are resolved elsewhere.
     pub(crate) fn anchor_parent_leaf_self_clip_geometry(
         &self,
     ) -> Option<crate::view::compositor::property_tree::ClipGeometry> {
@@ -273,31 +264,6 @@ impl Element {
             .then_some(geometry)
     }
 
-    /// Apply this element's own clip scissor on top of `ctx`. For most
-    /// modes the scissor is intersected with the ancestor scissor (so a
-    /// child cannot paint outside its parent). `ClipMode::Viewport` is the
-    /// escape hatch — it replaces the ancestor scissor outright so the
-    /// element can paint up to viewport edges even when an ancestor was
-    /// previously clipped (e.g. an off-screen window). Returns the previous
-    /// scissor rect packed in `Some(previous)` when a scissor was applied,
-    /// or `None` when this element does not contribute its own scissor.
-    pub(crate) fn apply_self_clip_scissor(
-        &self,
-        ctx: &mut UiBuildContext,
-    ) -> Option<Option<[u32; 4]>> {
-        let scissor = self.absolute_clip_scissor_rect()?;
-        let previous = match self.computed_style.position.clip_mode() {
-            // Viewport / AnchorParent must escape the immediate ancestor scissor
-            // chain. AnchorParent's resolved rect already encodes the upstream
-            // clip chain up to the anchor's parent (or, without an anchor, the
-            // grandparent), so replacing — not intersecting — is what gives the
-            // child the room to paint outside its immediate parent.
-            ClipMode::Viewport | ClipMode::AnchorParent => ctx.replace_scissor_rect(Some(scissor)),
-            _ => ctx.push_scissor_rect(Some(scissor)),
-        };
-        Some(previous)
-    }
-
     fn inner_clip_rect(&self) -> Rect {
         let (frame_width, frame_height) = self.current_clip_layout_size();
         self.inner_rect_for_frame_size(frame_width, frame_height)
@@ -310,16 +276,6 @@ impl Element {
 
     fn inner_clip_scissor_rect(&self) -> Option<[u32; 4]> {
         rect_to_scissor_rect(self.inner_clip_rect())
-    }
-
-    fn inner_clip_scissor_rect_with_paint_offset(
-        &self,
-        paint_offset: [f32; 2],
-    ) -> Option<[u32; 4]> {
-        let mut rect = self.inner_clip_rect();
-        rect.x += paint_offset[0];
-        rect.y += paint_offset[1];
-        rect_to_scissor_rect(rect)
     }
 
     fn inner_clip_radii(&self, outer_radii: CornerRadii) -> CornerRadii {
@@ -487,89 +443,6 @@ impl Element {
             }
         }
         false
-    }
-
-    fn begin_child_clip_scope(
-        &mut self,
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-        inner_radii: CornerRadii,
-    ) -> Option<ChildClipScope> {
-        let inner_scissor = self.inner_clip_scissor_rect_with_paint_offset(ctx.paint_offset());
-        intersect_scissor_rects(ctx.scissor_rect(), inner_scissor)?;
-        let parent_clip_id = ctx.current_clip_id();
-        let Some(child_clip_id) = ctx.push_clip_id() else {
-            return None;
-        };
-        let previous_scissor = ctx.push_scissor_rect(inner_scissor);
-
-        let mut increment = DrawRectPass::new(
-            self.child_clip_stencil_pass_params(ctx, inner_radii),
-            DrawRectInput {
-                ..Default::default()
-            },
-            DrawRectOutput {
-                ..Default::default()
-            },
-        );
-
-        increment.set_stencil_increment(parent_clip_id);
-        increment.set_color_write_enabled(false);
-        self.push_stencil_pass(graph, ctx, increment);
-
-        Some(ChildClipScope {
-            previous_scissor,
-            parent_clip_id,
-            child_clip_id,
-        })
-    }
-
-    fn end_child_clip_scope(
-        &mut self,
-        graph: &mut FrameGraph,
-        ctx: &mut UiBuildContext,
-        scope: Option<ChildClipScope>,
-    ) {
-        let Some(scope) = scope else {
-            return;
-        };
-        let inner_radii = self.inner_clip_radii(normalize_corner_radii(
-            self.border_radii,
-            self.layout_state.layout_size.width.max(0.0),
-            self.layout_state.layout_size.height.max(0.0),
-        ));
-
-        let mut decrement = DrawRectPass::new(
-            self.child_clip_stencil_pass_params(ctx, inner_radii),
-            DrawRectInput::default(),
-            DrawRectOutput::default(),
-        );
-        decrement.set_stencil_decrement(scope.child_clip_id);
-        decrement.set_color_write_enabled(false);
-        self.push_stencil_pass(graph, ctx, decrement);
-
-        ctx.pop_clip_id();
-        ctx.restore_scissor_rect(scope.previous_scissor);
-        debug_assert_eq!(ctx.current_clip_id(), scope.parent_clip_id);
-    }
-
-    fn child_clip_stencil_pass_params(
-        &self,
-        ctx: &UiBuildContext,
-        inner_radii: CornerRadii,
-    ) -> RectPassParams {
-        let inner = self.inner_clip_rect();
-        let [inner_x, inner_y] = ctx.paint_point(inner.x, inner.y);
-        let mut pass_params = RectPassParams {
-            position: [inner_x, inner_y],
-            size: [inner.width, inner.height],
-            fill_color: [0.0, 0.0, 0.0, 0.0],
-            opacity: 1.0,
-            ..Default::default()
-        };
-        pass_params.set_border_width(0.0);
-        pass_params.set_border_radii(inner_radii.to_array());
-        pass_params
     }
 
     fn current_layout_transition_size(&self) -> (f32, f32) {
@@ -978,7 +851,7 @@ impl Element {
     }
 
     pub(crate) fn mark_resource_dirty(&mut self) {
-        // PAINT preserves redraw scheduling for Legacy and existing consumers.
+        // PAINT keeps redraw scheduling for consumers that watch paint dirt.
         self.mark_local_dirty(DirtyFlags::RESOURCE.union(DirtyFlags::PAINT));
     }
 

@@ -2,34 +2,6 @@
 
 use super::*;
 
-pub(crate) fn root_effect_stable_key(root: NodeKey) -> PersistentTextureKey {
-    PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, root.data().as_ffi())
-}
-
-impl UiBuildContext {
-    pub(crate) fn allocate_persistent_full_viewport_target(
-        &mut self,
-        graph: &mut FrameGraph,
-        stable_key: PersistentTextureKey,
-    ) -> RenderTargetOut {
-        let desc = self.persistent_full_viewport_target_desc(stable_key);
-        self.next_persistent_target_with_desc(graph, desc, stable_key)
-    }
-
-    pub(crate) fn persistent_full_viewport_target_desc(
-        &self,
-        stable_key: PersistentTextureKey,
-    ) -> TextureDesc {
-        let desc = TextureDesc::new(
-            self.viewport.target_width,
-            self.viewport.target_height,
-            self.viewport.target_format,
-            wgpu::TextureDimension::D2,
-        );
-        persistent_target_texture_descriptors(desc, stable_key).0
-    }
-}
-
 impl Element {
     /// Offset-zero recorder oracle for a generalized native content subtree.
     ///
@@ -116,7 +88,5 @@ impl Element {
         ])
     }
 }
-
-use slotmap::Key;
 
 impl UiBuildContext {}

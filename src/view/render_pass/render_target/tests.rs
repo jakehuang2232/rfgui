@@ -66,8 +66,8 @@ fn persistent_compatibility_rejects_every_recreate_field_mismatch() {
 #[test]
 fn targeted_persistent_release_removes_color_depth_pair_only() {
     let mut pool = OffscreenRenderTargetPool::new();
-    let color = PersistentTextureKey::retained(RetainedTextureRole::RootEffectColor, 9);
-    let depth = color.depth_stencil().expect("root depth key");
+    let color = PersistentTextureKey::retained(RetainedTextureRole::TransformedColor, 9);
+    let depth = color.depth_stencil().expect("transformed depth key");
     let unrelated = generic(99);
     for (key, entry_id) in [(color, 10), (depth, 11), (unrelated, 12)] {
         pool.persistent_bindings.insert(

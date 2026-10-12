@@ -55,14 +55,10 @@ pub enum ResourceLifetime {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RetainedTextureRole {
     GpuSourceColor,
-    RootEffectColor,
-    RootEffectDepthStencil,
     TransformedColor,
     TransformedDepthStencil,
     IsolationColor,
     IsolationDepthStencil,
-    ScrollHostColor,
-    ScrollHostDepthStencil,
     ScrollContentColor,
     ScrollContentDepthStencil,
 }
@@ -124,10 +120,8 @@ impl PersistentTextureKey {
             Self::Generic(_) | Self::ShadowTemplate(_) => return None,
         };
         let role = match role {
-            RetainedTextureRole::RootEffectColor => RetainedTextureRole::RootEffectDepthStencil,
             RetainedTextureRole::TransformedColor => RetainedTextureRole::TransformedDepthStencil,
             RetainedTextureRole::IsolationColor => RetainedTextureRole::IsolationDepthStencil,
-            RetainedTextureRole::ScrollHostColor => RetainedTextureRole::ScrollHostDepthStencil,
             RetainedTextureRole::ScrollContentColor => {
                 RetainedTextureRole::ScrollContentDepthStencil
             }
@@ -145,9 +139,7 @@ fn is_failed_execution_retained_color_key(key: PersistentTextureKey) -> bool {
         key,
         PersistentTextureKey::Retained {
             role: RetainedTextureRole::GpuSourceColor
-                | RetainedTextureRole::RootEffectColor
                 | RetainedTextureRole::TransformedColor
-                | RetainedTextureRole::ScrollHostColor
                 | RetainedTextureRole::ScrollContentColor,
             ..
         } | PersistentTextureKey::RetainedScrollContentTile {
@@ -1153,16 +1145,6 @@ impl CompiledGraph {
 }
 
 impl FrameGraph {
-    #[cfg(test)]
-    pub(crate) fn build_state_snapshot_for_test(&self) -> TopologySignature {
-        self.topology_signature()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn topology_cache_key_for_test(&self) -> TopologyCacheKey {
-        self.resolve_topology_cache_key(None).0
-    }
-
     #[allow(dead_code)] // C4A prepared-surface validation; production dispatch lands in C4B.
     pub(crate) fn contains_texture_handle(&self, handle: TextureHandle) -> bool {
         usize::try_from(handle.0).is_ok_and(|index| index < self.textures.len())

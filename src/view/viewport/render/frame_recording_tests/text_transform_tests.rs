@@ -17,12 +17,7 @@ fn retained_auto_accepts_sampled_element_layout_transition_geometry() {
     assert_eq!(snapshot.width.to_bits(), 44.0_f32.to_bits());
     assert_eq!(snapshot.height.to_bits(), 26.0_f32.to_bits());
 
-    assert_native_host_retained_closure(
-        "Element sampled layout transition",
-        &arena,
-        &roots,
-        &UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0),
-    );
+    assert_native_host_retained_closure("Element sampled layout transition", &arena, &roots);
 }
 
 #[test]
@@ -32,7 +27,6 @@ fn retained_auto_accepts_sampled_inline_span_layout_transition_package() {
         "inline-owned Element sampled layout transition",
         &arena,
         &roots,
-        &UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0),
     );
 }
 
@@ -69,17 +63,6 @@ fn retained_auto_direct_text_transform_selects_seals_emits_and_compiles() {
 fn retained_auto_text_transform_coexists_with_sampled_layout_transition() {
     let (arena, roots, _) =
         prepared_native_text_transform(Transform::new([Translate::x(Length::px(6.0))]), true, true);
-    let ctx = UiBuildContext::new(320, 240, wgpu::TextureFormat::Bgra8Unorm, 1.0);
-    let decision = auto_decision(&arena, &roots, &ctx);
-    assert!(
-        !matches!(decision, AutoAuthorityDecision::Legacy { .. }),
-        "sampled parent + Text transform rejection: {:?}",
-        auto_authority_trace(&decision)
-            .rejections
-            .iter()
-            .map(AutoAuthorityRejection::debug_label)
-            .collect::<Vec<_>>()
-    );
     assert_native_artifact_surface_authority(
         "sampled parent with direct Text transform",
         &arena,

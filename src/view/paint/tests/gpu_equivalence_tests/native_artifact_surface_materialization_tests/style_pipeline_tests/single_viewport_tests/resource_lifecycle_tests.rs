@@ -79,7 +79,7 @@ fn check_resource_pixels(
     label: &str,
 ) -> Result<(), String> {
     // Uniform image covers [0,20)x[0,32), clipped to 20x16. Loading/error reveal its opaque green background.
-    // All expectations are absolute; neither renderer is oracle.
+    // All expectations are absolute; no readback is an oracle.
     for (x, y, color) in [
         (4, 4, expected),
         (18, 14, expected),
@@ -107,7 +107,6 @@ fn check_resource_retention(
     dpr: u32,
     action: RetainedSurfaceCompileAction,
 ) {
-    assert!(observed.artifact_selected);
     assert_eq!(observed.actions, [action]);
     assert_eq!(observed.texture_bytes, 20 * 32 * 4 * u64::from(dpr * dpr));
     assert_eq!(observed.color_targets.len(), 1);
@@ -119,20 +118,13 @@ fn check_resource_retention(
 #[test]
 #[ignore = "requires native hardware graphics adapter"]
 fn native_single_viewport_resource_completion_and_generation_invalidation() -> Result<(), String> {
-    run_resource_transitions(ViewportPaintRendererMode::RetainedAuto)
+    run_resource_transitions()
 }
-#[test]
-#[ignore = "requires native hardware graphics adapter"]
-fn native_single_viewport_legacy_resource_completion_and_generation_pixels() -> Result<(), String> {
-    run_resource_transitions(ViewportPaintRendererMode::Legacy)
-}
-
-fn run_resource_transitions(mode: ViewportPaintRendererMode) -> Result<(), String> {
+fn run_resource_transitions() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native hardware graphics context");
     for dpr in [1, 2] {
         let mut viewport = Viewport::new();
-        viewport.set_paint_renderer_mode(mode);
         let scene = install_resource_scene(&mut viewport);
         set_image_loading_for_test(scene.asset);
         // Each pair is transition then unchanged. A worker publishes registry
@@ -193,7 +185,7 @@ fn run_resource_transitions(mode: ViewportPaintRendererMode) -> Result<(), Strin
                 4 | 5 => [0, 0, 255, 255],
                 _ => [255, 0, 0, 255],
             };
-            check_resource_pixels(&pixels, dpr, expected, &format!("{mode:?} frame {frame}"))?;
+            check_resource_pixels(&pixels, dpr, expected, &format!("frame {frame}"))?;
             let (_, uploads, _) =
                 viewport.sampled_cache_observation_for_test(SampledTextureId::Image(scene.asset));
             assert_eq!(
@@ -207,23 +199,19 @@ fn run_resource_transitions(mode: ViewportPaintRendererMode) -> Result<(), Strin
                 },
                 "upload only on first ready/new generation/new extent"
             );
-            if mode == ViewportPaintRendererMode::RetainedAuto {
-                check_resource_retention(
-                    &viewport,
-                    &observed,
-                    dpr,
-                    if frame % 2 == 0 {
-                        RetainedSurfaceCompileAction::Reraster
-                    } else {
-                        RetainedSurfaceCompileAction::Reuse
-                    },
-                );
-            } else {
-                assert!(observed.legacy_selected);
-            }
+            check_resource_retention(
+                &viewport,
+                &observed,
+                dpr,
+                if frame % 2 == 0 {
+                    RetainedSurfaceCompileAction::Reraster
+                } else {
+                    RetainedSurfaceCompileAction::Reuse
+                },
+            );
         }
     }
-    eprintln!("resource completion {mode:?} passed on {}", gpu.label());
+    eprintln!("resource completion passed on {}", gpu.label());
     Ok(())
 }
 
@@ -232,76 +220,66 @@ fn run_resource_transitions(mode: ViewportPaintRendererMode) -> Result<(), Strin
 fn native_single_viewport_completion_after_freeze_waits_until_next_frame() -> Result<(), String> {
     let gpu = native_gpu_test_context()?;
     let gpu = gpu.as_ref().expect("native hardware graphics context");
-    for mode in [
-        ViewportPaintRendererMode::RetainedAuto,
-        ViewportPaintRendererMode::Legacy,
-    ] {
-        for dpr in [1, 2] {
-            let mut viewport = Viewport::new();
-            viewport.set_paint_renderer_mode(mode);
-            let scene = install_resource_scene(&mut viewport);
-            for frame in 0..6 {
-                begin_resource_frame(&mut viewport, gpu, dpr)?;
-                let asset = scene.asset;
-                let observed = if frame == 1 || frame == 3 {
-                    viewport.render_single_viewport_after_freeze_for_test(move |_| {
-                        // Publish from another thread AFTER freeze but BEFORE
-                        // metadata/full recording. Neither may see newer truth.
-                        std::thread::spawn(move || {
-                            if frame == 1 {
-                                replace_ready_image_for_test(
-                                    asset,
-                                    2,
-                                    2,
-                                    Arc::from([0, 0, 255, 255].repeat(4)),
-                                );
-                            } else {
-                                set_image_error_for_test(asset, "late completion error");
-                            }
-                        })
-                        .join()
-                        .expect("late resource completion worker");
-                    })?
-                } else {
-                    viewport.render_single_viewport_scene_for_test()?
-                };
-                let pixels =
-                    read_submitted_texture(&observed.texture, gpu, [WIDTH * dpr, HEIGHT * dpr])?;
-                let expected = if frame < 2 {
-                    [255, 0, 0, 255]
-                } else if frame < 4 {
-                    [0, 0, 255, 255]
-                } else {
-                    [0, 255, 0, 255]
-                };
-                check_resource_pixels(
-                    &pixels,
-                    dpr,
-                    expected,
-                    &format!("post-freeze {mode:?} frame {frame}"),
-                )?;
-                let (_, uploads, _) =
-                    viewport.sampled_cache_observation_for_test(SampledTextureId::Image(asset));
-                assert_eq!(
-                    uploads,
-                    if frame < 2 { 1 } else { 2 },
-                    "late completion cannot leak a newer upload into this frame"
-                );
-                if mode == ViewportPaintRendererMode::RetainedAuto {
-                    check_resource_retention(
-                        &viewport,
-                        &observed,
-                        dpr,
-                        if frame % 2 == 0 {
-                            RetainedSurfaceCompileAction::Reraster
+    for dpr in [1, 2] {
+        let mut viewport = Viewport::new();
+        let scene = install_resource_scene(&mut viewport);
+        for frame in 0..6 {
+            begin_resource_frame(&mut viewport, gpu, dpr)?;
+            let asset = scene.asset;
+            let observed = if frame == 1 || frame == 3 {
+                viewport.render_single_viewport_after_freeze_for_test(move |_| {
+                    // Publish from another thread AFTER freeze but BEFORE
+                    // metadata/full recording. Neither may see newer truth.
+                    std::thread::spawn(move || {
+                        if frame == 1 {
+                            replace_ready_image_for_test(
+                                asset,
+                                2,
+                                2,
+                                Arc::from([0, 0, 255, 255].repeat(4)),
+                            );
                         } else {
-                            RetainedSurfaceCompileAction::Reuse
-                        },
-                    );
+                            set_image_error_for_test(asset, "late completion error");
+                        }
+                    })
+                    .join()
+                    .expect("late resource completion worker");
+                })?
+            } else {
+                viewport.render_single_viewport_scene_for_test()?
+            };
+            let pixels =
+                read_submitted_texture(&observed.texture, gpu, [WIDTH * dpr, HEIGHT * dpr])?;
+            let expected = if frame < 2 {
+                [255, 0, 0, 255]
+            } else if frame < 4 {
+                [0, 0, 255, 255]
+            } else {
+                [0, 255, 0, 255]
+            };
+            check_resource_pixels(
+                &pixels,
+                dpr,
+                expected,
+                &format!("post-freeze frame {frame}"),
+            )?;
+            let (_, uploads, _) =
+                viewport.sampled_cache_observation_for_test(SampledTextureId::Image(asset));
+            assert_eq!(
+                uploads,
+                if frame < 2 { 1 } else { 2 },
+                "late completion cannot leak a newer upload into this frame"
+            );
+            check_resource_retention(
+                &viewport,
+                &observed,
+                dpr,
+                if frame % 2 == 0 {
+                    RetainedSurfaceCompileAction::Reraster
                 } else {
-                    assert!(observed.legacy_selected);
-                }
-            }
+                    RetainedSurfaceCompileAction::Reuse
+                },
+            );
         }
     }
     eprintln!("post-freeze completion passed on {}", gpu.label());

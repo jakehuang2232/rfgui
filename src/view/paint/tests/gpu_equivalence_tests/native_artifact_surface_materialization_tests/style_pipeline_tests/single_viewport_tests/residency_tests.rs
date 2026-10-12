@@ -7,7 +7,6 @@ fn native_single_viewport_missing_backing_rerasterizes_then_reuses() -> Result<(
     let gpu = gpu.as_ref().expect("native hardware graphics context");
     for dpr in [1_u32, 2] {
         let mut viewport = Viewport::new();
-        viewport.set_paint_renderer_mode(ViewportPaintRendererMode::RetainedAuto);
         let (root, mut style) = install_translucent_scene(&mut viewport);
         style.set_transform(Transform::new([Translate::xy(
             Length::px(9.0),
@@ -52,7 +51,6 @@ fn native_single_viewport_missing_backing_rerasterizes_then_reuses() -> Result<(
                 dpr,
                 frame,
             )?;
-            assert!(observed.artifact_selected);
             if expected_action == RetainedSurfaceCompileAction::Reuse {
                 assert_eq!(
                     viewport.offscreen_pool_texture_creation_count_for_test(),

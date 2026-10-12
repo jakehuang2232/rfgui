@@ -53,16 +53,6 @@ impl crate::view::base_component::Layoutable for Placeholder {
     fn set_layout_height(&mut self, _height: f32) {}
 }
 impl crate::view::base_component::EventTarget for Placeholder {}
-impl crate::view::base_component::Renderable for Placeholder {
-    fn build(
-        &mut self,
-        _graph: &mut crate::view::frame_graph::FrameGraph,
-        _arena: &mut NodeArena,
-        ctx: crate::view::base_component::UiBuildContext,
-    ) -> crate::view::base_component::BuildState {
-        ctx.into_state()
-    }
-}
 impl ElementTrait for Placeholder {
     fn stable_id(&self) -> u64 {
         0
@@ -728,31 +718,14 @@ impl NodeArena {
         }
     }
 
-    /// Seed `ctx`'s deferred render list using the popup stack as
-    /// Render order is **document order** (DFS over root descendants,
-    /// parent before child, earlier sibling before later). z-order is a
-    /// property of tree position, not interaction history.
-    ///
-    /// As a side effect, mutates `popup_stack`:
-    ///
-    /// 1. Compact: drop ids that no longer resolve in the arena.
-    /// 2. Auto-register: every collected viewport-clip id is appended
-    ///    to the top of the stack if not already present.
-    ///
-    /// The stack drives **hit-test priority only** — render emits in
-    /// document order regardless of stack position.
-    pub fn seed_defer_render_with_stack(
-        &self,
-        popup_stack: &mut crate::view::popup_stack::PopupStack,
-        ctx: &mut crate::view::base_component::UiBuildContext,
-    ) {
+    /// Keeps the popup stack in step with the tree: drops ids that no longer
+    /// resolve in the arena, then appends every viewport-clip node not yet
+    /// present to the top. The stack drives hit-test priority only; paint
+    /// records deferred nodes in document order regardless of stack position.
+    pub fn sync_popup_stack(&self, popup_stack: &mut crate::view::popup_stack::PopupStack) {
         popup_stack.compact(self);
-        let collected = self.collect_viewport_clip_nodes();
-        for node in &collected {
+        for node in self.collect_viewport_clip_nodes() {
             popup_stack.register(node.stable_id);
-        }
-        for node in &collected {
-            ctx.register_deferred(node.key, node.stable_id);
         }
     }
 
