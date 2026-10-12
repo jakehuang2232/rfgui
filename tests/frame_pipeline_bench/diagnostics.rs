@@ -23,7 +23,7 @@ impl Samples {
             *self.counts.entry(name).or_default() += n;
         }
     }
-    pub fn print(self, mode: &str, case: &str, rows: usize) {
+    pub fn print(self, case: &str, rows: usize) {
         if self.samples == 0 {
             return;
         }
@@ -43,7 +43,7 @@ impl Samples {
             .map(|(k, v)| (k, v as f64 / self.samples as f64))
             .collect::<BTreeMap<_, _>>();
         println!(
-            "f0 mode={mode} case={case} rows={rows} phases_p50_ms={phases:?} exclusive_p50_ms={exclusive:?} counts_mean={counts:?}"
+            "f0 case={case} rows={rows} phases_p50_ms={phases:?} exclusive_p50_ms={exclusive:?} counts_mean={counts:?}"
         );
     }
 }

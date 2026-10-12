@@ -1,9 +1,8 @@
-//! Incremental assignment reuse must match a freshly built scene, in both renderers.
+//! Incremental assignment reuse must match a freshly built scene.
 #![cfg(feature = "renderer-test-support")]
 use rfgui::style::{Color, CrossSize, Layout, Length, ScrollDirection};
 use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, render_root, rsx};
-use rfgui::view::viewport::ViewportPaintRendererMode;
 use rfgui::view::{Element, Text, Viewport};
 #[path = "frame_pipeline_bench/gpu.rs"]
 mod gpu;
@@ -60,42 +59,35 @@ fn incremental_assignment_matches_cold_geometry_and_pixels() -> Result<(), Strin
                 "structure",
                 "stretch",
             ] {
-                for mode in [
-                    ViewportPaintRendererMode::Legacy,
-                    ViewportPaintRendererMode::RetainedAuto,
-                ] {
-                    let mut incremental = Viewport::new();
-                    incremental.set_paint_renderer_mode(mode);
-                    for step in 0..4 {
-                        let tree = scene(axis, case, step);
-                        let out = incremental.render_rsx_offscreen_for_test(
-                            &tree,
-                            gpu.device.clone(),
-                            gpu.queue.clone(),
-                            SIZE,
-                            dpr,
-                            now,
-                        )?;
-                        let pixels = gpu.read(&out.texture, SIZE)?;
-                        let mut cold = Viewport::new();
-                        cold.set_paint_renderer_mode(mode);
-                        let fresh = cold.render_rsx_offscreen_for_test(
-                            &tree,
-                            gpu.device.clone(),
-                            gpu.queue.clone(),
-                            SIZE,
-                            dpr,
-                            now,
-                        )?;
-                        let expected = gpu.read(&fresh.texture, SIZE)?;
-                        assert!(pixels.chunks_exact(4).any(|p| p[3] > 0));
-                        assert_eq!(
-                            pixels.iter().zip(&expected).filter(|(a, b)| a != b).count(),
-                            0,
-                            "incremental/cold {mode:?} axis={axis} case={case} step={step} dpr={dpr}"
-                        );
-                        frames += 2;
-                    }
+                let mut incremental = Viewport::new();
+                for step in 0..4 {
+                    let tree = scene(axis, case, step);
+                    let out = incremental.render_rsx_offscreen_for_test(
+                        &tree,
+                        gpu.device.clone(),
+                        gpu.queue.clone(),
+                        SIZE,
+                        dpr,
+                        now,
+                    )?;
+                    let pixels = gpu.read(&out.texture, SIZE)?;
+                    let mut cold = Viewport::new();
+                    let fresh = cold.render_rsx_offscreen_for_test(
+                        &tree,
+                        gpu.device.clone(),
+                        gpu.queue.clone(),
+                        SIZE,
+                        dpr,
+                        now,
+                    )?;
+                    let expected = gpu.read(&fresh.texture, SIZE)?;
+                    assert!(pixels.chunks_exact(4).any(|p| p[3] > 0));
+                    assert_eq!(
+                        pixels.iter().zip(&expected).filter(|(a, b)| a != b).count(),
+                        0,
+                        "incremental/cold axis={axis} case={case} step={step} dpr={dpr}"
+                    );
+                    frames += 2;
                 }
             }
         }
