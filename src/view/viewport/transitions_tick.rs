@@ -479,7 +479,7 @@ impl Viewport {
         let animation_result = self
             .transitions
             .animation_plugin
-            .run_animations(dt, now_seconds);
+            .run_animations(now_seconds);
         let visual_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transitions.transition_channels,
@@ -522,6 +522,15 @@ impl Viewport {
                 relayout_required = true;
             }
         }
+        // Before this frame's transition samples, so a running transition
+        // still owns a field an animation hands back.
+        let (released_changed, released_relayout) = restore_released_animation_fields(
+            &mut self.transitions.animation_plugin,
+            &mut arena,
+            &root_keys,
+        );
+        redraw_changed |= released_changed;
+        relayout_required |= released_relayout;
         let style_samples = self.transitions.style_transition_plugin.take_samples();
         for sample in style_samples {
             for &root_key in root_keys.iter().rev() {
@@ -666,7 +675,7 @@ impl Viewport {
         let animation_result = self
             .transitions
             .animation_plugin
-            .run_animations(0.0, frame.now_seconds);
+            .run_animations(frame.now_seconds);
         let visual_result = {
             let mut host = TransitionHostAdapter {
                 registered_channels: &self.transitions.transition_channels,
@@ -697,6 +706,12 @@ impl Viewport {
                 sample.value,
             );
         }
+        changed |= restore_released_animation_fields(
+            &mut self.transitions.animation_plugin,
+            &mut arena,
+            &root_keys,
+        )
+        .0;
         for sample in self.transitions.style_transition_plugin.take_samples() {
             for &root_key in root_keys.iter().rev() {
                 if crate::view::viewport::transitions_tick::set_style_field_by_id(
@@ -1069,6 +1084,83 @@ pub(crate) fn set_style_field_by_id(
     value: StyleValue,
 ) -> bool {
     set_arena_dirty_style_field_by_id(arena, root_key, stable_id, field, &value)
+}
+
+/// Hands the fields animations stopped writing back to their elements'
+/// own style. Returns whether anything changed and whether that needs a
+/// relayout.
+fn restore_released_animation_fields(
+    plugin: &mut AnimationPlugin,
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_keys: &[crate::view::node_arena::NodeKey],
+) -> (bool, bool) {
+    let mut changed = false;
+    let mut relayout_required = false;
+    for (target, field) in plugin.take_released_style_fields() {
+        for &root_key in root_keys.iter().rev() {
+            if restore_style_field_by_id(arena, root_key, target, field) {
+                changed = true;
+                relayout_required |= style_field_requires_relayout(field);
+                break;
+            }
+        }
+    }
+    for (target, field) in plugin.take_released_layout_fields() {
+        for &root_key in root_keys.iter().rev() {
+            if restore_layout_field_by_id(arena, root_key, target, field) {
+                changed = true;
+                relayout_required = true;
+                break;
+            }
+        }
+    }
+    (changed, relayout_required)
+}
+
+fn restore_style_field_by_id(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    stable_id: u64,
+    field: StyleField,
+) -> bool {
+    let Some(target_key) = find_active_transition_target(arena, root_key, stable_id) else {
+        return false;
+    };
+    let Some(value) = arena.get(target_key).and_then(|node| {
+        node.element
+            .as_any()
+            .downcast_ref::<Element>()
+            .map(|element| element.computed_style_value(field))
+    }) else {
+        return false;
+    };
+    set_arena_dirty_style_field_by_id(arena, root_key, stable_id, field, &value)
+}
+
+fn restore_layout_field_by_id(
+    arena: &mut crate::view::node_arena::NodeArena,
+    root_key: crate::view::node_arena::NodeKey,
+    node_id: u64,
+    field: LayoutField,
+) -> bool {
+    let Some(target_key) = find_active_transition_target(arena, root_key, node_id) else {
+        return false;
+    };
+
+    arena
+        .mutate_element_with_invalidation(target_key, |element, cx| {
+            let Some(element) = element.as_any_mut().downcast_mut::<Element>() else {
+                return false;
+            };
+            match field {
+                LayoutField::Width => element.clear_layout_transition_width(),
+                LayoutField::Height => element.clear_layout_transition_height(),
+                LayoutField::X | LayoutField::Y => return false,
+            }
+            cx.invalidate(DirtyFlags::ALL);
+            true
+        })
+        .unwrap_or(false)
 }
 
 fn find_active_transition_target(

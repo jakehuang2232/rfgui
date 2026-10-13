@@ -232,6 +232,27 @@ impl Element {
     }
 
     pub(crate) fn set_border_radius_transition_sample(&mut self, radius: f32) {
+        let target_radii = self.transition_target_border_radii();
+        let target_max = target_radii.max();
+        if target_max <= f32::EPSILON {
+            self.border_radii = CornerRadii::uniform(0.0);
+            self.border_radius = 0.0;
+            return;
+        }
+
+        let scale = radius.max(0.0) / target_max;
+        self.border_radii = CornerRadii {
+            top_left: target_radii.top_left * scale,
+            top_right: target_radii.top_right * scale,
+            bottom_right: target_radii.bottom_right * scale,
+            bottom_left: target_radii.bottom_left * scale,
+        };
+        self.border_radius = self.border_radii.max();
+    }
+
+    /// The corners the computed style resolves to; a radius sample scales
+    /// them uniformly.
+    fn transition_target_border_radii(&self) -> CornerRadii {
         let proposal = self.last_layout_proposal.unwrap_or(LayoutProposal {
             width: self.layout_state.layout_size.width.max(0.0),
             height: self.layout_state.layout_size.height.max(0.0),
@@ -246,7 +267,7 @@ impl Element {
             .width
             .min(self.layout_state.layout_size.height)
             .max(0.0);
-        let target_radii = CornerRadii {
+        CornerRadii {
             top_left: resolve_px(
                 self.computed_style.border_radii.top_left,
                 radius_base,
@@ -271,22 +292,7 @@ impl Element {
                 proposal.viewport_width,
                 proposal.viewport_height,
             ),
-        };
-        let target_max = target_radii.max();
-        if target_max <= f32::EPSILON {
-            self.border_radii = CornerRadii::uniform(0.0);
-            self.border_radius = 0.0;
-            return;
         }
-
-        let scale = radius.max(0.0) / target_max;
-        self.border_radii = CornerRadii {
-            top_left: target_radii.top_left * scale,
-            top_right: target_radii.top_right * scale,
-            bottom_right: target_radii.bottom_right * scale,
-            bottom_left: target_radii.bottom_left * scale,
-        };
-        self.border_radius = self.border_radii.max();
     }
 
     pub(crate) fn set_border_radius_transition_sample_with_invalidation(

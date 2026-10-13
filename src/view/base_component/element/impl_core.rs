@@ -770,6 +770,27 @@ impl Element {
         needs_layout || needs_place
     }
 
+    /// The element's own value for `field`, in the form a transition or
+    /// animation sample writes it.
+    pub(crate) fn computed_style_value(&self, field: StyleField) -> StyleValue {
+        let computed = &self.computed_style;
+        match field {
+            StyleField::Opacity => StyleValue::Scalar(computed.opacity.clamp(0.0, 1.0)),
+            StyleField::BorderRadius => {
+                StyleValue::Scalar(self.transition_target_border_radii().max())
+            }
+            StyleField::BackgroundColor => StyleValue::Color(computed.background_color),
+            StyleField::Color => StyleValue::Color(computed.color),
+            StyleField::BorderTopColor => StyleValue::Color(computed.border_colors.top),
+            StyleField::BorderRightColor => StyleValue::Color(computed.border_colors.right),
+            StyleField::BorderBottomColor => StyleValue::Color(computed.border_colors.bottom),
+            StyleField::BorderLeftColor => StyleValue::Color(computed.border_colors.left),
+            StyleField::BoxShadow => StyleValue::BoxShadow(computed.box_shadow.clone()),
+            StyleField::Transform => StyleValue::Transform(computed.transform.clone()),
+            StyleField::TransformOrigin => StyleValue::TransformOrigin(computed.transform_origin),
+        }
+    }
+
     pub fn set_position(&mut self, x: f32, y: f32) {
         self.core.set_position(x, y);
         self.mark_place_dirty();
@@ -1037,6 +1058,19 @@ impl Element {
         let value = round_layout_value(value.max(0.0));
         self.layout_transition_override_height = Some(value);
         self.layout_state.layout_size.height = value;
+        self.mark_layout_dirty();
+    }
+
+    /// Lets layout resolve the element's own width again. A layout
+    /// transition still tracking its target re-applies its sample.
+    pub(crate) fn clear_layout_transition_width(&mut self) {
+        self.layout_transition_override_width = None;
+        self.mark_layout_dirty();
+    }
+
+    /// Height counterpart of [`Self::clear_layout_transition_width`].
+    pub(crate) fn clear_layout_transition_height(&mut self) {
+        self.layout_transition_override_height = None;
         self.mark_layout_dirty();
     }
 

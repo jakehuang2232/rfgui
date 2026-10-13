@@ -50,6 +50,12 @@ pub struct AnimationPlugin {
     completed_animators: FxHashMap<u64, ActiveAnimator>,
     style_samples: Vec<StyleSample>,
     layout_samples: Vec<LayoutSample>,
+    /// Fields the last run wrote. A field no animation writes any more
+    /// goes back to its element's own style.
+    applied_style_fields: FxHashSet<(u64, StyleField)>,
+    applied_layout_fields: FxHashSet<(u64, LayoutField)>,
+    released_style_fields: Vec<(u64, StyleField)>,
+    released_layout_fields: Vec<(u64, LayoutField)>,
 }
 
 impl AnimationPlugin {
@@ -112,24 +118,46 @@ impl AnimationPlugin {
         std::mem::take(&mut self.layout_samples)
     }
 
+    /// Style fields the last run stopped writing because their animation
+    /// ended without a forwards fill, or was removed or replaced. Each
+    /// element shows its own style for them again.
+    pub fn take_released_style_fields(&mut self) -> Vec<(u64, StyleField)> {
+        std::mem::take(&mut self.released_style_fields)
+    }
+
+    /// Layout counterpart of [`Self::take_released_style_fields`].
+    pub fn take_released_layout_fields(&mut self) -> Vec<(u64, LayoutField)> {
+        std::mem::take(&mut self.released_layout_fields)
+    }
+
     pub fn prune_targets(&mut self, keep_targets: &FxHashSet<u64>) {
         self.animators
             .retain(|target, _| keep_targets.contains(target));
         self.completed_animators
             .retain(|target, _| keep_targets.contains(target));
+        self.applied_style_fields
+            .retain(|(target, _)| keep_targets.contains(target));
+        self.applied_layout_fields
+            .retain(|(target, _)| keep_targets.contains(target));
     }
 
     /// True when any animator state exists that [`Self::prune_targets`]
     /// could clear; lets callers skip building the keep-set on idle frames.
     pub fn has_prunable_targets(&self) -> bool {
-        !self.animators.is_empty() || !self.completed_animators.is_empty()
+        !self.animators.is_empty()
+            || !self.completed_animators.is_empty()
+            || !self.applied_style_fields.is_empty()
+            || !self.applied_layout_fields.is_empty()
     }
 
     pub fn active_targets(&self) -> FxHashSet<u64> {
         self.animators.keys().copied().collect()
     }
 
-    pub fn run_animations(&mut self, dt_seconds: f32, now_seconds: f64) -> RunResult {
+    /// Samples every animation at `now_seconds`, the frame clock. Frames
+    /// that never arrived are not replayed: an animation whose active
+    /// interval passed in the gap is sampled as ended.
+    pub fn run_animations(&mut self, now_seconds: f64) -> RunResult {
         self.style_samples.clear();
         self.layout_samples.clear();
 
@@ -141,16 +169,15 @@ impl AnimationPlugin {
         for (&target, animator) in &mut self.animators {
             let mut target_keep_running = false;
             for animation in &mut animator.animations {
-                let Some(sample_progress) =
-                    sample_animation_progress(animation, dt_seconds, now_seconds)
-                else {
+                let sample = sample_animation_progress(animation, now_seconds);
+                target_keep_running |= sample.keep_running;
+                let Some(progress) = sample.progress else {
                     continue;
                 };
-                target_keep_running |= sample_progress.keep_running;
-                for (field, value) in sample_style_fields(animation, sample_progress.progress) {
+                for (field, value) in sample_style_fields(animation, progress) {
                     merged_style.insert((target, field), value);
                 }
-                for (field, value) in sample_layout_fields(animation, sample_progress.progress) {
+                for (field, value) in sample_layout_fields(animation, progress) {
                     merged_layout.insert((target, field), value);
                 }
             }
@@ -181,6 +208,21 @@ impl AnimationPlugin {
             }
         }
 
+        let applied_style: FxHashSet<_> = merged_style.keys().copied().collect();
+        let applied_layout: FxHashSet<_> = merged_layout.keys().copied().collect();
+        self.released_style_fields = self
+            .applied_style_fields
+            .difference(&applied_style)
+            .copied()
+            .collect();
+        self.released_layout_fields = self
+            .applied_layout_fields
+            .difference(&applied_layout)
+            .copied()
+            .collect();
+        self.applied_style_fields = applied_style;
+        self.applied_layout_fields = applied_layout;
+
         self.style_samples = merged_style
             .into_iter()
             .map(|((target, field), value)| StyleSample {
@@ -199,8 +241,9 @@ impl AnimationPlugin {
             .collect();
 
         RunResult {
-            needs_layout: !self.layout_samples.is_empty(),
-            needs_paint: !self.style_samples.is_empty(),
+            needs_layout: !self.layout_samples.is_empty()
+                || !self.released_layout_fields.is_empty(),
+            needs_paint: !self.style_samples.is_empty() || !self.released_style_fields.is_empty(),
             keep_running,
         }
     }
@@ -208,7 +251,8 @@ impl AnimationPlugin {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ProgressSample {
-    progress: f32,
+    /// `None` leaves the element's own style showing.
+    progress: Option<f32>,
     keep_running: bool,
 }
 
@@ -356,36 +400,35 @@ fn map_animation_timing(timing: TransitionTiming) -> TimeFunction {
     }
 }
 
-fn sample_animation_progress(
-    animation: &mut ActiveAnimation,
-    dt_seconds: f32,
-    now_seconds: f64,
-) -> Option<ProgressSample> {
+fn sample_animation_progress(animation: &mut ActiveAnimation, now_seconds: f64) -> ProgressSample {
+    const IDLE: ProgressSample = ProgressSample {
+        progress: None,
+        keep_running: false,
+    };
     if animation.keyframes.is_empty() {
-        return None;
+        return IDLE;
     }
     if matches!(animation.play_state, PlayState::Paused) {
-        return Some(ProgressSample {
-            progress: boundary_progress(animation.direction, 0, false),
+        return ProgressSample {
+            progress: sample_completed_fill_progress(animation),
             keep_running: false,
-        });
+        };
     }
 
-    let dt = dt_seconds.max(0.0) as f64;
-    let started = animation
-        .started_at_seconds
-        .get_or_insert_with(|| (now_seconds - dt).max(0.0));
-    let elapsed_ms = ((now_seconds - *started) * 1000.0) as f32;
+    // The timeline starts on the frame that first samples the animation,
+    // however long ago the frame before it was drawn.
+    let started = *animation.started_at_seconds.get_or_insert(now_seconds);
+    let elapsed_ms = ((now_seconds - started) * 1000.0) as f32;
     let local_ms = elapsed_ms - animation.delay_ms as f32;
     let duration_ms = animation.duration_ms.max(0) as f32;
 
     if local_ms < 0.0 {
-        return match animation.fill_mode {
-            FillMode::Backwards | FillMode::Both => Some(ProgressSample {
-                progress: boundary_progress(animation.direction, 0, false),
-                keep_running: true,
-            }),
-            _ => None,
+        // Still in its delay: only a backwards fill shows the first frame.
+        let progress = matches!(animation.fill_mode, FillMode::Backwards | FillMode::Both)
+            .then(|| boundary_progress(animation.direction, 0, false));
+        return ProgressSample {
+            progress,
+            keep_running: true,
         };
     }
 
@@ -394,41 +437,22 @@ fn sample_animation_progress(
         Repeat::Infinite => u32::MAX,
     };
     if total_iterations == 0 {
-        return None;
+        return IDLE;
     }
 
-    if duration_ms <= f32::EPSILON {
-        let progress = boundary_progress(
-            animation.direction,
-            total_iterations.saturating_sub(1),
-            true,
-        );
-        return Some(ProgressSample {
-            progress,
+    let ended = duration_ms <= f32::EPSILON
+        || match animation.repeat {
+            Repeat::Count(count) => local_ms / duration_ms >= count as f32,
+            Repeat::Infinite => false,
+        };
+    if ended {
+        return ProgressSample {
+            progress: sample_completed_fill_progress(animation),
             keep_running: false,
-        });
-    }
-
-    let overall_progress = local_ms / duration_ms;
-    let finite_end = match animation.repeat {
-        Repeat::Count(count) => overall_progress >= count as f32,
-        Repeat::Infinite => false,
-    };
-
-    if finite_end {
-        return match animation.fill_mode {
-            FillMode::Forwards | FillMode::Both => Some(ProgressSample {
-                progress: boundary_progress(
-                    animation.direction,
-                    total_iterations.saturating_sub(1),
-                    true,
-                ),
-                keep_running: false,
-            }),
-            _ => None,
         };
     }
 
+    let overall_progress = local_ms / duration_ms;
     let iteration_index = overall_progress.floor().max(0.0) as u32;
     let iteration_progress = overall_progress.fract();
     let directed_progress = directed_progress(
@@ -436,13 +460,19 @@ fn sample_animation_progress(
         iteration_index,
         animation.timing.sample(iteration_progress),
     );
-    Some(ProgressSample {
-        progress: directed_progress,
+    ProgressSample {
+        progress: Some(directed_progress),
         keep_running: true,
-    })
+    }
 }
 
+/// What an animation that stopped advancing leaves on its element: a
+/// paused one holds its first frame; a finished one holds its last frame
+/// only with a forwards fill.
 fn sample_completed_fill_progress(animation: &ActiveAnimation) -> Option<f32> {
+    if matches!(animation.play_state, PlayState::Paused) {
+        return Some(boundary_progress(animation.direction, 0, false));
+    }
     match animation.fill_mode {
         FillMode::Forwards | FillMode::Both => Some(boundary_progress(
             animation.direction,
