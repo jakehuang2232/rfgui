@@ -176,3 +176,30 @@ fn generic_culled_subtree_with_nested_effects_records_no_paint() {
         "ancestor and child opacity cannot make a culled subtree paint"
     );
 }
+
+#[test]
+fn deferred_viewport_child_records_beneath_a_culled_subtree() {
+    // The culled root is observed, its child is never walked, and the
+    // grandchild paints late against the viewport.
+    let (mut arena, root, middle) = hidden_element_subtree(160, 161);
+    let mut late = leaf_element(162, Color::rgb(30, 160, 90), 1.0, false);
+    let mut style = Style::new();
+    style.insert(
+        PropertyId::Position,
+        ParsedValue::Position(Position::absolute().clip(ClipMode::Viewport)),
+    );
+    late.apply_style(style);
+    let late = commit_child(&mut arena, middle, Box::new(late));
+    let (measure, place) = constraints();
+    measure_and_place(&mut arena, late, measure, place);
+    let (properties, generations) = sync_identity(&arena, &[root]);
+
+    let artifact = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
+    assert!(artifact.chunks.iter().any(|chunk| chunk.owner == late));
+    assert!(
+        artifact
+            .chunks
+            .iter()
+            .all(|chunk| chunk.owner != root && chunk.owner != middle)
+    );
+}

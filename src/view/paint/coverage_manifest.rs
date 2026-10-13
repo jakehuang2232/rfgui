@@ -955,6 +955,36 @@ pub(super) fn record_cached_coverage_manifest(
             }
         }
 
+        /// The state a walk recorded for `owner`. A deferred root still paints
+        /// when the normal phase culled an ancestor's subtree, so the owners
+        /// between them were never walked; they observe the same synced
+        /// property state a walk would have recorded.
+        fn observed_owner_property_state(
+            &mut self,
+            owner: NodeKey,
+        ) -> PaintOwnerPropertyStateSnapshot {
+            if let Some(state) = self.observed_owner_property_states.get(&owner) {
+                return *state;
+            }
+            let states = self
+                .properties
+                .node_state_for(owner)
+                .expect("synced property trees hold every node");
+            let state = PaintOwnerPropertyStateSnapshot {
+                owner,
+                stable_id: self
+                    .arena
+                    .get(owner)
+                    .expect("an owner's ancestors are in the arena")
+                    .element
+                    .stable_id(),
+                paint: states.paint,
+                descendants: states.descendants,
+            };
+            self.observed_owner_property_states.insert(owner, state);
+            state
+        }
+
         /// Resolve each owner once in this traversal. The immutable property
         /// trees make endpoint chain reuse exact.
         fn owner_scope_for(&mut self, leaf: NodeKey) -> std::sync::Arc<PaintOwnerScope> {
@@ -977,7 +1007,7 @@ pub(super) fn record_cached_coverage_manifest(
             while let Some(owner) = self.scope_pending.pop() {
                 let parent_key = *self.owner_parents.get(&owner).expect(WALKED);
                 let parent = parent_key.map(|key| self.owner_scopes[&key].clone());
-                let state = self.observed_owner_property_states[&owner];
+                let state = self.observed_owner_property_state(owner);
                 // Store the two immutable endpoint chains directly. Copying
                 // their complete ancestry into every owner merely duplicates
                 // observations; materialization merges each shared chain once.
