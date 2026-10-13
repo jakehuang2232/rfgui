@@ -103,11 +103,13 @@ pub struct ElementPropSchema {
 /// inherited fields are [`color`](Self::color), [`cursor`](Self::cursor),
 /// [`font`](Self::font), [`font_size`](Self::font_size),
 /// [`font_weight`](Self::font_weight), [`line_height`](Self::line_height),
-/// [`text_wrap`](Self::text_wrap) and [`vertical_align`](Self::vertical_align).
-/// All other fields apply to this element only.
+/// [`selection`](Self::selection), [`text_wrap`](Self::text_wrap) and
+/// [`vertical_align`](Self::vertical_align). All other fields apply to this
+/// element only.
 ///
 /// `<TextArea>` takes this schema but applies only `color`, `cursor`, `font`,
-/// `font_size`, `font_weight`, `line_height` and `vertical_align`.
+/// `font_size`, `font_weight`, `line_height`, `selection` and
+/// `vertical_align`.
 ///
 /// Children that overflow an element's content box (inside its border and
 /// padding) are clipped to it.
@@ -326,9 +328,10 @@ pub struct ElementStylePropSchema {
     /// Overrides applied while the pointer is over this element or one of
     /// its descendants; see [`HoverElementStylePropSchema`].
     pub hover: Option<HoverElementStylePropSchema>,
-    /// Text selection style; see [`SelectionStylePropSchema`]. No host reads
-    /// it: a `TextArea` keeps its default highlight color whether this is
-    /// set on the `TextArea` or on an ancestor. Not inherited.
+    /// Text selection style; see [`SelectionStylePropSchema`]. Only a
+    /// `TextArea` draws a selection, using the highlight color from its own
+    /// style or else from the nearest ancestor that sets one, and its
+    /// default color when none does. Inherited.
     pub selection: Option<SelectionStylePropSchema>,
     /// Opacity from 0 (invisible) to 1 (opaque). Values outside are
     /// clamped. Default 1.
@@ -498,7 +501,8 @@ pub struct HoverElementStylePropSchema {
     /// While hovered, replaces [`ElementStylePropSchema::border_radius`], all
     /// four corners.
     pub border_radius: Option<BorderRadius>,
-    /// Like [`ElementStylePropSchema::selection`], has no effect.
+    /// Has no effect: hover overrides do not reach a `TextArea`, the only
+    /// host that draws a selection.
     pub selection: Option<SelectionStylePropSchema>,
     /// While hovered, replaces [`ElementStylePropSchema::opacity`].
     pub opacity: Option<Opacity>,
@@ -645,9 +649,8 @@ pub struct HoverTextStylePropSchema {
 }
 
 /// Text selection style, used by [`ElementStylePropSchema::selection`] and
-/// [`HoverElementStylePropSchema::selection`].
-///
-/// No host reads it: a `TextArea` keeps its default highlight color.
+/// [`HoverElementStylePropSchema::selection`]. Only a `TextArea` draws a
+/// selection.
 #[derive(Clone)]
 #[props]
 pub struct SelectionStylePropSchema {

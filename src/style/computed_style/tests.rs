@@ -223,7 +223,7 @@ fn hovered_effective_style_uses_merged_selection() {
 
     assert_eq!(
         computed.selection_background_color,
-        Color::rgb(0xaa, 0xbb, 0xcc)
+        Some(Color::rgb(0xaa, 0xbb, 0xcc))
     );
 }
 

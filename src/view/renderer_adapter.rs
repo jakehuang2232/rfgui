@@ -134,6 +134,10 @@ impl StyleCascadeContext {
         self.has_inherited(PropertyId::VerticalAlign)
             .then_some(self.parent.vertical_align)
     }
+
+    pub(crate) fn inherited_selection_background_color(&self) -> Option<Color> {
+        self.parent.selection_background_color
+    }
 }
 
 fn active_inherited_properties(style: &Style) -> FxHashSet<PropertyId> {

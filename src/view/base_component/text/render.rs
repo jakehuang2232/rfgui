@@ -1,5 +1,5 @@
-//! `Renderable` impl for Text: emits the prepared glyph pass + selection
-//! rects, consuming the same shaped context measure produced.
+//! Text paint recording: the prepared glyph payload built from the shaped
+//! context measure produced. Text draws no selection.
 
 use crate::view::render_pass::text_pass::{TextPassPreparedFragment, TextPassPreparedParams};
 

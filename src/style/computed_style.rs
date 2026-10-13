@@ -55,7 +55,9 @@ pub struct ComputedStyle {
     pub scroll_direction: ScrollDirection,
     pub cursor: Cursor,
     pub color: Color,
-    pub selection_background_color: Color,
+    /// The text selection highlight, inherited like `color`. `None` when no
+    /// ancestor sets one, so a text host keeps its own default.
+    pub selection_background_color: Option<Color>,
     pub background_color: Color,
     pub background_image: Option<Gradient>,
     pub border_image: Option<Gradient>,
@@ -114,7 +116,7 @@ impl Default for ComputedStyle {
             scroll_direction: ScrollDirection::None,
             cursor: Cursor::Default,
             color: Color::rgb(0, 0, 0),
-            selection_background_color: Color::rgba(0, 0, 0, 0),
+            selection_background_color: None,
             background_color: Color::rgba(0, 0, 0, 0),
             background_image: None,
             border_image: None,
@@ -286,12 +288,13 @@ pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) 
 
     if let Some(parent) = ctx.parent {
         apply_inherited_properties(parent, &mut computed);
+        computed.selection_background_color = parent.selection_background_color;
     }
 
     if let Some(selection) = parsed.selection()
         && let Some(background) = selection.background_color()
     {
-        computed.selection_background_color = background.to_color();
+        computed.selection_background_color = Some(background.to_color());
     }
 
     for declaration in parsed.declarations() {

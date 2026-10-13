@@ -230,3 +230,41 @@ fn textarea_accepts_on_blur_prop() {
 // v1 TextArea accepted width/height directly; per design A1 v2 does
 // not — the box model lives on a wrapping `<Element>`. The two old
 // size-on-textarea tests were dropped in P7.
+
+#[test]
+fn textarea_selection_color_comes_from_its_style_or_an_ancestor() {
+    let selection = |hex: &str| ElementStylePropSchema {
+        selection: Some(crate::view::SelectionStylePropSchema {
+            background: Some(crate::style::Background::Color(Box::new(
+                IntoColor::<Color>::into_color(Color::hex(hex)),
+            ))),
+        }),
+        ..empty_element_style()
+    };
+    let selection_of = |parent: ElementStylePropSchema, own: Option<ElementStylePropSchema>| {
+        let mut text_area = host_text_area_node().with_prop("content", "hello");
+        if let Some(own) = own {
+            text_area = text_area.with_prop("style", own);
+        }
+        let tree = host_element_node()
+            .with_prop("style", parent)
+            .with_child(text_area);
+        let mut arena = crate::view::test_support::new_test_arena();
+        let root = commit_rsx_tree(&mut arena, &tree)[0];
+        let text_area = arena.children_of(root)[0];
+        crate::view::test_support::get_element::<TextArea>(&arena, text_area)
+            .selection_background_color
+            .to_rgba_u8()
+    };
+    let rgba = |hex: &str| IntoColor::<Color>::into_color(Color::hex(hex)).to_rgba_u8();
+
+    assert_eq!(
+        selection_of(selection("#336699"), Some(selection("#aa5500"))),
+        rgba("#aa5500")
+    );
+    assert_eq!(selection_of(selection("#336699"), None), rgba("#336699"));
+    assert_eq!(
+        selection_of(empty_element_style(), None),
+        crate::style::Color::rgba(71, 133, 240, 89).to_rgba_u8()
+    );
+}

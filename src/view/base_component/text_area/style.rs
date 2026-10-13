@@ -17,6 +17,7 @@ pub(crate) struct TextAreaComputedStyleBridge {
     has_cursor: bool,
     has_line_height: bool,
     has_vertical_align: bool,
+    has_selection_background: bool,
     #[allow(dead_code)]
     has_width: bool,
     #[allow(dead_code)]
@@ -53,6 +54,9 @@ impl TextAreaComputedStyleBridge {
             has_cursor: style.get(PropertyId::Cursor).is_some(),
             has_line_height: style.get(PropertyId::LineHeight).is_some(),
             has_vertical_align: style.get(PropertyId::VerticalAlign).is_some(),
+            has_selection_background: style
+                .selection()
+                .is_some_and(|selection| selection.background_color().is_some()),
             has_width: style.get(PropertyId::Width).is_some(),
             has_height: style.get(PropertyId::Height).is_some(),
             computed,
@@ -114,6 +118,9 @@ impl TextArea {
         if let Some(inherited_color) = inherited.inherited_color() {
             self.color = inherited_color;
         }
+        if let Some(selection) = inherited.inherited_selection_background_color() {
+            self.selection_background_color = selection;
+        }
     }
 
     fn apply_computed_style_bridge(&mut self, bridge: &TextAreaComputedStyleBridge) {
@@ -137,6 +144,11 @@ impl TextArea {
         }
         if bridge.has_vertical_align {
             self.vertical_align = bridge.computed.vertical_align;
+        }
+        if bridge.has_selection_background
+            && let Some(selection) = bridge.computed.selection_background_color
+        {
+            self.selection_background_color = selection;
         }
     }
 }
