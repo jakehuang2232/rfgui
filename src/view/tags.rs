@@ -96,142 +96,622 @@ pub struct ElementPropSchema {
     pub on_blur: Option<BlurHandlerProp>,
 }
 
+/// The `style` prop of `<Element>`, `<Image>`, `<Svg>` and `<TextArea>`.
+///
+/// Every field is optional. An unset field keeps its default, or for an
+/// inherited field the value of the nearest ancestor that sets it. The
+/// inherited fields are [`color`](Self::color), [`cursor`](Self::cursor),
+/// [`font`](Self::font), [`font_size`](Self::font_size),
+/// [`font_weight`](Self::font_weight), [`line_height`](Self::line_height),
+/// [`text_wrap`](Self::text_wrap) and [`vertical_align`](Self::vertical_align).
+/// All other fields apply to this element only.
+///
+/// `<TextArea>` takes this schema but applies only `color`, `cursor`, `font`,
+/// `font_size`, `font_weight`, `line_height` and `vertical_align`.
+///
+/// Children that overflow an element's content box (inside its border and
+/// padding) are clipped to it.
 #[derive(Clone)]
 #[props]
 pub struct ElementStylePropSchema {
+    /// How the element is placed; see [`Position`]. Default
+    /// [`Position::static_`]: the element stays in its parent's flow.
+    ///
+    /// - Only [`Position::absolute`] changes placement. [`Position::relative`]
+    ///   and [`Position::fixed`] behave like static: the element stays in
+    ///   flow and its insets are ignored.
+    /// - An absolute element leaves the flow. It takes no room in its
+    ///   parent's layout and does not count toward the parent's auto size or
+    ///   scroll extent.
+    /// - It is placed against its anchor: by default the parent's content
+    ///   box (inside padding and border), moved by the parent's scroll
+    ///   offset. [`Position::anchor`] can pick a named element (one whose
+    ///   [`ElementPropSchema::anchor`] is set and that is placed earlier in
+    ///   the same layout pass), the parent's border box, an ancestor or the
+    ///   viewport; see [`Anchor`](crate::style::Anchor). A name that is not
+    ///   found falls back to the default.
+    /// - The `top`, `right`, `bottom` and `left` insets are distances from
+    ///   the anchor's edges. A left or right percent resolves against the
+    ///   anchor's width, a top or bottom percent against its height. Setting
+    ///   both `left` and `right` sets the width; both `top` and `bottom` set
+    ///   the height.
+    /// - [`Position::origin`] shifts the element by a fraction of its own
+    ///   size. [`Position::collision`] flips the element to the other side
+    ///   of the anchor, or shifts it inside the viewport or the parent, when
+    ///   it would overflow. [`Position::clip`] picks what clips it; see
+    ///   [`ClipMode`](crate::style::ClipMode).
+    ///
+    /// `TransitionProperty::Position`, `X` and `Y` animate a change in where
+    /// the element is placed. Not inherited.
     pub position: Option<Position>,
+    /// The element's width. Default auto.
+    ///
+    /// - A [`Length::vw`] or [`Length::vh`] value resolves against the
+    ///   viewport. A percent resolves against the parent's content-box width
+    ///   (inside its padding and border). [`Length::calc`] combines units.
+    /// - Auto sizes the element to its content, unless the parent's layout
+    ///   assigns a width, as `flex` grow and shrink or a cross-axis stretch
+    ///   do.
+    /// - [`min_width`](Self::min_width) and [`max_width`](Self::max_width)
+    ///   clamp the result.
+    /// - In a [`Layout::Inline`] parent, an `Inline` element with no width
+    ///   and no height flows as a span across the parent's lines. Setting
+    ///   either makes it one box on a line.
+    ///
+    /// Changes animate with `TransitionProperty::Width` or `All`. Not
+    /// inherited.
     pub width: Option<Length>,
+    /// The element's height. Default auto. Units work as for
+    /// [`width`](Self::width), with a percent resolving against the parent's
+    /// content-box height.
+    ///
+    /// A percent needs a parent whose height is known: set explicitly, or
+    /// assigned by the parent's own layout. Otherwise, for example when the
+    /// parent sizes to its content, the percent does not resolve and gives
+    /// no height.
+    ///
+    /// [`min_height`](Self::min_height) and [`max_height`](Self::max_height)
+    /// clamp the result. Changes animate with `TransitionProperty::Height` or
+    /// `All`. Not inherited.
     pub height: Option<Length>,
+    /// Lower bound for the width. Default 0. A percent resolves against the
+    /// parent's content-box width. When it is larger than
+    /// [`max_width`](Self::max_width), `min_width` wins.
+    ///
+    /// In a [`Layout::Flex`] row, setting it (even to zero) replaces the
+    /// automatic minimum, so a child without a width or basis can shrink
+    /// below its content size. Not inherited.
     pub min_width: Option<Length>,
+    /// Upper bound for the width. Default none. A percent resolves against
+    /// the parent's content-box width. It never goes below
+    /// [`min_width`](Self::min_width). Not inherited.
     pub max_width: Option<Length>,
+    /// Lower bound for the height. Default 0. A percent resolves against the
+    /// parent's content-box height. When it is larger than
+    /// [`max_height`](Self::max_height), `min_height` wins.
+    ///
+    /// In a [`Layout::Flex`] column, setting it (even to zero) replaces the
+    /// automatic minimum, so a child without a height or basis can shrink
+    /// below its content size. Not inherited.
     pub min_height: Option<Length>,
+    /// Upper bound for the height. Default none. A percent resolves against
+    /// the parent's content-box height. It never goes below
+    /// [`min_height`](Self::min_height). Not inherited.
     pub max_height: Option<Length>,
+    /// How the element arranges its children; see [`Layout`]. Default
+    /// [`Layout::Inline`]. Not inherited.
     pub layout: Option<Layout>,
+    /// How this element grows, shrinks and sets its starting size when its
+    /// parent's layout is [`Layout::Flex`]; any other parent layout ignores
+    /// it. See [`Flex`], built with [`flex()`](crate::style::flex).
+    ///
+    /// Default: grow 0, shrink 1, basis auto. Negative grow or shrink counts
+    /// as 0. A percent basis resolves against the parent's content-box size
+    /// along its main axis. [`Layout::Flex`] describes how an auto basis
+    /// behaves. Not inherited.
     pub flex: Option<Flex>,
+    /// Space between children. Default 0.
+    ///
+    /// - [`Layout::Flex`] and [`Layout::Flow`]: between neighbouring
+    ///   children on a line and, in a wrapping `Flow`, between lines. A
+    ///   percent resolves against the content-box size along the main axis.
+    /// - [`Layout::Inline`]: horizontal space between neighbouring children
+    ///   on a line. It adds no space between lines. A percent resolves
+    ///   against the content-box width.
+    ///
+    /// `TransitionProperty::Gap` does not animate it. Not inherited.
     pub gap: Option<Length>,
+    /// Lets the user scroll the content along the chosen axis, or both, when
+    /// it is larger than the element. Default [`ScrollDirection::None`].
+    ///
+    /// Children are measured and placed with an available size of
+    /// 1,000,000 px along the scroll axis, so the element's size does not
+    /// limit them there. Percent sizes of children still resolve against the
+    /// element's visible content box. An `Inline` element still breaks its
+    /// lines at its own width. Not inherited.
     pub scroll_direction: Option<ScrollDirection>,
+    /// The mouse cursor while the pointer is over this element. Default
+    /// [`Cursor::Default`]. Inherited: descendants, including child text,
+    /// use it unless they set their own.
+    ///
+    /// The cursor shown is the one of the element directly under the
+    /// pointer, so over a child it is the child's value.
     pub cursor: Option<Cursor>,
+    /// Text color. The element draws no text itself: descendant `Text`,
+    /// `TextArea` and bare text use it unless they set their own. Inherited.
+    /// When nothing sets a color, text is drawn in `#111111`.
     pub color: Option<Box<dyn ColorLike>>,
+    /// Border widths and colors per side; see [`Border`](crate::style::Border).
+    /// Default: no border.
+    ///
+    /// A border takes room: it adds to an auto size and shrinks the content
+    /// box. A percent width resolves against the parent's content box: left
+    /// and right against its width, top and bottom against its height. Each
+    /// side is limited to half the element's shorter side.
+    /// [`border_image`](Self::border_image), when set, replaces the colors.
+    ///
+    /// `TransitionProperty::BorderColor` animates the colors. The widths do
+    /// not animate. Not inherited.
     pub border: Option<crate::style::Border>,
+    /// Shorthand for [`background_color`](Self::background_color) (from a
+    /// color) or [`background_image`](Self::background_image) (from a
+    /// gradient). Each of those fields, when set, wins over the matching
+    /// part of this one. Not inherited.
     pub background: Option<crate::style::Background>,
+    /// Fill color of the area inside the border. Default transparent. Wins
+    /// over a color from [`background`](Self::background).
+    ///
+    /// When a [`background_image`](Self::background_image) is set, the
+    /// gradient is drawn instead and this color does not show. Animates with
+    /// `TransitionProperty::BackgroundColor`. Not inherited.
     pub background_color: Option<Box<dyn ColorLike>>,
+    /// Gradient fill of the area inside the border, laid out over the
+    /// element's box. Wins over a gradient from
+    /// [`background`](Self::background), and is drawn instead of
+    /// [`background_color`](Self::background_color).
+    ///
+    /// An inline span (an `Inline` element without width or height in an
+    /// `Inline` parent) does not draw it. Does not animate. Not inherited.
     pub background_image: Option<crate::style::Gradient>,
+    /// Gradient that paints the border instead of the border colors. It
+    /// shows only where [`border`](Self::border) gives a side a width.
+    ///
+    /// An inline span (an `Inline` element without width or height in an
+    /// `Inline` parent) does not draw it. Does not animate. Not inherited.
     pub border_image: Option<crate::style::Gradient>,
+    /// Font families for descendant text, in order of preference; see
+    /// [`FontFamily`]. Default: none, which uses the default font.
+    /// Inherited.
     pub font: Option<FontFamily>,
+    /// Text size for descendant text. A number is pixels; see [`FontSize`]
+    /// for the other units. `em` and percent are relative to the inherited
+    /// size, `rem` to the root size (the viewport style's font size, 16 px
+    /// unless set), and `vw` and `vh` to the viewport. Negative sizes count
+    /// as 0.
+    ///
+    /// Default 16 px. Inherited. No transition property animates it.
     pub font_size: Option<FontSize>,
+    /// Weight for descendant text, from 100 to 900 (400 normal, 700 bold).
+    /// Values outside that range are clamped. Default 400. Inherited.
     pub font_weight: Option<FontWeight>,
+    /// Whether text breaks into lines at the available width
+    /// ([`TextWrap::Wrap`], the default) or stays on one line
+    /// ([`TextWrap::NoWrap`]). On an element with [`Layout::Inline`], this
+    /// element's own value decides whether its inline content wraps.
+    /// Inherited.
     pub text_wrap: Option<TextWrap>,
+    /// Line height as a multiplier of the font size, not a length: `1.5`
+    /// makes each line 1.5 times the font size tall. Negative values count
+    /// as 0.
+    ///
+    /// Default 1.2; a `Text` that gets no line height from anywhere uses
+    /// 1.25. Inherited. Does not animate.
     pub line_height: Option<f64>,
+    /// Where an item sits vertically in its line: on the baseline (the
+    /// default) or at the top, middle or bottom of the line box; see
+    /// [`VerticalAlign`].
+    ///
+    /// Only items on the lines of a [`Layout::Inline`] element read it, such
+    /// as text and inline child elements. Other layouts ignore it.
+    /// Inherited.
     pub vertical_align: Option<VerticalAlign>,
+    /// Corner radii; see [`BorderRadius`]. Default 0. A percent resolves
+    /// against the element's own shorter side.
+    ///
+    /// Rounds the background, the border and the shadows, and clips
+    /// children to the rounded content box. Pointer hit testing still uses
+    /// the full rectangle. Does not change layout. Animates with
+    /// `TransitionProperty::BorderRadius`. Not inherited.
     pub border_radius: Option<BorderRadius>,
+    /// Overrides applied while the pointer is over this element or one of
+    /// its descendants; see [`HoverElementStylePropSchema`].
     pub hover: Option<HoverElementStylePropSchema>,
+    /// Text selection style; see [`SelectionStylePropSchema`]. No host reads
+    /// it: a `TextArea` keeps its default highlight color whether this is
+    /// set on the `TextArea` or on an ancestor. Not inherited.
     pub selection: Option<SelectionStylePropSchema>,
+    /// Opacity from 0 (invisible) to 1 (opaque). Values outside are
+    /// clamped. Default 1.
+    ///
+    /// It fades the element and all of its descendants as one group, like
+    /// CSS `opacity`. Paint only: layout does not change, and a fully
+    /// transparent element still receives pointer events. Animates with
+    /// `TransitionProperty::Opacity`. Not inherited.
     pub opacity: Option<Opacity>,
+    /// Shadows drawn around the element, or inside it for an `inset`
+    /// shadow; see [`BoxShadow`]. Default none.
+    ///
+    /// Paint only: shadows do not change layout size or position. They
+    /// follow [`border_radius`](Self::border_radius). Animates with
+    /// `TransitionProperty::BoxShadow`. Not inherited.
     pub box_shadow: Option<Vec<BoxShadow>>,
+    /// Space between the border and the content, per side; see [`Padding`].
+    /// Default 0.
+    ///
+    /// Padding adds to an auto size and shrinks the content box, and
+    /// children that overflow into it are clipped. A percent resolves
+    /// against the parent's content box: left and right against its width,
+    /// top and bottom against its height (CSS uses the width for all four).
+    ///
+    /// `TransitionProperty::Padding` does not animate it. Not inherited.
     pub padding: Option<Padding>,
+    /// Translates, scales, rotates or projects the element and its
+    /// descendants as drawn; see [`Transform`]. Entries combine in order, as
+    /// in CSS. A percent translation resolves against the element's own
+    /// size, and [`transform_origin`](Self::transform_origin) sets the
+    /// pivot.
+    ///
+    /// Layout does not change: the parent and siblings still see the
+    /// untransformed box. Pointer hit testing follows the transform.
+    /// Animates with `TransitionProperty::Transform`. Not inherited.
     pub transform: Option<Transform>,
+    /// The point that [`transform`](Self::transform) scales and rotates
+    /// around; see [`TransformOrigin`]. Default the center (50%, 50%).
+    /// Percents resolve against the element's own size. Animates with
+    /// `TransitionProperty::TransformOrigin`. Not inherited.
     pub transform_origin: Option<TransformOrigin>,
+    /// Whether the element stays visible when its own transform turns its
+    /// back to the viewer; see [`BackfaceVisibility`]. Default visible. A
+    /// hidden, back-facing element and its subtree are neither drawn nor
+    /// hit-tested. Does not animate. Not inherited.
     pub backface_visibility: Option<BackfaceVisibility>,
+    /// Animations for changes to this element's style and layout. Each
+    /// [`Transition`](crate::style::Transition) names a
+    /// [`TransitionProperty`](crate::style::TransitionProperty), a duration
+    /// and a delay in milliseconds, and a timing curve (linear by default).
+    ///
+    /// - `Opacity`, `BackgroundColor`, `BorderColor` (all four sides),
+    ///   `BorderRadius`, `BoxShadow`, `Transform` and `TransformOrigin`
+    ///   animate when the computed value changes, for example when
+    ///   [`hover`](Self::hover) starts or after a re-render.
+    /// - `Width` and `Height` animate the laid-out size, whatever changed
+    ///   it: this element's style, its content or its parent's layout.
+    /// - `Position`, `X` (or `PositionX`) and `Y` (or `PositionY`) animate a
+    ///   change in where the element sits relative to its parent.
+    /// - `All` covers the style values above plus `Width` and `Height`, but
+    ///   not the position.
+    /// - `Gap`, `Padding` and `BorderWidth` are accepted but do not animate.
+    ///
+    /// The style an element is first built with does not animate. Not
+    /// inherited.
     pub transition: Option<Transitions>,
+    /// Keyframe animations that run on this element; see [`Animator`] and
+    /// [`Animation`](crate::style::Animation). Keyframes animate opacity,
+    /// background color, border colors, border radius, box shadow,
+    /// transform, transform origin, and pixel widths and heights.
+    ///
+    /// The animator starts when it is first set or when its value changes.
+    /// Setting an equal value again does not restart it, and removing it
+    /// stops it. Durations default to 0, so give the animator or each
+    /// animation a duration. Not inherited.
     pub animator: Option<Animator>,
 }
 
+/// Style overrides for [`ElementStylePropSchema::hover`], applied while the
+/// element is hovered: while the pointer is over the element or over one of
+/// its descendants.
+///
+/// While hovered, each field set here replaces the same field of the base
+/// style; unset fields keep the base value. When the pointer leaves, the
+/// base style returns. Both changes animate like any other style change,
+/// using the [`transition`](Self::transition) list of the state being
+/// entered: this one when hover starts, the base one when it ends.
+///
+/// - `<Element>`, `<Image>` and `<Svg>` apply hover. `<TextArea>` does not.
+/// - The inherited fields (`color`, `cursor`, `font`, `font_size`,
+///   `font_weight`, `line_height`, `text_wrap` and `vertical_align`) change
+///   only this element's own value and are not passed down while hovered.
+///   A hover `color` or `font_size` does not change child text, and a hover
+///   `cursor` does not show while a child is under the pointer.
+/// - A hover `background` color cannot hide a base `background_image`,
+///   because a gradient is drawn instead of the color.
 #[derive(Clone)]
 #[props]
 pub struct HoverElementStylePropSchema {
+    /// While hovered, replaces [`ElementStylePropSchema::position`].
     pub position: Option<Position>,
+    /// While hovered, replaces [`ElementStylePropSchema::width`].
     pub width: Option<Length>,
+    /// While hovered, replaces [`ElementStylePropSchema::height`].
     pub height: Option<Length>,
+    /// While hovered, replaces [`ElementStylePropSchema::min_width`].
     pub min_width: Option<Length>,
+    /// While hovered, replaces [`ElementStylePropSchema::max_width`].
     pub max_width: Option<Length>,
+    /// While hovered, replaces [`ElementStylePropSchema::min_height`].
     pub min_height: Option<Length>,
+    /// While hovered, replaces [`ElementStylePropSchema::max_height`].
     pub max_height: Option<Length>,
+    /// While hovered, replaces [`ElementStylePropSchema::layout`].
     pub layout: Option<Layout>,
+    /// While hovered, replaces [`ElementStylePropSchema::flex`].
     pub flex: Option<Flex>,
+    /// While hovered, replaces [`ElementStylePropSchema::gap`].
     pub gap: Option<Length>,
+    /// While hovered, replaces [`ElementStylePropSchema::scroll_direction`].
     pub scroll_direction: Option<ScrollDirection>,
+    /// While hovered, replaces this element's own
+    /// [`ElementStylePropSchema::cursor`]. It shows only while this element
+    /// itself is under the pointer, not one of its children.
     pub cursor: Option<Cursor>,
+    /// While hovered, replaces this element's own
+    /// [`ElementStylePropSchema::color`]. Descendant text keeps the base
+    /// color.
     pub color: Option<Box<dyn ColorLike>>,
+    /// While hovered, replaces [`ElementStylePropSchema::border`], all four
+    /// sides.
     pub border: Option<crate::style::Border>,
+    /// While hovered, replaces the matching part of
+    /// [`ElementStylePropSchema::background`]: a color replaces the
+    /// background color and a gradient replaces the background image.
     pub background: Option<crate::style::Background>,
+    /// While hovered, replaces [`ElementStylePropSchema::background_color`].
     pub background_color: Option<Box<dyn ColorLike>>,
+    /// While hovered, replaces [`ElementStylePropSchema::background_image`].
     pub background_image: Option<crate::style::Gradient>,
+    /// While hovered, replaces [`ElementStylePropSchema::border_image`].
     pub border_image: Option<crate::style::Gradient>,
+    /// While hovered, replaces this element's own
+    /// [`ElementStylePropSchema::font`]. Descendant text keeps the base
+    /// value.
     pub font: Option<FontFamily>,
+    /// While hovered, replaces this element's own
+    /// [`ElementStylePropSchema::font_size`]. Descendant text keeps the base
+    /// value.
     pub font_size: Option<FontSize>,
+    /// While hovered, replaces this element's own
+    /// [`ElementStylePropSchema::font_weight`]. Descendant text keeps the
+    /// base value.
     pub font_weight: Option<FontWeight>,
+    /// While hovered, replaces this element's own
+    /// [`ElementStylePropSchema::text_wrap`]. Descendants keep the base
+    /// value.
     pub text_wrap: Option<TextWrap>,
+    /// While hovered, replaces this element's own
+    /// [`ElementStylePropSchema::line_height`]. Descendants keep the base
+    /// value.
     pub line_height: Option<f64>,
+    /// While hovered, replaces this element's own
+    /// [`ElementStylePropSchema::vertical_align`]. Descendants keep the base
+    /// value.
     pub vertical_align: Option<VerticalAlign>,
+    /// While hovered, replaces [`ElementStylePropSchema::border_radius`], all
+    /// four corners.
     pub border_radius: Option<BorderRadius>,
+    /// Like [`ElementStylePropSchema::selection`], has no effect.
     pub selection: Option<SelectionStylePropSchema>,
+    /// While hovered, replaces [`ElementStylePropSchema::opacity`].
     pub opacity: Option<Opacity>,
+    /// While hovered, replaces [`ElementStylePropSchema::box_shadow`], the
+    /// whole list.
     pub box_shadow: Option<Vec<BoxShadow>>,
+    /// While hovered, replaces [`ElementStylePropSchema::padding`], all four
+    /// sides.
     pub padding: Option<Padding>,
+    /// While hovered, replaces [`ElementStylePropSchema::transform`], the
+    /// whole list.
     pub transform: Option<Transform>,
+    /// While hovered, replaces [`ElementStylePropSchema::transform_origin`].
     pub transform_origin: Option<TransformOrigin>,
+    /// While hovered, replaces
+    /// [`ElementStylePropSchema::backface_visibility`].
     pub backface_visibility: Option<BackfaceVisibility>,
+    /// While hovered, replaces [`ElementStylePropSchema::transition`], the
+    /// whole list. This list animates the change into the hovered state.
     pub transition: Option<Transitions>,
+    /// While hovered, replaces [`ElementStylePropSchema::animator`].
     pub animator: Option<Animator>,
 }
 
+/// The `style` prop of `<Text>`.
+///
+/// `<Text>` applies `width`, `height`, `color`, `font`, `font_size`,
+/// `font_weight`, `text_wrap`, `cursor`, `transform`, `transform_origin` and
+/// `backface_visibility`. It ignores [`opacity`](Self::opacity) (use
+/// [`TextPropSchema::opacity`]), [`transition`](Self::transition) and
+/// [`hover`](Self::hover). Line height and alignment are tag props:
+/// [`TextPropSchema::line_height`] and [`TextPropSchema::align`].
+///
+/// An unset `color`, `cursor`, `font`, `font_size`, `font_weight` or
+/// `text_wrap` takes the value of the nearest ancestor that sets it, as do
+/// the line height and vertical alignment.
+///
+/// In a parent with [`Layout::Inline`] (the default), the parent lays the
+/// text out in its own lines. There `width`, `height`, `text_wrap` and
+/// [`TextPropSchema::align`] have no effect.
 #[derive(Clone)]
 #[props]
 pub struct TextStylePropSchema {
+    /// Fixed width of the text box. Only pixel lengths work: a px value, or
+    /// a [`Length::calc`] made only of pixels. A percent, `vw` or `vh` value
+    /// is rejected: the first build reports an error, and a later update
+    /// treats it as unset.
+    ///
+    /// Unset sizes the box to the text. No effect in a [`Layout::Inline`]
+    /// parent.
     pub width: Option<Length>,
+    /// Fixed height of the text box. Takes the same units as
+    /// [`width`](Self::width), with the same limits. Unset sizes the box to
+    /// the text. No effect in a [`Layout::Inline`] parent.
     pub height: Option<Length>,
+    /// Text color. Default: the inherited color, or `#111111` when no
+    /// ancestor sets one.
     pub color: Option<Box<dyn ColorLike>>,
+    /// Font families in order of preference; see [`FontFamily`]. Default:
+    /// inherited. When [`TextPropSchema::font`] is also set, this value wins
+    /// when the text is first built; on later updates, whichever of the two
+    /// changed is applied.
     pub font: Option<FontFamily>,
+    /// Text size; see [`ElementStylePropSchema::font_size`] for the units.
+    /// `em` and percent are relative to the inherited size. Default:
+    /// inherited, 16 px at the root.
+    ///
+    /// When [`TextPropSchema::font_size`] is also set, this value wins when
+    /// the text is first built; on later updates, whichever of the two
+    /// changed is applied.
     pub font_size: Option<FontSize>,
+    /// Weight from 100 to 900 (400 normal, 700 bold); values outside are
+    /// clamped. Default: inherited, else 400.
     pub font_weight: Option<FontWeight>,
+    /// Whether the text wraps at the box width ([`TextWrap::Wrap`]) or stays
+    /// on one line ([`TextWrap::NoWrap`]). Default: inherited, else `Wrap`.
+    ///
+    /// No effect in a [`Layout::Inline`] parent: the `text_wrap` of the
+    /// element that lays out those lines decides.
     pub text_wrap: Option<TextWrap>,
+    /// The mouse cursor while the pointer is over this text. Default:
+    /// inherited, else [`Cursor::Default`].
     pub cursor: Option<Cursor>,
+    /// Has no effect: `<Text>` does not track hover. See
+    /// [`HoverTextStylePropSchema`].
     pub hover: Option<HoverTextStylePropSchema>,
+    /// Has no effect on `<Text>`; use [`TextPropSchema::opacity`].
     pub opacity: Option<Opacity>,
+    /// Translates, scales or rotates the drawn text without changing its
+    /// layout; see [`ElementStylePropSchema::transform`]. A percent
+    /// translation resolves against the text box size.
     pub transform: Option<Transform>,
+    /// The point that [`transform`](Self::transform) scales and rotates
+    /// around. Default the center of the text box. Percents resolve against
+    /// the text box size.
     pub transform_origin: Option<TransformOrigin>,
+    /// Whether the text stays visible when its transform turns its back to
+    /// the viewer; see [`BackfaceVisibility`]. Default visible.
     pub backface_visibility: Option<BackfaceVisibility>,
+    /// Has no effect: `<Text>` does not run transitions.
     pub transition: Option<Transitions>,
 }
 
+/// Hover overrides for `<Text>`, used by [`TextStylePropSchema::hover`].
+///
+/// Has no effect: `<Text>` does not track hover, so none of these fields is
+/// ever applied.
 #[derive(Clone)]
 #[props]
 pub struct HoverTextStylePropSchema {
+    /// Hover counterpart of [`TextStylePropSchema::width`]; never applied.
     pub width: Option<Length>,
+    /// Hover counterpart of [`TextStylePropSchema::height`]; never applied.
     pub height: Option<Length>,
+    /// Hover counterpart of [`TextStylePropSchema::color`]; never applied.
     pub color: Option<Box<dyn ColorLike>>,
+    /// Hover counterpart of [`TextStylePropSchema::font`]; never applied.
     pub font: Option<FontFamily>,
+    /// Hover counterpart of [`TextStylePropSchema::font_size`]; never
+    /// applied.
     pub font_size: Option<FontSize>,
+    /// Hover counterpart of [`TextStylePropSchema::font_weight`]; never
+    /// applied.
     pub font_weight: Option<FontWeight>,
+    /// Hover counterpart of [`TextStylePropSchema::text_wrap`]; never
+    /// applied.
     pub text_wrap: Option<TextWrap>,
+    /// Hover counterpart of [`TextStylePropSchema::cursor`]; never applied.
     pub cursor: Option<Cursor>,
+    /// Hover counterpart of [`TextStylePropSchema::opacity`]; never applied.
     pub opacity: Option<Opacity>,
+    /// Hover counterpart of [`TextStylePropSchema::transform`]; never
+    /// applied.
     pub transform: Option<Transform>,
+    /// Hover counterpart of [`TextStylePropSchema::transform_origin`]; never
+    /// applied.
     pub transform_origin: Option<TransformOrigin>,
+    /// Hover counterpart of [`TextStylePropSchema::backface_visibility`];
+    /// never applied.
     pub backface_visibility: Option<BackfaceVisibility>,
+    /// Hover counterpart of [`TextStylePropSchema::transition`]; never
+    /// applied.
     pub transition: Option<Transitions>,
 }
 
+/// Text selection style, used by [`ElementStylePropSchema::selection`] and
+/// [`HoverElementStylePropSchema::selection`].
+///
+/// No host reads it: a `TextArea` keeps its default highlight color.
 #[derive(Clone)]
 #[props]
 pub struct SelectionStylePropSchema {
+    /// Highlight color for selected text. Only a color is kept; a gradient
+    /// is ignored.
     pub background: Option<crate::style::Background>,
 }
 
+/// A border width and color pair.
+///
+/// No style field takes this type. Set borders with
+/// [`ElementStylePropSchema::border`] and a
+/// [`Border`](crate::style::Border) value.
 #[derive(Clone)]
 #[props]
 pub struct BorderStylePropSchema {
+    /// Border width. Unused; see the type docs.
     pub width: Option<Length>,
+    /// Border color. Unused; see the type docs.
     pub color: Option<Box<dyn ColorLike>>,
 }
 
+/// Props of the `<Text>` host tag.
+///
+/// `font_size`, `line_height`, `font`, `opacity` and `align` sit beside
+/// [`style`](Self::style). Each field says how it interacts with the style.
 #[props]
 pub struct TextPropSchema {
+    /// The text's style; see [`TextStylePropSchema`].
     pub style: Option<TextStylePropSchema>,
+    /// Horizontal alignment of each line inside the text box: left (the
+    /// default), center or right. There is no style counterpart.
+    ///
+    /// No effect in a [`Layout::Inline`] parent (the default layout): its
+    /// lines always start at the left. It applies when the parent lays the
+    /// `Text` out as a box, as [`Layout::Flow`] does.
     pub align: Option<TextAlign>,
+    /// Text size, as a number of pixels or a [`FontSize`]. `em` and percent
+    /// are relative to the inherited size. Zero counts as unset. It takes
+    /// priority over the inherited size.
+    ///
+    /// When [`TextStylePropSchema::font_size`] is also set, the style value
+    /// wins when the text is first built; on later updates, whichever of
+    /// the two changed is applied.
     pub font_size: Option<FontSize>,
+    /// Line height as a multiplier of the font size, not a length: `1.5`
+    /// makes each line 1.5 times the font size tall. Zero counts as unset.
+    ///
+    /// There is no style counterpart on `<Text>`. It takes priority over a
+    /// [`line_height`](ElementStylePropSchema::line_height) inherited from
+    /// an ancestor. Default: inherited, else 1.25.
     pub line_height: Option<f64>,
+    /// Font families as one comma-separated string, such as
+    /// `"Inter, sans-serif"`. An empty string counts as unset.
+    ///
+    /// When [`TextStylePropSchema::font`] is also set, the style value wins
+    /// when the text is first built; on later updates, whichever of the two
+    /// changed is applied.
     pub font: Option<String>,
+    /// Opacity of this text from 0 to 1, clamped when drawn. Default 1.
+    ///
+    /// This is the only way to set a `<Text>`'s opacity:
+    /// [`TextStylePropSchema::opacity`] is ignored. `0.0` counts as unset,
+    /// so it leaves the text fully opaque.
     pub opacity: Option<f64>,
 }
 
