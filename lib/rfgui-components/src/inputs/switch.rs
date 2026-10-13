@@ -9,15 +9,26 @@ use rfgui::ui::{
 use rfgui::view::{Element, Text};
 use std::rc::Rc;
 
+/// A track that fills with the primary color and slides its thumb to the
+/// end when on, with a label beside it. Clicking the track or the label
+/// toggles it. A label that does not fit the width the switch gets wraps
+/// beside the track.
 pub struct Switch;
 
 #[derive(Clone)]
 #[props]
 pub struct SwitchProps {
+    /// Shown to the right of the track.
     pub label: String,
+    /// Holds the checked state: the switch reads it and writes each toggle
+    /// to it.
     pub binding: Option<Binding<bool>>,
+    /// The initial state when there is no `binding`; later changes are
+    /// ignored, so use `binding` to set the state from outside.
     pub checked: Option<bool>,
+    /// Ignores clicks and uses the disabled colors.
     pub disabled: Option<bool>,
+    /// Called with the new state after each toggle.
     pub on_change: Option<Rc<dyn Fn(bool)>>,
 }
 

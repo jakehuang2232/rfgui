@@ -520,14 +520,36 @@ impl<const N: usize> From<[Transition; N]> for Transitions {
     }
 }
 
+/// How an element arranges its children.
+///
+/// `Flow` and `Flex` both place children along a row or a column, but only
+/// `Flex` sizes them. Use `Flex` when a child should give up room to its
+/// siblings, such as text that wraps next to an icon or a button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
+    /// The default. Text and inline children run in lines that wrap at the
+    /// element's width, like CSS inline formatting. An inline child's
+    /// horizontal padding and border stay on the line of the content they
+    /// border.
     Inline,
+    /// Children on a single line along `direction`, sized like CSS flexbox
+    /// by `flex` grow, shrink and basis. One difference: an auto basis is
+    /// zero rather than the child's content size, except for images and
+    /// SVGs. A child with no width, basis or `min_width` therefore sizes to
+    /// its content and is not shrunk below it. When the line overflows,
+    /// such children first share the room the other children leave and are
+    /// measured again at it, so their text wraps; shrink then takes any
+    /// overflow left from the other children.
     Flex {
         direction: FlowDirection,
         justify_content: JustifyContent,
         cross_axis: CrossAxis,
     },
+    /// Children in order along `direction`, each at the size it measures
+    /// against the element's whole inner size. `Flow` never resizes a
+    /// child: with [`FlowWrap::Wrap`] a child that does not fit the rest of
+    /// a line starts the next one, and with [`FlowWrap::NoWrap`] (the
+    /// default) the line overflows.
     Flow {
         direction: FlowDirection,
         wrap: FlowWrap,
@@ -662,6 +684,8 @@ pub enum FlowDirection {
     Column,
 }
 
+/// Whether a [`Layout::Flow`] starts a new line for a child that does not
+/// fit the rest of the current one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowWrap {
     NoWrap,

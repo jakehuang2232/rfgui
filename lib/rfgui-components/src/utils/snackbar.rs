@@ -5,6 +5,8 @@ use rfgui::view::Element;
 use std::rc::Rc;
 use std::time::Duration;
 
+/// The viewport edge a [`Snackbar`] pins to vertically. Defaults to
+/// `Bottom`. As a prop it also accepts `"top"` or `"bottom"`, in any case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnackbarVertical {
     Top,
@@ -33,6 +35,8 @@ impl From<String> for SnackbarVertical {
     }
 }
 
+/// The viewport edge a [`Snackbar`] pins to horizontally. Defaults to
+/// `Left`. As a prop it also accepts `"left"` or `"right"`, in any case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnackbarHorizontal {
     Left,
@@ -82,20 +86,36 @@ impl SnackbarOrigin {
 /// rfgui currently surfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnackbarCloseReason {
+    /// `auto_hide_duration` passed while the snackbar was open.
     Timeout,
+    /// Never sent by the snackbar; for callers that close it themselves,
+    /// such as from its action, through the same handler.
     Manual,
 }
 
+/// A brief message pinned to a viewport corner while `open` is true.
+///
+/// It shows a [`SnackbarContent`] built from `message` and `action`, or its
+/// children instead when it has any. It never hides itself: `on_close`
+/// reports when it should, and the caller sets `open` to false (see
+/// [`snackbar_close_binding`]).
 pub struct Snackbar;
 
 #[derive(Clone)]
 #[props]
 pub struct SnackbarProps {
+    /// Whether the snackbar shows; while false it renders nothing.
     pub open: bool,
+    /// Shown on the left of the default content.
     pub message: Option<RsxNode>,
+    /// Shown on the right of the default content; for example a button.
     pub action: Option<RsxNode>,
+    /// How long after opening to call `on_close` with
+    /// [`SnackbarCloseReason::Timeout`]. Without it there is no timeout.
     pub auto_hide_duration: Option<Duration>,
+    /// The corner it pins to. Defaults to bottom left.
     pub anchor_origin: Option<SnackbarOrigin>,
+    /// Called with the reason the snackbar should close.
     pub on_close: Option<Rc<dyn Fn(SnackbarCloseReason)>>,
 }
 
@@ -207,6 +227,10 @@ fn SnackbarView(
     }
 }
 
+/// The box a [`Snackbar`] shows by default: `message` on the left and
+/// `action` on the right of one line, between 240 and 560px wide. A
+/// message that does not fit the width the box gets wraps, while the action
+/// keeps its size.
 pub struct SnackbarContent;
 
 #[derive(Clone)]

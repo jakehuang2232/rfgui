@@ -8,15 +8,25 @@ use rfgui::ui::{
 use rfgui::view::{Element, Text};
 use std::rc::Rc;
 
+/// A box that shows a checkmark when checked, with a label beside it.
+/// Clicking the box or the label toggles it. A label that does not fit the
+/// width the checkbox gets wraps beside the box.
 pub struct Checkbox;
 
 #[derive(Clone)]
 #[props]
 pub struct CheckboxProps {
+    /// Shown to the right of the box.
     pub label: String,
+    /// Holds the checked state: the checkbox reads it and writes each toggle
+    /// to it.
     pub binding: Option<Binding<bool>>,
+    /// The initial state when there is no `binding`; later changes are
+    /// ignored, so use `binding` to set the state from outside.
     pub checked: Option<bool>,
+    /// Ignores clicks and uses the disabled colors.
     pub disabled: Option<bool>,
+    /// Called with the new state after each toggle.
     pub on_change: Option<Rc<dyn Fn(bool)>>,
 }
 

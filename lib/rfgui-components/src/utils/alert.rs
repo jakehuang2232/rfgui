@@ -7,8 +7,13 @@ use rfgui::ui::{ClickHandlerProp, RsxComponent, RsxNode, component, props, rsx};
 use rfgui::view::{Element, Text};
 use std::rc::Rc;
 
+/// How serious an [`Alert`] is; picks its color and default icon.
+///
+/// As a prop it also accepts `"info"`, `"success"`, `"warning"` or
+/// `"error"`, in any case; any other string panics while building the tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlertSeverity {
+    /// The default.
     Info,
     Success,
     Warning,
@@ -51,10 +56,17 @@ impl rfgui::ui::IntoOptionalProp<AlertSeverity> for String {
     }
 }
 
+/// How an [`Alert`] paints its severity color.
+///
+/// As a prop it also accepts `"standard"`, `"filled"` or `"outlined"`, in
+/// any case; any other string panics while building the tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlertVariant {
+    /// Text in the severity color on a light tint of it. The default.
     Standard,
+    /// The severity color behind text in its contrasting color.
     Filled,
+    /// Text and a 1px border in the severity color, no background.
     Outlined,
 }
 
@@ -93,15 +105,28 @@ impl rfgui::ui::IntoOptionalProp<AlertVariant> for String {
     }
 }
 
+/// A message box marked with a severity. Its children are the message,
+/// shown after the severity icon; an action and a close button can follow
+/// on the right.
+///
+/// The box fits its content, between 240 and 560px wide. A message that
+/// does not fit the width the box gets wraps, while the icon, the action
+/// and the close button keep their size.
 pub struct Alert;
 
 #[derive(Clone)]
 #[props]
 pub struct AlertProps {
+    /// Picks the color and the icon. Defaults to [`AlertSeverity::Info`].
     pub severity: Option<AlertSeverity>,
+    /// Defaults to [`AlertVariant::Standard`].
     pub variant: Option<AlertVariant>,
+    /// Replaces the severity icon.
     pub icon: Option<RsxNode>,
+    /// Shown on the right, before the close button; for example a button.
     pub action: Option<RsxNode>,
+    /// Adds a close button that calls this when clicked. The alert does
+    /// not hide itself; update the state that renders it.
     pub on_close: Option<Rc<dyn Fn()>>,
 }
 

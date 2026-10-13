@@ -1,6 +1,6 @@
 ---
 name: m04-ui-layout
-description: rfgui layout and scroll model reference. Use whenever the user works with flow/wrap layout, container sizing, scroll containers, ScrollDirection, scrollbars, scroll_offset, or asks why x/y absolute positioning is not available, or how scroll hit-testing and bubbling work in this engine.
+description: rfgui layout and scroll model reference. Use whenever the user works with inline, flow/wrap or flex layout, chooses between them, container sizing, scroll containers, ScrollDirection, scrollbars, scroll_offset, or asks why x/y absolute positioning is not available, or how scroll hit-testing and bubbling work in this engine.
 ---
 
 # Layout System
@@ -8,8 +8,27 @@ description: rfgui layout and scroll model reference. Use whenever the user work
 ## Principles
 
 - no x/y positioning
-- use container layout
-- support flow + wrap
+- use container layout: Inline, Flow or Flex
+
+## Layout Modes
+
+- `Layout::Inline` (default)
+    - text and inline children run in lines that wrap at the element's width, like CSS inline formatting
+    - an inline child's horizontal padding and border stay on the line of the content they border
+- `Layout::flow()`: children in order along a row or column
+    - each child is measured against the container's whole inner size and keeps that size; Flow never resizes a child
+    - `wrap()`: a child that does not fit the rest of the line starts the next one
+    - `no_wrap()` (default): the line overflows
+- `Layout::flex()`: children on a single line, sized by `flex` grow / shrink / basis
+    - a child with no width, basis or `min_width` sizes to its content and is not shrunk below it
+    - when the line overflows, those children first share the room the others leave and are measured again at it, so their text wraps; shrink then takes any overflow left from the other children
+    - unlike CSS, an auto basis is 0 rather than the content size (images and SVGs use their intrinsic size), so a child with an auto width and a `min_width` starts from 0
+
+## Choosing a Mode
+
+- text that must wrap next to an icon, a button or another item → `Layout::flex().row()`; a flow row lets the text take the whole width and push its siblings out
+- items that keep their own size (chips, tags, buttons) → `Layout::flow().row()`, with `wrap()` to start new lines
+- a vertical stack → `Layout::flow().column()`
 
 ## Size
 
