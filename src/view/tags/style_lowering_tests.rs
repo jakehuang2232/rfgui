@@ -27,8 +27,8 @@ where
     <<T::StyleProp as StylePropTrait>::Accepted as StylePropSet>::accepts(property)
 }
 
-fn hover_text_style() -> HoverTextStylePropSchema {
-    HoverTextStylePropSchema {
+fn text_style() -> TextStylePropSchema {
+    TextStylePropSchema {
         width: Some(Length::px(120.0)),
         height: Some(Length::px(32.0)),
         color: Some(color("#123456")),
@@ -120,26 +120,6 @@ fn host_tag_style_contract_matches_validation() {
             )
         )
     );
-}
-
-fn text_style() -> TextStylePropSchema {
-    let hover = hover_text_style();
-    TextStylePropSchema {
-        width: hover.width,
-        height: hover.height,
-        color: hover.color.clone(),
-        font: hover.font.clone(),
-        font_size: hover.font_size,
-        font_weight: hover.font_weight,
-        text_wrap: hover.text_wrap,
-        cursor: hover.cursor,
-        hover: None,
-        opacity: hover.opacity,
-        transform: hover.transform.clone(),
-        transform_origin: hover.transform_origin,
-        backface_visibility: hover.backface_visibility,
-        transition: hover.transition.clone(),
-    }
 }
 
 fn element_style() -> ElementStylePropSchema {
@@ -244,9 +224,25 @@ fn element_style_lowering_keeps_shared_and_element_fields() {
 
 #[test]
 fn hover_lowering_keeps_shared_fields() {
-    let schema = TextStylePropSchema {
-        hover: Some(hover_text_style()),
-        ..text_style()
+    let text = text_style();
+    let schema = ElementStylePropSchema {
+        hover: Some(HoverElementStylePropSchema {
+            width: text.width,
+            height: text.height,
+            color: text.color.clone(),
+            font: text.font.clone(),
+            font_size: text.font_size,
+            font_weight: text.font_weight,
+            text_wrap: text.text_wrap,
+            cursor: text.cursor,
+            opacity: text.opacity,
+            transform: text.transform.clone(),
+            transform_origin: text.transform_origin,
+            backface_visibility: text.backface_visibility,
+            transition: text.transition.clone(),
+            ..Default::default()
+        }),
+        ..Default::default()
     };
     let style = schema.to_style();
 
@@ -272,10 +268,7 @@ fn inherent_and_trait_to_style_match_for_element_style() {
 
 #[test]
 fn inherent_and_trait_to_style_match_for_text_style() {
-    let schema = TextStylePropSchema {
-        hover: Some(hover_text_style()),
-        ..text_style()
-    };
+    let schema = text_style();
 
     assert_eq!(
         TextStylePropSchema::to_style(&schema),

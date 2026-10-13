@@ -103,7 +103,11 @@ pub struct Text {
     pub(super) line_height: f32,
     pub(super) font_weight: u16,
     pub(super) align: InlineIfcAlignment,
+    /// The drawn opacity: `style_opacity` when the style sets one, else
+    /// `prop_opacity`.
     pub(super) opacity: f32,
+    pub(super) prop_opacity: f32,
+    pub(super) style_opacity: Option<f32>,
     pub(super) transform: Transform,
     pub(super) transform_origin: TransformOrigin,
     pub(super) resolved_transform: Option<Mat4>,
@@ -199,6 +203,8 @@ impl Text {
             font_weight: 400,
             align: InlineIfcAlignment::Left,
             opacity: 1.0,
+            prop_opacity: 1.0,
+            style_opacity: None,
             transform: Transform::default(),
             transform_origin: TransformOrigin::center(),
             resolved_transform: None,

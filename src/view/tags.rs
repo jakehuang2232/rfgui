@@ -530,11 +530,13 @@ pub struct HoverElementStylePropSchema {
 /// The `style` prop of `<Text>`.
 ///
 /// `<Text>` applies `width`, `height`, `color`, `font`, `font_size`,
-/// `font_weight`, `text_wrap`, `cursor`, `transform`, `transform_origin` and
-/// `backface_visibility`. It ignores [`opacity`](Self::opacity) (use
-/// [`TextPropSchema::opacity`]), [`transition`](Self::transition) and
-/// [`hover`](Self::hover). Line height and alignment are tag props:
-/// [`TextPropSchema::line_height`] and [`TextPropSchema::align`].
+/// `font_weight`, `text_wrap`, `cursor`, `opacity`, `transform`,
+/// `transform_origin` and `backface_visibility`. It ignores
+/// [`transition`](Self::transition). Line height and alignment are tag
+/// props: [`TextPropSchema::line_height`] and [`TextPropSchema::align`].
+///
+/// `<Text>` takes no hover style and no event handlers; wrap it in an
+/// `<Element>` for those.
 ///
 /// An unset `color`, `cursor`, `font`, `font_size`, `font_weight` or
 /// `text_wrap` takes the value of the nearest ancestor that sets it, as do
@@ -586,10 +588,11 @@ pub struct TextStylePropSchema {
     /// The mouse cursor while the pointer is over this text. Default:
     /// inherited, else [`Cursor::Default`].
     pub cursor: Option<Cursor>,
-    /// Has no effect: `<Text>` does not track hover. See
-    /// [`HoverTextStylePropSchema`].
-    pub hover: Option<HoverTextStylePropSchema>,
-    /// Has no effect on `<Text>`; use [`TextPropSchema::opacity`].
+    /// Opacity from 0 (invisible) to 1 (opaque). Values outside are
+    /// clamped. Default 1. Paint only.
+    ///
+    /// While set, it takes precedence over [`TextPropSchema::opacity`];
+    /// removing it from the style restores the prop's value.
     pub opacity: Option<Opacity>,
     /// Translates, scales or rotates the drawn text without changing its
     /// layout; see [`ElementStylePropSchema::transform`]. A percent
@@ -603,48 +606,6 @@ pub struct TextStylePropSchema {
     /// the viewer; see [`BackfaceVisibility`]. Default visible.
     pub backface_visibility: Option<BackfaceVisibility>,
     /// Has no effect: `<Text>` does not run transitions.
-    pub transition: Option<Transitions>,
-}
-
-/// Hover overrides for `<Text>`, used by [`TextStylePropSchema::hover`].
-///
-/// Has no effect: `<Text>` does not track hover, so none of these fields is
-/// ever applied.
-#[derive(Clone)]
-#[props]
-pub struct HoverTextStylePropSchema {
-    /// Hover counterpart of [`TextStylePropSchema::width`]; never applied.
-    pub width: Option<Length>,
-    /// Hover counterpart of [`TextStylePropSchema::height`]; never applied.
-    pub height: Option<Length>,
-    /// Hover counterpart of [`TextStylePropSchema::color`]; never applied.
-    pub color: Option<Box<dyn ColorLike>>,
-    /// Hover counterpart of [`TextStylePropSchema::font`]; never applied.
-    pub font: Option<FontFamily>,
-    /// Hover counterpart of [`TextStylePropSchema::font_size`]; never
-    /// applied.
-    pub font_size: Option<FontSize>,
-    /// Hover counterpart of [`TextStylePropSchema::font_weight`]; never
-    /// applied.
-    pub font_weight: Option<FontWeight>,
-    /// Hover counterpart of [`TextStylePropSchema::text_wrap`]; never
-    /// applied.
-    pub text_wrap: Option<TextWrap>,
-    /// Hover counterpart of [`TextStylePropSchema::cursor`]; never applied.
-    pub cursor: Option<Cursor>,
-    /// Hover counterpart of [`TextStylePropSchema::opacity`]; never applied.
-    pub opacity: Option<Opacity>,
-    /// Hover counterpart of [`TextStylePropSchema::transform`]; never
-    /// applied.
-    pub transform: Option<Transform>,
-    /// Hover counterpart of [`TextStylePropSchema::transform_origin`]; never
-    /// applied.
-    pub transform_origin: Option<TransformOrigin>,
-    /// Hover counterpart of [`TextStylePropSchema::backface_visibility`];
-    /// never applied.
-    pub backface_visibility: Option<BackfaceVisibility>,
-    /// Hover counterpart of [`TextStylePropSchema::transition`]; never
-    /// applied.
     pub transition: Option<Transitions>,
 }
 
@@ -712,9 +673,8 @@ pub struct TextPropSchema {
     pub font: Option<String>,
     /// Opacity of this text from 0 to 1, clamped when drawn. Default 1.
     ///
-    /// This is the only way to set a `<Text>`'s opacity:
-    /// [`TextStylePropSchema::opacity`] is ignored. `0.0` counts as unset,
-    /// so it leaves the text fully opaque.
+    /// A [`TextStylePropSchema::opacity`] takes precedence while set. `0.0`
+    /// counts as unset, so it leaves the text fully opaque.
     pub opacity: Option<f64>,
 }
 
@@ -1409,12 +1369,6 @@ impl_shared_style_prop_value!(
     from_lowered_style_prop_value
 );
 impl_shared_style_prop_value!(
-    HoverTextStylePropSchema,
-    "HoverTextStylePropSchema",
-    into_shared_prop_value,
-    from_shared_prop_value
-);
-impl_shared_style_prop_value!(
     SelectionStylePropSchema,
     "SelectionStylePropSchema",
     into_shared_prop_value,
@@ -1523,23 +1477,6 @@ impl SharedStylePropFields for HoverElementStylePropSchema {
 }
 
 impl SharedStylePropFields for TextStylePropSchema {
-    fn shared_style_fields(&self) -> SharedStyleFields<'_> {
-        SharedStyleFields {
-            width: self.width,
-            height: self.height,
-            color: &self.color,
-            font: &self.font,
-            font_size: self.font_size,
-            font_weight: self.font_weight,
-            text_wrap: self.text_wrap,
-            cursor: self.cursor,
-            opacity: self.opacity,
-            transition: &self.transition,
-        }
-    }
-}
-
-impl SharedStylePropFields for HoverTextStylePropSchema {
     fn shared_style_fields(&self) -> SharedStyleFields<'_> {
         SharedStyleFields {
             width: self.width,
@@ -1876,21 +1813,6 @@ impl StylePropTrait for ElementStylePropSchema {
     }
 }
 
-impl HoverTextStylePropSchema {
-    pub fn to_style(&self) -> Style {
-        let mut style = Style::new();
-        apply_shared_style_fields(&mut style, &self.shared_style_fields());
-        if let Some(transform) = &self.transform {
-            style.set_transform(transform.clone());
-        }
-        if let Some(transform_origin) = self.transform_origin {
-            style.set_transform_origin(transform_origin);
-        }
-        apply_backface_visibility(&mut style, self.backface_visibility);
-        style
-    }
-}
-
 impl TextStylePropSchema {
     pub fn to_style(&self) -> Style {
         let mut style = Style::new();
@@ -1902,9 +1824,6 @@ impl TextStylePropSchema {
             style.set_transform_origin(transform_origin);
         }
         apply_backface_visibility(&mut style, self.backface_visibility);
-        if let Some(hover) = &self.hover {
-            style.set_hover(hover.to_style());
-        }
         style
     }
 }

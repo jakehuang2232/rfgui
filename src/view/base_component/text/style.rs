@@ -26,6 +26,7 @@ pub(crate) struct TextComputedStyleBridge {
     has_transform: bool,
     has_transform_origin: bool,
     has_backface_visibility: bool,
+    has_opacity: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +82,7 @@ impl TextComputedStyleBridge {
             has_transform: style.get(PropertyId::Transform).is_some(),
             has_transform_origin: style.get(PropertyId::TransformOrigin).is_some(),
             has_backface_visibility: style.get(PropertyId::BackfaceVisibility).is_some(),
+            has_opacity: style.get(PropertyId::Opacity).is_some(),
             computed,
         }
     }
@@ -271,7 +273,19 @@ impl Text {
         });
     }
 
+    /// Sets the `opacity` prop. A `style.opacity` takes precedence while set.
     pub fn set_opacity(&mut self, opacity: f32) {
+        self.prop_opacity = opacity;
+        self.apply_effective_opacity();
+    }
+
+    fn set_style_opacity(&mut self, opacity: Option<f32>) {
+        self.style_opacity = opacity;
+        self.apply_effective_opacity();
+    }
+
+    fn apply_effective_opacity(&mut self) {
+        let opacity = self.style_opacity.unwrap_or(self.prop_opacity);
         if self.opacity.to_bits() == opacity.to_bits() {
             return;
         }
@@ -424,6 +438,7 @@ impl Text {
             self.set_transform(crate::style::Transform::default());
             self.set_transform_origin(crate::style::TransformOrigin::center());
             self.set_backface_visibility(crate::style::BackfaceVisibility::Visible);
+            self.set_style_opacity(None);
         }
 
         self.apply_inherited(inherited);
@@ -493,6 +508,7 @@ impl Text {
         if bridge.has_vertical_align {
             self.set_vertical_align(bridge.computed.vertical_align);
         }
+        self.set_style_opacity(bridge.has_opacity.then_some(bridge.computed.opacity));
     }
 
     /// 軌 A #7: apply an ancestor-derived `StyleCascadeContext` to any

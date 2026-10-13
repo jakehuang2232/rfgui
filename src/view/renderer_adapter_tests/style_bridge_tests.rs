@@ -189,3 +189,51 @@ fn as_element_style_accepts_box_style_props() {
         Some(ParsedValue::Color(_))
     ));
 }
+
+#[test]
+fn text_style_opacity_takes_precedence_over_the_opacity_prop_while_set() {
+    let opacity_style = |value: f32| TextStylePropSchema {
+        opacity: Some(crate::style::Opacity::new(value)),
+        ..Default::default()
+    };
+    let mut arena = crate::view::test_support::new_test_arena();
+    let root = commit_rsx_tree(
+        &mut arena,
+        &host_text_node()
+            .with_prop("opacity", 0.9)
+            .with_prop("style", opacity_style(0.4))
+            .with_child(RsxNode::text("fade")),
+    )[0];
+    let opacity = |arena: &crate::view::node_arena::NodeArena| {
+        crate::view::test_support::get_element::<Text>(arena, root).opacity()
+    };
+    assert_eq!(opacity(&arena), 0.4);
+
+    let viewport_style = Style::new();
+    let ctx = crate::view::fiber_work::ApplyContext {
+        viewport_style: &viewport_style,
+        viewport_width: 800.0,
+        viewport_height: 600.0,
+    };
+    let apply =
+        |arena: &mut crate::view::node_arena::NodeArena, name, value: crate::ui::PropValue| {
+            arena.with_element_taken(root, |element, arena_ref| {
+                element.apply_prop(arena_ref, root, &ctx, name, value);
+            });
+        };
+    // A style without opacity hands it back to the prop.
+    apply(
+        &mut arena,
+        "style",
+        TextStylePropSchema::default().into_prop_value(),
+    );
+    assert_eq!(opacity(&arena), 0.9);
+    // A style value keeps precedence over a later prop change.
+    apply(&mut arena, "style", opacity_style(0.3).into_prop_value());
+    apply(&mut arena, "opacity", 0.8.into_prop_value());
+    assert_eq!(opacity(&arena), 0.3);
+    arena.with_element_taken(root, |element, arena_ref| {
+        element.reset_prop(arena_ref, root, &ctx, "style");
+    });
+    assert_eq!(opacity(&arena), 0.8);
+}
