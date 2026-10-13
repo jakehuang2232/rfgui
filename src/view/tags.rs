@@ -4,10 +4,10 @@
 
 use crate::style::style_props::{AllStyleSet, NoStylePropSchema, StylePropTrait, TextStyleSet};
 use crate::style::{
-    Align, Animator, BackfaceVisibility, BorderRadius, BoxShadow, ColorLike, CrossSize, Cursor,
-    Flex, FontFamily, FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding,
-    Position, ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform,
-    TransformOrigin, Transitions, VerticalAlign,
+    Animator, BackfaceVisibility, BorderRadius, BoxShadow, ColorLike, Cursor, Flex, FontFamily,
+    FontSize, FontWeight, IntoAnimationStyle, Layout, Length, Opacity, Padding, Position,
+    ScrollDirection, SelectionStyle, Style, TextAlign, TextWrap, Transform, TransformOrigin,
+    Transitions, VerticalAlign,
 };
 use crate::ui::RsxNode;
 use crate::ui::{
@@ -107,8 +107,6 @@ pub struct ElementStylePropSchema {
     pub min_height: Option<Length>,
     pub max_height: Option<Length>,
     pub layout: Option<Layout>,
-    pub cross_size: Option<CrossSize>,
-    pub align: Option<Align>,
     pub flex: Option<Flex>,
     pub gap: Option<Length>,
     pub scroll_direction: Option<ScrollDirection>,
@@ -149,8 +147,6 @@ pub struct HoverElementStylePropSchema {
     pub min_height: Option<Length>,
     pub max_height: Option<Length>,
     pub layout: Option<Layout>,
-    pub cross_size: Option<CrossSize>,
-    pub align: Option<Align>,
     pub flex: Option<Flex>,
     pub gap: Option<Length>,
     pub scroll_direction: Option<ScrollDirection>,
@@ -1085,8 +1081,6 @@ struct ElementStyleFields<'a> {
     min_height: Option<Length>,
     max_height: Option<Length>,
     layout: Option<Layout>,
-    cross_size: Option<CrossSize>,
-    align: Option<Align>,
     flex: Option<Flex>,
     gap: Option<Length>,
     scroll_direction: Option<ScrollDirection>,
@@ -1121,8 +1115,6 @@ impl ElementStylePropFields for ElementStylePropSchema {
             min_height: self.min_height,
             max_height: self.max_height,
             layout: self.layout,
-            cross_size: self.cross_size,
-            align: self.align,
             flex: self.flex,
             gap: self.gap,
             scroll_direction: self.scroll_direction,
@@ -1155,8 +1147,6 @@ impl ElementStylePropFields for HoverElementStylePropSchema {
             min_height: self.min_height,
             max_height: self.max_height,
             layout: self.layout,
-            cross_size: self.cross_size,
-            align: self.align,
             flex: self.flex,
             gap: self.gap,
             scroll_direction: self.scroll_direction,
@@ -1289,18 +1279,6 @@ where
         style.insert(
             crate::style::PropertyId::Layout,
             crate::style::ParsedValue::Layout(layout),
-        );
-    }
-    if let Some(cross_size) = fields.cross_size {
-        style.insert(
-            crate::style::PropertyId::CrossSize,
-            crate::style::ParsedValue::CrossSize(cross_size),
-        );
-    }
-    if let Some(align) = fields.align {
-        style.insert(
-            crate::style::PropertyId::Align,
-            crate::style::ParsedValue::Align(align),
         );
     }
     if let Some(flex) = fields.flex {

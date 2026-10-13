@@ -380,8 +380,11 @@ pub fn RenderTest(theme: Theme, animation_on: bool) -> RsxNode {
                         background: Color::hex("#08111f"),
                         border: Border::uniform(Length::px(1.0), &Color::hex("#1e293b")),
                         border_radius: theme.radius.md,
-                        layout: Layout::flow().row().no_wrap().justify_content(JustifyContent::Center),
-                        align: Align::Center,
+                        layout: Layout::flow()
+                            .row()
+                            .no_wrap()
+                            .justify_content(JustifyContent::Center)
+                            .align(Align::Center),
                     }}>
                         <Element style={{
                             width: Length::px(56.0),
@@ -716,7 +719,6 @@ pub fn RenderTest(theme: Theme, animation_on: bool) -> RsxNode {
                         width: Length::percent(100.0),
                         layout: Layout::flow().row().wrap(),
                         gap: theme.spacing.lg,
-                        cross_size: CrossSize::Fit,
                     }}>
                         <Element style={{
                             width: Length::px(210.0),

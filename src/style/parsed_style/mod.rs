@@ -17,8 +17,6 @@ use std::ops::Add;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum PropertyId {
     Layout,
-    CrossSize,
-    Align,
     Flex,
     Position,
     Width,
@@ -2502,8 +2500,6 @@ pub const fn flex() -> Flex {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ParsedValue {
     Layout(Layout),
-    CrossSize(CrossSize),
-    Align(Align),
     Flex(Flex),
     ScrollDirection(ScrollDirection),
     Cursor(Cursor),

@@ -174,7 +174,6 @@ pub fn ButtonSection(theme: Theme) -> RsxNode {
                 width: Length::percent(100.0),
                 layout: Layout::flow().row().wrap(),
                 gap: theme.spacing.md,
-                align: rfgui::style::Align::Start,
             }}>
                 <ToggleButtonGroup value={align.binding()}>
                     <ToggleButton value="left"><FormatAlignLeftIcon /></ToggleButton>

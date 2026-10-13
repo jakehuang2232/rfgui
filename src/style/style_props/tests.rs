@@ -61,8 +61,6 @@ fn registry_has_unique_property_ids() {
 fn registry_covers_current_property_id_variants() {
     let expected = [
         PropertyId::Layout,
-        PropertyId::CrossSize,
-        PropertyId::Align,
         PropertyId::Flex,
         PropertyId::Position,
         PropertyId::Width,

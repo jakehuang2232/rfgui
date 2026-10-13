@@ -39,8 +39,6 @@ pub struct CornerRadii<T> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
     pub layout: Layout,
-    pub cross_size: CrossSize,
-    pub align: Align,
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub flex_basis: SizeValue,
@@ -90,8 +88,6 @@ impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
             layout: Layout::Inline,
-            cross_size: CrossSize::Fit,
-            align: Align::Start,
             flex_grow: 0.0,
             flex_shrink: 1.0,
             flex_basis: SizeValue::Auto,
@@ -168,8 +164,6 @@ impl ComputedStyle {
     /// because they only affect the place or paint passes.
     pub fn layout_eq(&self, other: &Self) -> bool {
         self.layout == other.layout
-            && self.cross_size == other.cross_size
-            && self.align == other.align
             && self.flex_grow == other.flex_grow
             && self.flex_shrink == other.flex_shrink
             && self.flex_basis == other.flex_basis
@@ -240,35 +234,17 @@ impl ComputedStyle {
         }
     }
 
-    pub const fn layout_axis_cross_size(&self) -> crate::style::CrossSize {
+    pub const fn layout_axis_cross_size(&self) -> CrossSize {
         match self.layout {
             Layout::Flex { cross_axis, .. } | Layout::Flow { cross_axis, .. } => cross_axis.size,
-            Layout::Inline => crate::style::CrossSize::Fit,
-            _ => self.cross_size,
+            Layout::Inline | Layout::Grid => CrossSize::Fit,
         }
     }
 
-    pub const fn layout_flow_cross_size(&self) -> crate::style::CrossSize {
-        match self.layout {
-            Layout::Flow { cross_axis, .. } => cross_axis.size,
-            Layout::Inline => crate::style::CrossSize::Fit,
-            _ => self.cross_size,
-        }
-    }
-
-    pub const fn layout_axis_align(&self) -> crate::style::Align {
+    pub const fn layout_axis_align(&self) -> Align {
         match self.layout {
             Layout::Flex { cross_axis, .. } | Layout::Flow { cross_axis, .. } => cross_axis.align,
-            Layout::Inline => crate::style::Align::Start,
-            _ => self.align,
-        }
-    }
-
-    pub const fn layout_flow_align(&self) -> crate::style::Align {
-        match self.layout {
-            Layout::Flow { cross_axis, .. } => cross_axis.align,
-            Layout::Inline => crate::style::Align::Start,
-            _ => self.align,
+            Layout::Inline | Layout::Grid => Align::Start,
         }
     }
 }
@@ -307,8 +283,6 @@ pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) 
     let parsed = effective_style.as_ref().unwrap_or(parsed);
 
     let mut computed = ComputedStyle::default();
-    let mut has_explicit_cross_size = false;
-    let mut has_explicit_align = false;
 
     if let Some(parent) = ctx.parent {
         apply_inherited_properties(parent, &mut computed);
@@ -325,18 +299,6 @@ pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) 
             PropertyId::Layout => {
                 if let ParsedValue::Layout(value) = &declaration.value {
                     computed.layout = *value;
-                }
-            }
-            PropertyId::CrossSize => {
-                if let ParsedValue::CrossSize(value) = &declaration.value {
-                    computed.cross_size = *value;
-                    has_explicit_cross_size = true;
-                }
-            }
-            PropertyId::Align => {
-                if let ParsedValue::Align(value) = &declaration.value {
-                    computed.align = *value;
-                    has_explicit_align = true;
                 }
             }
             PropertyId::Flex => {
@@ -589,12 +551,6 @@ pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) 
         resolve_length_px(computed.border_radii.bottom_left),
     )
     .max(0.0);
-    if !has_explicit_cross_size {
-        computed.cross_size = computed.layout_axis_cross_size();
-    }
-    if !has_explicit_align {
-        computed.align = computed.layout_axis_align();
-    }
 
     computed
 }

@@ -135,8 +135,6 @@ macro_rules! style_prop_registry {
 
 style_prop_registry! {
     Layout => { inherited: false, animatable: false },
-    CrossSize => { inherited: false, animatable: false },
-    Align => { inherited: false, animatable: false },
     Flex => { inherited: false, animatable: true },
     Position => { inherited: false, animatable: true },
     Width => { inherited: false, animatable: true },

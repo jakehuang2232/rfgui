@@ -371,31 +371,6 @@ fn compute_style_reads_justify_content_from_layput_flow() {
             cross_axis: CrossAxis::new(CrossSize::Stretch, Align::Center),
         }
     );
-    assert_eq!(computed.align, Align::Center);
-    assert_eq!(computed.cross_size, CrossSize::Stretch);
-}
-
-#[test]
-fn explicit_cross_axis_overrides_flow_cross_axis() {
-    let mut style = Style::new();
-    style.insert(
-        PropertyId::Layout,
-        ParsedValue::Layout(
-            Layout::flow()
-                .align(Align::End)
-                .cross_size(CrossSize::Fit)
-                .into(),
-        ),
-    );
-    style.insert(PropertyId::Align, ParsedValue::Align(Align::Center));
-    style.insert(
-        PropertyId::CrossSize,
-        ParsedValue::CrossSize(CrossSize::Stretch),
-    );
-
-    let computed = compute_style(&style, None);
-    assert_eq!(computed.align, Align::Center);
-    assert_eq!(computed.cross_size, CrossSize::Stretch);
 }
 
 #[test]
