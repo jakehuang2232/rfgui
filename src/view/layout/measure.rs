@@ -8,7 +8,7 @@
 //!   returns owned outputs the caller writes back into its component
 //!   state.
 
-use crate::style::{Layout, SizeValue};
+use crate::style::Layout;
 use crate::view::base_component::{LayoutConstraints, Size};
 use crate::view::layout::flex_solver::{
     FlexSolverInputs, compute_flex_info, flex_hypothetical_main,
@@ -90,18 +90,14 @@ pub(crate) fn measure_child_if_needed(
     arena.with_element_taken(key, |child, arena| child.measure(constraints, arena));
 }
 
-/// Each child of a row is first measured against the whole row. A no-wrap
-/// row has no next line, so when its children overflow, the ones sized by
-/// their content share what the other children and gaps leave. A child
+/// Each child of a flex row is first measured against the whole row, and
+/// the solver takes a content-sized child's measured width as its minimum.
+/// When the children overflow, the content-sized ones share what the other
+/// children (at the size the solver starts them at) and gaps leave. A child
 /// whose width fits an even share keeps it; wider children are measured
-/// again at the share, so wrapping content wraps there. The row still
-/// overflows when a child cannot get narrower; a flex row then shrinks its
-/// other children as usual.
-///
-/// A flow child is sized by its content when its width is auto. A flex
-/// child is when the solver takes its measured width as its minimum; the
-/// others count with the size the solver starts them at.
-fn fit_no_wrap_row(inputs: &MeasureAxisInputs<'_>, arena: &mut NodeArena) {
+/// again at the share, so wrapping content wraps there. The solver then
+/// shrinks the other children as usual if the row still overflows.
+fn fit_flex_row(inputs: &MeasureAxisInputs<'_>, arena: &mut NodeArena) {
     let mut in_flow = 0_usize;
     let mut fixed_width = 0.0_f32;
     let mut auto_widths = Vec::new();
@@ -115,14 +111,9 @@ fn fit_no_wrap_row(inputs: &MeasureAxisInputs<'_>, arena: &mut NodeArena) {
         in_flow += 1;
         let width = node.element.measured_size().0.max(0.0);
         let props = node.element.flex_props();
-        let content_sized = if inputs.is_real_flex {
-            props.auto_min_main(true).is_some()
-        } else {
-            props.main_size(true) == SizeValue::Auto
-        };
-        if content_sized {
+        if props.auto_min_main(true).is_some() {
             auto_widths.push((key, width));
-        } else if inputs.is_real_flex {
+        } else {
             fixed_width += flex_hypothetical_main(
                 &props,
                 width,
@@ -131,8 +122,6 @@ fn fit_no_wrap_row(inputs: &MeasureAxisInputs<'_>, arena: &mut NodeArena) {
                 inputs.viewport_width,
                 inputs.viewport_height,
             );
-        } else {
-            fixed_width += width;
         }
     }
     let gaps = inputs.solver_gap * in_flow.saturating_sub(1) as f32;
@@ -215,8 +204,8 @@ pub(crate) fn measure_axis(
         },
         arena,
     );
-    if inputs.is_row && !inputs.solver_wrap {
-        fit_no_wrap_row(&inputs, arena);
+    if inputs.is_row && inputs.is_real_flex {
+        fit_flex_row(&inputs, arena);
     }
 
     let flex_info = compute_flex_info(

@@ -249,6 +249,9 @@ fn SnackbarContentView(message: Option<RsxNode>, action: Option<RsxNode>) -> Rsx
     let message_node = message.unwrap_or_else(|| RsxNode::fragment(vec![]));
     let action_node = action.unwrap_or_else(|| RsxNode::fragment(vec![]));
 
+    // A flex row, not a flow row: a flow row measures the message against
+    // the whole row, so a long one would push the action out of the box
+    // instead of wrapping beside it.
     rsx! {
         <Element
             style={{
@@ -258,9 +261,8 @@ fn SnackbarContentView(message: Option<RsxNode>, action: Option<RsxNode>) -> Rsx
                 border_radius: theme.radius.sm,
                 font_size: theme.typography.size.sm,
                 box_shadow: vec![theme.shadow.level_2.clone()],
-                layout: Layout::flow()
+                layout: Layout::flex()
                     .row()
-                    .no_wrap()
                     .align(Align::Center)
                     .justify_content(JustifyContent::SpaceBetween),
                 gap: theme.spacing.md,

@@ -194,3 +194,60 @@ fn window_supports_nested_optional_object_props() {
     assert_eq!(root.tag_descriptor, Some(RsxTagDescriptor::of::<Window>()));
     assert!(!root.children.is_empty());
 }
+
+#[test]
+fn alert_wraps_long_text_to_fit_a_narrow_column() {
+    use crate::{Alert, AlertSeverity};
+    use rfgui::style::{Layout, Length};
+    use std::rc::Rc;
+
+    let on_close: Rc<dyn Fn()> = Rc::new(|| {});
+    let tree = render_root(move || {
+        let on_close = on_close.clone();
+        rsx! {
+            <Element style={{ width: Length::px(380.0), layout: Layout::flow().column() }}>
+                <Alert severity={AlertSeverity::Info} on_close={on_close}>
+                    {"Offline demo: my replies here are pre-written and picked by keyword."}
+                </Alert>
+            </Element>
+        }
+    });
+    let mut arena = NodeArena::new();
+    let root = commit_rsx_tree_into(&mut arena, &tree)[0];
+    measure_and_place_root(
+        &mut arena,
+        root,
+        LayoutConstraints {
+            max_width: 800.0,
+            max_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        },
+        LayoutPlacement {
+            parent_x: 0.0,
+            parent_y: 0.0,
+            visual_offset_x: 0.0,
+            visual_offset_y: 0.0,
+            available_width: 800.0,
+            available_height: 600.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            percent_base_width: Some(800.0),
+            percent_base_height: Some(600.0),
+        },
+    );
+
+    // The text wraps so the icon, the text and the close button all stay
+    // inside the 380px column.
+    let alert = arena.children_of(root)[0];
+    let alert_box = arena.get(alert).unwrap().element.box_model_snapshot();
+    assert_eq!(alert_box.width, 380.0);
+    let mut stack = arena.children_of(alert);
+    while let Some(key) = stack.pop() {
+        let snapshot = arena.get(key).unwrap().element.box_model_snapshot();
+        assert!(snapshot.x + snapshot.width <= 380.0, "{snapshot:?}");
+        stack.extend(arena.children_of(key));
+    }
+}

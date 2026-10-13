@@ -57,9 +57,12 @@ impl RsxComponent<CheckboxProps> for Checkbox {
         let on_pointer_leave =
             PointerLeaveHandlerProp::new(move |_event| hover_state_for_leave.set(false));
 
+        // A flex row, not a flow row: a flow row measures the label against
+        // the whole row, so a long one would push past the available width
+        // instead of wrapping beside the box.
         rsx! {
             <Element style={{
-                layout: Layout::flow().row().align(Align::Center).no_wrap(),
+                layout: Layout::flex().row().align(Align::Center),
                 gap: theme.spacing.md,
             }}
             on_click={click}

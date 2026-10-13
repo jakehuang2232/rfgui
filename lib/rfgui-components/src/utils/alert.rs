@@ -250,6 +250,9 @@ fn AlertView(
         RsxNode::fragment(vec![])
     };
 
+    // Flex rows, not flow rows: a flow row measures the message against
+    // the whole row, so a long one would push the icon, the action and the
+    // close button out of the box instead of wrapping beside them.
     rsx! {
         <Element
             style={{
@@ -260,9 +263,8 @@ fn AlertView(
                 border_radius: theme.radius.sm,
                 font_size: theme.typography.size.sm,
                 box_shadow: vec![theme.shadow.level_2.clone()],
-                layout: Layout::flow()
+                layout: Layout::flex()
                     .row()
-                    .no_wrap()
                     .align(Align::Center)
                     .justify_content(JustifyContent::SpaceBetween),
                 gap: theme.spacing.md,
@@ -271,7 +273,7 @@ fn AlertView(
             }}
         >
             <Element style={{
-                layout: Layout::flow().row().no_wrap().align(Align::Center),
+                layout: Layout::flex().row().align(Align::Center),
                 gap: theme.spacing.sm,
             }}>
                 {icon_node}
