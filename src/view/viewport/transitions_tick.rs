@@ -3,7 +3,7 @@ use crate::transition::{
     AnimationRequest, LayoutField, LayoutTrackRequest, StyleTrackRequest, VisualField,
     VisualTrackRequest,
 };
-use crate::view::base_component::{DirtyFlags, DirtyPassMask, Element, ElementTrait};
+use crate::view::base_component::{DirtyFlags, DirtyPassMask, Element, ElementTrait, Text};
 
 pub(super) struct TransitionHostAdapter<'a> {
     pub(super) registered_channels: &'a FxHashSet<ChannelId>,
@@ -974,13 +974,18 @@ pub(crate) fn collect_transition_track_allowlist(
         out: &mut FxHashSet<TrackKey<TrackTarget>>,
     ) {
         let Some(node) = arena.get(key) else { return };
-        if let Some(element) = node.element.as_any().downcast_ref::<Element>() {
-            for channel in element.active_transition_channels() {
-                out.insert(TrackKey {
-                    target: node.element.stable_id(),
-                    channel,
-                });
-            }
+        let channels = if let Some(element) = node.element.as_any().downcast_ref::<Element>() {
+            element.active_transition_channels()
+        } else if let Some(text) = node.element.as_any().downcast_ref::<Text>() {
+            text.active_transition_channels()
+        } else {
+            Vec::new()
+        };
+        for channel in channels {
+            out.insert(TrackKey {
+                target: node.element.stable_id(),
+                channel,
+            });
         }
         let child_count = node.children.len();
         drop(node);
@@ -1134,7 +1139,45 @@ fn restore_style_field_by_id(
     }) else {
         return false;
     };
-    set_arena_dirty_style_field_by_id(arena, root_key, stable_id, field, &value)
+    let restored = set_arena_dirty_style_field_by_id(arena, root_key, stable_id, field, &value);
+    if restored && field == StyleField::Color {
+        // The descendants go back to the color their own cascade gives them.
+        pass_inherited_color(arena, target_key, None);
+    }
+    restored
+}
+
+/// Passes an Element's animated `color` to the Text it colors: descendants
+/// that inherit it, through Elements that do not set a color of their own.
+/// `None` hands them back their inherited color.
+fn pass_inherited_color(
+    arena: &mut crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    color: Option<crate::style::Color>,
+) {
+    for child in arena.children_of(key) {
+        let descend = arena
+            .mutate_element_with_invalidation(child, |element, cx| {
+                if let Some(text) = element.as_any_mut().downcast_mut::<Text>() {
+                    text.set_inherited_color_override(color);
+                    cx.invalidate(element.local_dirty_flags());
+                    return false;
+                }
+                element
+                    .as_any()
+                    .downcast_ref::<Element>()
+                    .is_some_and(|element| {
+                        element
+                            .text_cascade_style()
+                            .get(crate::style::PropertyId::Color)
+                            .is_none()
+                    })
+            })
+            .unwrap_or(false);
+        if descend {
+            pass_inherited_color(arena, child, color);
+        }
+    }
 }
 
 fn restore_layout_field_by_id(
@@ -1225,8 +1268,15 @@ fn set_arena_dirty_style_field_by_id(
         return false;
     }
 
-    arena
+    let applied = arena
         .mutate_element_with_invalidation(target_key, |element, cx| {
+            if let Some(text) = element.as_any_mut().downcast_mut::<Text>() {
+                if !text.set_style_transition_sample(field, value) {
+                    return false;
+                }
+                cx.invalidate(element.local_dirty_flags());
+                return true;
+            }
             let Some(element) = element.as_any_mut().downcast_mut::<Element>() else {
                 return false;
             };
@@ -1286,7 +1336,18 @@ fn set_arena_dirty_style_field_by_id(
             }
             true
         })
-        .unwrap_or(false)
+        .unwrap_or(false);
+    // An Element draws no text of its own: its animated color shows in the
+    // Text that inherits it.
+    if applied
+        && let (StyleField::Color, StyleValue::Color(color)) = (field, value)
+        && arena
+            .get(target_key)
+            .is_some_and(|node| node.element.as_any().is::<Element>())
+    {
+        pass_inherited_color(arena, target_key, Some(*color));
+    }
+    applied
 }
 
 #[allow(dead_code)]

@@ -1,6 +1,7 @@
 //! Text paint recording: the prepared glyph payload built from the shaped
 //! context measure produced. Text draws no selection.
 
+use crate::style::ColorLike;
 use crate::view::render_pass::text_pass::{TextPassPreparedFragment, TextPassPreparedParams};
 
 use super::Text;
@@ -30,6 +31,10 @@ impl Text {
 
     /// The immutable source recording reads: owned by an inline formatting
     /// context, or shaped by this Text itself. `None` without one.
+    ///
+    /// Either way the glyphs take the drawn color: an IFC shapes them with
+    /// this Text's color as their brush, and an animating color changes the
+    /// drawn one without reshaping.
     fn shadow_text_paint_source(&self, opacity: f32) -> Option<ShadowTextPaintSource<'_>> {
         if let Some(input) = self.inline_ifc_owned_paint_input() {
             let installed = self.inline_ifc_owned_paint_bounds()?;
@@ -42,7 +47,7 @@ impl Text {
             return Some(ShadowTextPaintSource {
                 bounds,
                 input: self.is_paint_visible(opacity).then_some(input),
-                color_override: None,
+                color_override: Some(self.drawn_color().to_rgba_f32()),
             });
         }
         let bounds = self.standalone_paint_bounds();
@@ -60,7 +65,7 @@ impl Text {
         Some(ShadowTextPaintSource {
             bounds,
             input: Some(input),
-            color_override: Some(self.color.to_rgba_f32()),
+            color_override: Some(self.drawn_color().to_rgba_f32()),
         })
     }
 
@@ -128,7 +133,7 @@ impl Text {
                 opacity,
                 0,
                 1.0,
-                Some(self.color.to_rgba_f32()),
+                Some(self.drawn_color().to_rgba_f32()),
             ),
         )
     }

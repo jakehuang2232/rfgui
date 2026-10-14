@@ -27,6 +27,7 @@ pub(crate) struct TextComputedStyleBridge {
     has_transform_origin: bool,
     has_backface_visibility: bool,
     has_opacity: bool,
+    has_transition: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +84,7 @@ impl TextComputedStyleBridge {
             has_transform_origin: style.get(PropertyId::TransformOrigin).is_some(),
             has_backface_visibility: style.get(PropertyId::BackfaceVisibility).is_some(),
             has_opacity: style.get(PropertyId::Opacity).is_some(),
+            has_transition: style.get(PropertyId::Transition).is_some(),
             computed,
         }
     }
@@ -163,13 +165,20 @@ impl Text {
             font_size: self.font_size,
             line_height: self.line_height,
             font_weight: self.font_weight,
-            brush: self.color.to_rgba_u8(),
+            brush: self.drawn_color().to_rgba_u8(),
             font_families: self.font_families.clone(),
             vertical_align: self.vertical_align,
         }
     }
 
+    pub(super) fn has_explicit_color(&self) -> bool {
+        self.explicit_props.contains(TextExplicitProps::COLOR)
+    }
+
     pub fn set_color<T: ColorLike + 'static>(&mut self, color: T) {
+        if self.inherited_color_override.take().is_some() {
+            self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
+        }
         if self.color.to_rgba_u8() == color.to_rgba_u8() {
             self.explicit_props.insert(TextExplicitProps::COLOR);
             return;
@@ -431,6 +440,14 @@ impl Text {
         mode: TextStyleApplyMode,
     ) -> Result<(), String> {
         let bridge = style.map(|style| TextComputedStyleBridge::from_style(style, inherited));
+        // As for an Element, the first build does not transition.
+        let previous =
+            (mode == TextStyleApplyMode::Incremental).then(|| self.transition_snapshot());
+        self.transitions = bridge
+            .as_ref()
+            .filter(|bridge| bridge.has_transition)
+            .map(|bridge| bridge.computed.transition.clone())
+            .unwrap_or_default();
 
         if let Some(bridge) = &bridge {
             self.apply_computed_text_bridge(bridge);
@@ -442,6 +459,9 @@ impl Text {
         }
 
         self.apply_inherited(inherited);
+        if let Some(previous) = previous {
+            self.queue_style_transitions(&previous);
+        }
 
         let width = match bridge.as_ref().map(|bridge| &bridge.width) {
             Some(Ok(width)) => *width,

@@ -1,6 +1,6 @@
 //! `EventTarget` impl for Text. Text is a typography leaf — no event handlers,
-//! no scroll, no animator. Authors who need pointer/keyboard handlers wrap
-//! `<Element>` outside the `<Text>`.
+//! no scroll, no animator; it runs only its style transitions. Authors who
+//! need pointer/keyboard handlers wrap `<Element>` outside the `<Text>`.
 
 use crate::style::Cursor;
 use crate::view::base_component::EventTarget;
@@ -14,6 +14,10 @@ impl EventTarget for Text {
 
     fn cursor(&self) -> Cursor {
         self.cursor
+    }
+
+    fn take_style_transition_requests(&mut self) -> Vec<crate::transition::StyleTrackRequest> {
+        self.take_queued_style_transition_requests()
     }
     // All other EventTarget methods (dispatch_pointer_*, dispatch_key_*,
     // dispatch_focus, dispatch_blur, dispatch_wheel, dispatch_click,

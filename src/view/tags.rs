@@ -242,6 +242,11 @@ pub struct ElementStylePropSchema {
     /// Text color. The element draws no text itself: descendant `Text`,
     /// `TextArea` and bare text use it unless they set their own. Inherited.
     /// When nothing sets a color, text is drawn in `#111111`.
+    ///
+    /// A `Color` [`transition`](Self::transition) or a color keyframe in
+    /// [`animator`](Self::animator) recolors the inheriting `Text` every
+    /// frame, as CSS inherits the animated value. A `TextArea` does not
+    /// follow the animation: it takes the new color when the style changes.
     pub color: Option<Box<dyn ColorLike>>,
     /// Border widths and colors per side; see [`Border`](crate::style::Border).
     /// Default: no border.
@@ -383,10 +388,10 @@ pub struct ElementStylePropSchema {
     /// [`TransitionProperty`](crate::style::TransitionProperty), a duration
     /// and a delay in milliseconds, and a timing curve (linear by default).
     ///
-    /// - `Opacity`, `BackgroundColor`, `BorderColor` (all four sides),
-    ///   `BorderRadius`, `BoxShadow`, `Transform` and `TransformOrigin`
-    ///   animate when the computed value changes, for example when
-    ///   [`hover`](Self::hover) starts or after a re-render.
+    /// - `Opacity`, `Color`, `BackgroundColor`, `BorderColor` (all four
+    ///   sides), `BorderRadius`, `BoxShadow`, `Transform` and
+    ///   `TransformOrigin` animate when the computed value changes, for
+    ///   example when [`hover`](Self::hover) starts or after a re-render.
     /// - `Width` and `Height` animate the laid-out size, whatever changed
     ///   it: this element's style, its content or its parent's layout.
     /// - `Position`, `X` (or `PositionX`) and `Y` (or `PositionY`) animate a
@@ -400,7 +405,7 @@ pub struct ElementStylePropSchema {
     pub transition: Option<Transitions>,
     /// Keyframe animations that run on this element; see [`Animator`] and
     /// [`Animation`](crate::style::Animation). Keyframes animate opacity,
-    /// background color, border colors, border radius, box shadow,
+    /// color, background color, border colors, border radius, box shadow,
     /// transform, transform origin, and pixel widths and heights.
     ///
     /// The animator starts when it is first set or when its value changes.
@@ -529,11 +534,8 @@ pub struct HoverElementStylePropSchema {
 
 /// The `style` prop of `<Text>`.
 ///
-/// `<Text>` applies `width`, `height`, `color`, `font`, `font_size`,
-/// `font_weight`, `text_wrap`, `cursor`, `opacity`, `transform`,
-/// `transform_origin` and `backface_visibility`. It ignores
-/// [`transition`](Self::transition). Line height and alignment are tag
-/// props: [`TextPropSchema::line_height`] and [`TextPropSchema::align`].
+/// `<Text>` applies every field. Line height and alignment are tag props:
+/// [`TextPropSchema::line_height`] and [`TextPropSchema::align`].
 ///
 /// `<Text>` takes no hover style and no event handlers; wrap it in an
 /// `<Element>` for those.
@@ -605,7 +607,13 @@ pub struct TextStylePropSchema {
     /// Whether the text stays visible when its transform turns its back to
     /// the viewer; see [`BackfaceVisibility`]. Default visible.
     pub backface_visibility: Option<BackfaceVisibility>,
-    /// Has no effect: `<Text>` does not run transitions.
+    /// Animations for changes to this text's style, as
+    /// [`ElementStylePropSchema::transition`] runs them for an element:
+    /// `Color`, `Opacity`, `Transform`, `TransformOrigin` and `All` animate
+    /// when this style changes their value. The other properties do not
+    /// apply to text. The style the text is first built with does not
+    /// animate, and a color it inherits follows the animating ancestor
+    /// instead; see [`ElementStylePropSchema::color`].
     pub transition: Option<Transitions>,
 }
 

@@ -838,7 +838,7 @@ pub(crate) fn take_transition_requests_pending() -> bool {
     TRANSITION_REQUESTS_PENDING.with(|cell| cell.replace(false))
 }
 
-fn mark_transition_requests_pending() {
+pub(crate) fn mark_transition_requests_pending() {
     TRANSITION_REQUESTS_PENDING.with(|cell| cell.set(true));
 }
 

@@ -378,7 +378,7 @@ pub(crate) fn resolve_layout_insets(
     }
 }
 
-fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
+pub(crate) fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
     match timing {
         TransitionTiming::Linear => TimeFunction::Linear,
         TransitionTiming::EaseIn => TimeFunction::EaseIn,
@@ -387,7 +387,7 @@ fn map_transition_timing(timing: TransitionTiming) -> TimeFunction {
     }
 }
 
-fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelId>) {
+pub(crate) fn push_transition_channels(property: TransitionProperty, out: &mut Vec<ChannelId>) {
     match property {
         TransitionProperty::All => {
             out.extend([

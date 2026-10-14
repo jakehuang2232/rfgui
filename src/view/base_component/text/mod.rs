@@ -23,6 +23,7 @@ mod profile;
 mod props;
 mod render;
 mod style;
+mod transition;
 
 #[cfg(test)]
 mod tests;
@@ -108,6 +109,11 @@ pub struct Text {
     pub(super) opacity: f32,
     pub(super) prop_opacity: f32,
     pub(super) style_opacity: Option<f32>,
+    /// The style's own transitions; see `transition.rs`.
+    pub(super) transitions: crate::style::Transitions,
+    pub(super) style_transition_requests: Vec<crate::transition::StyleTrackRequest>,
+    /// The animated color of an ancestor, drawn while it animates.
+    pub(super) inherited_color_override: Option<crate::style::Color>,
     pub(super) transform: Transform,
     pub(super) transform_origin: TransformOrigin,
     pub(super) resolved_transform: Option<Mat4>,
@@ -205,6 +211,9 @@ impl Text {
             opacity: 1.0,
             prop_opacity: 1.0,
             style_opacity: None,
+            transitions: crate::style::Transitions::default(),
+            style_transition_requests: Vec::new(),
+            inherited_color_override: None,
             transform: Transform::default(),
             transform_origin: TransformOrigin::center(),
             resolved_transform: None,
@@ -888,7 +897,7 @@ impl ElementTrait for Text {
         self.layout_state.should_render.hash(&mut hasher);
         self.backface_culled.hash(&mut hasher);
         self.content_hash.hash(&mut hasher);
-        self.color.to_rgba_u8().hash(&mut hasher);
+        self.drawn_color().to_rgba_u8().hash(&mut hasher);
         self.font_families.hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);
         self.line_height.to_bits().hash(&mut hasher);
@@ -983,6 +992,9 @@ impl ElementTrait for Text {
     }
 
     fn apply_inherited(&mut self, inherited: &crate::view::renderer_adapter::StyleCascadeContext) {
+        // A recascade hands this Text a fresh inherited color; an ancestor
+        // still animating passes its color down again on its next sample.
+        self.set_inherited_color_override(None);
         Text::apply_inherited(self, inherited);
     }
 

@@ -324,10 +324,10 @@ fn native_production_artifact_nested_scroll_inline_ifc_text_paints_inside_its_sc
     // hosts' background, or that background blended toward the glyph color by
     // one coverage value, which the green and blue channels must agree on.
     // The fixture builds its IFC-owned geometry from the standalone Text's
-    // shaped context, which Text shapes with a constant black brush (the
-    // standalone bridge applies its color), so these glyphs paint black.
+    // shaped context, which Text shapes with a constant black brush; Text
+    // draws either geometry in its own color, here rgb(31, 91, 173).
     let background = rgba8_unorm(Color::rgb(24, 48, 72));
-    let glyph = [0, 0, 0, 255];
+    let glyph = rgba8_unorm(Color::rgb(31, 91, 173));
     let expected = |pixels: &[u8], case: &str| {
         let near = |value: u32, edge: u32| value + 1 >= edge && value <= edge;
         let mut inked = 0;
