@@ -192,3 +192,62 @@ fn incremental_commit_applies_svg_loading_slot_swap() {
     let svg = node.element.as_any().downcast_ref::<Svg>().unwrap();
     assert_eq!(svg.loading_slot_len(), 1);
 }
+
+/// Zero is a value for these props, not "unset": a Text whose opacity prop
+/// fades to 0 stays transparent rather than being reset to 1, on the first
+/// build and on an update.
+#[test]
+fn zero_text_and_text_area_props_apply_as_zero() {
+    use crate::style::FontSize;
+    use crate::view::Text as HostText;
+    use crate::view::TextArea as HostTextArea;
+    use crate::view::base_component::{Text as TextHost, TextArea as TextAreaHost};
+
+    let scene = |zero: bool| {
+        let value = if zero { 0.0 } else { 0.5 };
+        rsx! {
+            <HostElement style={{ width: Length::px(200.0), height: Length::px(80.0) }}>
+                <HostText
+                    opacity={value}
+                    line_height={value * 3.0}
+                    font_size={FontSize::px(value as f32 * 24.0)}
+                >"fade"</HostText>
+                <HostTextArea
+                    content={"abc".to_string()}
+                    font_size={FontSize::px(value as f32 * 24.0)}
+                    max_length={(value * 10.0) as i64}
+                />
+            </HostElement>
+        }
+    };
+    let assert_zero = |viewport: &Viewport, label: &str| {
+        let arena = &viewport.scene.node_arena;
+        let children = arena.children_of(viewport.scene.ui_root_keys[0]);
+        let text = crate::view::test_support::get_element::<TextHost>(arena, children[0]);
+        assert_eq!(
+            (text.opacity(), text.line_height_value(), text.font_size()),
+            (0.0, 0.0, 0.0),
+            "{label}: Text opacity, line height, font size",
+        );
+        drop(text);
+        let area = crate::view::test_support::get_element::<TextAreaHost>(arena, children[1]);
+        assert_eq!(
+            (area.font_size, area.max_length, area.content.as_str()),
+            (0.0, Some(0), ""),
+            "{label}: TextArea font size, max length, content",
+        );
+    };
+
+    let mut built = Viewport::new();
+    built.set_use_incremental_commit(true);
+    built.render_rsx(&scene(true)).expect("cold render");
+    assert_zero(&built, "first build");
+
+    let mut updated = Viewport::new();
+    updated.set_use_incremental_commit(true);
+    updated.render_rsx(&scene(false)).expect("cold render");
+    let root = updated.scene.ui_root_keys[0];
+    updated.render_rsx(&scene(true)).expect("update");
+    assert_eq!(updated.scene.ui_root_keys, vec![root]);
+    assert_zero(&updated, "update");
+}

@@ -653,15 +653,15 @@ pub struct TextPropSchema {
     /// `Text` out as a box, as [`Layout::Flow`] does.
     pub align: Option<TextAlign>,
     /// Text size, as a number of pixels or a [`FontSize`]. `em` and percent
-    /// are relative to the inherited size. Zero counts as unset. It takes
-    /// priority over the inherited size.
+    /// are relative to the inherited size. It takes priority over the
+    /// inherited size.
     ///
     /// When [`TextStylePropSchema::font_size`] is also set, the style value
     /// wins when the text is first built; on later updates, whichever of
     /// the two changed is applied.
     pub font_size: Option<FontSize>,
     /// Line height as a multiplier of the font size, not a length: `1.5`
-    /// makes each line 1.5 times the font size tall. Zero counts as unset.
+    /// makes each line 1.5 times the font size tall.
     ///
     /// There is no style counterpart on `<Text>`. It takes priority over a
     /// [`line_height`](ElementStylePropSchema::line_height) inherited from
@@ -676,8 +676,7 @@ pub struct TextPropSchema {
     pub font: Option<String>,
     /// Opacity of this text from 0 to 1, clamped when drawn. Default 1.
     ///
-    /// A [`TextStylePropSchema::opacity`] takes precedence while set. `0.0`
-    /// counts as unset, so it leaves the text fully opaque.
+    /// A [`TextStylePropSchema::opacity`] takes precedence while set.
     pub opacity: Option<f64>,
 }
 
@@ -704,6 +703,8 @@ pub struct TextAreaPropSchema {
     pub multiline: Option<bool>,
     pub auto_wrap: Option<bool>,
     pub read_only: Option<bool>,
+    /// Most characters the content may hold: longer content is cut, and
+    /// typing stops at the limit. `0` allows none. Default: no limit.
     pub max_length: Option<i64>,
 }
 
@@ -804,14 +805,10 @@ impl RsxComponent<TextPropSchema> for Text {
         if let Some(align) = props.align {
             node = node.with_prop("align", align);
         }
-        if let Some(font_size) = props.font_size
-            && !is_unset_font_size(font_size)
-        {
+        if let Some(font_size) = props.font_size {
             node = node.with_prop("font_size", font_size);
         }
-        if let Some(line_height) = props.line_height
-            && line_height != 0.0
-        {
+        if let Some(line_height) = props.line_height {
             node = node.with_prop("line_height", line_height);
         }
         if let Some(font) = props.font
@@ -819,9 +816,7 @@ impl RsxComponent<TextPropSchema> for Text {
         {
             node = node.with_prop("font", font);
         }
-        if let Some(opacity) = props.opacity
-            && opacity != 0.0
-        {
+        if let Some(opacity) = props.opacity {
             node = node.with_prop("opacity", opacity);
         }
         for child in children {
@@ -898,9 +893,7 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
         {
             node = node.with_prop("placeholder", placeholder);
         }
-        if let Some(font_size) = props.font_size
-            && !is_unset_font_size(font_size)
-        {
+        if let Some(font_size) = props.font_size {
             node = node.with_prop("font_size", font_size);
         }
         if let Some(font) = props.font
@@ -917,9 +910,7 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
         if let Some(read_only) = props.read_only {
             node = node.with_prop("read_only", read_only);
         }
-        if let Some(max_length) = props.max_length
-            && max_length != 0
-        {
+        if let Some(max_length) = props.max_length {
             node = node.with_prop("max_length", max_length);
         }
         if let Some(handler) = props.on_render {
@@ -1937,16 +1928,5 @@ impl crate::ui::FromPropValue for RsxNode {
                 .map_err(|_| "expected RsxNode value".to_string()),
             _ => Err("expected RsxNode value".to_string()),
         }
-    }
-}
-
-fn is_unset_font_size(font_size: FontSize) -> bool {
-    match font_size {
-        FontSize::Px(v)
-        | FontSize::Percent(v)
-        | FontSize::Em(v)
-        | FontSize::Rem(v)
-        | FontSize::Vw(v)
-        | FontSize::Vh(v) => v == 0.0,
     }
 }
