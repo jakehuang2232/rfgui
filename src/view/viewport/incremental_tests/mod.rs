@@ -5,6 +5,7 @@
 
 #![cfg(test)]
 
+mod box_length_transition_tests;
 mod commit;
 mod common;
 mod dirty;

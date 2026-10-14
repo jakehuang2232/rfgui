@@ -8,7 +8,7 @@ use super::{
     Transition, TransitionFrame, TransitionHost, TransitionPluginId, elapsed_seconds_from_frame,
     normalized_timeline_progress,
 };
-use crate::style::{BoxShadow, Color, Interpolate, Transform, TransformOrigin};
+use crate::style::{BoxShadow, Color, Interpolate, Length, Transform, TransformOrigin};
 
 pub const CHANNEL_STYLE_OPACITY: ChannelId = ChannelId(30_001);
 pub const CHANNEL_STYLE_BORDER_RADIUS: ChannelId = ChannelId(30_002);
@@ -21,6 +21,15 @@ pub const CHANNEL_STYLE_BORDER_LEFT_COLOR: ChannelId = ChannelId(30_008);
 pub const CHANNEL_STYLE_TRANSFORM: ChannelId = ChannelId(30_009);
 pub const CHANNEL_STYLE_TRANSFORM_ORIGIN: ChannelId = ChannelId(30_010);
 pub const CHANNEL_STYLE_BOX_SHADOW: ChannelId = ChannelId(30_011);
+pub const CHANNEL_STYLE_PADDING_TOP: ChannelId = ChannelId(30_012);
+pub const CHANNEL_STYLE_PADDING_RIGHT: ChannelId = ChannelId(30_013);
+pub const CHANNEL_STYLE_PADDING_BOTTOM: ChannelId = ChannelId(30_014);
+pub const CHANNEL_STYLE_PADDING_LEFT: ChannelId = ChannelId(30_015);
+pub const CHANNEL_STYLE_BORDER_TOP_WIDTH: ChannelId = ChannelId(30_016);
+pub const CHANNEL_STYLE_BORDER_RIGHT_WIDTH: ChannelId = ChannelId(30_017);
+pub const CHANNEL_STYLE_BORDER_BOTTOM_WIDTH: ChannelId = ChannelId(30_018);
+pub const CHANNEL_STYLE_BORDER_LEFT_WIDTH: ChannelId = ChannelId(30_019);
+pub const CHANNEL_STYLE_GAP: ChannelId = ChannelId(30_020);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StyleField {
@@ -35,9 +44,64 @@ pub enum StyleField {
     Transform,
     TransformOrigin,
     BoxShadow,
+    PaddingTop,
+    PaddingRight,
+    PaddingBottom,
+    PaddingLeft,
+    BorderTopWidth,
+    BorderRightWidth,
+    BorderBottomWidth,
+    BorderLeftWidth,
+    Gap,
 }
 
 impl StyleField {
+    pub const ALL: [Self; 20] = [
+        Self::Opacity,
+        Self::BorderRadius,
+        Self::BackgroundColor,
+        Self::Color,
+        Self::BorderTopColor,
+        Self::BorderRightColor,
+        Self::BorderBottomColor,
+        Self::BorderLeftColor,
+        Self::Transform,
+        Self::TransformOrigin,
+        Self::BoxShadow,
+        Self::PaddingTop,
+        Self::PaddingRight,
+        Self::PaddingBottom,
+        Self::PaddingLeft,
+        Self::BorderTopWidth,
+        Self::BorderRightWidth,
+        Self::BorderBottomWidth,
+        Self::BorderLeftWidth,
+        Self::Gap,
+    ];
+
+    pub fn from_channel_id(channel: ChannelId) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|field| field.channel_id() == channel)
+    }
+
+    /// Padding, border widths and gap: lengths layout resolves, so a sample
+    /// needs a relayout.
+    pub const fn is_box_length(self) -> bool {
+        matches!(
+            self,
+            Self::PaddingTop
+                | Self::PaddingRight
+                | Self::PaddingBottom
+                | Self::PaddingLeft
+                | Self::BorderTopWidth
+                | Self::BorderRightWidth
+                | Self::BorderBottomWidth
+                | Self::BorderLeftWidth
+                | Self::Gap
+        )
+    }
+
     pub const fn channel_id(self) -> ChannelId {
         match self {
             Self::Opacity => CHANNEL_STYLE_OPACITY,
@@ -51,6 +115,15 @@ impl StyleField {
             Self::Transform => CHANNEL_STYLE_TRANSFORM,
             Self::TransformOrigin => CHANNEL_STYLE_TRANSFORM_ORIGIN,
             Self::BoxShadow => CHANNEL_STYLE_BOX_SHADOW,
+            Self::PaddingTop => CHANNEL_STYLE_PADDING_TOP,
+            Self::PaddingRight => CHANNEL_STYLE_PADDING_RIGHT,
+            Self::PaddingBottom => CHANNEL_STYLE_PADDING_BOTTOM,
+            Self::PaddingLeft => CHANNEL_STYLE_PADDING_LEFT,
+            Self::BorderTopWidth => CHANNEL_STYLE_BORDER_TOP_WIDTH,
+            Self::BorderRightWidth => CHANNEL_STYLE_BORDER_RIGHT_WIDTH,
+            Self::BorderBottomWidth => CHANNEL_STYLE_BORDER_BOTTOM_WIDTH,
+            Self::BorderLeftWidth => CHANNEL_STYLE_BORDER_LEFT_WIDTH,
+            Self::Gap => CHANNEL_STYLE_GAP,
         }
     }
 
@@ -66,6 +139,15 @@ impl StyleField {
             Self::Transform => StyleValue::Transform(Transform::default()),
             Self::TransformOrigin => StyleValue::TransformOrigin(TransformOrigin::center()),
             Self::BoxShadow => StyleValue::BoxShadow(Vec::new()),
+            Self::PaddingTop
+            | Self::PaddingRight
+            | Self::PaddingBottom
+            | Self::PaddingLeft
+            | Self::BorderTopWidth
+            | Self::BorderRightWidth
+            | Self::BorderBottomWidth
+            | Self::BorderLeftWidth
+            | Self::Gap => StyleValue::Length(Length::Zero),
         }
     }
 
@@ -140,6 +222,24 @@ impl StyleField {
                 }
                 (_, to) => to,
             },
+            // A mix of a px and a percent stays a `calc` that layout resolves
+            // against the current base, as in CSS. The end returns the target
+            // itself, so the finished value equals the computed one.
+            Self::PaddingTop
+            | Self::PaddingRight
+            | Self::PaddingBottom
+            | Self::PaddingLeft
+            | Self::BorderTopWidth
+            | Self::BorderRightWidth
+            | Self::BorderBottomWidth
+            | Self::BorderLeftWidth
+            | Self::Gap => match (from, to) {
+                (StyleValue::Length(_), to) if t >= 1.0 => to,
+                (StyleValue::Length(from), StyleValue::Length(to)) => {
+                    StyleValue::Length(Length::interpolate(&from, &to, t))
+                }
+                (_, to) => to,
+            },
         }
     }
 }
@@ -188,6 +288,7 @@ pub enum StyleValue {
         progress: f32,
     },
     BoxShadow(Vec<BoxShadow>),
+    Length(Length),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -292,19 +393,7 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
     }
 
     fn observed_channels(&self, _target: TrackTarget) -> Vec<ChannelId> {
-        vec![
-            CHANNEL_STYLE_OPACITY,
-            CHANNEL_STYLE_BORDER_RADIUS,
-            CHANNEL_STYLE_BACKGROUND_COLOR,
-            CHANNEL_STYLE_COLOR,
-            CHANNEL_STYLE_BORDER_TOP_COLOR,
-            CHANNEL_STYLE_BORDER_RIGHT_COLOR,
-            CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
-            CHANNEL_STYLE_BORDER_LEFT_COLOR,
-            CHANNEL_STYLE_TRANSFORM,
-            CHANNEL_STYLE_TRANSFORM_ORIGIN,
-            CHANNEL_STYLE_BOX_SHADOW,
-        ]
+        StyleField::ALL.map(StyleField::channel_id).to_vec()
     }
 
     fn start_track(
@@ -312,19 +401,8 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
         key: TrackKey<TrackTarget>,
         host: &mut dyn TransitionHost<TrackTarget>,
     ) -> Result<(), StartTrackError<TrackTarget>> {
-        let field = match key.channel {
-            CHANNEL_STYLE_OPACITY => StyleField::Opacity,
-            CHANNEL_STYLE_BORDER_RADIUS => StyleField::BorderRadius,
-            CHANNEL_STYLE_BACKGROUND_COLOR => StyleField::BackgroundColor,
-            CHANNEL_STYLE_COLOR => StyleField::Color,
-            CHANNEL_STYLE_BORDER_TOP_COLOR => StyleField::BorderTopColor,
-            CHANNEL_STYLE_BORDER_RIGHT_COLOR => StyleField::BorderRightColor,
-            CHANNEL_STYLE_BORDER_BOTTOM_COLOR => StyleField::BorderBottomColor,
-            CHANNEL_STYLE_BORDER_LEFT_COLOR => StyleField::BorderLeftColor,
-            CHANNEL_STYLE_TRANSFORM => StyleField::Transform,
-            CHANNEL_STYLE_TRANSFORM_ORIGIN => StyleField::TransformOrigin,
-            CHANNEL_STYLE_BOX_SHADOW => StyleField::BoxShadow,
-            _ => return Err(StartTrackError::ChannelNotRegistered(key.channel)),
+        let Some(field) = StyleField::from_channel_id(key.channel) else {
+            return Err(StartTrackError::ChannelNotRegistered(key.channel));
         };
         self.start_style_track(
             host,
@@ -362,19 +440,8 @@ impl Transition<TrackTarget> for StyleTransitionPlugin {
                 continue;
             };
             let eased = state.transition.timing.sample(progress);
-            let field = match key.channel {
-                CHANNEL_STYLE_OPACITY => StyleField::Opacity,
-                CHANNEL_STYLE_BORDER_RADIUS => StyleField::BorderRadius,
-                CHANNEL_STYLE_BACKGROUND_COLOR => StyleField::BackgroundColor,
-                CHANNEL_STYLE_COLOR => StyleField::Color,
-                CHANNEL_STYLE_BORDER_TOP_COLOR => StyleField::BorderTopColor,
-                CHANNEL_STYLE_BORDER_RIGHT_COLOR => StyleField::BorderRightColor,
-                CHANNEL_STYLE_BORDER_BOTTOM_COLOR => StyleField::BorderBottomColor,
-                CHANNEL_STYLE_BORDER_LEFT_COLOR => StyleField::BorderLeftColor,
-                CHANNEL_STYLE_TRANSFORM => StyleField::Transform,
-                CHANNEL_STYLE_TRANSFORM_ORIGIN => StyleField::TransformOrigin,
-                CHANNEL_STYLE_BOX_SHADOW => StyleField::BoxShadow,
-                _ => continue,
+            let Some(field) = StyleField::from_channel_id(key.channel) else {
+                continue;
             };
             let value = field.interpolate_value(state.from.clone(), state.to.clone(), eased);
             self.frame_samples.push(StyleSample {

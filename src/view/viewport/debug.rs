@@ -641,6 +641,16 @@ pub(super) fn style_field_requires_relayout(field: StyleField) -> bool {
         // Complete that placement (including hit testing and IFC witnesses)
         // before recording; updating the matrix alone leaves stale evidence.
         StyleField::Transform | StyleField::TransformOrigin => true,
+        // Layout resolves these lengths into the box and its children.
+        StyleField::PaddingTop
+        | StyleField::PaddingRight
+        | StyleField::PaddingBottom
+        | StyleField::PaddingLeft
+        | StyleField::BorderTopWidth
+        | StyleField::BorderRightWidth
+        | StyleField::BorderBottomWidth
+        | StyleField::BorderLeftWidth
+        | StyleField::Gap => true,
     }
 }
 

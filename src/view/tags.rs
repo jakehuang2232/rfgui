@@ -221,7 +221,7 @@ pub struct ElementStylePropSchema {
     ///   on a line. It adds no space between lines. A percent resolves
     ///   against the content-box width.
     ///
-    /// `TransitionProperty::Gap` does not animate it. Not inherited.
+    /// `TransitionProperty::Gap` animates it. Not inherited.
     pub gap: Option<Length>,
     /// Lets the user scroll the content along the chosen axis, or both, when
     /// it is larger than the element. Default [`ScrollDirection::None`].
@@ -257,8 +257,8 @@ pub struct ElementStylePropSchema {
     /// side is limited to half the element's shorter side.
     /// [`border_image`](Self::border_image), when set, replaces the colors.
     ///
-    /// `TransitionProperty::BorderColor` animates the colors. The widths do
-    /// not animate. Not inherited.
+    /// `TransitionProperty::BorderColor` animates the colors and
+    /// `TransitionProperty::BorderWidth` the widths. Not inherited.
     pub border: Option<crate::style::Border>,
     /// Shorthand for [`background_color`](Self::background_color) (from a
     /// color) or [`background_image`](Self::background_image) (from a
@@ -361,7 +361,7 @@ pub struct ElementStylePropSchema {
     /// against the parent's content box: left and right against its width,
     /// top and bottom against its height (CSS uses the width for all four).
     ///
-    /// `TransitionProperty::Padding` does not animate it. Not inherited.
+    /// `TransitionProperty::Padding` animates it. Not inherited.
     pub padding: Option<Padding>,
     /// Translates, scales, rotates or projects the element and its
     /// descendants as drawn; see [`Transform`]. Entries combine in order, as
@@ -392,13 +392,22 @@ pub struct ElementStylePropSchema {
     ///   sides), `BorderRadius`, `BoxShadow`, `Transform` and
     ///   `TransformOrigin` animate when the computed value changes, for
     ///   example when [`hover`](Self::hover) starts or after a re-render.
+    /// - `Padding`, `BorderWidth` (both all four sides) and `Gap` animate
+    ///   the same way. A change between a pixel and a percent value stays
+    ///   correct while the percent base changes, as in CSS. The element
+    ///   lays out again every frame of the animation, and so do its
+    ///   children.
     /// - `Width` and `Height` animate the laid-out size, whatever changed
     ///   it: this element's style, its content or its parent's layout.
     /// - `Position`, `X` (or `PositionX`) and `Y` (or `PositionY`) animate a
     ///   change in where the element sits relative to its parent.
     /// - `All` covers the style values above plus `Width` and `Height`, but
     ///   not the position.
-    /// - `Gap`, `Padding` and `BorderWidth` are accepted but do not animate.
+    ///
+    /// An auto-sized element whose padding, border width or gap animates
+    /// changes size every frame. With a `Width` or `Height` transition (or
+    /// `All`) on it or on an auto-sized ancestor, that size transition
+    /// restarts toward each new size, so the size trails the padding.
     ///
     /// The style an element is first built with does not animate. Not
     /// inherited.

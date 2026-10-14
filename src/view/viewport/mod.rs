@@ -34,14 +34,10 @@ use crate::style::{ColorLike, Cursor, HexColor, PropertyId, Style};
 use crate::time::Instant;
 use crate::transition::{
     AnimationPlugin, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_LAYOUT_X,
-    CHANNEL_LAYOUT_Y, CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_STYLE_BACKGROUND_COLOR,
-    CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
-    CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
-    CHANNEL_STYLE_BOX_SHADOW, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_TRANSFORM,
-    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId, ClaimMode,
-    LayoutTransitionPlugin, ScrollAxis, ScrollTransition, ScrollTransitionPlugin, StyleField,
-    StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget, Transition, TransitionFrame,
-    TransitionHost, TransitionPluginId, VisualTransitionPlugin,
+    CHANNEL_LAYOUT_Y, CHANNEL_SCROLL_X, CHANNEL_SCROLL_Y, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y,
+    ChannelId, ClaimMode, LayoutTransitionPlugin, ScrollAxis, ScrollTransition,
+    ScrollTransitionPlugin, StyleField, StyleTransitionPlugin, StyleValue, TrackKey, TrackTarget,
+    Transition, TransitionFrame, TransitionHost, TransitionPluginId, VisualTransitionPlugin,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, EventCommand, EventMeta, FocusEvent, FromPropValue, ImePreeditEvent,
@@ -423,19 +419,9 @@ impl TransitionRuntime {
                 CHANNEL_LAYOUT_HEIGHT,
                 CHANNEL_VISUAL_X,
                 CHANNEL_VISUAL_Y,
-                CHANNEL_STYLE_OPACITY,
-                CHANNEL_STYLE_BORDER_RADIUS,
-                CHANNEL_STYLE_BACKGROUND_COLOR,
-                CHANNEL_STYLE_COLOR,
-                CHANNEL_STYLE_BORDER_TOP_COLOR,
-                CHANNEL_STYLE_BORDER_RIGHT_COLOR,
-                CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
-                CHANNEL_STYLE_BORDER_LEFT_COLOR,
-                CHANNEL_STYLE_BOX_SHADOW,
-                CHANNEL_STYLE_TRANSFORM,
-                CHANNEL_STYLE_TRANSFORM_ORIGIN,
             ]
             .into_iter()
+            .chain(StyleField::ALL.map(StyleField::channel_id))
             .collect(),
             transition_claims: FxHashMap::default(),
             claims_were_empty: false,

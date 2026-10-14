@@ -236,8 +236,8 @@ impl Layoutable for Element {
             self.measure_flex_children(proposal, arena);
         } else {
             let insets = resolve_layout_insets(
-                &self.computed_style.border_widths,
-                &self.computed_style.padding,
+                &self.box_lengths.border_widths,
+                &self.box_lengths.padding,
                 proposal.percent_base_width,
                 proposal.percent_base_height,
                 proposal.viewport_width,

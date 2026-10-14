@@ -12,13 +12,17 @@ use crate::style::{
 };
 use crate::transition::{
     AnimationRequest, CHANNEL_LAYOUT_HEIGHT, CHANNEL_LAYOUT_WIDTH, CHANNEL_STYLE_BACKGROUND_COLOR,
-    CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_LEFT_COLOR,
-    CHANNEL_STYLE_BORDER_RADIUS, CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_TOP_COLOR,
-    CHANNEL_STYLE_BOX_SHADOW, CHANNEL_STYLE_COLOR, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_TRANSFORM,
-    CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y, ChannelId, LayoutField,
-    LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition, ScrollAxis, StyleField,
-    StyleTrackRequest, StyleTransition as RuntimeStyleTransition, StyleValue, TimeFunction,
-    VisualField, VisualTrackRequest, VisualTransition as RuntimeVisualTransition,
+    CHANNEL_STYLE_BORDER_BOTTOM_COLOR, CHANNEL_STYLE_BORDER_BOTTOM_WIDTH,
+    CHANNEL_STYLE_BORDER_LEFT_COLOR, CHANNEL_STYLE_BORDER_LEFT_WIDTH, CHANNEL_STYLE_BORDER_RADIUS,
+    CHANNEL_STYLE_BORDER_RIGHT_COLOR, CHANNEL_STYLE_BORDER_RIGHT_WIDTH,
+    CHANNEL_STYLE_BORDER_TOP_COLOR, CHANNEL_STYLE_BORDER_TOP_WIDTH, CHANNEL_STYLE_BOX_SHADOW,
+    CHANNEL_STYLE_COLOR, CHANNEL_STYLE_GAP, CHANNEL_STYLE_OPACITY, CHANNEL_STYLE_PADDING_BOTTOM,
+    CHANNEL_STYLE_PADDING_LEFT, CHANNEL_STYLE_PADDING_RIGHT, CHANNEL_STYLE_PADDING_TOP,
+    CHANNEL_STYLE_TRANSFORM, CHANNEL_STYLE_TRANSFORM_ORIGIN, CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y,
+    ChannelId, LayoutField, LayoutTrackRequest, LayoutTransition as RuntimeLayoutTransition,
+    ScrollAxis, StyleField, StyleTrackRequest, StyleTransition as RuntimeStyleTransition,
+    StyleValue, TimeFunction, VisualField, VisualTrackRequest,
+    VisualTransition as RuntimeVisualTransition,
 };
 use crate::ui::{
     BlurEvent, ClickEvent, FocusEvent, KeyDownEvent, KeyUpEvent, PointerButton as UiPointerButton,
@@ -138,6 +142,55 @@ struct EdgeInsets {
     right: f32,
     top: f32,
     bottom: f32,
+}
+
+/// Padding, border widths and gap as layout resolves them: the computed
+/// lengths, or the values of running transitions.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BoxLengths {
+    padding: crate::style::EdgeInsets<Length>,
+    border_widths: crate::style::EdgeInsets<Length>,
+    gap: Length,
+}
+
+impl BoxLengths {
+    fn of(computed: &ComputedStyle) -> Self {
+        Self {
+            padding: computed.padding,
+            border_widths: computed.border_widths,
+            gap: computed.gap,
+        }
+    }
+
+    fn get(&self, field: StyleField) -> Option<Length> {
+        Some(match field {
+            StyleField::PaddingTop => self.padding.top,
+            StyleField::PaddingRight => self.padding.right,
+            StyleField::PaddingBottom => self.padding.bottom,
+            StyleField::PaddingLeft => self.padding.left,
+            StyleField::BorderTopWidth => self.border_widths.top,
+            StyleField::BorderRightWidth => self.border_widths.right,
+            StyleField::BorderBottomWidth => self.border_widths.bottom,
+            StyleField::BorderLeftWidth => self.border_widths.left,
+            StyleField::Gap => self.gap,
+            _ => return None,
+        })
+    }
+
+    fn get_mut(&mut self, field: StyleField) -> Option<&mut Length> {
+        Some(match field {
+            StyleField::PaddingTop => &mut self.padding.top,
+            StyleField::PaddingRight => &mut self.padding.right,
+            StyleField::PaddingBottom => &mut self.padding.bottom,
+            StyleField::PaddingLeft => &mut self.padding.left,
+            StyleField::BorderTopWidth => &mut self.border_widths.top,
+            StyleField::BorderRightWidth => &mut self.border_widths.right,
+            StyleField::BorderBottomWidth => &mut self.border_widths.bottom,
+            StyleField::BorderLeftWidth => &mut self.border_widths.left,
+            StyleField::Gap => &mut self.gap,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5209,7 +5262,7 @@ impl ElementInlineIfcMetadataCollectorState<'_> {
 
     fn resolved_gap(&self, element: &Element) -> f32 {
         resolve_px(
-            element.computed_style.gap,
+            element.box_lengths.gap,
             self.max_width,
             self.viewport_width,
             self.viewport_height,
@@ -5279,7 +5332,7 @@ fn inline_ifc_style_from_text_metadata(
 
 /// Snapshot of an Element's "previous frame" visual style. Used by
 /// the style-transition emission path (`collect_style_transition_
-/// requests` / `preserve_transform_transition_baseline`) to compute
+/// requests` / `preserve_transition_baselines`) to compute
 /// from→to deltas. Phase B trimmed the layout/hover/transition fields
 /// — those existed for the now-removed `restore_state` hack.
 #[derive(Clone, Debug)]
@@ -5297,6 +5350,7 @@ pub(crate) struct ElementStyleSnapshot {
     box_shadows: Vec<BoxShadow>,
     transform: Transform,
     transform_origin: TransformOrigin,
+    box_lengths: BoxLengths,
 }
 
 #[derive(Clone, Debug)]
@@ -5337,6 +5391,7 @@ pub struct Element {
     parsed_style: Style,
     text_cascade_style: Option<Style>,
     computed_style: ComputedStyle,
+    box_lengths: BoxLengths,
     padding: EdgeInsets,
     background_color: Box<dyn ColorLike>,
     paint_recording_inputs: RefCell<Option<paint_recording_inputs::NativeSelfPaintInputs>>,
@@ -6333,6 +6388,7 @@ impl Element {
             box_shadows: self.box_shadows.clone(),
             transform: self.transform.clone(),
             transform_origin: self.transform_origin,
+            box_lengths: self.box_lengths,
         }
     }
 
@@ -6430,6 +6486,19 @@ impl ElementStyleSnapshot {
             StyleField::BoxShadow => StyleValue::BoxShadow(current.box_shadow.clone()),
             StyleField::Transform => StyleValue::Transform(current.transform.clone()),
             StyleField::TransformOrigin => StyleValue::TransformOrigin(current.transform_origin),
+            StyleField::PaddingTop
+            | StyleField::PaddingRight
+            | StyleField::PaddingBottom
+            | StyleField::PaddingLeft
+            | StyleField::BorderTopWidth
+            | StyleField::BorderRightWidth
+            | StyleField::BorderBottomWidth
+            | StyleField::BorderLeftWidth
+            | StyleField::Gap => StyleValue::Length(
+                BoxLengths::of(current)
+                    .get(field)
+                    .expect("a box length field"),
+            ),
         }
     }
 
@@ -6446,25 +6515,23 @@ impl ElementStyleSnapshot {
             StyleField::BoxShadow => StyleValue::BoxShadow(self.box_shadows.clone()),
             StyleField::Transform => StyleValue::Transform(self.transform.clone()),
             StyleField::TransformOrigin => StyleValue::TransformOrigin(self.transform_origin),
+            StyleField::PaddingTop
+            | StyleField::PaddingRight
+            | StyleField::PaddingBottom
+            | StyleField::PaddingLeft
+            | StyleField::BorderTopWidth
+            | StyleField::BorderRightWidth
+            | StyleField::BorderBottomWidth
+            | StyleField::BorderLeftWidth
+            | StyleField::Gap => {
+                StyleValue::Length(self.box_lengths.get(field).expect("a box length field"))
+            }
         }
     }
 
     fn diff(&self, current: &ComputedStyle) -> Vec<StyleField> {
-        const FIELDS: [StyleField; 11] = [
-            StyleField::Opacity,
-            StyleField::BorderRadius,
-            StyleField::BackgroundColor,
-            StyleField::Color,
-            StyleField::BorderTopColor,
-            StyleField::BorderRightColor,
-            StyleField::BorderBottomColor,
-            StyleField::BorderLeftColor,
-            StyleField::BoxShadow,
-            StyleField::Transform,
-            StyleField::TransformOrigin,
-        ];
         let mut out = Vec::new();
-        for field in FIELDS {
+        for field in StyleField::ALL {
             let previous = self.value_for(field);
             let next = self.current_value_for(current, field);
             let changed = match (previous, next) {
@@ -6473,6 +6540,7 @@ impl ElementStyleSnapshot {
                 (StyleValue::BoxShadow(lhs), StyleValue::BoxShadow(rhs)) => lhs != rhs,
                 (StyleValue::Transform(lhs), StyleValue::Transform(rhs)) => lhs != rhs,
                 (StyleValue::TransformOrigin(lhs), StyleValue::TransformOrigin(rhs)) => lhs != rhs,
+                (StyleValue::Length(lhs), StyleValue::Length(rhs)) => lhs != rhs,
                 _ => true,
             };
             if changed {

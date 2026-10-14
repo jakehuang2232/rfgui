@@ -56,18 +56,7 @@ impl Viewport {
                 | CHANNEL_LAYOUT_Y
                 | CHANNEL_LAYOUT_WIDTH
                 | CHANNEL_LAYOUT_HEIGHT
-                | CHANNEL_STYLE_OPACITY
-                | CHANNEL_STYLE_BORDER_RADIUS
-                | CHANNEL_STYLE_BACKGROUND_COLOR
-                | CHANNEL_STYLE_COLOR
-                | CHANNEL_STYLE_BORDER_TOP_COLOR
-                | CHANNEL_STYLE_BORDER_RIGHT_COLOR
-                | CHANNEL_STYLE_BORDER_BOTTOM_COLOR
-                | CHANNEL_STYLE_BORDER_LEFT_COLOR
-                | CHANNEL_STYLE_TRANSFORM
-                | CHANNEL_STYLE_TRANSFORM_ORIGIN
-                | CHANNEL_STYLE_BOX_SHADOW
-        )
+        ) || StyleField::from_channel_id(channel).is_some()
     }
 
     pub(super) fn cancel_track_by_owner(&mut self, key: TrackKey<TrackTarget>) -> bool {
@@ -1264,7 +1253,8 @@ fn set_arena_dirty_style_field_by_id(
                 StyleField::TransformOrigin,
                 StyleValue::TransformOriginProgress { .. }
             )
-    ) {
+    ) && !(field.is_box_length() && matches!(value, StyleValue::Length(_)))
+    {
         return false;
     }
 
@@ -1330,6 +1320,9 @@ fn set_arena_dirty_style_field_by_id(
                         *from, *to, *progress, cx,
                     );
                 }
+                (field, StyleValue::Length(length)) => {
+                    return element.set_box_length_sample_with_invalidation(field, *length, cx);
+                }
                 _ => {
                     return false;
                 }
@@ -1348,114 +1341,6 @@ fn set_arena_dirty_style_field_by_id(
         pass_inherited_color(arena, target_key, Some(*color));
     }
     applied
-}
-
-#[allow(dead_code)]
-fn set_style_field_by_id_inner(
-    root: &mut dyn ElementTrait,
-    arena: &mut crate::view::node_arena::NodeArena,
-    stable_id: u64,
-    field: StyleField,
-    value: StyleValue,
-) -> bool {
-    if root.stable_id() == stable_id {
-        if let Some(element) = root.as_any_mut().downcast_mut::<Element>() {
-            match field {
-                StyleField::Opacity => {
-                    if let StyleValue::Scalar(value) = value {
-                        element.set_opacity(value);
-                    } else {
-                        return false;
-                    }
-                }
-                StyleField::BorderRadius => {
-                    if let StyleValue::Scalar(value) = value {
-                        element.set_border_radius_transition_sample(value);
-                    } else {
-                        return false;
-                    }
-                }
-                StyleField::BackgroundColor => {
-                    if let StyleValue::Color(color) = value {
-                        element.set_background_color_value(color);
-                    } else {
-                        return false;
-                    }
-                }
-                StyleField::Color => {
-                    if let StyleValue::Color(color) = value {
-                        element.set_foreground_color(color);
-                    } else {
-                        return false;
-                    }
-                }
-                StyleField::BorderTopColor => {
-                    if let StyleValue::Color(color) = value {
-                        element.set_border_top_color(color);
-                    } else {
-                        return false;
-                    }
-                }
-                StyleField::BorderRightColor => {
-                    if let StyleValue::Color(color) = value {
-                        element.set_border_right_color(color);
-                    } else {
-                        return false;
-                    }
-                }
-                StyleField::BorderBottomColor => {
-                    if let StyleValue::Color(color) = value {
-                        element.set_border_bottom_color(color);
-                    } else {
-                        return false;
-                    }
-                }
-                StyleField::BorderLeftColor => {
-                    if let StyleValue::Color(color) = value {
-                        element.set_border_left_color(color);
-                    } else {
-                        return false;
-                    }
-                }
-                StyleField::BoxShadow => {
-                    if let StyleValue::BoxShadow(box_shadows) = value {
-                        element.set_box_shadows(box_shadows);
-                    } else {
-                        return false;
-                    }
-                }
-                StyleField::Transform => match value {
-                    StyleValue::Transform(transform) => {
-                        element.set_transform_value(transform);
-                    }
-                    StyleValue::TransformProgress { from, to, progress } => {
-                        element.set_transform_progress_value(from, to, progress);
-                    }
-                    _ => {
-                        return false;
-                    }
-                },
-                StyleField::TransformOrigin => match value {
-                    StyleValue::TransformOrigin(transform_origin) => {
-                        element.set_transform_origin_value(transform_origin);
-                    }
-                    StyleValue::TransformOriginProgress { from, to, progress } => {
-                        element.set_transform_origin_progress_value(from, to, progress);
-                    }
-                    _ => return false,
-                },
-            }
-            return true;
-        }
-        return false;
-    }
-    let children: Vec<_> = root.children().to_vec();
-    for child_key in children {
-        if set_style_field_by_id(arena, child_key, stable_id, field, value.clone()) {
-            return true;
-        }
-    }
-    false
 }
 
 pub(crate) fn set_layout_field_by_id(

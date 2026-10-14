@@ -209,8 +209,8 @@ impl Element {
         arena: &mut crate::view::node_arena::NodeArena,
     ) {
         let insets = resolve_layout_insets(
-            &self.computed_style.border_widths,
-            &self.computed_style.padding,
+            &self.box_lengths.border_widths,
+            &self.box_lengths.padding,
             proposal.percent_base_width,
             proposal.percent_base_height,
             proposal.viewport_width,
@@ -261,7 +261,7 @@ impl Element {
             !is_real_flex && matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
         let main_limit = if is_row { inner_w } else { inner_h };
         let solver_gap = resolve_px(
-            self.computed_style.gap,
+            self.box_lengths.gap,
             if is_row { inner_w } else { inner_h },
             proposal.viewport_width,
             proposal.viewport_height,
@@ -753,26 +753,27 @@ impl Element {
         self.border_colors.right = Box::new(self.computed_style.border_colors.right);
         self.border_colors.top = Box::new(self.computed_style.border_colors.top);
         self.border_colors.bottom = Box::new(self.computed_style.border_colors.bottom);
+        self.box_lengths = BoxLengths::of(&self.computed_style);
         self.border_widths.left = resolve_px(
-            self.computed_style.border_widths.left,
+            self.box_lengths.border_widths.left,
             self.core.size.width,
             0.0,
             0.0,
         );
         self.border_widths.right = resolve_px(
-            self.computed_style.border_widths.right,
+            self.box_lengths.border_widths.right,
             self.core.size.width,
             0.0,
             0.0,
         );
         self.border_widths.top = resolve_px(
-            self.computed_style.border_widths.top,
+            self.box_lengths.border_widths.top,
             self.core.size.height,
             0.0,
             0.0,
         );
         self.border_widths.bottom = resolve_px(
-            self.computed_style.border_widths.bottom,
+            self.box_lengths.border_widths.bottom,
             self.core.size.height,
             0.0,
             0.0,
@@ -809,25 +810,25 @@ impl Element {
         self.update_resolved_transform();
         self.scroll_direction = self.computed_style.scroll_direction;
         self.padding.left = resolve_px(
-            self.computed_style.padding.left,
+            self.box_lengths.padding.left,
             self.core.size.width,
             0.0,
             0.0,
         );
         self.padding.right = resolve_px(
-            self.computed_style.padding.right,
+            self.box_lengths.padding.right,
             self.core.size.width,
             0.0,
             0.0,
         );
         self.padding.top = resolve_px(
-            self.computed_style.padding.top,
+            self.box_lengths.padding.top,
             self.core.size.height,
             0.0,
             0.0,
         );
         self.padding.bottom = resolve_px(
-            self.computed_style.padding.bottom,
+            self.box_lengths.padding.bottom,
             self.core.size.height,
             0.0,
             0.0,

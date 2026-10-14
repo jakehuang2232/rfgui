@@ -395,18 +395,8 @@ pub(crate) fn push_transition_channels(property: TransitionProperty, out: &mut V
                 CHANNEL_VISUAL_Y,
                 CHANNEL_LAYOUT_WIDTH,
                 CHANNEL_LAYOUT_HEIGHT,
-                CHANNEL_STYLE_OPACITY,
-                CHANNEL_STYLE_BORDER_RADIUS,
-                CHANNEL_STYLE_BACKGROUND_COLOR,
-                CHANNEL_STYLE_COLOR,
-                CHANNEL_STYLE_BORDER_TOP_COLOR,
-                CHANNEL_STYLE_BORDER_RIGHT_COLOR,
-                CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
-                CHANNEL_STYLE_BORDER_LEFT_COLOR,
-                CHANNEL_STYLE_BOX_SHADOW,
-                CHANNEL_STYLE_TRANSFORM,
-                CHANNEL_STYLE_TRANSFORM_ORIGIN,
             ]);
+            out.extend(StyleField::ALL.map(StyleField::channel_id));
         }
         TransitionProperty::Position => {
             out.extend([CHANNEL_VISUAL_X, CHANNEL_VISUAL_Y]);
@@ -428,8 +418,19 @@ pub(crate) fn push_transition_channels(property: TransitionProperty, out: &mut V
             CHANNEL_STYLE_BORDER_BOTTOM_COLOR,
             CHANNEL_STYLE_BORDER_LEFT_COLOR,
         ]),
-        TransitionProperty::Gap | TransitionProperty::Padding | TransitionProperty::BorderWidth => {
-        }
+        TransitionProperty::Padding => out.extend([
+            CHANNEL_STYLE_PADDING_TOP,
+            CHANNEL_STYLE_PADDING_RIGHT,
+            CHANNEL_STYLE_PADDING_BOTTOM,
+            CHANNEL_STYLE_PADDING_LEFT,
+        ]),
+        TransitionProperty::BorderWidth => out.extend([
+            CHANNEL_STYLE_BORDER_TOP_WIDTH,
+            CHANNEL_STYLE_BORDER_RIGHT_WIDTH,
+            CHANNEL_STYLE_BORDER_BOTTOM_WIDTH,
+            CHANNEL_STYLE_BORDER_LEFT_WIDTH,
+        ]),
+        TransitionProperty::Gap => out.push(CHANNEL_STYLE_GAP),
     }
 }
 

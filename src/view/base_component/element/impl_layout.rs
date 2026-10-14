@@ -120,79 +120,55 @@ impl Element {
     }
 
     fn resolve_lengths_from_parent_inner(&mut self, proposal: LayoutProposal) {
-        self.border_widths.left = resolve_px_or_zero(
-            self.computed_style.border_widths.left,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        self.border_widths.right = resolve_px_or_zero(
-            self.computed_style.border_widths.right,
-            proposal.percent_base_width,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        self.border_widths.top = resolve_px_or_zero(
-            self.computed_style.border_widths.top,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
-        self.border_widths.bottom = resolve_px_or_zero(
-            self.computed_style.border_widths.bottom,
-            proposal.percent_base_height,
-            proposal.viewport_width,
-            proposal.viewport_height,
-        );
+        let lengths = self.box_lengths;
+        let width_base = proposal.percent_base_width;
+        let height_base = proposal.percent_base_height;
+        let resolve = |length, base| {
+            resolve_px_or_zero(
+                length,
+                base,
+                proposal.viewport_width,
+                proposal.viewport_height,
+            )
+        };
+        self.border_widths.left = resolve(lengths.border_widths.left, width_base);
+        self.border_widths.right = resolve(lengths.border_widths.right, width_base);
+        self.border_widths.top = resolve(lengths.border_widths.top, height_base);
+        self.border_widths.bottom = resolve(lengths.border_widths.bottom, height_base);
 
-        if self
-            .parsed_style
-            .get(crate::style::PropertyId::PaddingLeft)
-            .is_some()
-        {
-            self.padding.left = resolve_px_or_zero(
-                self.computed_style.padding.left,
-                proposal.percent_base_width,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
+        use crate::style::PropertyId;
+        if self.style_sets_padding(PropertyId::PaddingLeft) {
+            self.padding.left = resolve(lengths.padding.left, width_base);
         }
-        if self
-            .parsed_style
-            .get(crate::style::PropertyId::PaddingRight)
-            .is_some()
-        {
-            self.padding.right = resolve_px_or_zero(
-                self.computed_style.padding.right,
-                proposal.percent_base_width,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
+        if self.style_sets_padding(PropertyId::PaddingRight) {
+            self.padding.right = resolve(lengths.padding.right, width_base);
         }
-        if self
-            .parsed_style
-            .get(crate::style::PropertyId::PaddingTop)
-            .is_some()
-        {
-            self.padding.top = resolve_px_or_zero(
-                self.computed_style.padding.top,
-                proposal.percent_base_height,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
+        if self.style_sets_padding(PropertyId::PaddingTop) {
+            self.padding.top = resolve(lengths.padding.top, height_base);
         }
-        if self
-            .parsed_style
-            .get(crate::style::PropertyId::PaddingBottom)
-            .is_some()
-        {
-            self.padding.bottom = resolve_px_or_zero(
-                self.computed_style.padding.bottom,
-                proposal.percent_base_height,
-                proposal.viewport_width,
-                proposal.viewport_height,
-            );
+        if self.style_sets_padding(PropertyId::PaddingBottom) {
+            self.padding.bottom = resolve(lengths.padding.bottom, height_base);
         }
+    }
+
+    /// Whether the style sets this padding side, rather than the `padding`
+    /// prop: its base or hover style declares it, or a transition can move
+    /// it.
+    fn style_sets_padding(&self, property: crate::style::PropertyId) -> bool {
+        let declares = |style: &Style| style.get(property).is_some();
+        declares(&self.parsed_style)
+            || self.parsed_style.hover().is_some_and(declares)
+            || self
+                .computed_style
+                .transition
+                .as_slice()
+                .iter()
+                .any(|transition| {
+                    matches!(
+                        transition.property,
+                        TransitionProperty::All | TransitionProperty::Padding
+                    )
+                })
     }
 
     fn resolve_corner_radii_from_self_box(&mut self, proposal: LayoutProposal) {
@@ -395,8 +371,8 @@ impl Element {
         });
 
         let insets = resolve_layout_insets(
-            &self.computed_style.border_widths,
-            &self.computed_style.padding,
+            &self.box_lengths.border_widths,
+            &self.box_lengths.padding,
             proposal.percent_base_width,
             proposal.percent_base_height,
             proposal.viewport_width,
@@ -1919,7 +1895,7 @@ impl Element {
             child_inner_height
         };
         let gap = resolve_px(
-            self.computed_style.gap,
+            self.box_lengths.gap,
             gap_base,
             viewport_width,
             viewport_height,

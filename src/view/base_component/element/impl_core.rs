@@ -18,25 +18,25 @@ impl Element {
         viewport_height: f32,
     ) -> bool {
         resolve_px(
-            self.computed_style.border_widths.left,
+            self.box_lengths.border_widths.left,
             width_base,
             viewport_width,
             viewport_height,
         ) > 0.0
             || resolve_px(
-                self.computed_style.border_widths.right,
+                self.box_lengths.border_widths.right,
                 width_base,
                 viewport_width,
                 viewport_height,
             ) > 0.0
             || resolve_px(
-                self.computed_style.border_widths.top,
+                self.box_lengths.border_widths.top,
                 height_base,
                 viewport_width,
                 viewport_height,
             ) > 0.0
             || resolve_px(
-                self.computed_style.border_widths.bottom,
+                self.box_lengths.border_widths.bottom,
                 height_base,
                 viewport_width,
                 viewport_height,
@@ -624,6 +624,7 @@ impl Element {
             parsed_style: style,
             text_cascade_style: None,
             computed_style: ComputedStyle::default(),
+            box_lengths: BoxLengths::of(&ComputedStyle::default()),
             padding: EdgeInsets {
                 left: 0.0,
                 right: 0.0,
@@ -788,7 +789,38 @@ impl Element {
             StyleField::BoxShadow => StyleValue::BoxShadow(computed.box_shadow.clone()),
             StyleField::Transform => StyleValue::Transform(computed.transform.clone()),
             StyleField::TransformOrigin => StyleValue::TransformOrigin(computed.transform_origin),
+            StyleField::PaddingTop
+            | StyleField::PaddingRight
+            | StyleField::PaddingBottom
+            | StyleField::PaddingLeft
+            | StyleField::BorderTopWidth
+            | StyleField::BorderRightWidth
+            | StyleField::BorderBottomWidth
+            | StyleField::BorderLeftWidth
+            | StyleField::Gap => StyleValue::Length(
+                BoxLengths::of(computed)
+                    .get(field)
+                    .expect("a box length field"),
+            ),
         }
+    }
+
+    /// Writes one sampled padding, border width or gap. Layout resolves it,
+    /// so the element lays out again.
+    pub(crate) fn set_box_length_sample_with_invalidation(
+        &mut self,
+        field: StyleField,
+        length: Length,
+        cx: &mut crate::view::node_arena::InvalidationContext<'_>,
+    ) -> bool {
+        let Some(slot) = self.box_lengths.get_mut(field) else {
+            return false;
+        };
+        if *slot != length {
+            *slot = length;
+            self.mark_layout_dirty_with(cx);
+        }
+        true
     }
 
     pub fn set_position(&mut self, x: f32, y: f32) {
@@ -1337,16 +1369,21 @@ impl Element {
         self.last_started_animator = next_animator;
     }
 
-    fn preserve_transform_transition_baseline(&mut self, previous: &ElementStyleSnapshot) {
-        let preserve_transform = self
-            .transition_requests
-            .as_ref()
-            .is_some_and(|r| r.style.iter().any(|req| req.field == StyleField::Transform));
-        let preserve_transform_origin = self.transition_requests.as_ref().is_some_and(|r| {
-            r.style
-                .iter()
-                .any(|req| req.field == StyleField::TransformOrigin)
-        });
+    /// Keeps the drawn values a queued transition starts from until its
+    /// first sample: the transform, and the lengths layout resolves before
+    /// this frame's transitions run.
+    fn preserve_transition_baselines(&mut self, previous: &ElementStyleSnapshot) {
+        let queued = |field| {
+            self.transition_requests
+                .as_ref()
+                .is_some_and(|requests| requests.style.iter().any(|req| req.field == field))
+        };
+        let preserve_transform = queued(StyleField::Transform);
+        let preserve_transform_origin = queued(StyleField::TransformOrigin);
+        let box_fields = StyleField::ALL
+            .into_iter()
+            .filter(|field| field.is_box_length() && queued(*field))
+            .collect::<Vec<_>>();
 
         if preserve_transform {
             self.transform = previous.transform.clone();
@@ -1357,156 +1394,42 @@ impl Element {
         if preserve_transform || preserve_transform_origin {
             self.update_resolved_transform();
         }
+        for field in box_fields {
+            if let (Some(slot), Some(length)) = (
+                self.box_lengths.get_mut(field),
+                previous.box_lengths.get(field),
+            ) {
+                *slot = length;
+            }
+        }
     }
 
     fn collect_style_transition_requests(&mut self, previous: &ElementStyleSnapshot) {
         let changed_fields = previous.diff(&self.computed_style);
+        if changed_fields.is_empty() {
+            return;
+        }
         for transition in self.computed_style.transition.as_slice() {
+            let mut channels = Vec::new();
+            push_transition_channels(transition.property, &mut channels);
             let runtime = RuntimeStyleTransition {
                 duration_ms: transition.duration_ms,
                 delay_ms: transition.delay_ms,
                 timing: map_transition_timing(transition.timing),
             };
-            match transition.property {
-                TransitionProperty::All => {
-                    for field in &changed_fields {
-                        queue_transition_requests(&mut self.transition_requests)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: *field,
-                                from: previous.value_for(*field),
-                                to: previous.current_value_for(&self.computed_style, *field),
-                                transition: runtime.clone(),
-                            });
-                    }
+            for &field in &changed_fields {
+                if !channels.contains(&field.channel_id()) {
+                    continue;
                 }
-                TransitionProperty::Opacity => {
-                    if changed_fields.contains(&StyleField::Opacity) {
-                        queue_transition_requests(&mut self.transition_requests)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::Opacity,
-                                from: previous.value_for(StyleField::Opacity),
-                                to: previous
-                                    .current_value_for(&self.computed_style, StyleField::Opacity),
-                                transition: runtime.clone(),
-                            });
-                    }
-                }
-                TransitionProperty::BorderRadius => {
-                    if changed_fields.contains(&StyleField::BorderRadius) {
-                        queue_transition_requests(&mut self.transition_requests)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BorderRadius,
-                                from: previous.value_for(StyleField::BorderRadius),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::BorderRadius,
-                                ),
-                                transition: runtime.clone(),
-                            });
-                    }
-                }
-                TransitionProperty::BackgroundColor => {
-                    if changed_fields.contains(&StyleField::BackgroundColor) {
-                        queue_transition_requests(&mut self.transition_requests)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BackgroundColor,
-                                from: previous.value_for(StyleField::BackgroundColor),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::BackgroundColor,
-                                ),
-                                transition: runtime.clone(),
-                            });
-                    }
-                }
-                TransitionProperty::Color => {
-                    if changed_fields.contains(&StyleField::Color) {
-                        queue_transition_requests(&mut self.transition_requests)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::Color,
-                                from: previous.value_for(StyleField::Color),
-                                to: previous
-                                    .current_value_for(&self.computed_style, StyleField::Color),
-                                transition: runtime.clone(),
-                            });
-                    }
-                }
-                TransitionProperty::BorderColor => {
-                    const BORDER_FIELDS: [StyleField; 4] = [
-                        StyleField::BorderTopColor,
-                        StyleField::BorderRightColor,
-                        StyleField::BorderBottomColor,
-                        StyleField::BorderLeftColor,
-                    ];
-                    for field in BORDER_FIELDS {
-                        if changed_fields.contains(&field) {
-                            queue_transition_requests(&mut self.transition_requests)
-                                .style
-                                .push(StyleTrackRequest {
-                                    target: self.core.id,
-                                    field,
-                                    from: previous.value_for(field),
-                                    to: previous.current_value_for(&self.computed_style, field),
-                                    transition: runtime.clone(),
-                                });
-                        }
-                    }
-                }
-                TransitionProperty::BoxShadow => {
-                    if changed_fields.contains(&StyleField::BoxShadow) {
-                        queue_transition_requests(&mut self.transition_requests)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::BoxShadow,
-                                from: previous.value_for(StyleField::BoxShadow),
-                                to: previous
-                                    .current_value_for(&self.computed_style, StyleField::BoxShadow),
-                                transition: runtime.clone(),
-                            });
-                    }
-                }
-                TransitionProperty::Transform => {
-                    if changed_fields.contains(&StyleField::Transform) {
-                        queue_transition_requests(&mut self.transition_requests)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::Transform,
-                                from: previous.value_for(StyleField::Transform),
-                                to: previous
-                                    .current_value_for(&self.computed_style, StyleField::Transform),
-                                transition: runtime.clone(),
-                            });
-                    }
-                }
-                TransitionProperty::TransformOrigin => {
-                    if changed_fields.contains(&StyleField::TransformOrigin) {
-                        queue_transition_requests(&mut self.transition_requests)
-                            .style
-                            .push(StyleTrackRequest {
-                                target: self.core.id,
-                                field: StyleField::TransformOrigin,
-                                from: previous.value_for(StyleField::TransformOrigin),
-                                to: previous.current_value_for(
-                                    &self.computed_style,
-                                    StyleField::TransformOrigin,
-                                ),
-                                transition: runtime.clone(),
-                            });
-                    }
-                }
-                _ => {}
+                queue_transition_requests(&mut self.transition_requests)
+                    .style
+                    .push(StyleTrackRequest {
+                        target: self.core.id,
+                        field,
+                        from: previous.value_for(field),
+                        to: previous.current_value_for(&self.computed_style, field),
+                        transition: runtime.clone(),
+                    });
             }
         }
     }
@@ -1530,7 +1453,7 @@ impl ComputedStyleConsumer for Element {
             self.mark_local_dirty(DirtyPassMask::PAINT.union(DirtyPassMask::COMPOSITE));
         }
         if let Some(previous_snapshot) = previous_snapshot {
-            self.preserve_transform_transition_baseline(previous_snapshot);
+            self.preserve_transition_baselines(previous_snapshot);
         }
         self.sync_animator_requests();
     }
