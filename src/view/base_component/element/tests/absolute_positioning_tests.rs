@@ -498,52 +498,6 @@ fn absolute_self_origin_left_placement_with_right_inset() {
 }
 
 #[test]
-fn relative_mode_ignores_self_origin() {
-    let parent = Element::new(0.0, 0.0, 200.0, 120.0);
-    let mut child = Element::new(0.0, 0.0, 40.0, 30.0);
-    let mut child_style = Style::new();
-    child_style.insert(
-        PropertyId::Position,
-        ParsedValue::Position(Position::relative().origin(Origin::center())),
-    );
-    child.apply_style(child_style);
-
-    let mut arena = new_test_arena();
-    let parent_key = commit_element(&mut arena, Box::new(parent));
-    let _child_key = commit_child(&mut arena, parent_key, Box::new(child));
-
-    measure_and_place(
-        &mut arena,
-        parent_key,
-        LayoutConstraints {
-            max_width: 800.0,
-            max_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        },
-        LayoutPlacement {
-            parent_x: 0.0,
-            parent_y: 0.0,
-            visual_offset_x: 0.0,
-            visual_offset_y: 0.0,
-            available_width: 800.0,
-            available_height: 600.0,
-            viewport_width: 800.0,
-            percent_base_width: Some(800.0),
-            percent_base_height: Some(600.0),
-            viewport_height: 600.0,
-        },
-    );
-
-    let snapshot = nth_child_snapshot(&arena, parent_key, 0);
-    // Relative element follows flow layout; origin must not shift it.
-    assert_eq!(snapshot.x, 0.0);
-    assert_eq!(snapshot.y, 0.0);
-}
-
-#[test]
 fn absolute_collision_fit_viewport_clamps_into_view() {
     let mut el = Element::new(0.0, 0.0, 50.0, 30.0);
     let mut style = Style::new();

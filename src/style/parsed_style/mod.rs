@@ -811,10 +811,10 @@ pub enum Cursor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PositionMode {
+    /// In the parent's flow.
     Static,
-    Relative,
+    /// Out of the flow, placed against an anchor.
     Absolute,
-    Fixed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -833,9 +833,8 @@ pub enum CollisionBoundary {
 
 /// Clip rect chosen for an absolutely-positioned element.
 ///
-/// Only meaningful when [`Position::mode`] is [`PositionMode::Absolute`] (or
-/// `Fixed`). Static / relative elements always clip against their layout
-/// parent's inner box.
+/// Only meaningful when [`Position::mode`] is [`PositionMode::Absolute`].
+/// Static elements always clip against their layout parent's inner box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipMode {
     /// Clip against the **layout parent's** inner box — the element where this
@@ -935,7 +934,7 @@ impl From<String> for Anchor {
 ///
 /// `Length` percent base is `self_size`. Default semantics (no origin set on
 /// `Position`) match `top_left`. Only applied when `Position::mode` is
-/// `Absolute` or `Fixed`; ignored under `Static` / `Relative`.
+/// `Absolute`; ignored under `Static`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Origin {
     x: Length,
@@ -1019,16 +1018,8 @@ impl Position {
         Self::new(PositionMode::Static)
     }
 
-    pub const fn relative() -> Self {
-        Self::new(PositionMode::Relative)
-    }
-
     pub const fn absolute() -> Self {
         Self::new(PositionMode::Absolute)
-    }
-
-    pub const fn fixed() -> Self {
-        Self::new(PositionMode::Fixed)
     }
 
     pub const fn mode(&self) -> PositionMode {
@@ -1073,7 +1064,7 @@ impl Position {
 
     /// Shifts self by `-origin · self_size` so the placement point
     /// (anchor + insets) lands on `origin` of self instead of self's top-left.
-    /// Only applied when `mode` is `Absolute` or `Fixed`.
+    /// Only applied when `mode` is `Absolute`.
     pub const fn origin(mut self, origin: Origin) -> Self {
         self.self_origin = Some(origin);
         self

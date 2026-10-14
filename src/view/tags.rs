@@ -119,9 +119,13 @@ pub struct ElementStylePropSchema {
     /// How the element is placed; see [`Position`]. Default
     /// [`Position::static_`]: the element stays in its parent's flow.
     ///
-    /// - Only [`Position::absolute`] changes placement. [`Position::relative`]
-    ///   and [`Position::fixed`] behave like static: the element stays in
-    ///   flow and its insets are ignored.
+    /// - Only [`Position::absolute`] changes placement. Under static the
+    ///   element stays in flow and its insets are ignored.
+    /// - There is no CSS `relative` or `fixed`. For `fixed`, anchor an
+    ///   absolute element to the viewport and clip it there, as `Snackbar`
+    ///   does: `Position::absolute().anchor(Anchor::Viewport)
+    ///   .clip(ClipMode::Viewport)`. To nudge an element from where it sits
+    ///   in flow, use a [`transform`](Self::transform) translation.
     /// - An absolute element leaves the flow. It takes no room in its
     ///   parent's layout and does not count toward the parent's auto size or
     ///   scroll extent.
