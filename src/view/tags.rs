@@ -637,20 +637,6 @@ pub struct SelectionStylePropSchema {
     pub background: Option<crate::style::Background>,
 }
 
-/// A border width and color pair.
-///
-/// No style field takes this type. Set borders with
-/// [`ElementStylePropSchema::border`] and a
-/// [`Border`](crate::style::Border) value.
-#[derive(Clone)]
-#[props]
-pub struct BorderStylePropSchema {
-    /// Border width. Unused; see the type docs.
-    pub width: Option<Length>,
-    /// Border color. Unused; see the type docs.
-    pub color: Option<Box<dyn ColorLike>>,
-}
-
 /// Props of the `<Text>` host tag.
 ///
 /// `font_size`, `line_height`, `font`, `opacity` and `align` sit beside
@@ -1388,12 +1374,6 @@ impl_shared_style_prop_value!(
 impl_shared_style_prop_value!(
     SelectionStylePropSchema,
     "SelectionStylePropSchema",
-    into_shared_prop_value,
-    from_shared_prop_value
-);
-impl_shared_style_prop_value!(
-    BorderStylePropSchema,
-    "BorderStylePropSchema",
     into_shared_prop_value,
     from_shared_prop_value
 );
