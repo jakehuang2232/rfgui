@@ -80,6 +80,10 @@ pub(super) struct InputState {
     /// pointer_up dispatch paths check this and route to drag events
     /// instead.
     pub drag_state: Option<DragState>,
+    /// Elements whose hover change moved a field their descendants inherit;
+    /// [`Viewport::recascade_hover_text`](super::Viewport) recascades their
+    /// text.
+    pub hover_text_recascade: Vec<crate::view::node_arena::NodeKey>,
 }
 
 /// Per-drag engine state. Lives inside [`InputState`] for the lifetime

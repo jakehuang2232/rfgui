@@ -1316,6 +1316,36 @@ impl Element {
             .unwrap_or(&self.parsed_style)
     }
 
+    /// Merges the text fields this element passes to its descendants onto
+    /// `cascade`: those of its style, and of its hover style while hovered.
+    pub(crate) fn merge_text_cascade_into(
+        &self,
+        cascade: &mut crate::view::renderer_adapter::StyleCascadeContext,
+    ) {
+        cascade.merge_style(self.text_cascade_style(), self.is_hovered);
+    }
+
+    /// Whether this element sets `property` for its descendants, in its
+    /// style or, while hovered, in its hover style.
+    pub(crate) fn sets_text_cascade_property(&self, property: crate::style::PropertyId) -> bool {
+        let style = self.text_cascade_style();
+        style.get(property).is_some()
+            || (self.is_hovered
+                && style
+                    .hover()
+                    .is_some_and(|hover| hover.get(property).is_some()))
+    }
+
+    /// Whether the hover style sets a field descendants inherit, so a hover
+    /// change has to recascade them.
+    pub(crate) fn hover_cascades_to_descendants(&self) -> bool {
+        self.text_cascade_style().hover().is_some_and(|hover| {
+            hover.declarations().iter().any(|declaration| {
+                crate::style::style_props::property_is_inherited(declaration.property)
+            })
+        })
+    }
+
     pub(crate) fn set_text_cascade_style(&mut self, style: Style) {
         self.text_cascade_style = Some(style);
     }

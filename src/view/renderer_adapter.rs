@@ -76,7 +76,9 @@ impl StyleCascadeContext {
     /// ancestor style. The registry decides which authored properties
     /// become active inherited values; `compute_style_with_context`
     /// produces the next computed parent snapshot.
-    pub(crate) fn merge_style(&mut self, style: &Style) {
+    /// Merges the inherited fields an element passes to its descendants:
+    /// those of `style`, and of its hover style while `hovered`.
+    pub(crate) fn merge_style(&mut self, style: &Style, hovered: bool) {
         self.parent = compute_style_with_context(
             style,
             StyleComputeContext {
@@ -84,11 +86,15 @@ impl StyleCascadeContext {
                 viewport_width: self.viewport_width,
                 viewport_height: self.viewport_height,
                 root_font_size: self.root_font_size,
-                hovered: false,
+                hovered,
             },
         );
         self.active_inherited_properties
             .extend(active_inherited_properties(style));
+        if hovered && let Some(hover) = style.hover() {
+            self.active_inherited_properties
+                .extend(active_inherited_properties(hover));
+        }
     }
 
     pub(crate) fn has_inherited(&self, property: PropertyId) -> bool {
@@ -933,7 +939,7 @@ pub(crate) fn style_cascade_at_parent(
     for key in chain {
         let Some(node) = arena.get(key) else { continue };
         if let Some(el) = node.element.as_any().downcast_ref::<Element>() {
-            inherited.merge_style(el.text_cascade_style());
+            el.merge_text_cascade_into(&mut inherited);
         }
     }
     inherited

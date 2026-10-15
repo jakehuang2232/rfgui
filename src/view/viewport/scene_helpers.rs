@@ -22,6 +22,7 @@ impl Viewport {
         arena: &crate::view::node_arena::NodeArena,
         root_keys: &[crate::view::node_arena::NodeKey],
         target: Option<crate::view::node_arena::NodeKey>,
+        recascade: &mut Vec<crate::view::node_arena::NodeKey>,
     ) -> bool {
         let target_path = hover_path_for_target(arena, root_keys, target);
         let target_root = target_path.first().copied();
@@ -34,7 +35,7 @@ impl Viewport {
                 Some(owner) if owner != root_key => None,
                 _ => target,
             };
-            if update_hover_state(arena, root_key, root_target, &target_path) {
+            if update_hover_state(arena, root_key, root_target, &target_path, recascade) {
                 changed = true;
             }
         }
@@ -47,6 +48,7 @@ impl Viewport {
         hovered_node_id: &mut Option<crate::view::node_arena::NodeKey>,
         next_target: Option<crate::view::node_arena::NodeKey>,
         pointer: crate::ui::PointerEventData,
+        recascade: &mut Vec<crate::view::node_arena::NodeKey>,
     ) -> (bool, bool) {
         let transition_dispatched = crate::view::viewport::scene_helpers::dispatch_hover_transition(
             arena,
@@ -56,7 +58,7 @@ impl Viewport {
             pointer,
         );
         *hovered_node_id = next_target;
-        let hover_changed = Self::apply_hover_target(arena, root_keys, next_target);
+        let hover_changed = Self::apply_hover_target(arena, root_keys, next_target, recascade);
         (hover_changed, transition_dispatched)
     }
 
@@ -65,9 +67,30 @@ impl Viewport {
         root_keys: &[crate::view::node_arena::NodeKey],
         hovered_node_id: &mut Option<crate::view::node_arena::NodeKey>,
         next_target: Option<crate::view::node_arena::NodeKey>,
+        recascade: &mut Vec<crate::view::node_arena::NodeKey>,
     ) -> bool {
         *hovered_node_id = next_target;
-        Self::apply_hover_target(arena, root_keys, next_target)
+        Self::apply_hover_target(arena, root_keys, next_target, recascade)
+    }
+
+    /// Recascades the text under the elements whose hover change moved a
+    /// field their descendants inherit, such as a hover `color`.
+    pub(super) fn recascade_hover_text(&mut self) {
+        let keys = std::mem::take(&mut self.input_state.hover_text_recascade);
+        let ctx = crate::view::fiber_work::ApplyContext {
+            viewport_style: &self.style,
+            viewport_width: self.logical_width,
+            viewport_height: self.logical_height,
+        };
+        for key in keys {
+            if self.scene.node_arena.get(key).is_some() {
+                crate::view::fiber_work::recascade_text_subtree(
+                    &mut self.scene.node_arena,
+                    ctx,
+                    key,
+                );
+            }
+        }
     }
 
     pub(super) fn save_scroll_states(
@@ -533,6 +556,7 @@ fn update_hover_state(
     root_key: crate::view::node_arena::NodeKey,
     target_key: Option<crate::view::node_arena::NodeKey>,
     target_path: &[crate::view::node_arena::NodeKey],
+    recascade: &mut Vec<crate::view::node_arena::NodeKey>,
 ) -> bool {
     let path_valid = target_key.is_none() || !target_path.is_empty();
     fn walk(
@@ -542,6 +566,7 @@ fn update_hover_state(
         root_key: crate::view::node_arena::NodeKey,
         target_path: &[crate::view::node_arena::NodeKey],
         path_valid: bool,
+        recascade: &mut Vec<crate::view::node_arena::NodeKey>,
     ) -> (bool, bool, bool) {
         crate::ui::work_profile::count(|p| p.hover_observations += 1);
         let Some(node) = arena.get(key) else {
@@ -590,8 +615,15 @@ fn update_hover_state(
         let mut contains_target = target_key == Some(key);
         let mut changed = false;
         for child in children.into_iter().rev() {
-            let (contains, child_changed, child_tracked) =
-                walk(arena, child, target_key, root_key, target_path, path_valid);
+            let (contains, child_changed, child_tracked) = walk(
+                arena,
+                child,
+                target_key,
+                root_key,
+                target_path,
+                path_valid,
+                recascade,
+            );
             tracked &= child_tracked && arena.parent_of(child) == Some(key);
             contains_target |= contains;
             changed |= child_changed;
@@ -605,6 +637,13 @@ fn update_hover_state(
                     let changed = element.set_hovered(contains_target);
                     if changed {
                         cx.invalidate(element.local_dirty_flags());
+                        if element
+                            .as_any()
+                            .downcast_ref::<crate::view::base_component::Element>()
+                            .is_some_and(|element| element.hover_cascades_to_descendants())
+                        {
+                            recascade.push(key);
+                        }
                     }
                     changed
                 })
@@ -629,6 +668,7 @@ fn update_hover_state(
         root_key,
         target_path,
         path_valid,
+        recascade,
     )
     .1
 }

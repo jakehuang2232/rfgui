@@ -110,9 +110,14 @@ fn unchanged_hover_does_not_record_paint_mutations() {
         Box::new(Element::new(40.0, 0.0, 30.0, 30.0)),
     );
     for target in [None, Some(a), Some(b), None] {
-        Viewport::apply_hover_target(&arena, &[root], target);
+        Viewport::apply_hover_target(&arena, &[root], target, &mut Vec::new());
         let before: Vec<_> = [root, a, b].map(|k| arena.mutation_revision(k)).into();
-        assert!(!Viewport::apply_hover_target(&arena, &[root], target));
+        assert!(!Viewport::apply_hover_target(
+            &arena,
+            &[root],
+            target,
+            &mut Vec::new()
+        ));
         assert_eq!(before, [root, a, b].map(|k| arena.mutation_revision(k)));
         assert!(
             !arena
@@ -147,12 +152,22 @@ fn same_target_resynchronizes_replaced_ancestor_hover_state() {
         root,
         Box::new(Element::new(0.0, 0.0, 20.0, 20.0)),
     );
-    assert!(Viewport::apply_hover_target(&arena, &[root], Some(child)));
+    assert!(Viewport::apply_hover_target(
+        &arena,
+        &[root],
+        Some(child),
+        &mut Vec::new()
+    ));
     // Rebuilding a native host can reset its state while retaining the target.
     arena.mutate_element_ref_with_invalidation(root, |element, _| {
         element.set_hovered(false);
     });
-    assert!(Viewport::apply_hover_target(&arena, &[root], Some(child)));
+    assert!(Viewport::apply_hover_target(
+        &arena,
+        &[root],
+        Some(child),
+        &mut Vec::new()
+    ));
     assert!(!arena.get(root).unwrap().element.hover_update_needed(true));
     let replacement = commit_child(
         &mut arena,
@@ -162,7 +177,8 @@ fn same_target_resynchronizes_replaced_ancestor_hover_state() {
     assert!(Viewport::apply_hover_target(
         &arena,
         &[root],
-        Some(replacement)
+        Some(replacement),
+        &mut Vec::new()
     ));
     assert!(!arena.get(child).unwrap().element.hover_update_needed(false));
     assert!(
@@ -242,9 +258,9 @@ fn unknown_hover_host_keeps_setter_side_effects_and_mutation_tracking() {
             calls: calls.clone(),
         }),
     );
-    Viewport::apply_hover_target(&arena, &[root], None);
+    Viewport::apply_hover_target(&arena, &[root], None, &mut Vec::new());
     let revision = arena.mutation_revision(root);
-    Viewport::apply_hover_target(&arena, &[root], None);
+    Viewport::apply_hover_target(&arena, &[root], None, &mut Vec::new());
     assert_eq!(calls.get(), 2);
     assert_ne!(arena.mutation_revision(root), revision);
 }
@@ -257,15 +273,15 @@ fn warm_hover_visits_only_changed_paths_in_a_wide_tree() {
         .map(|_| commit_child(&mut arena, root, Box::new(Element::new(0., 0., 10., 10.))))
         .collect();
     let (_, cold) = crate::ui::profile_ui_work(|| {
-        Viewport::apply_hover_target(&arena, &[root], Some(children[0]))
+        Viewport::apply_hover_target(&arena, &[root], Some(children[0]), &mut Vec::new())
     });
     assert_eq!(cold.hover_observations, 1001);
     let (_, warm) = crate::ui::profile_ui_work(|| {
-        Viewport::apply_hover_target(&arena, &[root], Some(children[0]))
+        Viewport::apply_hover_target(&arena, &[root], Some(children[0]), &mut Vec::new())
     });
     assert_eq!(warm.hover_observations, 1);
     let (_, moved) = crate::ui::profile_ui_work(|| {
-        Viewport::apply_hover_target(&arena, &[root], Some(children[999]))
+        Viewport::apply_hover_target(&arena, &[root], Some(children[999]), &mut Vec::new())
     });
     assert_eq!(moved.hover_observations, 3);
     for &key in &children {
@@ -277,8 +293,9 @@ fn warm_hover_visits_only_changed_paths_in_a_wide_tree() {
                 .hover_update_needed(key == children[999])
         );
     }
-    let (_, leave) =
-        crate::ui::profile_ui_work(|| Viewport::apply_hover_target(&arena, &[root], None));
+    let (_, leave) = crate::ui::profile_ui_work(|| {
+        Viewport::apply_hover_target(&arena, &[root], None, &mut Vec::new())
+    });
     assert_eq!(leave.hover_observations, 2);
     assert!(!arena.get(root).unwrap().element.hover_update_needed(false));
 }
@@ -290,16 +307,26 @@ fn hover_cache_resynchronizes_reparented_and_incoherent_paths() {
     let left = commit_child(&mut arena, root, Box::new(Element::new(0., 0., 40., 40.)));
     let right = commit_child(&mut arena, root, Box::new(Element::new(50., 0., 40., 40.)));
     let leaf = commit_child(&mut arena, left, Box::new(Element::new(0., 0., 10., 10.)));
-    Viewport::apply_hover_target(&arena, &[root], Some(leaf));
+    Viewport::apply_hover_target(&arena, &[root], Some(leaf), &mut Vec::new());
     arena.set_children(left, vec![]);
     arena.set_children(right, vec![leaf]);
     arena.set_parent(leaf, Some(right));
-    assert!(Viewport::apply_hover_target(&arena, &[root], Some(leaf)));
+    assert!(Viewport::apply_hover_target(
+        &arena,
+        &[root],
+        Some(leaf),
+        &mut Vec::new()
+    ));
     assert!(!arena.get(left).unwrap().element.hover_update_needed(false));
     assert!(!arena.get(right).unwrap().element.hover_update_needed(true));
     arena.set_parent(leaf, None);
-    Viewport::apply_hover_target(&arena, &[root], None);
-    assert!(Viewport::apply_hover_target(&arena, &[root], Some(leaf)));
+    Viewport::apply_hover_target(&arena, &[root], None, &mut Vec::new());
+    assert!(Viewport::apply_hover_target(
+        &arena,
+        &[root],
+        Some(leaf),
+        &mut Vec::new()
+    ));
     assert!(!arena.get(leaf).unwrap().element.hover_update_needed(true));
     assert!(!arena.get(right).unwrap().element.hover_update_needed(true));
 }
@@ -315,16 +342,16 @@ fn multi_root_hover_reuses_untargeted_roots_and_clears_previous_root() {
             .collect::<Vec<_>>()
     });
     let (_, cold) = crate::ui::profile_ui_work(|| {
-        Viewport::apply_hover_target(&arena, &roots, Some(children[0][0]))
+        Viewport::apply_hover_target(&arena, &roots, Some(children[0][0]), &mut Vec::new())
     });
     assert_eq!(cold.hover_observations, 2002);
     let (changed, warm) = crate::ui::profile_ui_work(|| {
-        Viewport::apply_hover_target(&arena, &roots, Some(children[0][0]))
+        Viewport::apply_hover_target(&arena, &roots, Some(children[0][0]), &mut Vec::new())
     });
     assert!(!changed);
     assert_eq!(warm.hover_observations, 2);
     let (changed, crossed) = crate::ui::profile_ui_work(|| {
-        Viewport::apply_hover_target(&arena, &roots, Some(children[1][999]))
+        Viewport::apply_hover_target(&arena, &roots, Some(children[1][999]), &mut Vec::new())
     });
     assert!(changed);
     assert_eq!(crossed.hover_observations, 4);
@@ -346,8 +373,9 @@ fn multi_root_hover_reuses_untargeted_roots_and_clears_previous_root() {
             );
         }
     }
-    let (changed, left) =
-        crate::ui::profile_ui_work(|| Viewport::apply_hover_target(&arena, &roots, None));
+    let (changed, left) = crate::ui::profile_ui_work(|| {
+        Viewport::apply_hover_target(&arena, &roots, None, &mut Vec::new())
+    });
     assert!(changed);
     assert_eq!(left.hover_observations, 3);
     for key in roots.into_iter().chain(children.into_iter().flatten()) {
@@ -365,11 +393,16 @@ fn multi_root_hover_rechecks_reparented_and_invalid_targets() {
         roots[0],
         Box::new(Element::new(0., 0., 10., 10.)),
     );
-    Viewport::apply_hover_target(&arena, &roots, Some(leaf));
+    Viewport::apply_hover_target(&arena, &roots, Some(leaf), &mut Vec::new());
     arena.set_children(roots[0], vec![]);
     arena.set_children(roots[1], vec![leaf]);
     arena.set_parent(leaf, Some(roots[1]));
-    assert!(Viewport::apply_hover_target(&arena, &roots, Some(leaf)));
+    assert!(Viewport::apply_hover_target(
+        &arena,
+        &roots,
+        Some(leaf),
+        &mut Vec::new()
+    ));
     assert!(
         !arena
             .get(roots[0])
@@ -384,16 +417,18 @@ fn multi_root_hover_rechecks_reparented_and_invalid_targets() {
             .element
             .hover_update_needed(true)
     );
-    let (_, warm) =
-        crate::ui::profile_ui_work(|| Viewport::apply_hover_target(&arena, &roots, Some(leaf)));
+    let (_, warm) = crate::ui::profile_ui_work(|| {
+        Viewport::apply_hover_target(&arena, &roots, Some(leaf), &mut Vec::new())
+    });
     assert_eq!(warm.hover_observations, 2);
 
     // The child mirror still reaches the target, but its parent link does not.
     // Do not treat an unresolved path as a proven unrelated root.
     arena.set_parent(leaf, None);
     for _ in 0..2 {
-        let (_, unresolved) =
-            crate::ui::profile_ui_work(|| Viewport::apply_hover_target(&arena, &roots, Some(leaf)));
+        let (_, unresolved) = crate::ui::profile_ui_work(|| {
+            Viewport::apply_hover_target(&arena, &roots, Some(leaf), &mut Vec::new())
+        });
         assert_eq!(unresolved.hover_observations, 3);
         assert!(!arena.get(leaf).unwrap().element.hover_update_needed(true));
         assert!(
@@ -406,7 +441,12 @@ fn multi_root_hover_rechecks_reparented_and_invalid_targets() {
     }
     arena.set_children(roots[1], vec![]);
     arena.remove_subtree(leaf);
-    assert!(Viewport::apply_hover_target(&arena, &roots, Some(leaf)));
+    assert!(Viewport::apply_hover_target(
+        &arena,
+        &roots,
+        Some(leaf),
+        &mut Vec::new()
+    ));
     for root in roots {
         assert!(!arena.get(root).unwrap().element.hover_update_needed(false));
     }
@@ -426,7 +466,14 @@ fn multi_root_pointer_transition_keeps_enter_leave_order() {
     });
     let mut hovered = None;
     for target in [Some(roots[0]), Some(roots[1]), None] {
-        Viewport::sync_hover_target(&arena, &roots, &mut hovered, target, test_pointer_data());
+        Viewport::sync_hover_target(
+            &arena,
+            &roots,
+            &mut hovered,
+            target,
+            test_pointer_data(),
+            &mut Vec::new(),
+        );
     }
     assert_eq!(
         &*order.borrow(),
@@ -492,6 +539,7 @@ fn pointer_dispatch_reuses_unchanged_hover_subtrees_after_event_mutations() {
         &mut hovered,
         Some(leaves[0]),
         test_pointer_data(),
+        &mut Vec::new(),
     );
     let (_, profile) = crate::ui::profile_ui_work(|| {
         Viewport::sync_hover_target(
@@ -500,6 +548,7 @@ fn pointer_dispatch_reuses_unchanged_hover_subtrees_after_event_mutations() {
             &mut hovered,
             Some(leaves[999]),
             test_pointer_data(),
+            &mut Vec::new(),
         )
     });
     // Enter/leave hooks invalidate their owners, so those branches are checked

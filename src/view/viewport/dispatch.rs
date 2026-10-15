@@ -266,7 +266,9 @@ impl Viewport {
             &mut self.input_state.hovered_node_id,
             hover_target,
             pointer_data,
+            &mut self.input_state.hover_text_recascade,
         );
+        self.recascade_hover_text();
         let meta = EventMeta::new(NodeId::default());
         let mut event = PointerMoveEvent {
             meta: meta.clone(),
@@ -1770,7 +1772,9 @@ impl Viewport {
             &mut self.input_state.hovered_node_id,
             None,
             pointer_data,
+            &mut self.input_state.hover_text_recascade,
         );
+        self.recascade_hover_text();
         let pointer_changed = Self::cancel_pointer_interactions(&self.scene.node_arena, &root_keys);
         if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
@@ -1835,7 +1839,9 @@ impl Viewport {
             &mut self.input_state.hovered_node_id,
             None,
             pointer_data,
+            &mut self.input_state.hover_text_recascade,
         );
+        self.recascade_hover_text();
         let pointer_changed = Self::cancel_pointer_interactions(&self.scene.node_arena, &root_keys);
         if hover_changed || hover_event_dispatched || pointer_changed {
             self.request_redraw();
@@ -1879,7 +1885,9 @@ impl Viewport {
             &mut self.input_state.hovered_node_id,
             hover_target,
             pointer_data,
+            &mut self.input_state.hover_text_recascade,
         );
+        self.recascade_hover_text();
         if hover_changed || hover_event_dispatched {
             self.request_redraw();
             true

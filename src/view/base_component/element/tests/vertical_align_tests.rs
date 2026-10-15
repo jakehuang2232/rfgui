@@ -127,7 +127,7 @@ fn style_line_height_cascades_into_text_unless_explicit() {
 
     let parent_style = Style::new().with_line_height(2.0);
     let mut inherited = StyleCascadeContext::default();
-    inherited.merge_style(&parent_style);
+    inherited.merge_style(&parent_style, false);
     assert_eq!(inherited.inherited_line_height(), Some(2.0));
 
     // Cascade reaches a non-explicit Text.
@@ -141,7 +141,7 @@ fn style_line_height_cascades_into_text_unless_explicit() {
     text2.set_line_height(1.4);
     let inherited3 = {
         let mut tmp = StyleCascadeContext::default();
-        tmp.merge_style(&Style::new().with_line_height(2.0));
+        tmp.merge_style(&Style::new().with_line_height(2.0), false);
         tmp
     };
     text2.apply_inherited(&inherited3);

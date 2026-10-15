@@ -7245,7 +7245,7 @@ impl ElementTrait for Element {
         parent: &crate::view::renderer_adapter::StyleCascadeContext,
     ) -> crate::view::renderer_adapter::StyleCascadeContext {
         let mut child = parent.clone();
-        child.merge_style(self.text_cascade_style());
+        self.merge_text_cascade_into(&mut child);
         child
     }
 

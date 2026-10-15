@@ -863,6 +863,8 @@ pub struct TextArea {
     pub(crate) vertical_align: crate::style::VerticalAlign,
     pub(crate) color: crate::style::Color,
     pub(crate) cursor: Cursor,
+    /// The text fields `style` sets; see [`style::TextAreaStyledFields`].
+    pub(crate) styled: style::TextAreaStyledFields,
 
     // cursor / selection / IME / focus
     pub(crate) cursor_char: usize,
@@ -956,18 +958,19 @@ impl Default for TextArea {
             max_length: None,
             text_binding: None,
             font_families: Vec::new(),
-            font_size: 14.0,
-            font_weight: 400,
-            line_height: 1.25,
+            font_size: style::DEFAULT_FONT_SIZE,
+            font_weight: style::DEFAULT_FONT_WEIGHT,
+            line_height: style::DEFAULT_LINE_HEIGHT,
             vertical_align: crate::style::VerticalAlign::Baseline,
-            color: crate::style::Color::rgba(17, 17, 17, 255),
+            color: style::DEFAULT_COLOR,
             cursor: Cursor::Text,
+            styled: style::TextAreaStyledFields::default(),
 
             cursor_char: 0,
             cursor_affinity: caret_map::CaretAffinity::Downstream,
             selection_anchor_char: None,
             selection_focus_char: None,
-            selection_background_color: crate::style::Color::rgba(71, 133, 240, 89),
+            selection_background_color: style::DEFAULT_SELECTION_BACKGROUND,
             pointer_selecting: false,
             is_focused: false,
             scroll_x: 0.0,
@@ -1056,69 +1059,6 @@ impl TextArea {
     /// route SetText to either Text or TextArea uniformly.
     pub fn set_text(&mut self, value: String) {
         self.set_content_from_external(value);
-    }
-
-    /// Re-apply ancestor-derived inherited cascade to props the user
-    /// didn't author explicitly. Called by
-    /// [`crate::view::fiber_work::recascade_text_subtree`] after an
-    /// ancestor style change.
-    ///
-    /// v2 doesn't yet track per-prop "explicit" flags (all TextArea
-    /// authors set values through `apply_prop` which writes
-    /// unconditionally). Conservative behaviour: overwrite
-    /// font_families when empty (default), font_size only when it still
-    /// matches the previously-cached inherited value (i.e. nothing else
-    /// has touched it since), and likewise for color / font_weight.
-    /// Marks content dirty so the next rebuild re-cascades the Run
-    /// children.
-    pub(crate) fn apply_inherited(
-        &mut self,
-        inherited: &crate::view::renderer_adapter::StyleCascadeContext,
-    ) -> bool {
-        let mut changed = false;
-        if self.font_families.is_empty()
-            && let Some(font_families) = inherited.inherited_font_families()
-            && !font_families.is_empty()
-        {
-            self.font_families = font_families.to_vec();
-            changed = true;
-        }
-        if let Some(fs) = inherited.inherited_font_size()
-            && (self.font_size - fs).abs() > f32::EPSILON
-            && (self.font_size - 14.0).abs() < f32::EPSILON
-        {
-            self.font_size = fs;
-            changed = true;
-        }
-        if let Some(fw) = inherited.inherited_font_weight()
-            && self.font_weight == 400
-            && fw != 400
-        {
-            self.font_weight = fw;
-            changed = true;
-        }
-        if let Some(line_height) = inherited.inherited_line_height()
-            && (self.line_height - line_height).abs() > f32::EPSILON
-        {
-            self.line_height = line_height;
-            changed = true;
-        }
-        if let Some(color) = inherited.inherited_color()
-            && self.color == crate::style::Color::rgba(17, 17, 17, 255)
-        {
-            self.color = color;
-            changed = true;
-        }
-        if let Some(vertical_align) = inherited.inherited_vertical_align()
-            && self.vertical_align != vertical_align
-        {
-            self.vertical_align = vertical_align;
-            changed = true;
-        }
-        if changed {
-            self.mark_content_dirty();
-        }
-        changed
     }
 }
 
@@ -1855,7 +1795,7 @@ impl ElementTrait for TextArea {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
                 let inherited = resolve_inherited(arena);
-                self.apply_style_incremental(&style, &inherited);
+                self.apply_style_incremental(Some(&style), &inherited);
                 PropApplyOutcome::Applied
             }
             "on_change" => {
@@ -1898,14 +1838,33 @@ impl ElementTrait for TextArea {
 
     fn reset_prop(
         &mut self,
-        _arena: &mut crate::view::node_arena::NodeArena,
-        _self_key: crate::view::node_arena::NodeKey,
-        _ctx: &crate::view::fiber_work::ApplyContext<'_>,
+        arena: &mut crate::view::node_arena::NodeArena,
+        self_key: crate::view::node_arena::NodeKey,
+        ctx: &crate::view::fiber_work::ApplyContext<'_>,
         name: &'static str,
     ) -> crate::view::fiber_work::PropApplyOutcome {
         use crate::view::fiber_work::PropApplyOutcome;
+        use crate::view::renderer_adapter::{StyleCascadeContext, style_cascade_at_parent};
         match name {
             "key" => PropApplyOutcome::Applied,
+            "style" => {
+                let inherited = match arena.parent_of(self_key) {
+                    Some(parent) => style_cascade_at_parent(
+                        arena,
+                        parent,
+                        ctx.viewport_style,
+                        ctx.viewport_width,
+                        ctx.viewport_height,
+                    ),
+                    None => StyleCascadeContext::from_viewport_style(
+                        ctx.viewport_style,
+                        ctx.viewport_width,
+                        ctx.viewport_height,
+                    ),
+                };
+                self.apply_style_incremental(None, &inherited);
+                PropApplyOutcome::Applied
+            }
             "binding" => {
                 self.text_binding = None;
                 PropApplyOutcome::Applied
@@ -1956,8 +1915,6 @@ impl ElementTrait for TextArea {
                 self.mark_content_dirty();
                 PropApplyOutcome::Applied
             }
-            // The style can't be reverted to "inherited" without a full
-            // descriptor rebuild — fall back to the cold path.
             _ => PropApplyOutcome::CannotReset(name),
         }
     }

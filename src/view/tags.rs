@@ -440,10 +440,11 @@ pub struct ElementStylePropSchema {
 ///
 /// - `<Element>`, `<Image>` and `<Svg>` apply hover. `<TextArea>` does not.
 /// - The inherited fields (`color`, `cursor`, `font`, `font_size`,
-///   `font_weight`, `line_height`, `text_wrap` and `vertical_align`) change
-///   only this element's own value and are not passed down while hovered.
-///   A hover `color` or `font_size` does not change child text, and a hover
-///   `cursor` does not show while a child is under the pointer.
+///   `font_weight`, `line_height`, `text_wrap` and `vertical_align`) pass
+///   down while hovered, as the base values do: a hover `color` recolors
+///   child text that does not set its own, and a hover `cursor` also shows
+///   over such a child. When hover ends, the descendants take the base
+///   values again.
 /// - A hover `background` color cannot hide a base `background_image`,
 ///   because a gradient is drawn instead of the color.
 #[derive(Clone)]
@@ -471,13 +472,11 @@ pub struct HoverElementStylePropSchema {
     pub gap: Option<Length>,
     /// While hovered, replaces [`ElementStylePropSchema::scroll_direction`].
     pub scroll_direction: Option<ScrollDirection>,
-    /// While hovered, replaces this element's own
-    /// [`ElementStylePropSchema::cursor`]. It shows only while this element
-    /// itself is under the pointer, not one of its children.
+    /// While hovered, replaces [`ElementStylePropSchema::cursor`], also for
+    /// descendants that do not set their own.
     pub cursor: Option<Cursor>,
-    /// While hovered, replaces this element's own
-    /// [`ElementStylePropSchema::color`]. Descendant text keeps the base
-    /// color.
+    /// While hovered, replaces [`ElementStylePropSchema::color`], also for
+    /// descendant text that does not set its own.
     pub color: Option<Box<dyn ColorLike>>,
     /// While hovered, replaces [`ElementStylePropSchema::border`], all four
     /// sides.
@@ -492,29 +491,23 @@ pub struct HoverElementStylePropSchema {
     pub background_image: Option<crate::style::Gradient>,
     /// While hovered, replaces [`ElementStylePropSchema::border_image`].
     pub border_image: Option<crate::style::Gradient>,
-    /// While hovered, replaces this element's own
-    /// [`ElementStylePropSchema::font`]. Descendant text keeps the base
-    /// value.
+    /// While hovered, replaces [`ElementStylePropSchema::font`], also for
+    /// descendant text that does not set its own.
     pub font: Option<FontFamily>,
-    /// While hovered, replaces this element's own
-    /// [`ElementStylePropSchema::font_size`]. Descendant text keeps the base
-    /// value.
+    /// While hovered, replaces [`ElementStylePropSchema::font_size`], also
+    /// for descendant text that does not set its own.
     pub font_size: Option<FontSize>,
-    /// While hovered, replaces this element's own
-    /// [`ElementStylePropSchema::font_weight`]. Descendant text keeps the
-    /// base value.
+    /// While hovered, replaces [`ElementStylePropSchema::font_weight`], also
+    /// for descendant text that does not set its own.
     pub font_weight: Option<FontWeight>,
-    /// While hovered, replaces this element's own
-    /// [`ElementStylePropSchema::text_wrap`]. Descendants keep the base
-    /// value.
+    /// While hovered, replaces [`ElementStylePropSchema::text_wrap`], also
+    /// for descendants that do not set their own.
     pub text_wrap: Option<TextWrap>,
-    /// While hovered, replaces this element's own
-    /// [`ElementStylePropSchema::line_height`]. Descendants keep the base
-    /// value.
+    /// While hovered, replaces [`ElementStylePropSchema::line_height`], also
+    /// for descendants that do not set their own.
     pub line_height: Option<f64>,
-    /// While hovered, replaces this element's own
-    /// [`ElementStylePropSchema::vertical_align`]. Descendants keep the base
-    /// value.
+    /// While hovered, replaces [`ElementStylePropSchema::vertical_align`],
+    /// also for descendants that do not set their own.
     pub vertical_align: Option<VerticalAlign>,
     /// While hovered, replaces [`ElementStylePropSchema::border_radius`], all
     /// four corners.

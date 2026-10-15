@@ -1783,8 +1783,10 @@ impl Viewport {
                 &root_keys,
                 &mut self.input_state.hovered_node_id,
                 next_hover_target,
+                &mut self.input_state.hover_text_recascade,
             );
             self.scene.node_arena = arena;
+            self.recascade_hover_text();
             result
         }
     }

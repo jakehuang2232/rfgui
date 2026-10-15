@@ -1156,10 +1156,7 @@ fn pass_inherited_color(
                     .as_any()
                     .downcast_ref::<Element>()
                     .is_some_and(|element| {
-                        element
-                            .text_cascade_style()
-                            .get(crate::style::PropertyId::Color)
-                            .is_none()
+                        !element.sets_text_cascade_property(crate::style::PropertyId::Color)
                     })
             })
             .unwrap_or(false);
