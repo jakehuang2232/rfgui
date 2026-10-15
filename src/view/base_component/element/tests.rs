@@ -275,6 +275,21 @@ fn place_grandparent_parent_child(
     crate::view::node_arena::NodeArena,
     crate::view::node_arena::NodeKey,
 ) {
+    place_grandparent_padded_parent_child(parent_box, 0.0, child_anchor, child_left, child_top)
+}
+
+/// Like [`place_grandparent_parent_child`], with `parent_padding` on every
+/// side of the parent, so its content box differs from its border box.
+fn place_grandparent_padded_parent_child(
+    parent_box: (f32, f32, f32, f32),
+    parent_padding: f32,
+    child_anchor: crate::style::Anchor,
+    child_left: f32,
+    child_top: f32,
+) -> (
+    crate::view::node_arena::NodeArena,
+    crate::view::node_arena::NodeKey,
+) {
     // grandparent (root) > parent (absolute @ parent_box) > child (absolute, anchor=...)
     let grandparent = Element::new(0.0, 0.0, 800.0, 600.0);
     let mut parent = Element::new(0.0, 0.0, parent_box.2, parent_box.3);
@@ -287,6 +302,7 @@ fn place_grandparent_parent_child(
                 .top(Length::px(parent_box.1)),
         ),
     );
+    parent_style.set_padding(crate::style::Padding::uniform(Length::px(parent_padding)));
     parent.apply_style(parent_style);
     let mut child = Element::new(0.0, 0.0, 30.0, 20.0);
     let mut child_style = Style::new();

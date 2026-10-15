@@ -903,16 +903,23 @@ impl From<String> for AnchorName {
     }
 }
 
-/// Reference to an anchor for absolute positioning.
-///
-/// `Name` looks up a registered `AnchorName` in the per-frame map.
-/// `Parent`, `Root`, `Ancestor(n)` walk the live ancestor stack — no
-/// declaration needed on the target.
+/// What an absolute element is placed against; see [`Position::anchor`].
+/// Without one, the anchor is the parent's content box (inside its padding
+/// and border), moved by the parent's scroll offset.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Anchor {
+    /// The element whose `anchor` prop has this name and that is placed
+    /// earlier in the same layout pass. A name not found falls back to the
+    /// default anchor.
     Name(AnchorName),
+    /// The parent's border box.
     Parent,
+    /// The viewport.
     Viewport,
+    /// The border box of the `n`-th ancestor, counting the parent as 1:
+    /// `Ancestor(1)` is the same as [`Parent`](Self::Parent) and
+    /// `Ancestor(2)` the grandparent. 0, or a count past the root, falls
+    /// back to the default anchor.
     Ancestor(usize),
 }
 

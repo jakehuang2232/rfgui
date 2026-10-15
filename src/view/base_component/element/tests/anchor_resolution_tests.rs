@@ -62,6 +62,27 @@ fn anchor_ancestor_n_walks_up_n_levels() {
 }
 
 #[test]
+fn anchor_ancestor_counts_from_one_and_zero_falls_back_to_the_default() {
+    // The parent sits at (100, 50) with 20 px of padding: `Ancestor(1)` is
+    // its border box, while `Ancestor(0)`, like a count past the root,
+    // falls back to the default anchor, its content box.
+    let place = |anchor| {
+        let (arena, child) = place_grandparent_padded_parent_child(
+            (100.0, 50.0, 200.0, 120.0),
+            20.0,
+            anchor,
+            10.0,
+            5.0,
+        );
+        let snap = child_snapshot(&arena, child);
+        (snap.x, snap.y)
+    };
+    assert_eq!(place(crate::style::Anchor::Ancestor(1)), (110.0, 55.0));
+    assert_eq!(place(crate::style::Anchor::Ancestor(0)), (130.0, 75.0));
+    assert_eq!(place(crate::style::Anchor::Ancestor(9)), (130.0, 75.0));
+}
+
+#[test]
 fn anchor_str_still_resolves_via_named_map() {
     // Regression: From<&str> for Anchor still flows through the named-anchor map.
     let parent = Element::new(0.0, 0.0, 500.0, 200.0);

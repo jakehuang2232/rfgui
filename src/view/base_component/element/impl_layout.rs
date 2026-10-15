@@ -1310,11 +1310,10 @@ impl Element {
                         }
                     }
                 }
+                // Counts from 1 (the parent); 0 or a count past the root
+                // falls back to the default anchor.
                 crate::style::Anchor::Ancestor(n) => {
                     let stack = &runtime.ancestor_stack;
-                    if *n == 0 {
-                        return stack.last().copied().unwrap_or(fallback);
-                    }
                     stack
                         .len()
                         .checked_sub(*n)
