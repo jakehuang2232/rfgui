@@ -127,8 +127,6 @@ fn registry_covers_current_property_id_variants() {
 #[test]
 fn style_prop_meta_finds_text_style_fields() {
     for property in [
-        PropertyId::Width,
-        PropertyId::Height,
         PropertyId::Color,
         PropertyId::FontFamily,
         PropertyId::FontSize,
@@ -278,8 +276,6 @@ fn all_style_set_accepts_existing_declarations() {
 #[test]
 fn text_style_set_accepts_text_fields() {
     let mut style = Style::new();
-    style.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
-    style.insert(PropertyId::Height, ParsedValue::Length(Length::px(32.0)));
     style.insert(
         PropertyId::Color,
         ParsedValue::color_like(Color::rgb(12, 34, 56)),
@@ -318,7 +314,11 @@ fn text_style_set_accepts_text_fields() {
 }
 
 #[test]
-fn text_style_set_rejects_background_and_layout_fields() {
+fn text_style_set_rejects_box_and_layout_fields() {
+    let mut width = Style::new();
+    width.insert(PropertyId::Width, ParsedValue::Length(Length::px(120.0)));
+    assert_rejects::<TextStyleSet>(&width, PropertyId::Width);
+
     let mut background = Style::new();
     background.insert(
         PropertyId::BackgroundColor,

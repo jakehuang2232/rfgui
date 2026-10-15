@@ -1,8 +1,8 @@
 //! Text typography setters + style/inherited cascade.
 
 use crate::style::{
-    ColorLike, ComputedStyle, Cursor, Length, SizeValue, Style, StyleComputeContext, TextAlign,
-    TextWrap, compute_style_with_context,
+    ColorLike, ComputedStyle, Cursor, Style, StyleComputeContext, TextAlign, TextWrap,
+    compute_style_with_context,
 };
 use crate::view::base_component::{DirtyFlags, Position, Size};
 use crate::view::inline_formatting_context::InlineIfcAlignment;
@@ -16,8 +16,6 @@ use super::{
 #[derive(Debug)]
 pub(crate) struct TextComputedStyleBridge {
     computed: ComputedStyle,
-    width: Result<Option<f32>, String>,
-    height: Result<Option<f32>, String>,
     has_font_family: bool,
     has_font_size: bool,
     has_font_weight: bool,
@@ -64,18 +62,6 @@ impl TextComputedStyleBridge {
         );
 
         Self {
-            width: authored_size_value_px(
-                style,
-                PropertyId::Width,
-                computed.width,
-                "Text style.width",
-            ),
-            height: authored_size_value_px(
-                style,
-                PropertyId::Height,
-                computed.height,
-                "Text style.height",
-            ),
             has_font_family: style.get(PropertyId::FontFamily).is_some(),
             has_font_size: style.get(PropertyId::FontSize).is_some(),
             has_font_weight: style.get(PropertyId::FontWeight).is_some(),
@@ -91,31 +77,6 @@ impl TextComputedStyleBridge {
             has_opacity: style.get(PropertyId::Opacity).is_some(),
             has_transition: style.get(PropertyId::Transition).is_some(),
             computed,
-        }
-    }
-}
-
-fn authored_size_value_px(
-    style: &Style,
-    property: crate::style::PropertyId,
-    computed: SizeValue,
-    context: &str,
-) -> Result<Option<f32>, String> {
-    if style.get(property).is_none() {
-        return Ok(None);
-    }
-    match computed {
-        SizeValue::Auto => Ok(None),
-        SizeValue::Length(Length::Px(value)) => Ok(Some(value)),
-        SizeValue::Length(Length::Zero) => Ok(Some(0.0)),
-        SizeValue::Length(length @ Length::Calc(_)) => {
-            if length.needs_percent_base() {
-                return Err(format!("{context} does not support relative length"));
-            }
-            Ok(Some(length.resolve_without_percent_base(0.0, 0.0)))
-        }
-        SizeValue::Length(Length::Percent(_) | Length::Vh(_) | Length::Vw(_)) => {
-            Err(format!("{context} does not support relative length"))
         }
     }
 }
@@ -383,19 +344,15 @@ impl Text {
         style: Option<&Style>,
         inherited: &StyleCascadeContext,
     ) {
-        let _ = self.apply_style_with_computed_bridge(
-            style,
-            inherited,
-            TextStyleApplyMode::Incremental,
-        );
+        self.apply_style_with_computed_bridge(style, inherited, TextStyleApplyMode::Incremental);
     }
 
     pub(crate) fn apply_style_cold(
         &mut self,
         style: Option<&Style>,
         inherited: &StyleCascadeContext,
-    ) -> Result<(), String> {
-        self.apply_style_with_computed_bridge(style, inherited, TextStyleApplyMode::Cold)
+    ) {
+        self.apply_style_with_computed_bridge(style, inherited, TextStyleApplyMode::Cold);
     }
 
     fn apply_style_with_computed_bridge(
@@ -403,7 +360,7 @@ impl Text {
         style: Option<&Style>,
         inherited: &StyleCascadeContext,
         mode: TextStyleApplyMode,
-    ) -> Result<(), String> {
+    ) {
         let bridge = style.map(|style| TextComputedStyleBridge::from_style(style, inherited));
         // As for an Element, the first build does not transition.
         let previous =
@@ -431,30 +388,6 @@ impl Text {
         if let Some(previous) = previous {
             self.queue_style_transitions(&previous);
         }
-
-        let width = match bridge.as_ref().map(|bridge| &bridge.width) {
-            Some(Ok(width)) => *width,
-            Some(Err(err)) if mode == TextStyleApplyMode::Cold => return Err(err.clone()),
-            Some(Err(_)) | None => None,
-        };
-        let height = match bridge.as_ref().map(|bridge| &bridge.height) {
-            Some(Ok(height)) => *height,
-            Some(Err(err)) if mode == TextStyleApplyMode::Cold => return Err(err.clone()),
-            Some(Err(_)) | None => None,
-        };
-
-        if let Some(width) = width {
-            self.set_width(width);
-        } else {
-            self.set_auto_width(true);
-        }
-        if let Some(height) = height {
-            self.set_height(height);
-        } else {
-            self.set_auto_height(true);
-        }
-
-        Ok(())
     }
 
     fn apply_computed_text_bridge(&mut self, bridge: &TextComputedStyleBridge) {

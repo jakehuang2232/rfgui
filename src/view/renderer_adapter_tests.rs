@@ -39,7 +39,6 @@ fn host_text_area_node() -> RsxNode {
     RsxNode::tagged("TextArea", RsxTagDescriptor::for_tag::<HostTextArea>())
 }
 
-
 fn empty_element_style() -> ElementStylePropSchema {
     ElementStylePropSchema::default()
 }
@@ -47,8 +46,6 @@ fn empty_element_style() -> ElementStylePropSchema {
 fn empty_text_style() -> TextStylePropSchema {
     TextStylePropSchema::default()
 }
-
-
 
 
 
@@ -87,7 +84,6 @@ fn style_with_size(
 }
 
 
-
 fn text_style_with_color(color_hex: &str) -> TextStylePropSchema {
     TextStylePropSchema {
         color: Some(Box::new(IntoColor::<Color>::into_color(Color::hex(
@@ -96,15 +92,6 @@ fn text_style_with_color(color_hex: &str) -> TextStylePropSchema {
         ..empty_text_style()
     }
 }
-
-fn text_style_with_size(width: f32, height: f32) -> TextStylePropSchema {
-    TextStylePropSchema {
-        width: Some(Length::px(width)),
-        height: Some(Length::px(height)),
-        ..empty_text_style()
-    }
-}
-
 
 
 
@@ -190,11 +177,6 @@ fn collect_text_like_boxes(
         collect_text_like_boxes(arena, child, out);
     }
 }
-
-
-
-
-
 
 
 

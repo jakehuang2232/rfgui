@@ -36,8 +36,7 @@ fn text_style_cold_path_uses_computed_bridge_for_supported_fields() {
     );
 
     let mut text = Text::from_content("computed");
-    text.apply_style_cold(Some(&style), &inherited)
-        .expect("text computed style bridge should apply");
+    text.apply_style_cold(Some(&style), &inherited);
 
     assert_eq!(text.color.to_rgba_u8(), [0x12, 0x34, 0x56, 0xff]);
     assert!((text.font_size() - 30.0).abs() < f32::EPSILON);
@@ -61,8 +60,7 @@ fn text_style_transform_lifecycle_resolves_and_resets_real_state() {
     );
     let mut text = Text::new(10.0, 20.0, 80.0, 24.0, "transform");
 
-    text.apply_style_cold(Some(&style), &inherited)
-        .expect("Text transform style");
+    text.apply_style_cold(Some(&style), &inherited);
     place_text_for_read_only_ifc_test(&mut text, 320.0, 240.0);
 
     assert_eq!(text.transform().as_slice().len(), 1);
@@ -109,8 +107,7 @@ fn text_style_cold_path_applies_authored_line_height_and_vertical_align() {
     );
 
     let mut text = Text::from_content("authored inline style");
-    text.apply_style_cold(Some(&style), &inherited)
-        .expect("text computed style bridge should apply");
+    text.apply_style_cold(Some(&style), &inherited);
 
     assert!((text.line_height_value() - 1.6).abs() < f32::EPSILON);
     assert_eq!(text.vertical_align(), VerticalAlign::Top);
@@ -164,8 +161,7 @@ fn text_style_computed_bridge_does_not_apply_unauthored_computed_defaults() {
     );
 
     let mut text = Text::from_content("masked");
-    text.apply_style_cold(Some(&style), &inherited)
-        .expect("text computed style bridge should apply");
+    text.apply_style_cold(Some(&style), &inherited);
 
     assert_eq!(text.color.to_rgba_u8(), [0x22, 0x44, 0x66, 0xff]);
     assert!((text.font_size() - 18.0).abs() < f32::EPSILON);
@@ -201,8 +197,7 @@ fn text_style_computed_bridge_resolves_em_from_computed_parent() {
     );
 
     let mut text = Text::from_content("computed parent");
-    text.apply_style_cold(Some(&style), &inherited)
-        .expect("text computed style bridge should apply");
+    text.apply_style_cold(Some(&style), &inherited);
 
     assert!((text.font_size() - 30.0).abs() < f32::EPSILON);
     assert!((text.line_height_value() - 1.7).abs() < f32::EPSILON);

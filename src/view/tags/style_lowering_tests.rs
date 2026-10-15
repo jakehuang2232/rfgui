@@ -29,8 +29,6 @@ where
 
 fn text_style() -> TextStylePropSchema {
     TextStylePropSchema {
-        width: Some(Length::px(120.0)),
-        height: Some(Length::px(32.0)),
         color: Some(color("#123456")),
         font: Some(FontFamily::new(["Inter"])),
         font_size: Some(FontSize::px(17.0)),
@@ -127,8 +125,8 @@ fn host_tag_style_contract_matches_validation() {
 fn element_style() -> ElementStylePropSchema {
     let text = text_style();
     ElementStylePropSchema {
-        width: text.width,
-        height: text.height,
+        width: Some(Length::px(120.0)),
+        height: Some(Length::px(32.0)),
         color: text.color.clone(),
         font: text.font.clone(),
         font_size: text.font_size,
@@ -146,7 +144,8 @@ fn element_style() -> ElementStylePropSchema {
     }
 }
 
-fn assert_shared_fields(style: &Style) {
+/// The fields an Element style and its hover share, beyond the text ones.
+fn assert_box_size(style: &Style) {
     assert!(matches!(
         style.get(PropertyId::Width),
         Some(ParsedValue::Length(_))
@@ -155,6 +154,9 @@ fn assert_shared_fields(style: &Style) {
         style.get(PropertyId::Height),
         Some(ParsedValue::Length(_))
     ));
+}
+
+fn assert_shared_fields(style: &Style) {
     assert!(matches!(
         style.get(PropertyId::Color),
         Some(ParsedValue::Color(_))
@@ -222,6 +224,7 @@ fn element_style_lowering_keeps_shared_and_element_fields() {
     let style = element_style().to_style();
 
     assert_shared_fields(&style);
+    assert_box_size(&style);
     assert_eq!(
         style.get(PropertyId::Layout),
         Some(&ParsedValue::Layout(Layout::Inline))
@@ -237,8 +240,8 @@ fn hover_lowering_keeps_shared_fields() {
     let text = text_style();
     let schema = ElementStylePropSchema {
         hover: Some(HoverElementStylePropSchema {
-            width: text.width,
-            height: text.height,
+            width: Some(Length::px(120.0)),
+            height: Some(Length::px(32.0)),
             color: text.color.clone(),
             font: text.font.clone(),
             font_size: text.font_size,
@@ -256,7 +259,9 @@ fn hover_lowering_keeps_shared_fields() {
     };
     let style = schema.to_style();
 
-    assert_shared_fields(style.hover().expect("hover style should lower"));
+    let hover = style.hover().expect("hover style should lower");
+    assert_shared_fields(hover);
+    assert_box_size(hover);
 }
 
 #[test]

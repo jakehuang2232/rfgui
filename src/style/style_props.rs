@@ -76,9 +76,7 @@ impl StylePropSet for TextStyleSet {
     fn accepts(property: PropertyId) -> bool {
         matches!(
             property,
-            PropertyId::Width
-                | PropertyId::Height
-                | PropertyId::Color
+            PropertyId::Color
                 | PropertyId::FontFamily
                 | PropertyId::FontSize
                 | PropertyId::FontWeight

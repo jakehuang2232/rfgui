@@ -548,24 +548,16 @@ pub struct HoverElementStylePropSchema {
 /// sets it, as does the vertical alignment, or else the default. Removing a
 /// field from the style on a later update does the same.
 ///
+/// A Text box is sized by its text: it wraps at the width its parent gives
+/// it and is as tall as its lines. To give text a size, set it on a
+/// wrapping `<Element>`.
+///
 /// In a parent with [`Layout::Inline`] (the default), the parent lays the
-/// text out in its own lines. There `width`, `height`, `text_wrap` and
+/// text out in its own lines. There `text_wrap` and
 /// [`text_align`](Self::text_align) have no effect.
 #[derive(Clone)]
 #[props]
 pub struct TextStylePropSchema {
-    /// Fixed width of the text box. Only pixel lengths work: a px value, or
-    /// a [`Length::calc`] made only of pixels. A percent, `vw` or `vh` value
-    /// is rejected: the first build reports an error, and a later update
-    /// treats it as unset.
-    ///
-    /// Unset sizes the box to the text. No effect in a [`Layout::Inline`]
-    /// parent.
-    pub width: Option<Length>,
-    /// Fixed height of the text box. Takes the same units as
-    /// [`width`](Self::width), with the same limits. Unset sizes the box to
-    /// the text. No effect in a [`Layout::Inline`] parent.
-    pub height: Option<Length>,
     /// Text color. Default: the inherited color, or `#111111` when no
     /// ancestor sets one.
     pub color: Option<Box<dyn ColorLike>>,
@@ -1401,8 +1393,8 @@ impl SharedStylePropFields for HoverElementStylePropSchema {
 impl SharedStylePropFields for TextStylePropSchema {
     fn shared_style_fields(&self) -> SharedStyleFields<'_> {
         SharedStyleFields {
-            width: self.width,
-            height: self.height,
+            width: None,
+            height: None,
             color: &self.color,
             font: &self.font,
             font_size: self.font_size,

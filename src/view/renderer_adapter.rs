@@ -283,7 +283,7 @@ pub(crate) fn convert_text_element(
     }
     text.ingest_props(node)?;
 
-    text.apply_style_cold(style.as_ref(), style_cascade)?;
+    text.apply_style_cold(style.as_ref(), style_cascade);
 
     for child in &node.children {
         append_text_children(&mut text_content, child)?;

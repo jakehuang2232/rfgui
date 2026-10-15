@@ -260,11 +260,7 @@ fn element_padding_offsets_child_layout() {
         .with_prop("padding_top", 12)
         .with_prop("padding_right", 16)
         .with_prop("padding_bottom", 10)
-        .with_child(
-            host_text_node()
-                .with_prop("style", text_style_with_size(300.0, 300.0))
-                .with_child(RsxNode::text("inner")),
-        );
+        .with_child(host_text_node().with_child(RsxNode::text("inner")));
 
     let mut arena = crate::view::test_support::new_test_arena();
     let roots = commit_rsx_tree(&mut arena, &tree);
