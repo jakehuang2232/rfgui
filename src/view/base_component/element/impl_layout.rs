@@ -791,18 +791,6 @@ impl Element {
         let intersects_absolute_clip = self
             .absolute_clip_rect
             .is_none_or(|clip| transformed_frame_bounds.intersects(clip));
-        let max_bw = (frame.width.min(frame.height)) * 0.5;
-        let border_left = self.border_widths.left.clamp(0.0, max_bw);
-        let border_right = self.border_widths.right.clamp(0.0, max_bw);
-        let border_top = self.border_widths.top.clamp(0.0, max_bw);
-        let border_bottom = self.border_widths.bottom.clamp(0.0, max_bw);
-        let inset_left = border_left + self.padding.left.max(0.0);
-        let inset_right = border_right + self.padding.right.max(0.0);
-        let inset_top = border_top + self.padding.top.max(0.0);
-        let inset_bottom = border_bottom + self.padding.bottom.max(0.0);
-        let inner_width = (frame.width - inset_left - inset_right).max(0.0);
-        let inner_height = (frame.height - inset_top - inset_bottom).max(0.0);
-        let has_nonzero_inner_area = inner_width > 0.0 && inner_height > 0.0;
         let has_visible_self_paint = self.has_visible_self_paint(
             frame.width.max(0.0),
             frame.height.max(0.0),
@@ -814,9 +802,10 @@ impl Element {
             && frame.height > 0.0
             && intersects_parent_clip
             && intersects_absolute_clip;
+        // Padding and border alone paint like any box, as in CSS: an empty
+        // content box does not hide the background, border or shadow.
         self.core.should_paint = self.layout_state.should_render
             && self.computed_style.opacity > 0.0
-            && has_nonzero_inner_area
             && has_visible_self_paint;
         self.last_parent_layout_x = parent_x;
         self.last_parent_layout_y = parent_y;

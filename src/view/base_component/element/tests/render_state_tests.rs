@@ -192,8 +192,10 @@ fn transparent_borderless_shadowless_element_does_not_paint_even_with_child() {
     assert!(!parent.core.should_paint);
 }
 
+/// Padding that takes the whole box leaves no content box, but the box
+/// still paints its background, as in CSS.
 #[test]
-fn zero_inner_area_sets_should_paint_false() {
+fn zero_inner_area_still_paints_the_box() {
     let mut arena = new_test_arena();
     let mut el = Element::new(0.0, 0.0, 20.0, 20.0);
     let mut style = Style::new();
@@ -249,5 +251,5 @@ fn zero_inner_area_sets_should_paint_false() {
     assert_eq!(el.layout_state.layout_inner_size.width, 0.0);
     assert_eq!(el.layout_state.layout_inner_size.height, 0.0);
     assert!(el.layout_state.should_render);
-    assert!(!el.core.should_paint);
+    assert!(el.core.should_paint);
 }
