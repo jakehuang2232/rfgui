@@ -924,16 +924,15 @@ impl ArtifactSurfaceCompositeGeometryState {
         Some(())
     }
 
-    /// Re-resolves a pending child's receiver clip inside a receiver that
-    /// rasters in its own space, such as scroll content, with `raster_scissor`
-    /// giving each clip's scissor in that space. Only the chain below
-    /// `boundary_clips` belongs to that raster: the receiver applies the clips
-    /// above it when it composites, so the child keeps the same clip at every
-    /// scroll offset.
+    /// Re-resolves a pending child's receiver clip inside its receiver's
+    /// raster, with `raster_scissor` giving each clip's scissor in that space.
+    /// Only the chain below `boundary` belongs to that raster: the receiver
+    /// applies `boundary` and the clips above it when it composites, so the
+    /// child keeps the same clip whatever the receiver's transform or scroll.
     fn localize_receiver_clip(
         &mut self,
         composite_clip: Option<ClipNodeId>,
-        boundary_clips: &[ClipNodeId],
+        boundary: ClipNodeId,
         clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
         raster_scissor: impl Fn(&ClipNodeSnapshot) -> Option<[u32; 4]>,
     ) -> Option<()> {
@@ -943,7 +942,7 @@ impl ArtifactSurfaceCompositeGeometryState {
         let mut local = Vec::new();
         let mut cursor = composite_clip;
         while let Some(id) = cursor {
-            if boundary_clips.contains(&id) {
+            if id == boundary {
                 break;
             }
             // A chain longer than the clips it draws from has a cycle.
@@ -2640,19 +2639,26 @@ fn surface_composite_geometry(
     spatial: &super::ArtifactSpatialProjection,
     folded_raster_translation: [f32; 2],
 ) -> Result<ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterPlanError> {
-    // Consumption transitions may borrow the deepest descendant witness's
-    // non-consumed dimensions. That descendant's self clip is raster-local
-    // inside this surface, not an outer composite clip. Only the surface
-    // owner's recorded paint scope can supply this receiver boundary.
-    let receiver_clip = closure
-        .map(SurfaceDagClipClosureProjection::receiver_clip)
-        .map(Some)
-        .unwrap_or_else(|| {
-            artifact_surface_receiver_clip(owner_clip, node.transition().clip.to, clips)
-        })
-        .ok_or(ArtifactSurfaceRasterPlanError::InvalidReceiverClip(
-            node.id(),
-        ))?;
+    // A surface composites under its boundary clip and every clip above it:
+    // a scroll's contents clip, or the clip a transform or effect's owner
+    // paints under. Its receiver keeps the part of that chain inside its own
+    // raster; every clip below the boundary lies inside this one.
+    let receiver_clip = match node.kind() {
+        // Consumption transitions may borrow the deepest descendant witness's
+        // non-consumed dimensions. That descendant's self clip is raster-local
+        // inside this surface, not an outer composite clip. Only the surface
+        // owner's recorded paint scope can supply this receiver boundary.
+        SurfaceDagNodeKind::ScrollContent { .. } => closure
+            .map(SurfaceDagClipClosureProjection::receiver_clip)
+            .map(Some)
+            .unwrap_or_else(|| {
+                artifact_surface_receiver_clip(owner_clip, node.transition().clip.to, clips)
+            })
+            .ok_or(ArtifactSurfaceRasterPlanError::InvalidReceiverClip(
+                node.id(),
+            ))?,
+        SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_) => owner_clip,
+    };
     let composite_clip = match node.kind() {
         // ScrollContent consumes its contents clip while detaching the raster,
         // so the closure identity remains the post-transition parent while
@@ -2793,10 +2799,6 @@ fn fold_materialized_composite_boundaries(
     mut geometry: ArtifactSurfaceCompositeGeometryStamp,
     folded_boundaries: &[SurfaceDagNodeId],
     surface_dag: &SurfaceDag,
-    receiver: SurfaceDagExecutionTargetId,
-    receiver_paint_offset: [f32; 2],
-    context: ArtifactSurfaceRasterContext,
-    clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
 ) -> Result<ArtifactSurfaceCompositeGeometryStamp, ArtifactSurfaceRasterPlanError> {
     let Some(boundary) = folded_boundaries.first().copied() else {
         return Ok(geometry);
@@ -2835,27 +2837,9 @@ fn fold_materialized_composite_boundaries(
             ArtifactSurfaceRasterPlanError::InvalidSurfaceBounds(boundary),
         )?;
     }
-    let Some(clip) = transfer.clip else {
-        return Ok(geometry);
-    };
-    let contents_clip = clip.local_clip();
-    let (resolved_clip, clip_chain) = resolve_artifact_surface_clip(Some(contents_clip), clips)
-        .ok_or(ArtifactSurfaceRasterPlanError::InvalidReceiverClip(
-            boundary,
-        ))?;
-    let resolved_clip = if matches!(receiver, SurfaceDagExecutionTargetId::SceneRoot(_)) {
-        let translated =
-            translate_artifact_surface_logical_clip(resolved_clip, receiver_paint_offset).ok_or(
-                ArtifactSurfaceRasterPlanError::InvalidReceiverClip(boundary),
-            )?;
-        artifact_surface_terminal_clip(translated, &clip_chain, context.incoming_scissor)
-    } else {
-        resolved_clip
-    };
-    geometry.replace_receiver_clip(
-        clip.receiver_clip(),
-        ArtifactSurfaceResolvedClip::from_logical(resolved_clip),
-    );
+    // The composite clip already runs through the folded boundary's clips:
+    // it starts at this surface's own boundary and the receiver keeps what
+    // lies inside its raster.
     Ok(geometry)
 }
 
@@ -2930,10 +2914,6 @@ fn surface_receiver_visible_rects(
                 geometry,
                 folded_boundaries,
                 &program.surface_dag,
-                execution.receiver(),
-                receiver_paint_offset,
-                context,
-                clips,
             )
             .ok()?;
             let shown_by_receiver = match execution.receiver() {
@@ -3242,10 +3222,6 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 geometry,
                 folded_boundaries,
                 &program.surface_dag,
-                execution.receiver(),
-                receiver_paint_offset,
-                context,
-                &clips,
             )
         };
         let raster_context = context.with_scale_factor(raster_scales[execution.id().index()]);
@@ -3364,20 +3340,17 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 }
             }
         }
-        // Scroll content rasters in content space. A nested child's
-        // destination moves there with `base_delta`; its receiver clip must
-        // move with it, and only the part of its chain inside the scrollport
-        // belongs to the raster.
-        let raster_boundary_clips = std::iter::once(source)
-            .chain(folded_boundaries.iter().copied())
-            .filter_map(|boundary| {
-                let node = program.surface_dag.nodes().get(boundary.index())?;
-                match node.kind() {
-                    SurfaceDagNodeKind::ScrollContent { contents_clip, .. } => Some(contents_clip),
-                    SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_) => None,
-                }
-            })
-            .collect::<Vec<_>>();
+        // A nested child keeps only the part of its composite chain below this
+        // surface's boundary: that part lies inside this raster, and the rest
+        // this surface applies when it composites, in its receiver's space.
+        // Scroll content rasters in content space, so a child's clip moves
+        // there with `base_delta`, as its destination does.
+        let raster_boundary = match node.kind() {
+            SurfaceDagNodeKind::ScrollContent { contents_clip, .. } => Some(contents_clip),
+            SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_) => {
+                node.owner_properties().clip
+            }
+        };
         for (child_execution, receiver_destination_bounds_bits) in nested_children {
             let child = prepared_nodes
                 .get_mut(child_execution.index())
@@ -3386,7 +3359,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
                     parent: source,
                     child: source,
                 })?;
-            if !raster_boundary_clips.is_empty() {
+            if let Some(raster_boundary) = raster_boundary {
                 let child_node = program
                     .surface_dag
                     .nodes()
@@ -3404,17 +3377,12 @@ fn prepare_artifact_surface_raster_plan_from_program(
                 };
                 child
                     .geometry
-                    .localize_receiver_clip(
-                        composite_clip,
-                        &raster_boundary_clips,
-                        &clips,
-                        |snapshot| {
-                            program
-                                .raster_clip(snapshot, base_delta)?
-                                .geometry
-                                .viewport_scissor()
-                        },
-                    )
+                    .localize_receiver_clip(composite_clip, raster_boundary, &clips, |snapshot| {
+                        program
+                            .raster_clip(snapshot, base_delta)?
+                            .geometry
+                            .viewport_scissor()
+                    })
                     .ok_or(ArtifactSurfaceRasterPlanError::InvalidReceiverClip(
                         child.source,
                     ))?;

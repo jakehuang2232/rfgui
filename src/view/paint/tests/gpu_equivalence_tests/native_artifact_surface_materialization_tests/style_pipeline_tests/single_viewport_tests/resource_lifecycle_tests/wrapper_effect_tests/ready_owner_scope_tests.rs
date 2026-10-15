@@ -195,7 +195,9 @@ fn run_ready_owner_scope(svg: bool, dpr: u32) -> Result<(), String> {
             dpr,
             // Adding the pure-translation boundary changes graph ordinals,
             // not owner pixels. Reuse now ignores only those frame-local IDs.
-            if frame == 0 || frame == 6 {
+            // The owner's own clip applies when its surface composites, so
+            // adding it at frame 6 rasters nothing new either.
+            if frame == 0 {
                 RetainedSurfaceCompileAction::Reraster
             } else {
                 RetainedSurfaceCompileAction::Reuse

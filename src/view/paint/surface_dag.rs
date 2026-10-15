@@ -467,10 +467,12 @@ impl SurfaceDagClipRebase {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn receiver_clip(self) -> Option<ClipNodeId> {
         self.receiver_clip
     }
 
+    #[cfg(test)]
     pub(crate) fn local_clip(self) -> ClipNodeId {
         self.local_clip
     }
@@ -1581,6 +1583,40 @@ fn local_clip_chain(
     Ok(local)
 }
 
+/// The part of the chain from `leaf` strictly below `boundary`, its last
+/// clip made the root. `None` when the chain never reaches `boundary`.
+/// `local` overrides the artifact's snapshots with an earlier cut.
+fn clip_chain_below(
+    leaf: Option<ClipNodeId>,
+    boundary: Option<ClipNodeId>,
+    local: &[ClipNodeSnapshot],
+    artifact_clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+) -> Option<Vec<ClipNodeSnapshot>> {
+    let boundary = boundary?;
+    let mut chain = Vec::<ClipNodeSnapshot>::new();
+    let mut cursor = leaf;
+    while let Some(id) = cursor {
+        if id == boundary {
+            if let Some(root) = chain.last_mut() {
+                root.parent = None;
+            }
+            return Some(chain);
+        }
+        // A chain longer than the clips it draws from has a cycle.
+        if chain.len() > artifact_clips.len() + local.len() {
+            return None;
+        }
+        let snapshot = local
+            .iter()
+            .find(|clip| clip.id == id)
+            .or_else(|| artifact_clips.get(&id))
+            .copied()?;
+        chain.push(snapshot);
+        cursor = snapshot.parent;
+    }
+    None
+}
+
 fn walk_artifact_surface_path(
     state: PropertyTreeState,
     owner_path: &[NodeKey],
@@ -1589,6 +1625,7 @@ fn walk_artifact_surface_path(
     artifact_clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
     mode: ArtifactSurfaceWalkMode,
     excluded_scrolls: &FxHashSet<ScrollNodeId>,
+    owner_clips: &FxHashMap<NodeKey, Option<ClipNodeId>>,
 ) -> Result<ArtifactSurfaceWalk, SurfaceDagError> {
     // Boundary transitions describe only dimensions actually consumed by a
     // surface edge. Chunk coverage additionally includes ancestor membership:
@@ -1607,6 +1644,8 @@ fn walk_artifact_surface_path(
     let mut edges = Vec::new();
     let mut matched = Vec::new();
     let mut local_clips = Vec::new();
+    // The localized clip chain once a boundary has cut it.
+    let mut localized_chain: Option<Vec<ClipNodeSnapshot>> = None;
 
     for path_owner in owner_path {
         // Indexing retains the original order within each owner. The outer
@@ -1660,6 +1699,9 @@ fn walk_artifact_surface_path(
                     receiver_state.clip = snapshots.clip_parent(contents_clip)?;
                     localized_state.scroll = None;
                     localized_state.clip = clips.first().map(|clip| clip.id);
+                    if matches!(mode, ArtifactSurfaceWalkMode::ChunkCoverage) {
+                        localized_chain = Some(clips.clone());
+                    }
                     local_clips.push((candidate.kind(), clips));
                     true
                 }
@@ -1667,6 +1709,28 @@ fn walk_artifact_surface_path(
                 | SurfaceDagNodeKind::Effect(_)
                 | SurfaceDagNodeKind::ScrollContent { .. } => false,
             };
+            if consumed
+                && matches!(mode, ArtifactSurfaceWalkMode::ChunkCoverage)
+                && let SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_) = kind
+            {
+                // This raster holds the owner's subtree. The clip the owner
+                // paints under, and every clip above it, is applied when the
+                // surface composites, in the receiver's space; applied again
+                // here, before a transform, it would turn with it.
+                let owner_clip = owner_clips.get(&candidate.target()).copied().flatten();
+                if let Some(chain) = clip_chain_below(
+                    localized_state.clip,
+                    owner_clip,
+                    localized_chain.as_deref().unwrap_or(&[]),
+                    artifact_clips,
+                ) {
+                    localized_state.clip = chain.first().map(|clip| clip.id);
+                    localized_chain = Some(chain);
+                }
+                if let Some(chain) = &localized_chain {
+                    local_clips.push((kind, chain.clone()));
+                }
+            }
             if consumed {
                 edges.push((kind, from, receiver_state));
             }
@@ -1876,6 +1940,7 @@ fn derive_surface_requests_from_inputs(
             &artifact_clips,
             ArtifactSurfaceWalkMode::BoundaryTransition,
             &excluded_scrolls,
+            &FxHashMap::default(),
         )?;
         let cursor = walk
             .edges
@@ -2152,6 +2217,11 @@ fn derive_surface_coverage_from_inputs(
         .iter()
         .map(|node| (node.kind, node.id))
         .collect::<FxHashMap<_, _>>();
+    let owner_clips = surface_dag
+        .nodes
+        .iter()
+        .map(|node| (node.target, node.owner_properties.clip))
+        .collect::<FxHashMap<_, _>>();
     let mut roots = surface_dag
         .roots
         .iter()
@@ -2189,6 +2259,7 @@ fn derive_surface_coverage_from_inputs(
             &artifact_clips,
             ArtifactSurfaceWalkMode::ChunkCoverage,
             &excluded_scrolls,
+            &owner_clips,
         )?;
         let matched_ids = walk
             .matched
