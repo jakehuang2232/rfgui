@@ -42,37 +42,6 @@ fn incremental_commit_applies_style_update_preserves_node_key() {
     );
 }
 
-/// font_size update on a Text leaf commits as `FiberWork::Update`.
-/// NodeKey must survive.
-///
-/// Uses numeric f64 directly so the prop lands as `PropValue::F64`
-/// (the M3 Text font_size branch only handles numeric; `FontSize`-
-/// typed values that need inherited-context resolution fall back).
-#[test]
-fn incremental_commit_applies_font_size_update_preserves_node_key() {
-    use crate::view::Text as HostText;
-
-    fn tree(size: f64) -> RsxNode {
-        rsx! { <HostText font_size={size}>"hi"</HostText> }
-    }
-
-    let mut viewport = Viewport::new();
-    viewport.set_use_incremental_commit(true);
-
-    viewport.render_rsx(&tree(14.0)).expect("cold render");
-    assert_eq!(viewport.scene.ui_root_keys.len(), 1);
-    let original_key = viewport.scene.ui_root_keys[0];
-
-    viewport
-        .render_rsx(&tree(20.0))
-        .expect("font_size update must commit incrementally");
-    assert_eq!(
-        viewport.scene.ui_root_keys,
-        vec![original_key],
-        "font_size update must preserve NodeKey via the M3 setter path",
-    );
-}
-
 /// A `style` prop update whose new `Style` lacks a declaration the old
 /// one had must clear that declaration — proving the M4 #1
 /// `replace_style` wiring is not using the additive `apply_style`

@@ -69,23 +69,12 @@ impl TextArea {
         &mut self,
         style: Option<&Style>,
         inherited: &StyleCascadeContext,
-        explicit_font_size: Option<f32>,
-        explicit_font: Option<String>,
     ) {
         self.apply_cold_inherited(inherited);
 
         if let Some(style) = style {
             let bridge = TextAreaComputedStyleBridge::from_style(style, inherited);
             self.apply_computed_style_bridge(&bridge);
-        }
-
-        // Explicit `font_size` / `font` props keep their existing
-        // priority over both inherited values and `style.*`.
-        if let Some(size) = explicit_font_size {
-            self.font_size = size;
-        }
-        if let Some(family) = explicit_font {
-            self.font_families = vec![family];
         }
     }
 

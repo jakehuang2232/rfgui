@@ -6,7 +6,7 @@ use crate::style::color::Color;
 use crate::style::gradient::Gradient;
 use crate::style::parsed_style::{
     Align, Animator, BackfaceVisibility, BoxShadow, CrossSize, Cursor, FontSize, Layout, Length,
-    ParsedValue, Position, PropertyId, ScrollDirection, Style, TextWrap, Transform,
+    ParsedValue, Position, PropertyId, ScrollDirection, Style, TextAlign, TextWrap, Transform,
     TransformOrigin, Transitions, VerticalAlign,
 };
 use crate::style::style_props::apply_inherited_properties;
@@ -71,6 +71,8 @@ pub struct ComputedStyle {
     /// Non-inline containers don't read this — they only pass it down
     /// the cascade.
     pub vertical_align: VerticalAlign,
+    /// Line alignment inside a `Text` box. Not inherited.
+    pub text_align: TextAlign,
     pub border_radius: f32,
     pub border_radii: CornerRadii<Length>,
     pub border_width: f32,
@@ -126,6 +128,7 @@ impl Default for ComputedStyle {
             line_height: 1.2,
             text_wrap: TextWrap::Wrap,
             vertical_align: VerticalAlign::Baseline,
+            text_align: TextAlign::Left,
             border_radius: 0.0,
             border_radii: CornerRadii {
                 top_left: Length::Px(0.0),
@@ -429,6 +432,11 @@ pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) 
             PropertyId::VerticalAlign => {
                 if let ParsedValue::VerticalAlign(value) = &declaration.value {
                     computed.vertical_align = *value;
+                }
+            }
+            PropertyId::TextAlign => {
+                if let ParsedValue::TextAlign(value) = &declaration.value {
+                    computed.text_align = *value;
                 }
             }
             PropertyId::BorderRadius => {

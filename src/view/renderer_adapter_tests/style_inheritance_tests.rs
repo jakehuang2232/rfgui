@@ -50,11 +50,7 @@ fn cursor_style_inherits_to_text_child() {
 
     let tree = host_element_node()
         .with_prop("style", parent_style)
-        .with_child(
-            host_text_node()
-                .with_prop("font_size", 16.0)
-                .with_child(RsxNode::text("Button label")),
-        );
+        .with_child(host_text_node().with_child(RsxNode::text("Button label")));
 
     let mut arena = crate::view::test_support::new_test_arena();
     let roots = commit_rsx_tree(&mut arena, &tree);

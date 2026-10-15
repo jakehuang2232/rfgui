@@ -3,7 +3,6 @@
 //! Core RSX node and prop data structures.
 
 use crate::style::FontSize;
-use crate::style::TextAlign;
 use crate::ui::{
     Binding, BlurHandlerProp, ClickHandlerProp, ContextMenuHandlerProp, CopyHandlerProp,
     CutHandlerProp, DragEndHandlerProp, DragLeaveHandlerProp, DragOverHandlerProp,
@@ -556,7 +555,6 @@ pub enum PropValue {
     OnTextAreaFocus(TextAreaFocusHandlerProp),
     OnChange(TextChangeHandlerProp),
     OnTextAreaRender(TextAreaRenderHandlerProp),
-    TextAlign(TextAlign),
     Shared(SharedPropValue),
 }
 
@@ -768,12 +766,6 @@ impl From<TextAreaRenderHandlerProp> for PropValue {
     }
 }
 
-impl From<TextAlign> for PropValue {
-    fn from(value: TextAlign) -> Self {
-        PropValue::TextAlign(value)
-    }
-}
-
 impl IntoPropValue for PropValue {
     fn into_prop_value(self) -> PropValue {
         self
@@ -971,12 +963,6 @@ impl IntoPropValue for TextAreaFocusHandlerProp {
 impl IntoPropValue for TextChangeHandlerProp {
     fn into_prop_value(self) -> PropValue {
         PropValue::OnChange(self)
-    }
-}
-
-impl IntoPropValue for TextAlign {
-    fn into_prop_value(self) -> PropValue {
-        PropValue::TextAlign(self)
     }
 }
 
@@ -1179,15 +1165,6 @@ impl FromPropValue for TextAreaRenderHandlerProp {
         match value {
             PropValue::OnTextAreaRender(v) => Ok(v),
             _ => Err("expected textarea render handler value".to_string()),
-        }
-    }
-}
-
-impl FromPropValue for TextAlign {
-    fn from_prop_value(value: PropValue) -> Result<Self, String> {
-        match value {
-            PropValue::TextAlign(v) => Ok(v),
-            _ => Err("expected TextAlign value".to_string()),
         }
     }
 }
@@ -1563,13 +1540,6 @@ pub fn as_string<'a>(value: &'a PropValue, key: &str) -> Result<&'a str, String>
 
 pub fn as_owned_string(value: &PropValue, key: &str) -> Result<String, String> {
     Ok(as_string(value, key)?.to_string())
-}
-
-pub fn as_text_align(value: &PropValue, key: &str) -> Result<TextAlign, String> {
-    match value {
-        PropValue::TextAlign(v) => Ok(*v),
-        _ => Err(format!("prop `{key}` expects TextAlign value")),
-    }
 }
 
 pub fn as_binding_string(value: &PropValue, key: &str) -> Result<Binding<String>, String> {

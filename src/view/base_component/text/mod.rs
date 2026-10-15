@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use crate::style::{
-    BackfaceVisibility, ColorLike, Cursor, HexColor, TextWrap, Transform, TransformKind,
-    TransformOrigin,
+    BackfaceVisibility, ColorLike, Cursor, TextWrap, Transform, TransformKind, TransformOrigin,
 };
 use crate::view::inline_formatting_context::{
     InlineFormattingContext, InlineIfcAlignment, InlineIfcTextPassPaintInput,
@@ -54,6 +53,13 @@ struct TextInlineIfcOwnedState {
     paint_bounds: crate::ui::Rect,
 }
 
+/// What a Text draws with when neither its style nor an ancestor sets the
+/// value.
+pub(super) const DEFAULT_FONT_SIZE: f32 = 16.0;
+pub(super) const DEFAULT_LINE_HEIGHT: f32 = 1.25;
+pub(super) const DEFAULT_FONT_WEIGHT: u16 = 400;
+pub(super) const DEFAULT_COLOR: crate::style::Color = crate::style::Color::rgb(0x11, 0x11, 0x11);
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct TextExplicitProps(u16);
 
@@ -104,11 +110,7 @@ pub struct Text {
     pub(super) line_height: f32,
     pub(super) font_weight: u16,
     pub(super) align: InlineIfcAlignment,
-    /// The drawn opacity: `style_opacity` when the style sets one, else
-    /// `prop_opacity`.
     pub(super) opacity: f32,
-    pub(super) prop_opacity: f32,
-    pub(super) style_opacity: Option<f32>,
     /// The style's own transitions; see `transition.rs`.
     pub(super) transitions: crate::style::Transitions,
     pub(super) style_transition_requests: Vec<crate::transition::StyleTrackRequest>,
@@ -125,7 +127,7 @@ pub struct Text {
     pub(super) text_wrap: TextWrap,
     pub(super) cursor: Cursor,
     /// Effective `vertical-align` for this Text node. Default
-    /// `Baseline`; written by parent cascade or explicit prop.
+    /// `Baseline`; written by the style or the parent cascade.
     pub(super) vertical_align: crate::style::VerticalAlign,
     pub(super) layout_cache: TextLayoutCache,
     /// Shaped context installed by the last measure; render and the
@@ -202,15 +204,13 @@ impl Text {
             layout_override_height: None,
             content_hash: content_signature(&content),
             content,
-            color: Box::new(HexColor::new("#111111")),
+            color: Box::new(DEFAULT_COLOR),
             font_families: Vec::new(),
-            font_size: 16.0,
-            line_height: 1.25,
-            font_weight: 400,
+            font_size: DEFAULT_FONT_SIZE,
+            line_height: DEFAULT_LINE_HEIGHT,
+            font_weight: DEFAULT_FONT_WEIGHT,
             align: InlineIfcAlignment::Left,
             opacity: 1.0,
-            prop_opacity: 1.0,
-            style_opacity: None,
             transitions: crate::style::Transitions::default(),
             style_transition_requests: Vec::new(),
             inherited_color_override: None,

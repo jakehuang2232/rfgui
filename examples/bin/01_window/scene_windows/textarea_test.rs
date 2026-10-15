@@ -178,9 +178,9 @@ pub fn TextareaTest(theme: Theme) -> RsxNode {
                 <TextArea
                     style={{
                         color: theme.color.text.primary.clone(),
+                        font_size: 14,
                         vertical_align: va,
                     }}
-                    font_size=14
                     multiline={multiline_value}
                     auto_wrap={auto_wrap_value}
                     placeholder="Type text here..."

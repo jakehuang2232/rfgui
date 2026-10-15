@@ -30,8 +30,7 @@ use crate::style::Style;
 use crate::ui::{Patch, PropValue, RsxElementNode, RsxNode};
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::renderer_adapter::{
-    ElementDescriptor, arena_insert_child, arena_remove_child, commit_descriptor_tree,
-    resolve_font_size_prop_with_inherited, resolve_path,
+    ElementDescriptor, arena_insert_child, arena_remove_child, commit_descriptor_tree, resolve_path,
 };
 
 /// Context needed to translate descriptor-producing patches
@@ -1436,21 +1435,6 @@ fn apply_update_work(
         recascade_text_subtree(arena, ctx, key);
     }
     Ok(())
-}
-
-/// 軌 A #9: resolve a `font_size` prop to pixels with full inherited
-/// context. `parent_font_size` comes from the arena ancestor walk
-/// (`style_cascade_at_parent`); `root_font_size` is the
-/// viewport root; viewport dims are passed in for `vw`/`vh`/`%`.
-///
-/// The `Em`/`Rem`/`Percent`/`Vw`/`Vh` variants now resolve correctly
-/// in the incremental path — previously they fell back to a full
-/// rebuild because the apply side had no inherited context.
-pub(crate) fn resolve_font_size_px_with_inherited(
-    value: &PropValue,
-    inherited: &crate::view::renderer_adapter::StyleCascadeContext,
-) -> Option<f32> {
-    resolve_font_size_prop_with_inherited(value, inherited)
 }
 
 /// Apply a `Patch::SetText` to a Text or TextArea host at `key`.

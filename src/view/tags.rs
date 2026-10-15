@@ -545,21 +545,19 @@ pub struct HoverElementStylePropSchema {
     pub animator: Option<Animator>,
 }
 
-/// The `style` prop of `<Text>`.
+/// The `style` prop of `<Text>`, which sets everything about the text.
 ///
-/// `<Text>` applies every field. Line height and alignment are tag props:
-/// [`TextPropSchema::line_height`] and [`TextPropSchema::align`].
+/// `<Text>` applies every field. It takes no hover style and no event
+/// handlers; wrap it in an `<Element>` for those.
 ///
-/// `<Text>` takes no hover style and no event handlers; wrap it in an
-/// `<Element>` for those.
-///
-/// An unset `color`, `cursor`, `font`, `font_size`, `font_weight` or
-/// `text_wrap` takes the value of the nearest ancestor that sets it, as do
-/// the line height and vertical alignment.
+/// An unset `color`, `cursor`, `font`, `font_size`, `font_weight`,
+/// `line_height` or `text_wrap` takes the value of the nearest ancestor that
+/// sets it, as does the vertical alignment, or else the default. Removing a
+/// field from the style on a later update does the same.
 ///
 /// In a parent with [`Layout::Inline`] (the default), the parent lays the
 /// text out in its own lines. There `width`, `height`, `text_wrap` and
-/// [`TextPropSchema::align`] have no effect.
+/// [`text_align`](Self::text_align) have no effect.
 #[derive(Clone)]
 #[props]
 pub struct TextStylePropSchema {
@@ -579,17 +577,11 @@ pub struct TextStylePropSchema {
     /// ancestor sets one.
     pub color: Option<Box<dyn ColorLike>>,
     /// Font families in order of preference; see [`FontFamily`]. Default:
-    /// inherited. When [`TextPropSchema::font`] is also set, this value wins
-    /// when the text is first built; on later updates, whichever of the two
-    /// changed is applied.
+    /// inherited.
     pub font: Option<FontFamily>,
     /// Text size; see [`ElementStylePropSchema::font_size`] for the units.
     /// `em` and percent are relative to the inherited size. Default:
     /// inherited, 16 px at the root.
-    ///
-    /// When [`TextPropSchema::font_size`] is also set, this value wins when
-    /// the text is first built; on later updates, whichever of the two
-    /// changed is applied.
     pub font_size: Option<FontSize>,
     /// Weight from 100 to 900 (400 normal, 700 bold); values outside are
     /// clamped. Default: inherited, else 400.
@@ -600,14 +592,22 @@ pub struct TextStylePropSchema {
     /// No effect in a [`Layout::Inline`] parent: the `text_wrap` of the
     /// element that lays out those lines decides.
     pub text_wrap: Option<TextWrap>,
+    /// Line height as a multiplier of the font size, not a length: `1.5`
+    /// makes each line 1.5 times the font size tall. Negative values count
+    /// as 0. Default: inherited, else 1.25.
+    pub line_height: Option<f64>,
+    /// Horizontal alignment of each line inside the text box: left (the
+    /// default), center or right. Not inherited.
+    ///
+    /// No effect in a [`Layout::Inline`] parent (the default layout): its
+    /// lines always start at the left. It applies when the parent lays the
+    /// `Text` out as a box, as [`Layout::Flow`] does.
+    pub text_align: Option<TextAlign>,
     /// The mouse cursor while the pointer is over this text. Default:
     /// inherited, else [`Cursor::Default`].
     pub cursor: Option<Cursor>,
     /// Opacity from 0 (invisible) to 1 (opaque). Values outside are
     /// clamped. Default 1. Paint only.
-    ///
-    /// While set, it takes precedence over [`TextPropSchema::opacity`];
-    /// removing it from the style restores the prop's value.
     pub opacity: Option<Opacity>,
     /// Translates, scales or rotates the drawn text without changing its
     /// layout; see [`ElementStylePropSchema::transform`]. A percent
@@ -642,46 +642,10 @@ pub struct SelectionStylePropSchema {
 }
 
 /// Props of the `<Text>` host tag.
-///
-/// `font_size`, `line_height`, `font`, `opacity` and `align` sit beside
-/// [`style`](Self::style). Each field says how it interacts with the style.
 #[props]
 pub struct TextPropSchema {
     /// The text's style; see [`TextStylePropSchema`].
     pub style: Option<TextStylePropSchema>,
-    /// Horizontal alignment of each line inside the text box: left (the
-    /// default), center or right. There is no style counterpart.
-    ///
-    /// No effect in a [`Layout::Inline`] parent (the default layout): its
-    /// lines always start at the left. It applies when the parent lays the
-    /// `Text` out as a box, as [`Layout::Flow`] does.
-    pub align: Option<TextAlign>,
-    /// Text size, as a number of pixels or a [`FontSize`]. `em` and percent
-    /// are relative to the inherited size. It takes priority over the
-    /// inherited size.
-    ///
-    /// When [`TextStylePropSchema::font_size`] is also set, the style value
-    /// wins when the text is first built; on later updates, whichever of
-    /// the two changed is applied.
-    pub font_size: Option<FontSize>,
-    /// Line height as a multiplier of the font size, not a length: `1.5`
-    /// makes each line 1.5 times the font size tall.
-    ///
-    /// There is no style counterpart on `<Text>`. It takes priority over a
-    /// [`line_height`](ElementStylePropSchema::line_height) inherited from
-    /// an ancestor. Default: inherited, else 1.25.
-    pub line_height: Option<f64>,
-    /// Font families as one comma-separated string, such as
-    /// `"Inter, sans-serif"`. An empty string counts as unset.
-    ///
-    /// When [`TextStylePropSchema::font`] is also set, the style value wins
-    /// when the text is first built; on later updates, whichever of the two
-    /// changed is applied.
-    pub font: Option<String>,
-    /// Opacity of this text from 0 to 1, clamped when drawn. Default 1.
-    ///
-    /// A [`TextStylePropSchema::opacity`] takes precedence while set.
-    pub opacity: Option<f64>,
 }
 
 #[props]
@@ -702,8 +666,6 @@ pub struct TextAreaPropSchema {
     pub on_blur: Option<BlurHandlerProp>,
     pub on_change: Option<TextChangeHandlerProp>,
     pub placeholder: Option<String>,
-    pub font_size: Option<FontSize>,
-    pub font: Option<String>,
     pub multiline: Option<bool>,
     pub auto_wrap: Option<bool>,
     pub read_only: Option<bool>,
@@ -806,23 +768,6 @@ impl RsxComponent<TextPropSchema> for Text {
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
         }
-        if let Some(align) = props.align {
-            node = node.with_prop("align", align);
-        }
-        if let Some(font_size) = props.font_size {
-            node = node.with_prop("font_size", font_size);
-        }
-        if let Some(line_height) = props.line_height {
-            node = node.with_prop("line_height", line_height);
-        }
-        if let Some(font) = props.font
-            && !font.is_empty()
-        {
-            node = node.with_prop("font", font);
-        }
-        if let Some(opacity) = props.opacity {
-            node = node.with_prop("opacity", opacity);
-        }
         for child in children {
             node = node.with_child(child);
         }
@@ -896,14 +841,6 @@ impl RsxComponent<TextAreaPropSchema> for TextArea {
             && !placeholder.is_empty()
         {
             node = node.with_prop("placeholder", placeholder);
-        }
-        if let Some(font_size) = props.font_size {
-            node = node.with_prop("font_size", font_size);
-        }
-        if let Some(font) = props.font
-            && !font.is_empty()
-        {
-            node = node.with_prop("font", font);
         }
         if let Some(multiline) = props.multiline {
             node = node.with_prop("multiline", multiline);
@@ -1816,6 +1753,12 @@ impl TextStylePropSchema {
             style.set_transform_origin(transform_origin);
         }
         apply_backface_visibility(&mut style, self.backface_visibility);
+        if let Some(line_height) = self.line_height {
+            style.set_line_height(line_height as f32);
+        }
+        if let Some(text_align) = self.text_align {
+            style.set_text_align(text_align);
+        }
         style
     }
 }

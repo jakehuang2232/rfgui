@@ -183,9 +183,9 @@ impl RsxComponent<SliderProps> for Slider {
                         }
                     }} />
                     <Text
-                        font_size={theme.typography.size.xs}
-                        line_height=1.0
                         style={{
+                            font_size: theme.typography.size.xs,
+                            line_height: 1.0,
                             color: if disabled { theme.color.text.disabled.clone() } else { theme.color.text.primary.clone() }
                         }}
                     >

@@ -83,6 +83,7 @@ impl StylePropSet for TextStyleSet {
                 | PropertyId::FontSize
                 | PropertyId::FontWeight
                 | PropertyId::LineHeight
+                | PropertyId::TextAlign
                 | PropertyId::TextWrap
                 | PropertyId::Cursor
                 | PropertyId::Opacity
@@ -186,6 +187,7 @@ style_prop_registry! {
     Transition => { inherited: false, animatable: false },
     Animator => { inherited: false, animatable: false },
     VerticalAlign => { inherited: true, animatable: false },
+    TextAlign => { inherited: false, animatable: false },
 }
 
 pub(crate) fn style_prop_meta(property: PropertyId) -> Option<&'static StylePropMeta> {

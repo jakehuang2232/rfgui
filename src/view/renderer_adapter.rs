@@ -154,28 +154,6 @@ pub(crate) fn computed_parent_from_style_cascade(cascade: &StyleCascadeContext) 
     cascade.parent.clone()
 }
 
-/// Resolve an explicit `font_size` prop using the same inherited text
-/// context as the computed-style bridge parent. This is for the
-/// standalone `font_size` prop only; local `style.font_size` flows
-/// through `compute_style_with_context`.
-pub(crate) fn resolve_font_size_prop_with_inherited(
-    value: &PropValue,
-    cascade: &StyleCascadeContext,
-) -> Option<f32> {
-    let parent_font_size = cascade.parent.font_size;
-    match value {
-        PropValue::I64(v) => Some((*v as f32).max(0.0)),
-        PropValue::F64(v) => Some((*v as f32).max(0.0)),
-        PropValue::FontSize(fs) => Some(fs.resolve_px(
-            parent_font_size,
-            cascade.root_font_size,
-            cascade.viewport_width,
-            cascade.viewport_height,
-        )),
-        _ => None,
-    }
-}
-
 /// Build a `Box<dyn ElementTrait>` for a bare `RsxNode::Text` leaf — i.e.
 /// raw text content sitting inside a parent container. Distinct from
 /// [`convert_text_element`], which builds the `<Text>` host tag from an
@@ -290,20 +268,11 @@ pub(crate) fn convert_text_element(
     );
     let mut style: Option<Style> = None;
 
-    // Cold-path-owned props: local style is decoded once and then
-    // applied by `TextComputedStyleBridge`; standalone `font_size`
-    // keeps its existing explicit-prop priority. Everything else flows
-    // through `Text::ingest_props`.
+    // The local style is decoded once and then applied by
+    // `TextComputedStyleBridge`; `Text::ingest_props` rejects other props.
     for (key, value) in node.props.iter() {
-        match *key {
-            "style" => style = Some(as_text_style(value, key)?),
-            "font_size" => {
-                let Some(px) = resolve_font_size_prop_with_inherited(value, style_cascade) else {
-                    return Err(format!("prop `{key}` expects numeric or FontSize value"));
-                };
-                text.set_font_size(px);
-            }
-            _ => {}
+        if *key == "style" {
+            style = Some(as_text_style(value, key)?);
         }
     }
     text.ingest_props(node)?;
@@ -356,8 +325,8 @@ fn append_text_children(out: &mut String, node: &RsxNode) -> Result<(), String> 
 /// Spawns a single `TextAreaTextRun` child at descriptor-build time for
 /// the no-`on_render` case (and the placeholder fallback when content is
 /// empty). Wires text-side style sources:
-/// - explicit `font_size` / `font` props
-/// - `style.color` → text_area.color (cascaded to the Run)
+/// - the text fields of `style` (font, font size, color, ...), cascaded
+///   to the Run
 /// - inherited font-family / font-size / font-weight / color
 ///
 /// Box-model props (`background` / `border` / `border_radius` / `padding`
@@ -373,24 +342,13 @@ pub(crate) fn convert_text_area_element_desc(
     let stable_id = stable_node_id_from_parts("TextArea", path, global_path.as_ref());
     let mut text_area = TextArea::with_stable_id(stable_id);
     let mut style: Option<Style> = None;
-    let mut explicit_font_size: Option<f32> = None;
-    let mut explicit_font: Option<String> = None;
 
-    // Cold-path-owned props: local style is decoded once and then
-    // applied by `TextAreaComputedStyleBridge`; explicit font/font_size
-    // props keep their existing priority. The rest of the schema flows
-    // through `TextArea::ingest_props`.
+    // The local style is decoded once and then applied by
+    // `TextAreaComputedStyleBridge`. The rest of the schema flows through
+    // `TextArea::ingest_props`.
     for (key, value) in node.props.iter() {
-        match *key {
-            "style" => style = Some(as_element_style(value, key)?),
-            "font_size" => {
-                let Some(px) = resolve_font_size_prop_with_inherited(value, style_cascade) else {
-                    return Err(format!("prop `{key}` expects numeric or FontSize value"));
-                };
-                explicit_font_size = Some(px);
-            }
-            "font" => explicit_font = Some(as_owned_string(value, key)?),
-            _ => {}
+        if *key == "style" {
+            style = Some(as_element_style(value, key)?);
         }
     }
     text_area.ingest_props(node)?;
@@ -406,12 +364,7 @@ pub(crate) fn convert_text_area_element_desc(
         text_area.content = text_area.content.chars().take(limit).collect();
     }
 
-    text_area.apply_style_cold(
-        style.as_ref(),
-        style_cascade,
-        explicit_font_size,
-        explicit_font,
-    );
+    text_area.apply_style_cold(style.as_ref(), style_cascade);
 
     let child_descriptors =
         text_area.build_children(node, path, global_path.as_ref(), style_cascade)?;
@@ -675,9 +628,7 @@ pub(crate) fn convert_svg_element_desc(
 // 軌 1 #14 Phase 7: PropValue→typed-value decoders moved to
 // `ui::rsx_tree`. Re-exported here so existing
 // `renderer_adapter::as_*` paths keep working.
-pub(crate) use crate::ui::{
-    as_binding_string, as_bool, as_f32, as_owned_string, as_string, as_text_align, as_usize,
-};
+pub(crate) use crate::ui::{as_binding_string, as_bool, as_f32, as_owned_string, as_usize};
 
 pub(crate) fn as_element_style(value: &PropValue, key: &str) -> Result<Style, String> {
     style_from_prop_value::<ElementStylePropSchema>(value, key, "ElementStylePropSchema")

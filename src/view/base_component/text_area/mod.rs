@@ -1711,9 +1711,8 @@ impl ElementTrait for TextArea {
         };
         for (key, value) in node.props.iter() {
             match *key {
-                // Cold-path-owned: identity, layered style, explicit
-                // font-priority block (cascade-resolved).
-                "key" | "style" | "font" | "font_size" => {}
+                // Cold-path-owned: identity and the layered style.
+                "key" | "style" => {}
                 "content" => self.content = as_owned_string(value, key)?,
                 "placeholder" => self.placeholder = as_owned_string(value, key)?,
                 "binding" => self.text_binding = Some(as_binding_string(value, key)?),
@@ -1757,7 +1756,7 @@ impl ElementTrait for TextArea {
         value: crate::ui::PropValue,
     ) -> crate::view::fiber_work::PropApplyOutcome {
         use crate::ui::FromPropValue;
-        use crate::view::fiber_work::{PropApplyOutcome, resolve_font_size_px_with_inherited};
+        use crate::view::fiber_work::PropApplyOutcome;
         use crate::view::renderer_adapter::{StyleCascadeContext, style_cascade_at_parent};
 
         self.set_self_node_key(self_key);
@@ -1848,25 +1847,6 @@ impl ElementTrait for TextArea {
                     _ => return PropApplyOutcome::DecodeFailed(name),
                 };
                 self.set_max_length(v);
-                PropApplyOutcome::Applied
-            }
-            "font" => {
-                let Ok(s) = String::from_prop_value(value) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.font_families = vec![s];
-                self.mark_content_dirty();
-                PropApplyOutcome::Applied
-            }
-            "font_size" => {
-                let inherited = resolve_inherited(arena);
-                let Some(px) = resolve_font_size_px_with_inherited(&value, &inherited) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                if (self.font_size - px).abs() > f32::EPSILON {
-                    self.font_size = px;
-                    self.mark_content_dirty();
-                }
                 PropApplyOutcome::Applied
             }
             "style" => {
@@ -1976,9 +1956,8 @@ impl ElementTrait for TextArea {
                 self.mark_content_dirty();
                 PropApplyOutcome::Applied
             }
-            // Style / font props can't be reverted to "inherited" without a
-            // full descriptor rebuild — fall back to the cold path.
-            "style" | "font" | "font_size" => PropApplyOutcome::CannotReset(name),
+            // The style can't be reverted to "inherited" without a full
+            // descriptor rebuild — fall back to the cold path.
             _ => PropApplyOutcome::CannotReset(name),
         }
     }
@@ -1995,8 +1974,6 @@ fn known_prop(name: &str) -> bool {
             | "on_change"
             | "on_render"
             | "placeholder"
-            | "font"
-            | "font_size"
             | "multiline"
             | "auto_wrap"
             | "read_only"

@@ -503,7 +503,7 @@ pub fn RenderTest(theme: Theme, animation_on: bool) -> RsxNode {
                     <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()), border_radius: theme.radius.lg, opacity: 0.6 }}>
                         <Element style={{
                             width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()), border_radius: theme.radius.md, opacity: 0.5 }}>
-                            <Text opacity=0.9>
+                            <Text style={{ opacity: 0.9 }}>
                                 Alpha
                             </Text>
                         </Element>
@@ -524,7 +524,7 @@ pub fn RenderTest(theme: Theme, animation_on: bool) -> RsxNode {
                     <Element style={{ width: Length::px(110.0), height: Length::px(86.0), background: "#e06c75", border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()), border_radius: theme.radius.lg, opacity: 1 }}>
                         <Element style={{
                             width: Length::px(72.0), height: Length::px(52.0), background: "#61afef", border: Border::uniform(Length::px(2.0), theme.color.border.as_ref()), border_radius: theme.radius.md, opacity: 0.5 }}>
-                            <Text opacity=0.9>
+                            <Text style={{ opacity: 0.9 }}>
                                 Alpha
                             </Text>
                         </Element>

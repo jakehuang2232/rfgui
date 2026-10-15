@@ -14,7 +14,7 @@ fn scene() -> RsxNode {
     rsx! {
         <Element style={{width:Length::px(640.), height:Length::px(480.), layout:Layout::flow().column()}}>
             <Element style={{width:Length::px(400.), height:Length::px(60.)}}>
-                <TextArea content="Input benchmark" font_size=16 />
+                <TextArea content="Input benchmark" style={{ font_size: 16 }} />
             </Element>
             <Element style={{width:Length::px(400.), height:Length::px(400.), layout:Layout::flow().column(), scroll_direction:ScrollDirection::Both}}>
                 {(0..512).map(|i| rsx! {

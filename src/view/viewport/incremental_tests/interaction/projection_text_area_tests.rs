@@ -62,7 +62,7 @@ fn projection_text_area_auto_wrap_toggle_keeps_all_rows_visible() {
                         content={content}
                         multiline={true}
                         auto_wrap={wrap}
-                        font_size={14}
+                        style={{ font_size: 14 }}
                         on_render={renderer}
                     />
                 </HostElement>

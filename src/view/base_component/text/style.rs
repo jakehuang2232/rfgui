@@ -8,7 +8,10 @@ use crate::view::base_component::{DirtyFlags, Position, Size};
 use crate::view::inline_formatting_context::InlineIfcAlignment;
 use crate::view::renderer_adapter::{StyleCascadeContext, computed_parent_from_style_cascade};
 
-use super::{Text, TextExplicitProps, TextInlineIfcStyleMetadata};
+use super::{
+    DEFAULT_COLOR, DEFAULT_FONT_SIZE, DEFAULT_FONT_WEIGHT, DEFAULT_LINE_HEIGHT, Text,
+    TextExplicitProps, TextInlineIfcStyleMetadata,
+};
 
 #[derive(Debug)]
 pub(crate) struct TextComputedStyleBridge {
@@ -22,6 +25,7 @@ pub(crate) struct TextComputedStyleBridge {
     has_cursor: bool,
     has_text_wrap: bool,
     has_line_height: bool,
+    has_text_align: bool,
     has_vertical_align: bool,
     has_transform: bool,
     has_transform_origin: bool,
@@ -79,6 +83,7 @@ impl TextComputedStyleBridge {
             has_cursor: style.get(PropertyId::Cursor).is_some(),
             has_text_wrap: style.get(PropertyId::TextWrap).is_some(),
             has_line_height: style.get(PropertyId::LineHeight).is_some(),
+            has_text_align: style.get(PropertyId::TextAlign).is_some(),
             has_vertical_align: style.get(PropertyId::VerticalAlign).is_some(),
             has_transform: style.get(PropertyId::Transform).is_some(),
             has_transform_origin: style.get(PropertyId::TransformOrigin).is_some(),
@@ -282,19 +287,7 @@ impl Text {
         });
     }
 
-    /// Sets the `opacity` prop. A `style.opacity` takes precedence while set.
     pub fn set_opacity(&mut self, opacity: f32) {
-        self.prop_opacity = opacity;
-        self.apply_effective_opacity();
-    }
-
-    fn set_style_opacity(&mut self, opacity: Option<f32>) {
-        self.style_opacity = opacity;
-        self.apply_effective_opacity();
-    }
-
-    fn apply_effective_opacity(&mut self) {
-        let opacity = self.style_opacity.unwrap_or(self.prop_opacity);
         if self.opacity.to_bits() == opacity.to_bits() {
             return;
         }
@@ -383,41 +376,13 @@ impl Text {
         self.explicit_props.insert(TextExplicitProps::CURSOR);
     }
 
-    /// 軌 1 #8: incremental-path replay of the cold-path `style`
-    /// fan-out. Called by `apply_update_to_text` when a `style` prop
-    /// on a `<Text>` element is updated or removed.
-    ///
-    /// Mirror of `convert_text_element`'s style handling (lines
-    /// ~950-996), with one addition: every author-controllable
-    /// explicit flag is flipped back to `false` before applying the
-    /// new style, so props removed from the declaration are free to
-    /// pick up the ancestor cascade again via `apply_inherited`.
-    ///
-    /// Scope caveat: if a declaration is removed and no inherited
-    /// value exists for it, the prior explicit value sticks (the
-    /// cold path starts from `Text::new` defaults; the incremental
-    /// path cannot cheaply reset to defaults without hardcoding
-    /// them here). Ancestor cascade covers the common case.
+    /// Replays the cold-path `style` handling when the `style` prop of a
+    /// `<Text>` is updated or removed (`None`).
     pub(crate) fn apply_style_incremental(
         &mut self,
         style: Option<&Style>,
         inherited: &StyleCascadeContext,
     ) {
-        // Track 1 #10 scope fix: do NOT blanket-reset the per-prop
-        // explicit flags before re-applying. A Text can source the
-        // same prop (e.g. `font_size`) from an independent prop
-        // (`<Text font_size={14} style={{color:...}}>`) — resetting
-        // the flag would cause `apply_inherited` to overwrite the
-        // author's value with the parent cascade on the next style
-        // re-apply (observed: Switch label font-size jumping after
-        // any re-render of its parent scene).
-        //
-        // Consequence: removing a declaration from the style block
-        // won't re-pick the ancestor cascade on its own. Cold-path
-        // rebuild still handles wholesale resets; callers that need
-        // incremental declaration-removal cascade refill must author
-        // an explicit reset value.
-
         let _ = self.apply_style_with_computed_bridge(
             style,
             inherited,
@@ -449,13 +414,17 @@ impl Text {
             .map(|bridge| bridge.computed.transition.clone())
             .unwrap_or_default();
 
+        // The style is the only source of these fields: whatever it does
+        // not set comes from the ancestors, or else the default.
+        self.explicit_props = TextExplicitProps::default();
         if let Some(bridge) = &bridge {
             self.apply_computed_text_bridge(bridge);
-        } else if mode == TextStyleApplyMode::Incremental {
+        } else {
             self.set_transform(crate::style::Transform::default());
             self.set_transform_origin(crate::style::TransformOrigin::center());
             self.set_backface_visibility(crate::style::BackfaceVisibility::Visible);
-            self.set_style_opacity(None);
+            self.set_text_align(TextAlign::Left);
+            self.set_opacity(1.0);
         }
 
         self.apply_inherited(inherited);
@@ -528,49 +497,74 @@ impl Text {
         if bridge.has_vertical_align {
             self.set_vertical_align(bridge.computed.vertical_align);
         }
-        self.set_style_opacity(bridge.has_opacity.then_some(bridge.computed.opacity));
+        self.set_text_align(if bridge.has_text_align {
+            bridge.computed.text_align
+        } else {
+            TextAlign::Left
+        });
+        self.set_opacity(if bridge.has_opacity {
+            bridge.computed.opacity
+        } else {
+            1.0
+        });
     }
 
-    /// 軌 A #7: apply an ancestor-derived `StyleCascadeContext` to any
-    /// Text prop that the author didn't set explicitly. Returns
-    /// `true` if any prop changed (so the caller can short-circuit
-    /// redundant dirty-marking). Explicit values — anything the
-    /// author set via a public setter — are preserved.
+    /// Gives every field the style does not set the value an ancestor
+    /// passes down, or else the default. Returns whether any field changed.
     pub(crate) fn apply_inherited(&mut self, inherited: &StyleCascadeContext) -> bool {
+        let explicit = self.explicit_props;
+        let unset = |flag| !explicit.contains(flag);
         let mut changed = false;
-        if !self.explicit_props.contains(TextExplicitProps::FONT_FAMILY)
-            && let Some(font_families) = inherited.inherited_font_families()
-            && !font_families.is_empty()
-            && self.font_families != font_families
-        {
-            self.font_families = font_families.to_vec();
+        let mut measure = false;
+        if unset(TextExplicitProps::FONT_FAMILY) {
+            let next = inherited
+                .inherited_font_families()
+                .filter(|families| !families.is_empty())
+                .map(<[String]>::to_vec)
+                .unwrap_or_default();
+            if self.font_families != next {
+                self.font_families = next;
+                measure = true;
+            }
+        }
+        if unset(TextExplicitProps::FONT_SIZE) {
+            let next = inherited.inherited_font_size().unwrap_or(DEFAULT_FONT_SIZE);
+            if (self.font_size - next).abs() > f32::EPSILON {
+                self.font_size = next;
+                measure = true;
+            }
+        }
+        if unset(TextExplicitProps::FONT_WEIGHT) {
+            let next = inherited
+                .inherited_font_weight()
+                .unwrap_or(DEFAULT_FONT_WEIGHT);
+            if self.font_weight != next {
+                self.font_weight = next;
+                measure = true;
+            }
+        }
+        if unset(TextExplicitProps::LINE_HEIGHT) {
+            let next = inherited
+                .inherited_line_height()
+                .unwrap_or(DEFAULT_LINE_HEIGHT);
+            if (self.line_height - next).abs() > f32::EPSILON {
+                self.line_height = next;
+                measure = true;
+            }
+        }
+        if measure {
             self.mark_measure_dirty();
             changed = true;
         }
-        if !self.explicit_props.contains(TextExplicitProps::FONT_SIZE)
-            && let Some(fs) = inherited.inherited_font_size()
-            && (self.font_size - fs).abs() > f32::EPSILON
-        {
-            self.font_size = fs;
-            self.mark_measure_dirty();
-            changed = true;
+        if unset(TextExplicitProps::COLOR) {
+            let next = inherited.inherited_color().unwrap_or(DEFAULT_COLOR);
+            if self.color.to_rgba_u8() != next.to_rgba_u8() {
+                self.color = Box::new(next);
+                self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
+                changed = true;
+            }
         }
-        if !self.explicit_props.contains(TextExplicitProps::FONT_WEIGHT)
-            && let Some(fw) = inherited.inherited_font_weight()
-            && self.font_weight != fw
-        {
-            self.font_weight = fw;
-            self.mark_measure_dirty();
-            changed = true;
-        }
-        if !self.explicit_props.contains(TextExplicitProps::COLOR)
-            && let Some(color) = inherited.inherited_color()
-        {
-            self.color = Box::new(color);
-            self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
-            changed = true;
-        }
-        if !self.explicit_props.contains(TextExplicitProps::TEXT_WRAP) {
+        if unset(TextExplicitProps::TEXT_WRAP) {
             let next = inherited.inherited_text_wrap().unwrap_or(TextWrap::Wrap);
             if self.text_wrap != next {
                 self.text_wrap = next;
@@ -579,31 +573,21 @@ impl Text {
                 changed = true;
             }
         }
-        if !self.explicit_props.contains(TextExplicitProps::LINE_HEIGHT)
-            && let Some(lh) = inherited.inherited_line_height()
-            && (self.line_height - lh).abs() > f32::EPSILON
-        {
-            self.line_height = lh;
-            self.mark_measure_dirty();
-            changed = true;
+        if unset(TextExplicitProps::CURSOR) {
+            let next = inherited.inherited_cursor().unwrap_or(Cursor::Default);
+            if self.cursor != next {
+                self.cursor = next;
+                self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
+                changed = true;
+            }
         }
-        if !self.explicit_props.contains(TextExplicitProps::CURSOR)
-            && let Some(cursor) = inherited.inherited_cursor()
-            && self.cursor != cursor
-        {
-            self.cursor = cursor;
-            self.dirty_flags = self.dirty_flags.union(DirtyFlags::PAINT);
-            changed = true;
-        }
-        if !self
-            .explicit_props
-            .contains(TextExplicitProps::VERTICAL_ALIGN)
-            && let Some(va) = inherited.inherited_vertical_align()
-            && self.vertical_align != va
-        {
-            self.vertical_align = va;
-            self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
-            changed = true;
+        if unset(TextExplicitProps::VERTICAL_ALIGN) {
+            let next = inherited.inherited_vertical_align().unwrap_or_default();
+            if self.vertical_align != next {
+                self.vertical_align = next;
+                self.dirty_flags = self.dirty_flags.union(DirtyFlags::ALL);
+                changed = true;
+            }
         }
         changed
     }

@@ -8,16 +8,10 @@ use super::Text;
 
 impl Text {
     pub(super) fn ingest_props_impl(&mut self, node: &RsxElementNode) -> Result<(), String> {
-        use crate::view::renderer_adapter::{as_f32, as_string, as_text_align};
-        for (key, value) in node.props.iter() {
+        for (key, _) in node.props.iter() {
             match *key {
-                // Cold-path shell owns identity, layered style, and
-                // cascade-resolved font_size.
-                "key" | "style" | "font_size" => {}
-                "line_height" => self.set_line_height(as_f32(value, key)?),
-                "align" => self.set_text_align(as_text_align(value, key)?),
-                "font" => self.set_font(as_string(value, key)?),
-                "opacity" => self.set_opacity(as_f32(value, key)?),
+                // The cold-path shell owns identity and the style.
+                "key" | "style" => {}
                 _ => return Err(format!("unknown prop `{}` on <Text>", key)),
             }
         }
@@ -32,10 +26,9 @@ impl Text {
         name: &'static str,
         value: PropValue,
     ) -> PropApplyOutcome {
-        use crate::view::fiber_work::{PropApplyOutcome, resolve_font_size_px_with_inherited};
+        use crate::view::fiber_work::PropApplyOutcome;
         use crate::view::renderer_adapter::{
-            StyleCascadeContext, as_f32, as_string, as_text_align, as_text_style,
-            style_cascade_at_parent,
+            StyleCascadeContext, as_text_style, style_cascade_at_parent,
         };
 
         let resolve_inherited = || -> StyleCascadeContext {
@@ -57,51 +50,14 @@ impl Text {
 
         match name {
             "style" => {
-                // 軌 1 #8: replay cold-path style fan-out on the live
-                // Text. Explicit flags are preserved (M3) so any
-                // declaration dropped from the new style picks up the
-                // ancestor cascade rather than re-resetting.
+                // Replays the cold-path style on the live Text. A field
+                // dropped from the new style falls back to the inherited
+                // value, or else the default.
                 let Ok(style) = as_text_style(&value, name) else {
                     return PropApplyOutcome::DecodeFailed(name);
                 };
                 let inherited = resolve_inherited();
                 self.apply_style_incremental(Some(&style), &inherited);
-                PropApplyOutcome::Applied
-            }
-            "font_size" => {
-                let inherited = resolve_inherited();
-                let Some(px) = resolve_font_size_px_with_inherited(&value, &inherited) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_font_size(px);
-                PropApplyOutcome::Applied
-            }
-            "line_height" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_line_height(v);
-                PropApplyOutcome::Applied
-            }
-            "align" => {
-                let Ok(align) = as_text_align(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_text_align(align);
-                PropApplyOutcome::Applied
-            }
-            "opacity" => {
-                let Ok(v) = as_f32(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_opacity(v);
-                PropApplyOutcome::Applied
-            }
-            "font" => {
-                let Ok(family) = as_string(&value, name) else {
-                    return PropApplyOutcome::DecodeFailed(name);
-                };
-                self.set_font(family);
                 PropApplyOutcome::Applied
             }
             _ => PropApplyOutcome::UnknownProp,
@@ -119,10 +75,6 @@ impl Text {
         use crate::view::renderer_adapter::{StyleCascadeContext, style_cascade_at_parent};
 
         match name {
-            "opacity" => {
-                self.set_opacity(1.0);
-                PropApplyOutcome::Applied
-            }
             "style" => {
                 // 軌 1 #8: `style` removed entirely. Reset every
                 // explicit flag and replay ancestor cascade so all

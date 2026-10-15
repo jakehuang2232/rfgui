@@ -36,6 +36,8 @@ fn text_style() -> TextStylePropSchema {
         font_size: Some(FontSize::px(17.0)),
         font_weight: Some(FontWeight::new(600)),
         text_wrap: Some(TextWrap::NoWrap),
+        line_height: Some(1.5),
+        text_align: Some(TextAlign::Center),
         cursor: Some(Cursor::Text),
         opacity: Some(Opacity::new(0.75)),
         transform: Some(Transform::new([crate::style::Translate::x(Length::px(
@@ -204,6 +206,14 @@ fn text_style_lowering_keeps_shared_fields() {
     let style = text_style().to_style();
 
     assert_shared_fields(&style);
+    assert!(matches!(
+        style.get(PropertyId::LineHeight),
+        Some(ParsedValue::LineHeight(_))
+    ));
+    assert_eq!(
+        style.get(PropertyId::TextAlign),
+        Some(&ParsedValue::TextAlign(TextAlign::Center))
+    );
     assert!(style.hover().is_none());
 }
 

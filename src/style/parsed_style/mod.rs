@@ -68,6 +68,7 @@ pub(crate) enum PropertyId {
     Transition,
     Animator,
     VerticalAlign,
+    TextAlign,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -725,8 +726,10 @@ pub enum Align {
     End,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Horizontal alignment of each line inside a text box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextAlign {
+    #[default]
     Left,
     Center,
     Right,
@@ -2512,6 +2515,7 @@ pub(crate) enum ParsedValue {
     Color(StyleColor),
     Gradient(Gradient),
     VerticalAlign(VerticalAlign),
+    TextAlign(TextAlign),
 }
 
 #[cfg(test)]
@@ -2976,6 +2980,10 @@ impl Style {
             PropertyId::VerticalAlign,
             ParsedValue::VerticalAlign(vertical_align),
         );
+    }
+
+    pub fn set_text_align(&mut self, text_align: TextAlign) {
+        self.insert(PropertyId::TextAlign, ParsedValue::TextAlign(text_align));
     }
 
     pub fn with_vertical_align(mut self, vertical_align: VerticalAlign) -> Self {

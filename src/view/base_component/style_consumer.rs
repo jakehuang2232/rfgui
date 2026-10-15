@@ -6,8 +6,8 @@ use crate::style::ComputedStyle;
 ///
 /// This trait is intentionally narrow: it is for hosts where a complete
 /// `ComputedStyle` can be applied directly to the retained node. It does not
-/// model authored-field masks, inherited cascade context, or explicit prop
-/// priority. Components that need those inputs should normalize through a
+/// model authored-field masks or inherited cascade context. Components that
+/// need those inputs should normalize through a
 /// local style bridge first and only apply the fields that were actually
 /// authored for that component.
 pub(crate) trait ComputedStyleConsumer {

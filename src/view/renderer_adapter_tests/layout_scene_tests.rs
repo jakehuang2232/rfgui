@@ -194,9 +194,7 @@ fn text_nodes_keep_expected_layout_bounds_in_scene() {
         ))
         .with_child(
             host_text_node()
-                .with_prop("font_size", 26)
-                .with_prop("style", text_style_with_color("#0F172A"))
-                .with_prop("font", "Noto Sans CJK TC")
+                .with_prop("style", scene_text_style("#0F172A", 26.0))
                 .with_child(RsxNode::text("Hello Rust GUI Text Test")),
         );
 
@@ -211,25 +209,19 @@ fn text_nodes_keep_expected_layout_bounds_in_scene() {
         )
         .with_child(
             host_text_node()
-                .with_prop("font_size", 22)
-                .with_prop("style", text_style_with_color("#E2E8F0"))
-                .with_prop("font", "Noto Sans CJK TC")
+                .with_prop("style", scene_text_style("#E2E8F0", 22.0))
                 .with_child(RsxNode::text("Test Component")),
         )
         .with_child(
             host_text_node()
-                .with_prop("font_size", 14)
-                .with_prop("style", text_style_with_color("#CBD5E1"))
-                .with_prop("font", "Noto Sans CJK TC")
+                .with_prop("style", scene_text_style("#CBD5E1", 14.0))
                 .with_child(RsxNode::text(
                     "Used to verify event hit-testing and bubbling.",
                 )),
         )
         .with_child(
             host_text_node()
-                .with_prop("font_size", 14)
-                .with_prop("style", text_style_with_color("#F8FAFC"))
-                .with_prop("font", "Noto Sans CJK TC")
+                .with_prop("style", scene_text_style("#F8FAFC", 14.0))
                 .with_child(RsxNode::text("Click Count: 0")),
         );
 
@@ -487,5 +479,13 @@ fn padded_inline_span_keeps_its_padding_on_the_line_of_its_content() {
                 span_box.x + span_box.width
             );
         }
+    }
+}
+
+fn scene_text_style(color_hex: &str, font_size: f32) -> TextStylePropSchema {
+    TextStylePropSchema {
+        font_size: Some(FontSize::px(font_size)),
+        font: Some(FontFamily::new(["Noto Sans CJK TC"])),
+        ..text_style_with_color(color_hex)
     }
 }

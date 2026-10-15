@@ -70,7 +70,7 @@ fn incremental_commit_applies_text_cascading_style_change_recascades_descendants
 }
 
 /// 軌 A #7: explicit-prop tracking preserves author overrides.
-/// A Text child with its own `font_size={14}` must NOT be clobbered
+/// A Text child whose style sets `font_size: 14` must NOT be clobbered
 /// when the ancestor's cascading font_size changes.
 #[test]
 fn incremental_commit_recascade_preserves_explicit_text_font_size() {
@@ -83,7 +83,7 @@ fn incremental_commit_recascade_preserves_explicit_text_font_size() {
             height: Length::px(80.0),
             font_size: 20.0f32,
         }}>
-            <HostText font_size={14.0f64}>"hi"</HostText>
+            <HostText style={{ font_size: 14.0f32 }}>"hi"</HostText>
         </HostElement>
     };
     let parent_30_explicit_14 = rsx! {
@@ -92,7 +92,7 @@ fn incremental_commit_recascade_preserves_explicit_text_font_size() {
             height: Length::px(80.0),
             font_size: 30.0f32,
         }}>
-            <HostText font_size={14.0f64}>"hi"</HostText>
+            <HostText style={{ font_size: 14.0f32 }}>"hi"</HostText>
         </HostElement>
     };
 
@@ -121,7 +121,7 @@ fn incremental_commit_recascade_preserves_explicit_text_font_size() {
         .font_size();
     assert!(
         (text - 14.0).abs() < 1e-4,
-        "explicit font_size={{14}} must survive ancestor cascade change; got {}",
+        "style font_size 14 must survive ancestor cascade change; got {}",
         text
     );
 }
@@ -405,73 +405,48 @@ fn incremental_commit_insert_child_inherits_parent_font_size_from_cascade() {
 // 軌 1 #2 / #3 / #4: context-free setter surface, slot hot-swap, source
 // ---------------------------------------------------------------------------
 
-/// 軌 A #9: an `em`-valued `font_size` update on a Text leaf now
-/// resolves through the inherited cascade (parent's font_size on
-/// the arena) instead of falling back to the full-rebuild pipeline.
+/// An `em` font size in an updated Text style resolves against the
+/// parent's font size on the arena, as the first build does.
 #[test]
 fn incremental_commit_resolves_em_font_size_via_inherited_cascade() {
     use crate::style::FontSize;
-    use crate::ui::{IntoPropValue, Patch, PropValue};
     use crate::view::Text as HostText;
     use crate::view::base_component::Text as TextHost;
-    use crate::view::fiber_work::{apply_fiber_works, patch_to_fiber_work};
 
-    // Parent Element has font_size=20 in its style; Text child
-    // initially has font_size 14 explicit.
-    let seed = rsx! {
-        <HostElement style={{
-            width: Length::px(200.0),
-            height: Length::px(80.0),
-            font_size: 20.0f32,
-        }}>
-            <HostText font_size={14.0f64}>"hi"</HostText>
-        </HostElement>
+    let tree = |font_size: FontSize| {
+        rsx! {
+            <HostElement style={{
+                width: Length::px(200.0),
+                height: Length::px(80.0),
+                font_size: 20.0f32,
+            }}>
+                <HostText style={{ font_size: font_size }}>"hi"</HostText>
+            </HostElement>
+        }
     };
     let mut viewport = Viewport::new();
     viewport.set_use_incremental_commit(true);
-    viewport.render_rsx(&seed).expect("cold render");
+    viewport
+        .render_rsx(&tree(FontSize::px(14.0)))
+        .expect("cold render");
     let parent_key = viewport.scene.ui_root_keys[0];
     let text_key = viewport.scene.node_arena.children_of(parent_key)[0];
 
-    // Synthetic Update patch: change Text's font_size to Em(2.0).
-    // Translator resolves via parent's cascade: 2.0em × 20px = 40px.
-    let patch = Patch::UpdateElementProps {
-        path: vec![0],
-        changed: vec![("font_size", PropValue::FontSize(FontSize::Em(2.0)))],
-        removed: vec![],
-    };
-    let style = crate::style::Style::new();
-    let ctx = crate::view::fiber_work::DescriptorContext {
-        new_rsx_root: &seed,
-        old_rsx_root: None,
-        inherited_style: &style,
-        viewport_width: 800.0,
-        viewport_height: 600.0,
-    };
-    let work = patch_to_fiber_work(
-        patch,
-        viewport.scene.node_arena.stable_id_index(),
-        &viewport.scene.node_arena,
-        parent_key,
-        Some(&ctx),
-    )
-    .expect("font_size em patch must translate");
-    assert!(
-        work.is_committable(&viewport.scene.node_arena),
-        "em font_size now committable via cascade resolver",
-    );
-    apply_fiber_works(&mut viewport.scene.node_arena, test_apply_ctx(), vec![work])
-        .expect("font-size work applies");
+    viewport
+        .render_rsx(&tree(FontSize::em(2.0)))
+        .expect("font-size update must commit incrementally");
 
-    let arena = &viewport.scene.node_arena;
-    let node = arena.get(text_key).unwrap();
-    let text = node.element.as_any().downcast_ref::<TextHost>().unwrap();
+    assert_eq!(
+        viewport.scene.node_arena.children_of(parent_key),
+        vec![text_key]
+    );
+    let text =
+        crate::view::test_support::get_element::<TextHost>(&viewport.scene.node_arena, text_key);
     assert!(
         (text.font_size() - 40.0).abs() < 1e-4,
         "Em(2.0) × parent 20px = 40px; got {}",
         text.font_size(),
     );
-    let _ = <FontSize as IntoPropValue>::into_prop_value;
 }
 
 /// A re-render rebuilds every `style` object, but an Element child whose

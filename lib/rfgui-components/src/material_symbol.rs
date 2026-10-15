@@ -51,7 +51,7 @@ pub(crate) fn render_material_symbol_icon(
 
     rsx! {
         <Element style={style}>
-            <Text line_height={line_height}>{glyph.text}</Text>
+            <Text style={{ line_height: line_height }}>{glyph.text}</Text>
         </Element>
     }
 }

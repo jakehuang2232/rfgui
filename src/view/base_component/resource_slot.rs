@@ -65,8 +65,7 @@ impl StaticSlotNode {
                                 | PropValue::I64(_)
                                 | PropValue::F64(_)
                                 | PropValue::FontSize(_)
-                                | PropValue::String(_)
-                                | PropValue::TextAlign(_) => StaticSlotProp::Value(value.clone()),
+                                | PropValue::String(_) => StaticSlotProp::Value(value.clone()),
                                 _ => return None,
                             }
                         };

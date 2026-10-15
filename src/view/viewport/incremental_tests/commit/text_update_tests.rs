@@ -78,66 +78,49 @@ fn incremental_commit_text_style_color_change_preserves_node_key() {
     );
 }
 
-/// Text.style update that drops a declaration (font_size goes away):
-/// the explicit flag for font_size must flip back to `false` so the
-/// ancestor cascade can refill it.
+/// A Text style update that drops declarations: each dropped field takes
+/// the ancestor's value again (font size), or else the default (line height
+/// and opacity).
 #[test]
-fn incremental_commit_text_style_drops_font_size_keeps_prior_explicit_value() {
-    // Track 1 #10 scope: apply_style_incremental does NOT reset
-    // explicit flags — an independent `font_size={}` prop may be the
-    // source of truth. Removing `font_size` from the style declaration
-    // alone therefore does not refill from the ancestor cascade;
-    // it keeps whatever the prior explicit value was. Cold-path
-    // rebuild is still responsible for wholesale defaults.
+fn incremental_commit_text_style_drops_fields_back_to_inherited_or_default() {
     use crate::view::Text as HostText;
     use crate::view::base_component::Text as TextHost;
 
-    let first = rsx! {
-        <HostElement style={{
-            width: Length::px(200.0),
-            height: Length::px(80.0),
-            font_size: 20.0f32,
-        }}>
-            <HostText style={{ font_size: 40.0f32 }}>"hi"</HostText>
-        </HostElement>
-    };
-    let second = rsx! {
-        <HostElement style={{
-            width: Length::px(200.0),
-            height: Length::px(80.0),
-            font_size: 20.0f32,
-        }}>
-            <HostText style={{}}>"hi"</HostText>
-        </HostElement>
+    let tree = |own: bool| {
+        rsx! {
+            <HostElement style={{
+                width: Length::px(200.0),
+                height: Length::px(80.0),
+                font_size: 20.0f32,
+            }}>
+                <HostText style={{
+                    font_size: own.then_some(crate::style::FontSize::px(40.0)),
+                    line_height: own.then_some(2.0),
+                    opacity: own.then_some(crate::style::Opacity::new(0.5)),
+                }}>"hi"</HostText>
+            </HostElement>
+        }
     };
 
     let mut viewport = Viewport::new();
     viewport.set_use_incremental_commit(true);
-
-    viewport.render_rsx(&first).expect("cold render");
+    viewport.render_rsx(&tree(true)).expect("cold render");
     let parent_key = viewport.scene.ui_root_keys[0];
     let text_key = viewport.scene.node_arena.children_of(parent_key)[0];
+    let fields = |viewport: &Viewport| {
+        let text = crate::view::test_support::get_element::<TextHost>(
+            &viewport.scene.node_arena,
+            text_key,
+        );
+        (text.font_size(), text.line_height_value(), text.opacity())
+    };
+    assert_eq!(fields(&viewport), (40.0, 2.0, 0.5));
 
     viewport
-        .render_rsx(&second)
-        .expect("Text.style losing font_size must commit incrementally");
-
+        .render_rsx(&tree(false))
+        .expect("a Text style losing fields must commit incrementally");
     assert_eq!(viewport.scene.ui_root_keys, vec![parent_key]);
-    let arena = &viewport.scene.node_arena;
-    let font_size = arena
-        .get(text_key)
-        .unwrap()
-        .element
-        .as_any()
-        .downcast_ref::<TextHost>()
-        .unwrap()
-        .font_size();
-    // Prior explicit 40.0 persists; cascade does not override.
-    assert!(
-        (font_size - 40.0).abs() < 1e-4,
-        "prior explicit font_size 40.0 must stick; got {}",
-        font_size,
-    );
+    assert_eq!(fields(&viewport), (20.0, 1.25, 1.0));
 }
 
 /// Text.style prop removed entirely (UpdateElementProps `removed` list

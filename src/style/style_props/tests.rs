@@ -112,6 +112,7 @@ fn registry_covers_current_property_id_variants() {
         PropertyId::Transition,
         PropertyId::Animator,
         PropertyId::VerticalAlign,
+        PropertyId::TextAlign,
     ];
 
     for property in expected {
@@ -133,6 +134,7 @@ fn style_prop_meta_finds_text_style_fields() {
         PropertyId::FontSize,
         PropertyId::FontWeight,
         PropertyId::LineHeight,
+        PropertyId::TextAlign,
         PropertyId::TextWrap,
         PropertyId::Cursor,
         PropertyId::Opacity,

@@ -595,44 +595,4 @@ fn svg_slot_structural_failure_surfaces_as_update_failure() {
     assert_eq!(svg.loading_slot_len(), 0);
 }
 
-/// A FiberWork::Update with `removed = ["opacity"]` on a Text host
-/// resets opacity to the default 1.0. Element's schema folds opacity
-/// into the `style` map (no top-level reset arm); Text still exposes
-/// `opacity` as a named prop with its own reset arm, so it's the
-/// smallest case that exercises the named-prop reset branch.
-#[test]
-fn fiber_work_removes_opacity_resets_to_default_on_text() {
-    use crate::view::base_component::Text;
-    use crate::view::node_arena::Node;
-
-    let mut arena = NodeArena::new();
-    let mut text = Text::new(0.0, 0.0, 100.0, 20.0, "hello");
-    text.set_opacity(0.3);
-    assert!((text.opacity() - 0.3).abs() < 1e-4);
-    let k = arena.insert(Node::new(Box::new(text)));
-
-    apply_fiber_works(
-        &mut arena,
-        test_apply_ctx(),
-        vec![FiberWork::Update {
-            key: k,
-            changed: vec![],
-            removed: vec!["opacity"],
-        }],
-    )
-    .expect("text opacity reset applies");
-
-    let node = arena.get(k).expect("node survived");
-    let text = node
-        .element
-        .as_any()
-        .downcast_ref::<Text>()
-        .expect("Text host");
-    assert!(
-        (text.opacity() - 1.0).abs() < 1e-4,
-        "removed opacity must reset to default 1.0, got {}",
-        text.opacity()
-    );
-}
-
 mod resource_slot_reuse_tests;
