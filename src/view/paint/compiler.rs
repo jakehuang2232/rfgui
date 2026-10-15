@@ -461,6 +461,31 @@ pub(crate) enum ArtifactSurfaceRasterPlanError {
     },
 }
 
+impl ArtifactSurfaceRasterPlanError {
+    /// The node whose paint the plan could not use, when the error names
+    /// one: the frame can be recorded again without it.
+    pub(crate) fn owner(self) -> Option<NodeKey> {
+        match self {
+            Self::ArtifactProgram(SingleTargetSurfaceDagPrepareError::UnresolvedClip(owner))
+            | Self::InvalidOwnerTopology { owner, .. } => Some(owner),
+            Self::ArtifactProgram(SingleTargetSurfaceDagPrepareError::SurfaceDag(error))
+            | Self::SurfaceDag(error) => error.owner(),
+            Self::ArtifactProgram(SingleTargetSurfaceDagPrepareError::ChunkPlacement)
+            | Self::MissingSurfaceSnapshot(_)
+            | Self::MissingCoverageNode(_)
+            | Self::InvalidSurfaceBounds(_)
+            | Self::InvalidRasterOrigin(_)
+            | Self::InvalidCoverageSpan(_)
+            | Self::InvalidChunkBounds { .. }
+            | Self::InvalidResolvedClip { .. }
+            | Self::InvalidReceiverClip(_)
+            | Self::Localization { .. }
+            | Self::LocalizedPayload { .. }
+            | Self::InvalidNestedSurface { .. } => None,
+        }
+    }
+}
+
 impl From<SurfaceDagError> for ArtifactSurfaceRasterPlanError {
     fn from(error: SurfaceDagError) -> Self {
         Self::SurfaceDag(error)
@@ -1139,6 +1164,8 @@ impl PreparedArtifactSurfaceRasterPlan {
 pub(crate) enum SingleTargetSurfaceDagPrepareError {
     /// A chunk's command range or placed geometry is malformed.
     ChunkPlacement,
+    /// A clip of this owner has an incomplete or unplaced chain.
+    UnresolvedClip(NodeKey),
     SurfaceDag(SurfaceDagError),
 }
 
@@ -1419,7 +1446,8 @@ fn derive_artifact_surface_dag_program(
         })
         .collect();
     let spatial = place_artifact_geometry(&mut artifact, scale_factor, cache.as_deref_mut())?;
-    let resolved_clips = resolve_clip_values(&artifact);
+    let resolved_clips = try_resolve_clip_values(&artifact)
+        .map_err(SingleTargetSurfaceDagPrepareError::UnresolvedClip)?;
 
     if let Some(mut cached) = cache
         .as_deref_mut()
@@ -4487,15 +4515,9 @@ fn fold_resolved_clip_chain(chain: &[ClipNodeSnapshot]) -> Option<ResolvedClip> 
 }
 
 /// Resolves every chunk's clip from its placed clip chain. Chunks sharing a
-/// leaf share its result. The recorder snapshots every referenced clip and
-/// its ancestors, so each chain is complete and acyclic.
-fn resolve_clip_values(artifact: &PaintArtifact) -> Vec<ResolvedClip> {
-    try_resolve_clip_values(artifact).expect("recorded clip chains are complete and placed")
-}
-
-/// [`resolve_clip_values`] for artifacts not built by the recorder: `None`
-/// when a chain is incomplete, cyclic or unplaced.
-fn try_resolve_clip_values(artifact: &PaintArtifact) -> Option<Vec<ResolvedClip>> {
+/// leaf share its result. The error names the owner of a clip whose chain
+/// is incomplete, cyclic or unplaced.
+fn try_resolve_clip_values(artifact: &PaintArtifact) -> Result<Vec<ResolvedClip>, NodeKey> {
     let clip_nodes = artifact
         .clip_nodes
         .iter()
@@ -4508,25 +4530,30 @@ fn try_resolve_clip_values(artifact: &PaintArtifact) -> Option<Vec<ResolvedClip>
         .iter()
         .map(|chunk| {
             let Some(leaf) = chunk.properties.clip else {
-                return Some(ResolvedClip::Unclipped);
+                return Ok(ResolvedClip::Unclipped);
             };
             if let Some(resolved) = by_leaf.get(&leaf) {
-                return Some(*resolved);
+                return Ok(*resolved);
             }
             chain.clear();
             let mut cursor = Some(leaf);
             while let Some(id) = cursor {
                 // A chain longer than the clips it draws from has a cycle.
                 if chain.len() >= clip_nodes.len() {
-                    return None;
+                    return Err(leaf.owner);
                 }
-                let snapshot = *clip_nodes.get(&id)?;
+                let snapshot = *clip_nodes.get(&id).ok_or(id.owner)?;
                 chain.push(snapshot);
                 cursor = snapshot.parent;
             }
-            let resolved = fold_resolved_clip_chain(&chain)?;
+            let resolved = fold_resolved_clip_chain(&chain).ok_or_else(|| {
+                chain
+                    .iter()
+                    .find(|clip| clip.geometry.viewport_scissor().is_none())
+                    .map_or(leaf.owner, |clip| clip.owner)
+            })?;
             by_leaf.insert(leaf, resolved);
-            Some(resolved)
+            Ok(resolved)
         })
         .collect()
 }

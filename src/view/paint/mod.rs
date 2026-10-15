@@ -69,6 +69,8 @@ pub(crate) use coverage_manifest::{
     CoverageOrder, CoverageRecordingMode, PaintCoverageItem, PaintCoverageManifest,
 };
 
+pub(crate) use frame_recorder::record_frame_artifact;
+#[cfg(test)]
 pub(crate) use frame_recorder::{
     record_surface_dag_frame_artifact, record_surface_dag_frame_artifact_cached,
 };

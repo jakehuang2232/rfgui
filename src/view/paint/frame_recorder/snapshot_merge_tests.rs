@@ -159,7 +159,10 @@ fn artifact_snapshots_complete_spatial_ancestor_graphs_without_arena_queries() {
             .is_some(),
         "visual-offset snapshot chain"
     );
-    populate_referenced_property_snapshots(&mut artifact, &trees);
+    assert_eq!(
+        populate_referenced_property_snapshots(&mut artifact, &trees),
+        Ok(())
+    );
 
     assert_eq!(
         artifact
@@ -294,7 +297,10 @@ fn artifact_snapshot_closure_includes_named_anchor_visual_chain() {
         .into(),
         ..PaintArtifact::default()
     };
-    populate_referenced_property_snapshots(&mut artifact, &trees);
+    assert_eq!(
+        populate_referenced_property_snapshots(&mut artifact, &trees),
+        Ok(())
+    );
 
     assert_eq!(
         artifact

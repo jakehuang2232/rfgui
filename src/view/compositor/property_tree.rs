@@ -334,6 +334,27 @@ pub(crate) enum SpatialProjectionError {
     InvalidClip(ClipNodeId),
 }
 
+impl SpatialProjectionError {
+    /// The node whose spatial data the error is about.
+    pub(crate) fn owner(self) -> NodeKey {
+        match self {
+            Self::DuplicateTransform(id)
+            | Self::MissingTransform(id)
+            | Self::CyclicTransform(id) => id.0,
+            Self::DuplicateLayoutPosition(id)
+            | Self::MissingLayoutPosition(id)
+            | Self::CyclicLayoutPosition(id)
+            | Self::InvalidLayoutReference(id) => id.0,
+            Self::DuplicateVisualOffset(id)
+            | Self::MissingVisualOffset(id)
+            | Self::CyclicVisualOffset(id) => id.0,
+            Self::DuplicateScroll(id) | Self::MissingScroll(id) | Self::CyclicScroll(id) => id.0,
+            Self::InvalidSnapshot(owner) => owner,
+            Self::InvalidClip(id) => id.owner,
+        }
+    }
+}
+
 /// Owner projection derived exclusively from the spatial snapshot graph.
 /// `owner_viewport_transform` intentionally contains only the owner's authored
 /// transform; ancestor transforms remain separate property-tree edges.
@@ -711,6 +732,66 @@ where
         complete.extend(path.drain());
     }
     Ok(())
+}
+
+/// The snapshots whose own value is valid and whose parent chain is
+/// complete, valid and acyclic. A bad node drops only itself and the nodes
+/// below it; `errors` records why each chain broke.
+fn retain_projectable<K, S>(
+    snapshots: Vec<S>,
+    id: impl Fn(&S) -> K,
+    parent: impl Fn(&S) -> Option<K>,
+    invalid: impl Fn(&S) -> Option<SpatialProjectionError>,
+    missing: impl Fn(K) -> SpatialProjectionError,
+    cyclic: impl Fn(K) -> SpatialProjectionError,
+    errors: &mut Vec<SpatialTreeValidationError>,
+) -> Vec<S>
+where
+    K: Copy + Eq + std::hash::Hash,
+{
+    let index = snapshots
+        .iter()
+        .enumerate()
+        .map(|(at, snapshot)| (id(snapshot), at))
+        .collect::<FxHashMap<_, _>>();
+    let mut projectable = FxHashMap::<K, bool>::default();
+    let mut path = Vec::new();
+    let mut on_path = FxHashSet::default();
+    for snapshot in &snapshots {
+        // Climb to the first node whose answer is known, then settle the
+        // nodes passed on the way back down.
+        let mut cursor = id(snapshot);
+        let mut ok = loop {
+            if let Some(&known) = projectable.get(&cursor) {
+                break known;
+            }
+            if !on_path.insert(cursor) {
+                errors.push(SpatialTreeValidationError::Projection(cyclic(cursor)));
+                break false;
+            }
+            let Some(&at) = index.get(&cursor) else {
+                errors.push(SpatialTreeValidationError::Projection(missing(cursor)));
+                break false;
+            };
+            path.push(at);
+            match parent(&snapshots[at]) {
+                Some(next) => cursor = next,
+                None => break true,
+            }
+        };
+        while let Some(at) = path.pop() {
+            if ok && let Some(error) = invalid(&snapshots[at]) {
+                errors.push(SpatialTreeValidationError::Projection(error));
+                ok = false;
+            }
+            projectable.insert(id(&snapshots[at]), ok);
+        }
+        on_path.clear();
+    }
+    snapshots
+        .into_iter()
+        .filter(|snapshot| projectable.get(&id(snapshot)) == Some(&true))
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1625,6 +1706,62 @@ impl PropertyTrees {
                 generation: node.generation,
             })
             .collect::<Vec<_>>();
+
+        // A node that cannot be projected closes only itself and the nodes
+        // that depend on it; the graph is built from the rest.
+        let errors = &mut self.spatial_validation_errors;
+        let scrolls = retain_projectable(
+            scrolls,
+            |snapshot| snapshot.id,
+            |snapshot| snapshot.parent,
+            |snapshot| snapshot.validate_projection_value().err(),
+            SpatialProjectionError::MissingScroll,
+            SpatialProjectionError::CyclicScroll,
+            errors,
+        );
+        let projectable_scrolls = scrolls
+            .iter()
+            .map(|snapshot| snapshot.id)
+            .collect::<FxHashSet<_>>();
+        let positions = retain_projectable(
+            positions,
+            |snapshot| snapshot.id,
+            |snapshot| match snapshot.reference {
+                SpatialPositionReference::Viewport
+                | SpatialPositionReference::LayoutParent(None) => None,
+                SpatialPositionReference::LayoutParent(Some(parent))
+                | SpatialPositionReference::Anchor(parent) => Some(LayoutPositionNodeId(parent)),
+            },
+            |snapshot| {
+                snapshot.validate_projection_value().err().or_else(|| {
+                    snapshot
+                        .reference_scroll
+                        .filter(|scroll| !projectable_scrolls.contains(scroll))
+                        .map(SpatialProjectionError::MissingScroll)
+                })
+            },
+            SpatialProjectionError::MissingLayoutPosition,
+            SpatialProjectionError::CyclicLayoutPosition,
+            errors,
+        );
+        let visuals = retain_projectable(
+            visuals,
+            |snapshot| snapshot.id,
+            |snapshot| snapshot.parent,
+            |snapshot| snapshot.validate_projection_value().err(),
+            SpatialProjectionError::MissingVisualOffset,
+            SpatialProjectionError::CyclicVisualOffset,
+            errors,
+        );
+        let transforms = retain_projectable(
+            transforms,
+            |snapshot| snapshot.id,
+            |snapshot| snapshot.parent,
+            |snapshot| snapshot.validate_projection_value().err(),
+            SpatialProjectionError::MissingTransform,
+            SpatialProjectionError::CyclicTransform,
+            errors,
+        );
 
         let graph =
             match SpatialProjectionGraph::try_new(&transforms, &positions, &visuals, &scrolls) {

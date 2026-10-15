@@ -15,26 +15,67 @@ use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::{CoverageRecordingMode, PaintArtifact, PaintCoverageItem, PaintRecordingContext};
 
-/// Synced property trees hold every node a recorded state references.
-const REFERENCED: &str = "synced property trees hold every referenced node";
+/// Records the frame: what every node draws, with every property snapshot
+/// the compiler needs. Each node in `left_out` is skipped with its subtree,
+/// and so is each node found unable to paint, which is added to `left_out`;
+/// the rest of the frame always records. `cache` reuses what earlier frames
+/// and passes recorded.
+pub(crate) fn record_frame_artifact(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    mut cache: Option<&mut super::RecordingCache>,
+    left_out: &mut FxHashSet<NodeKey>,
+) -> PaintArtifact {
+    loop {
+        let recorded = match cache.as_deref_mut() {
+            Some(cache) => record_with_cache(
+                arena,
+                roots,
+                property_trees,
+                paint_generations,
+                cache,
+                left_out,
+            ),
+            None => record_without_cache(arena, roots, property_trees, paint_generations, left_out),
+        };
+        let incomplete = match recorded {
+            Ok(artifact) => return artifact,
+            Err(incomplete) => incomplete,
+        };
+        // Record again without the owners whose chains are incomplete. A
+        // left-out node never records again, so each pass leaves out more;
+        // with the roots left out nothing records.
+        let before = left_out.len();
+        left_out.extend(incomplete);
+        if left_out.len() == before {
+            left_out.extend(roots.iter().copied());
+        }
+    }
+}
 
-/// Records the complete frame: what every node draws, with every property
-/// snapshot the compiler needs.
+/// [`record_frame_artifact`] with nothing left out beforehand.
+#[cfg(test)]
 pub(crate) fn record_surface_dag_frame_artifact(
     arena: &NodeArena,
     roots: &[NodeKey],
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
 ) -> PaintArtifact {
-    let _profile = crate::view::paint::work_profile::scope("record_surface_dag_frame_artifact");
-    let manifest = record_full_manifest(arena, roots, property_trees, paint_generations, None);
-    let mut artifact = materialize_frame_artifact_with_cache(manifest, None);
-    populate_referenced_property_snapshots(&mut artifact, property_trees);
-    artifact
+    record_frame_artifact(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        None,
+        &mut FxHashSet::default(),
+    )
 }
 
 /// [`record_surface_dag_frame_artifact`] reusing what `cache` recorded in
 /// earlier frames.
+#[cfg(test)]
 pub(crate) fn record_surface_dag_frame_artifact_cached(
     arena: &NodeArena,
     roots: &[NodeKey],
@@ -42,6 +83,49 @@ pub(crate) fn record_surface_dag_frame_artifact_cached(
     paint_generations: &PaintGenerationTracker,
     cache: &mut super::RecordingCache,
 ) -> PaintArtifact {
+    record_frame_artifact(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        Some(cache),
+        &mut FxHashSet::default(),
+    )
+}
+
+/// One recording pass. The error names the owners whose chains the property
+/// trees miss.
+fn record_without_cache(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    left_out: &mut FxHashSet<NodeKey>,
+) -> Result<PaintArtifact, FxHashSet<NodeKey>> {
+    let _profile = crate::view::paint::work_profile::scope("record_surface_dag_frame_artifact");
+    let manifest = record_full_manifest(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        None,
+        left_out,
+    );
+    let mut artifact = materialize_frame_artifact_with_cache(manifest, None);
+    populate_referenced_property_snapshots(&mut artifact, property_trees)?;
+    Ok(artifact)
+}
+
+/// [`record_without_cache`] reusing what `cache` recorded in earlier frames
+/// and passes.
+fn record_with_cache(
+    arena: &NodeArena,
+    roots: &[NodeKey],
+    property_trees: &PropertyTrees,
+    paint_generations: &PaintGenerationTracker,
+    cache: &mut super::RecordingCache,
+    left_out: &mut FxHashSet<NodeKey>,
+) -> Result<PaintArtifact, FxHashSet<NodeKey>> {
     cache.begin();
     // A metadata pass finds the owners whose commands the cache still holds;
     // when it holds them all, their recorded commands complete the frame.
@@ -54,6 +138,7 @@ pub(crate) fn record_surface_dag_frame_artifact_cached(
         paint_generations,
         recording_context(),
         Some(&mut *cache),
+        left_out,
     );
     let manifest = if cache.materialize(arena, &mut preflight).is_some() {
         preflight
@@ -64,12 +149,15 @@ pub(crate) fn record_surface_dag_frame_artifact_cached(
             property_trees,
             paint_generations,
             Some(&mut *cache),
+            left_out,
         )
     };
     let mut artifact = materialize_frame_artifact_with_cache(manifest, Some(&mut *cache));
-    property_closure_cache::populate(&mut artifact, property_trees, cache);
+    let populated = property_closure_cache::populate(&mut artifact, property_trees, cache);
+    // A pass that has to leave an owner out still recorded valid inputs; the
+    // cache keeps them for the next pass.
     cache.finish(true);
-    artifact
+    populated.map(|()| artifact)
 }
 
 fn recording_context() -> PaintRecordingContext {
@@ -82,6 +170,7 @@ fn record_full_manifest(
     property_trees: &PropertyTrees,
     paint_generations: &PaintGenerationTracker,
     cache: Option<&mut super::RecordingCache>,
+    left_out: &mut FxHashSet<NodeKey>,
 ) -> super::PaintCoverageManifest {
     super::coverage_manifest::record_cached_coverage_manifest(
         arena,
@@ -92,6 +181,7 @@ fn record_full_manifest(
         paint_generations,
         recording_context(),
         cache,
+        left_out,
     )
 }
 
@@ -109,13 +199,14 @@ where
     }
 }
 
-/// On return the artifact owns every transitive property snapshot needed by
+/// On success the artifact owns every transitive property snapshot needed by
 /// its chunk states and recorded owner endpoints, and no later stage needs the
-/// arena.
+/// arena. Otherwise the error names each owner whose chains the property
+/// trees miss.
 pub(super) fn populate_referenced_property_snapshots(
     artifact: &mut PaintArtifact,
     property_trees: &PropertyTrees,
-) {
+) -> Result<(), FxHashSet<NodeKey>> {
     let _profile =
         crate::view::paint::work_profile::scope("populate_referenced_property_snapshots");
     artifact.transform_nodes.clear();
@@ -175,46 +266,51 @@ pub(super) fn populate_referenced_property_snapshots(
     let mut visual_scratch = snapshot_closure::ChainScratch::default();
     let mut scroll_scratch = snapshot_closure::ChainScratch::default();
     let mut anchor_visual_roots = Vec::new();
+    let mut incomplete = FxHashSet::default();
     let mut next_state = 0;
-    while let Some(&(_, state)) = referenced_states.get(next_state) {
+    while let Some(&(owner, state)) = referenced_states.get(next_state) {
         next_state += 1;
-        if checked_clip_leaves.insert(state.clip) {
-            for snapshot in property_trees
-                .clip_snapshot_for(state.clip)
-                .expect(REFERENCED)
-            {
-                if insert_snapshot(&mut clips, snapshot.id, snapshot) {
-                    artifact.clip_nodes.push(snapshot);
-                    referenced_states.extend(clip_frame(&snapshot));
+        // A leaf counts as checked only once its whole chain was found, so
+        // every owner under a missing chain is reported.
+        let complete = 'state: {
+            if !checked_clip_leaves.contains(&state.clip) {
+                let Some(chain) = property_trees.clip_snapshot_for(state.clip) else {
+                    break 'state false;
+                };
+                checked_clip_leaves.insert(state.clip);
+                for snapshot in chain {
+                    if insert_snapshot(&mut clips, snapshot.id, snapshot) {
+                        artifact.clip_nodes.push(snapshot);
+                        referenced_states.extend(clip_frame(&snapshot));
+                    }
                 }
             }
-        }
-        if checked_effect_leaves.insert(state.effect) {
-            for snapshot in property_trees
-                .effect_snapshot_for(state.effect)
-                .expect(REFERENCED)
-            {
-                if insert_snapshot(&mut effects, snapshot.id, snapshot) {
-                    artifact.effect_nodes.push(snapshot);
+            if !checked_effect_leaves.contains(&state.effect) {
+                let Some(chain) = property_trees.effect_snapshot_for(state.effect) else {
+                    break 'state false;
+                };
+                checked_effect_leaves.insert(state.effect);
+                for snapshot in chain {
+                    if insert_snapshot(&mut effects, snapshot.id, snapshot) {
+                        artifact.effect_nodes.push(snapshot);
+                    }
                 }
             }
-        }
-        anchor_visual_roots.clear();
-        for snapshot in transform_scratch
-            .unseen_chain(
+            anchor_visual_roots.clear();
+            let Some(chain) = transform_scratch.unseen_chain(
                 state.transform,
                 &transforms,
                 |id| property_trees.transform_snapshot_for(id),
                 |s| s.parent,
-            )
-            .expect(REFERENCED)
-        {
-            if insert_snapshot(&mut transforms, snapshot.id, snapshot) {
-                artifact.transform_nodes.push(snapshot);
+            ) else {
+                break 'state false;
+            };
+            for snapshot in chain {
+                if insert_snapshot(&mut transforms, snapshot.id, snapshot) {
+                    artifact.transform_nodes.push(snapshot);
+                }
             }
-        }
-        for snapshot in position_scratch
-            .unseen_chain(
+            let Some(chain) = position_scratch.unseen_chain(
                 state.layout_position,
                 &positions,
                 |id| property_trees.layout_position_snapshot_for(id),
@@ -226,72 +322,83 @@ pub(super) fn populate_referenced_property_snapshots(
                         Some(LayoutPositionNodeId(parent))
                     }
                 },
-            )
-            .expect(REFERENCED)
-        {
-            if let SpatialPositionReference::Anchor(anchor) = snapshot.reference {
-                anchor_visual_roots.push(VisualOffsetNodeId(anchor));
-            }
-            if let Some(scroll) = snapshot.reference_scroll {
-                for scroll_snapshot in scroll_scratch
-                    .unseen_chain(
+            ) else {
+                break 'state false;
+            };
+            for snapshot in chain {
+                if let SpatialPositionReference::Anchor(anchor) = snapshot.reference {
+                    anchor_visual_roots.push(VisualOffsetNodeId(anchor));
+                }
+                if let Some(scroll) = snapshot.reference_scroll {
+                    let Some(scroll_chain) = scroll_scratch.unseen_chain(
                         Some(scroll),
                         &scrolls,
                         |id| property_trees.scroll_snapshot_for(id),
                         |s| s.parent,
-                    )
-                    .expect(REFERENCED)
-                {
-                    if insert_snapshot(&mut scrolls, scroll_snapshot.id, scroll_snapshot) {
-                        artifact.scroll_nodes.push(scroll_snapshot);
+                    ) else {
+                        break 'state false;
+                    };
+                    for scroll_snapshot in scroll_chain {
+                        if insert_snapshot(&mut scrolls, scroll_snapshot.id, scroll_snapshot) {
+                            artifact.scroll_nodes.push(scroll_snapshot);
+                        }
                     }
                 }
+                if insert_snapshot(&mut positions, snapshot.id, snapshot) {
+                    artifact.layout_position_nodes.push(snapshot);
+                }
             }
-            if insert_snapshot(&mut positions, snapshot.id, snapshot) {
-                artifact.layout_position_nodes.push(snapshot);
-            }
-        }
-        for snapshot in visual_scratch
-            .unseen_chain(
+            let Some(chain) = visual_scratch.unseen_chain(
                 state.visual_offset,
                 &visuals,
                 |id| property_trees.visual_offset_snapshot_for(id),
                 |s| s.parent,
-            )
-            .expect(REFERENCED)
-        {
-            if insert_snapshot(&mut visuals, snapshot.id, snapshot) {
-                artifact.visual_offset_nodes.push(snapshot);
-            }
-        }
-        for anchor in anchor_visual_roots.drain(..) {
-            for snapshot in visual_scratch
-                .unseen_chain(
-                    Some(anchor),
-                    &visuals,
-                    |id| property_trees.visual_offset_snapshot_for(id),
-                    |s| s.parent,
-                )
-                .expect(REFERENCED)
-            {
+            ) else {
+                break 'state false;
+            };
+            for snapshot in chain {
                 if insert_snapshot(&mut visuals, snapshot.id, snapshot) {
                     artifact.visual_offset_nodes.push(snapshot);
                 }
             }
-        }
-        for snapshot in scroll_scratch
-            .unseen_chain(
+            for anchor in anchor_visual_roots.drain(..) {
+                let Some(chain) = visual_scratch.unseen_chain(
+                    Some(anchor),
+                    &visuals,
+                    |id| property_trees.visual_offset_snapshot_for(id),
+                    |s| s.parent,
+                ) else {
+                    break 'state false;
+                };
+                for snapshot in chain {
+                    if insert_snapshot(&mut visuals, snapshot.id, snapshot) {
+                        artifact.visual_offset_nodes.push(snapshot);
+                    }
+                }
+            }
+            let Some(chain) = scroll_scratch.unseen_chain(
                 state.scroll,
                 &scrolls,
                 |id| property_trees.scroll_snapshot_for(id),
                 |s| s.parent,
-            )
-            .expect(REFERENCED)
-        {
-            if insert_snapshot(&mut scrolls, snapshot.id, snapshot) {
-                artifact.scroll_nodes.push(snapshot);
+            ) else {
+                break 'state false;
+            };
+            for snapshot in chain {
+                if insert_snapshot(&mut scrolls, snapshot.id, snapshot) {
+                    artifact.scroll_nodes.push(snapshot);
+                }
             }
+            true
+        };
+        if !complete {
+            incomplete.insert(owner);
         }
+    }
+    if incomplete.is_empty() {
+        Ok(())
+    } else {
+        Err(incomplete)
     }
 }
 
@@ -300,7 +407,8 @@ pub(crate) fn populate_referenced_property_snapshots_for_test(
     artifact: &mut PaintArtifact,
     property_trees: &PropertyTrees,
 ) {
-    populate_referenced_property_snapshots(artifact, property_trees)
+    let result = populate_referenced_property_snapshots(artifact, property_trees);
+    assert!(result.is_ok(), "incomplete property chains: {result:?}");
 }
 
 fn materialize_frame_artifact_with_cache(

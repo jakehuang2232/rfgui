@@ -303,6 +303,8 @@ struct FrameRuntime {
         gpu_paint::ShadowTemplateResidency,
     >,
     surface_diagnostics: Vec<gpu_paint::SurfaceDiagnostic>,
+    /// The nodes the last frame left out of its paint, already warned about.
+    left_out_paint: FxHashSet<crate::view::node_arena::NodeKey>,
     /// F9 asked for a text report of the next RetainedAuto frame.
     retained_auto_report_pending: bool,
     frame_state: Option<FrameState>,
@@ -362,6 +364,7 @@ impl FrameRuntime {
             gpu_paint_sources: FxHashMap::default(),
             shadow_templates: FxHashMap::default(),
             surface_diagnostics: Vec::new(),
+            left_out_paint: FxHashSet::default(),
             retained_auto_report_pending: false,
             frame_buffer_pool: FxHashMap::default(),
             rect_instances: rect_instances::RectInstanceFrame::default(),

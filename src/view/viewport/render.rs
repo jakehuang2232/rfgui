@@ -53,13 +53,22 @@ struct RecordedFrame {
     frame: crate::view::paint::PreparedArtifactSurfaceFrame,
     chunk_count: usize,
     op_count: usize,
+    /// The nodes left out of the frame, each with its subtree, because their
+    /// paint inputs are incomplete.
+    left_out: FxHashSet<crate::view::node_arena::NodeKey>,
+}
+
+/// Why a recorded artifact did not become a frame.
+enum FramePlanError {
+    Plan(crate::view::paint::ArtifactSurfaceRasterPlanError),
+    Seal(crate::view::paint::ArtifactSurfaceResidentSealError),
 }
 
 fn plan_recorded_frame(
     artifact: crate::view::paint::PaintArtifact,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
     planning_cache: Option<&mut crate::view::paint::PlanningCache>,
-) -> RecordedFrame {
+) -> Result<RecordedFrame, FramePlanError> {
     let chunk_count = artifact.chunks.len();
     let op_count = artifact.ops.len();
     #[cfg(test)]
@@ -72,51 +81,77 @@ fn plan_recorded_frame(
         ),
         None => crate::view::paint::prepare_artifact_surface_raster_plan(artifact, raster_context),
     }
-    .expect("recorded artifacts always plan");
+    .map_err(FramePlanError::Plan)?;
     #[cfg(test)]
     attempts::record("resident-seal");
-    RecordedFrame {
+    Ok(RecordedFrame {
         frame: crate::view::paint::seal_prepared_artifact_surface_frame(plan)
-            .expect("raster plans always seal"),
+            .map_err(FramePlanError::Seal)?,
         chunk_count,
         op_count,
-    }
+        left_out: FxHashSet::default(),
+    })
 }
 
 /// Records the frame's paint and plans its surfaces. The caches only reuse
-/// work: whatever they cannot replay is recorded and planned again.
+/// work: whatever they cannot replay is recorded and planned again. A node
+/// whose paint cannot be recorded or planned is left out with its subtree
+/// and the rest of the frame still draws; `None` only when the plan fails
+/// without naming a node.
 fn record_frame(
     arena: &crate::view::node_arena::NodeArena,
     roots: &[crate::view::node_arena::NodeKey],
     property_trees: &crate::view::compositor::PropertyTrees,
     paint_generations: &crate::view::compositor::PaintGenerationTracker,
     raster_context: crate::view::paint::ArtifactSurfaceRasterContext,
-    recording_cache: Option<&mut crate::view::paint::RecordingCache>,
+    mut recording_cache: Option<&mut crate::view::paint::RecordingCache>,
     mut planning_cache: Option<&mut crate::view::paint::PlanningCache>,
-) -> RecordedFrame {
+) -> Option<RecordedFrame> {
     #[cfg(test)]
     attempts::record("generic-record");
-    let artifact = if let Some(cache) = recording_cache {
-        crate::view::paint::record_surface_dag_frame_artifact_cached(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-            cache,
-        )
-    } else {
-        crate::view::paint::record_surface_dag_frame_artifact(
-            arena,
-            roots,
-            property_trees,
-            paint_generations,
-        )
-    };
+    let mut left_out = FxHashSet::default();
+    let mut artifact = crate::view::paint::record_frame_artifact(
+        arena,
+        roots,
+        property_trees,
+        paint_generations,
+        recording_cache.as_deref_mut(),
+        &mut left_out,
+    );
     if let Some(cache) = planning_cache.as_deref_mut() {
         cache.observe_property_changes(property_trees);
         cache.observe_recording_changes(arena);
     }
-    plan_recorded_frame(artifact, raster_context, planning_cache)
+    loop {
+        let error =
+            match plan_recorded_frame(artifact, raster_context, planning_cache.as_deref_mut()) {
+                Ok(mut recorded) => {
+                    recorded.left_out = left_out;
+                    return Some(recorded);
+                }
+                Err(error) => error,
+            };
+        let owner = match error {
+            FramePlanError::Plan(error) => error.owner(),
+            FramePlanError::Seal(_) => None,
+        };
+        // Each pass leaves out one more node, so this ends.
+        if !owner.is_some_and(|owner| left_out.insert(owner)) {
+            match error {
+                FramePlanError::Plan(error) => eprintln!("[warn] frame plan failed: {error:?}"),
+                FramePlanError::Seal(error) => eprintln!("[warn] frame seal failed: {error:?}"),
+            }
+            return None;
+        }
+        artifact = crate::view::paint::record_frame_artifact(
+            arena,
+            roots,
+            property_trees,
+            paint_generations,
+            recording_cache.as_deref_mut(),
+            &mut left_out,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -140,6 +175,7 @@ fn record_frame_for_test(
         None,
         None,
     )
+    .expect("the test frame plans")
 }
 
 /// Emits the recorded frame. Without `owner` the surface cache is unavailable
@@ -1095,7 +1131,12 @@ impl Viewport {
         if let Some(started) = paint_select_started {
             timings.paint_select_ms = started.elapsed().as_secs_f64() * 1000.0;
         }
-        let (recorded_chunks, recorded_ops) = (recorded.chunk_count, recorded.op_count);
+        if let Some(recorded) = &recorded {
+            self.report_left_out_paint(&recorded.left_out);
+        }
+        let (recorded_chunks, recorded_ops) = recorded
+            .as_ref()
+            .map_or((0, 0), |recorded| (recorded.chunk_count, recorded.op_count));
         let clear_uses_premultiplied_alpha = matches!(
             self.gpu.surface_config.alpha_mode,
             wgpu::CompositeAlphaMode::PostMultiplied | wgpu::CompositeAlphaMode::PreMultiplied
@@ -1130,15 +1171,19 @@ impl Viewport {
             ctx.set_current_target(output);
         }
         // A missing owner means another transaction owns the slot: draw
-        // without the surface cache.
-        let state = compile_recorded_frame(
-            self,
-            retained_surface_frame_owner,
-            &mut graph,
-            recorded.frame,
-            &ctx,
-        );
-        ctx.set_state(state);
+        // without the surface cache. A frame whose plan failed is aborted
+        // below, and the next frame records again.
+        let frame_planned = recorded.is_some();
+        if let Some(recorded) = recorded {
+            let state = compile_recorded_frame(
+                self,
+                retained_surface_frame_owner,
+                &mut graph,
+                recorded.frame,
+                &ctx,
+            );
+            ctx.set_state(state);
+        }
         self.push_retained_auto_debug_overlay();
         let dependency_handle = ctx.current_target().and_then(|target| target.handle());
         if let Some(dep_handle) = dependency_handle {
@@ -1227,23 +1272,24 @@ impl Viewport {
             .take()
             .map(|c| (c.topology_key, c.graph));
         let mut compiled_topology_key = None;
-        let compiled = match graph.compile_with_upload_cached(self, prior_cache) {
-            Ok((profile, topology_key)) => {
-                if self.debug_options.trace_render_time {
-                    timings.compile_children = build_compile_trace_nodes(
-                        &profile,
-                        self.debug_options.trace_compile_detail,
-                    );
+        let compiled = frame_planned
+            && match graph.compile_with_upload_cached(self, prior_cache) {
+                Ok((profile, topology_key)) => {
+                    if self.debug_options.trace_render_time {
+                        timings.compile_children = build_compile_trace_nodes(
+                            &profile,
+                            self.debug_options.trace_compile_detail,
+                        );
+                    }
+                    compiled_topology_key = Some(topology_key);
+                    true
                 }
-                compiled_topology_key = Some(topology_key);
-                true
-            }
-            Err(err) => {
-                eprintln!("[warn] frame graph compile failed: {:?}", err);
-                // compile_cache already cleared by take() above
-                false
-            }
-        };
+                Err(err) => {
+                    eprintln!("[warn] frame graph compile failed: {:?}", err);
+                    // compile_cache already cleared by take() above
+                    false
+                }
+            };
 
         // Include cache transfer, diagnostic construction and errors, even
         // when compilation fails without returning an internal profile.
@@ -1386,6 +1432,18 @@ impl Viewport {
         // retry it if submission failed; future samples use the deadline API.
         post_layout_transition.redraw_changed
             || (post_layout_animation_changed && !self.frame.frame_presented)
+    }
+
+    /// Warns once about each node a frame leaves out, until it paints again.
+    fn report_left_out_paint(&mut self, left_out: &FxHashSet<crate::view::node_arena::NodeKey>) {
+        for key in left_out {
+            if !self.frame.left_out_paint.contains(key) {
+                eprintln!(
+                    "[warn] node {key:?} and its subtree are not painted: their paint inputs are incomplete"
+                );
+            }
+        }
+        self.frame.left_out_paint.clone_from(left_out);
     }
 
     fn update_animation_frame_schedule(&mut self, now: Instant) {
@@ -2271,6 +2329,8 @@ mod frame_recording_tests;
 mod frame_timing_tests;
 #[cfg(test)]
 mod incremental_layout_tests;
+#[cfg(test)]
+mod paint_isolation_tests;
 
 /// Flatten a Fragment-at-root into its children so multi-root reconcile
 /// sees the same arity as the arena (Fragment root → N arena roots).

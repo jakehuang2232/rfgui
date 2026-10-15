@@ -201,6 +201,10 @@ pub(crate) struct Snapshot {
     viewport_translation: Option<u64>,
     completed: std::sync::OnceLock<Arc<[PaintCoverageItem]>>,
     pub(crate) items: Arc<[PaintCoverageItem]>,
+    /// Members the capture left out with their subtrees, because their paint
+    /// inputs were incomplete. The inputs below cover why, so a replay
+    /// leaves them out again.
+    pub(crate) left_out: Vec<NodeKey>,
     pub(crate) states: Vec<(NodeKey, super::super::PaintOwnerPropertyStateSnapshot)>,
     pub(crate) scopes: Vec<(NodeKey, Arc<PaintOwnerScope>)>,
     metadata: Vec<(NodeKey, u64, Arc<PaintNodePlan<PaintChunkMetadata>>)>,
@@ -560,6 +564,7 @@ impl RecordingCache {
         key: Key,
         arena: &NodeArena,
         members: &[NodeKey],
+        left_out: Vec<NodeKey>,
         items: &[PaintCoverageItem],
         states: &FxHashMap<NodeKey, super::super::PaintOwnerPropertyStateSnapshot>,
         scopes: &FxHashMap<NodeKey, Arc<PaintOwnerScope>>,
@@ -613,6 +618,7 @@ impl RecordingCache {
             viewport_translation,
             completed: Default::default(),
             items: items.into(),
+            left_out,
             states: members
                 .iter()
                 .take(key.subtree_len)

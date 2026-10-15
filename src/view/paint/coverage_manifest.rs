@@ -297,6 +297,7 @@ pub(super) fn record_coverage_manifest_with_context(
         paint_generations,
         initial_recording_context,
         None,
+        &mut FxHashSet::default(),
     )
 }
 
@@ -310,6 +311,7 @@ pub(super) fn record_cached_coverage_manifest(
     paint_generations: &PaintGenerationTracker,
     initial_recording_context: PaintRecordingContext,
     mut recording_cache: Option<&mut super::RecordingCache>,
+    left_out: &mut FxHashSet<NodeKey>,
 ) -> PaintCoverageManifest {
     let _profile = crate::view::paint::work_profile::scope("record_coverage_manifest");
     super::work_profile::count(
@@ -438,6 +440,9 @@ pub(super) fn record_cached_coverage_manifest(
         generations: &'a PaintGenerationTracker,
         recording_mode: CoverageRecordingMode,
         items: &'a mut super::shared_sequence::SharedSequence<PaintCoverageItem>,
+        /// Nodes the walk skips with their subtrees; it adds each node whose
+        /// paint inputs turn out incomplete.
+        left_out: &'a mut FxHashSet<NodeKey>,
     }
     struct RecordedPlanItem {
         chunk: PaintChunkMetadata,
@@ -481,6 +486,9 @@ pub(super) fn record_cached_coverage_manifest(
             deferred_phase_root: bool,
             parent_recording_context: &PaintRecordingContext,
         ) {
+            if self.left_out.contains(&key) {
+                return;
+            }
             let candidate = if self.subtree_replay && self.subtree_capture_depth == 0 {
                 self.recording_cache.as_deref_mut().and_then(|cache| {
                     cache.subtree_key(
@@ -495,17 +503,24 @@ pub(super) fn record_cached_coverage_manifest(
             } else {
                 None
             };
-            if let Some((input, _)) = &candidate {
+            if let Some((input, members)) = &candidate {
                 let snapshot = self.recording_cache.as_deref_mut().and_then(|cache| {
                     cache
                         .subtrees
                         .replay(self.arena, key, input, self.properties, self.generations)
                 });
-                if let Some(snapshot) = snapshot {
+                // A subtree recorded with a member that is now left out would
+                // bring that member back.
+                if let Some(snapshot) = snapshot
+                    && self.left_out.iter().all(|left_out| {
+                        snapshot.left_out.contains(left_out) || !members.contains(left_out)
+                    })
+                {
                     self.recording_cache
                         .as_deref_mut()
                         .unwrap()
                         .restore_subtree(&snapshot, self.arena);
+                    self.left_out.extend(snapshot.left_out.iter().copied());
                     self.replayed_owner_inputs.insert(key, snapshot.clone());
                     self.items.append_shared(snapshot.items.clone());
                     crate::view::paint::work_profile::count("recorded_subtree_replays", 1);
@@ -534,11 +549,17 @@ pub(super) fn record_cached_coverage_manifest(
             if let Some((input, members)) = candidate
                 && let Some(cache) = self.recording_cache.as_deref_mut()
             {
+                let left_out = members
+                    .iter()
+                    .copied()
+                    .filter(|member| self.left_out.contains(member))
+                    .collect();
                 cache.remember_subtree(
                     key,
                     input,
                     self.arena,
                     &members,
+                    left_out,
                     &self.items[start..],
                     self.observed_owner_property_states,
                     &self.owner_scopes,
@@ -578,16 +599,17 @@ pub(super) fn record_cached_coverage_manifest(
                 phase: PaintNodePhase::BeforeChildren,
                 slot: 0,
             };
-            let property_states = self
-                .properties
-                .node_state_for(key)
-                .expect("synced property trees hold every walked node");
+            // A node the property sync or the paint generations missed
+            // cannot be placed: leave it out with its subtree.
+            let (Some(property_states), Some(generations)) = (
+                self.properties.node_state_for(key),
+                self.generations.local_generations_for(key),
+            ) else {
+                self.left_out.insert(key);
+                return;
+            };
             let live_properties = property_states.paint;
             let live_contents_properties = property_states.descendants;
-            let generations = self
-                .generations
-                .local_generations_for(key)
-                .expect("synced paint generations cover every walked node");
             let revision = PaintContentRevision {
                 self_paint_revision: generations.self_paint_revision,
                 composite_revision: generations.composite_revision,
@@ -737,10 +759,13 @@ pub(super) fn record_cached_coverage_manifest(
                                     cache.insert(key, plan.clone());
                                 }
                             }
-                            let before_children =
-                                Self::record_artifact_plan_side(plan.before_children);
-                            let after_children =
-                                Self::record_artifact_plan_side(plan.after_children);
+                            let (Some(before_children), Some(after_children)) = (
+                                Self::record_artifact_plan_side(plan.before_children),
+                                Self::record_artifact_plan_side(plan.after_children),
+                            ) else {
+                                self.left_out.insert(key);
+                                return;
+                            };
                             RecordedPlan {
                                 before_children: RecordedPlanSide::Full(
                                     before_children.into_iter(),
@@ -749,18 +774,23 @@ pub(super) fn record_cached_coverage_manifest(
                             }
                         }
                     };
-                    let before_children = self.prepare_plan_side(
-                        key,
-                        &order,
-                        PaintNodePhase::BeforeChildren,
-                        plan.before_children,
-                    );
-                    let after_children = self.prepare_plan_side(
-                        key,
-                        &order,
-                        PaintNodePhase::AfterChildren,
-                        plan.after_children,
-                    );
+                    let (Some(before_children), Some(after_children)) = (
+                        self.prepare_plan_side(
+                            key,
+                            &order,
+                            PaintNodePhase::BeforeChildren,
+                            plan.before_children,
+                        ),
+                        self.prepare_plan_side(
+                            key,
+                            &order,
+                            PaintNodePhase::AfterChildren,
+                            plan.after_children,
+                        ),
+                    ) else {
+                        self.left_out.insert(key);
+                        return;
+                    };
                     self.items.extend(before_children);
                     let children = node.element.children();
                     // A child mask carries its own normal/overflow partition.
@@ -783,7 +813,13 @@ pub(super) fn record_cached_coverage_manifest(
                         let index = if retained_child_mask.is_none() {
                             schedule_index
                         } else {
-                            next_ordered_child_index(children, &mut next_in_scope_index, child)
+                            let Some(index) =
+                                next_ordered_child_index(children, &mut next_in_scope_index, child)
+                            else {
+                                self.left_out.insert(child);
+                                continue;
+                            };
+                            index
                         };
                         let child_recording_context =
                             node.element.shadow_paint_recording_context_for_child(
@@ -818,8 +854,12 @@ pub(super) fn record_cached_coverage_manifest(
                     if let Some(mask) = retained_child_mask {
                         let mut next_overflow_index = 0;
                         for &child in mask.overflow_children() {
-                            let index =
-                                next_ordered_child_index(children, &mut next_overflow_index, child);
+                            let Some(index) =
+                                next_ordered_child_index(children, &mut next_overflow_index, child)
+                            else {
+                                self.left_out.insert(child);
+                                continue;
+                            };
                             let child_recording_context =
                                 node.element.shadow_paint_recording_context_for_child(
                                     child,
@@ -835,17 +875,18 @@ pub(super) fn record_cached_coverage_manifest(
             }
         }
 
-        /// Each host artifact is one chunk and the commands it draws.
+        /// Each host artifact is one chunk and the commands it draws; `None`
+        /// when a host returned any other shape.
         fn record_artifact_plan_side(
             artifacts: Vec<super::PaintArtifact>,
-        ) -> Vec<RecordedPlanItem> {
+        ) -> Option<Vec<RecordedPlanItem>> {
             artifacts
                 .into_iter()
                 .map(|artifact| {
                     let [artifact_chunk] = artifact.chunks.as_slice() else {
-                        unreachable!("a host artifact holds exactly one chunk")
+                        return None;
                     };
-                    RecordedPlanItem {
+                    Some(RecordedPlanItem {
                         chunk: PaintChunkMetadata {
                             frame: artifact_chunk.frame,
                             id: artifact_chunk.id,
@@ -856,24 +897,26 @@ pub(super) fn record_cached_coverage_manifest(
                             payload_identity: artifact_chunk.payload_identity.clone(),
                         },
                         ops: Some(artifact.ops.into()),
-                    }
+                    })
                 })
                 .collect()
         }
 
+        /// `None` when the property trees miss a chain the owner or one of
+        /// its ancestors paints under.
         fn prepare_plan_side(
             &mut self,
             key: NodeKey,
             node_order: &CoverageOrder,
             phase: PaintNodePhase,
             items: RecordedPlanSide,
-        ) -> PreparedPlanSide {
+        ) -> Option<PreparedPlanSide> {
             let _profile = crate::view::paint::work_profile::scope("prepare_plan_side");
             let mut prepared = PreparedPlanSide {
                 first: None,
                 remaining: Vec::with_capacity(items.len().saturating_sub(1)),
             };
-            let scope = self.owner_scope_for(key);
+            let scope = self.owner_scope_for(key)?;
             for RecordedPlanItem { chunk, ops } in items {
                 let order = node_order.for_chunk(phase, chunk.id.slot);
                 let endpoint = match chunk.id.scope {
@@ -889,7 +932,7 @@ pub(super) fn record_cached_coverage_manifest(
                     ops,
                 });
             }
-            prepared
+            Some(prepared)
         }
 
         fn clip_snapshot_for(
@@ -955,44 +998,54 @@ pub(super) fn record_cached_coverage_manifest(
             }
         }
 
+        fn has_left_out_ancestor(&self, key: NodeKey) -> bool {
+            if self.left_out.is_empty() {
+                return false;
+            }
+            let mut seen = FxHashSet::default();
+            let mut cursor = self.owner_parents.get(&key).copied().flatten();
+            while let Some(owner) = cursor
+                && seen.insert(owner)
+            {
+                if self.left_out.contains(&owner) {
+                    return true;
+                }
+                cursor = self.owner_parents.get(&owner).copied().flatten();
+            }
+            false
+        }
+
         /// The state a walk recorded for `owner`. A deferred root still paints
         /// when the normal phase culled an ancestor's subtree, so the owners
         /// between them were never walked; they observe the same synced
-        /// property state a walk would have recorded.
+        /// property state a walk would have recorded. `None` when the
+        /// property sync missed the owner.
         fn observed_owner_property_state(
             &mut self,
             owner: NodeKey,
-        ) -> PaintOwnerPropertyStateSnapshot {
+        ) -> Option<PaintOwnerPropertyStateSnapshot> {
             if let Some(state) = self.observed_owner_property_states.get(&owner) {
-                return *state;
+                return Some(*state);
             }
-            let states = self
-                .properties
-                .node_state_for(owner)
-                .expect("synced property trees hold every node");
+            let states = self.properties.node_state_for(owner)?;
             let state = PaintOwnerPropertyStateSnapshot {
                 owner,
-                stable_id: self
-                    .arena
-                    .get(owner)
-                    .expect("an owner's ancestors are in the arena")
-                    .element
-                    .stable_id(),
+                stable_id: self.arena.get(owner)?.element.stable_id(),
                 paint: states.paint,
                 descendants: states.descendants,
             };
             self.observed_owner_property_states.insert(owner, state);
-            state
+            Some(state)
         }
 
         /// Resolve each owner once in this traversal. The immutable property
-        /// trees make endpoint chain reuse exact.
-        fn owner_scope_for(&mut self, leaf: NodeKey) -> std::sync::Arc<PaintOwnerScope> {
+        /// trees make endpoint chain reuse exact. `None` when the owner or an
+        /// ancestor has no complete property state.
+        fn owner_scope_for(&mut self, leaf: NodeKey) -> Option<std::sync::Arc<PaintOwnerScope>> {
             self.restore_owner_inputs(leaf);
             if let Some(scope) = self.owner_scopes.get(&leaf) {
-                return scope.clone();
+                return Some(scope.clone());
             }
-            const WALKED: &str = "an owner is walked before its chunks are prepared";
             self.scope_pending.clear();
             self.scope_seen.clear();
             let mut cursor = Some(leaf);
@@ -1002,26 +1055,28 @@ pub(super) fn record_cached_coverage_manifest(
                     break;
                 }
                 self.scope_pending.push(owner);
-                cursor = *self.owner_parents.get(&owner).expect(WALKED);
+                cursor = *self.owner_parents.get(&owner)?;
             }
             while let Some(owner) = self.scope_pending.pop() {
-                let parent_key = *self.owner_parents.get(&owner).expect(WALKED);
-                let parent = parent_key.map(|key| self.owner_scopes[&key].clone());
-                let state = self.observed_owner_property_state(owner);
+                let parent_key = *self.owner_parents.get(&owner)?;
+                let parent = match parent_key {
+                    Some(key) => Some(self.owner_scopes.get(&key)?.clone()),
+                    None => None,
+                };
+                let state = self.observed_owner_property_state(owner)?;
                 // Store the two immutable endpoint chains directly. Copying
                 // their complete ancestry into every owner merely duplicates
                 // observations; materialization merges each shared chain once.
-                const SYNCED: &str = "synced property trees hold every referenced chain";
                 let clips = [
-                    self.clip_snapshot_for(state.paint).expect(SYNCED),
-                    self.clip_snapshot_for(state.descendants).expect(SYNCED),
+                    self.clip_snapshot_for(state.paint)?,
+                    self.clip_snapshot_for(state.descendants)?,
                 ];
                 let effects = [
-                    self.effect_snapshot_for(state.paint).expect(SYNCED),
-                    self.effect_snapshot_for(state.descendants).expect(SYNCED),
+                    self.effect_snapshot_for(state.paint)?,
+                    self.effect_snapshot_for(state.descendants)?,
                 ];
                 let snap = super::PaintOwnerSnap::observe(
-                    self.arena.get(owner).expect(WALKED).element.as_ref(),
+                    self.arena.get(owner)?.element.as_ref(),
                     self.arena,
                     state.paint.layout_position,
                 );
@@ -1042,7 +1097,7 @@ pub(super) fn record_cached_coverage_manifest(
                 };
                 self.owner_scopes.insert(owner, scope);
             }
-            self.owner_scopes[&leaf].clone()
+            self.owner_scopes.get(&leaf).cloned()
         }
     }
 
@@ -1081,6 +1136,7 @@ pub(super) fn record_cached_coverage_manifest(
         generations: paint_generations,
         recording_mode,
         items: &mut manifest.items,
+        left_out,
     };
     let walk_profile = super::work_profile::scope("walk_manifest");
     for (root_index, &root) in roots.iter().enumerate() {
@@ -1094,6 +1150,11 @@ pub(super) fn record_cached_coverage_manifest(
     }
     if emit_deferred_late {
         for (deferred_index, deferred_root) in deferred_roots.iter().copied().enumerate() {
+            // A deferred root paints under its ancestors' properties, so it
+            // is left out with any of them.
+            if recorder.has_left_out_ancestor(deferred_root) {
+                continue;
+            }
             recorder.walk(
                 deferred_root,
                 roots.len(),
@@ -1136,14 +1197,19 @@ fn escaping_child_phases(
 
 /// Each canonical mask partition preserves original sibling order. Continue
 /// searching at the previous match instead of rescanning every earlier child.
-fn next_ordered_child_index(children: &[NodeKey], next: &mut usize, child: NodeKey) -> usize {
-    let offset = children[*next..]
+/// `None` when the partition names a child out of that order.
+fn next_ordered_child_index(
+    children: &[NodeKey],
+    next: &mut usize,
+    child: NodeKey,
+) -> Option<usize> {
+    let offset = children
+        .get(*next..)?
         .iter()
-        .position(|candidate| *candidate == child)
-        .expect("a child mask partition keeps sibling order");
+        .position(|candidate| *candidate == child)?;
     let index = *next + offset;
     *next = index + 1;
-    index
+    Some(index)
 }
 
 #[cfg(test)]

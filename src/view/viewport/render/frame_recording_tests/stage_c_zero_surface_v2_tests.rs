@@ -208,6 +208,7 @@ fn stage_c_zero_surface_retained_auto_emits_the_leaf_fill_once() {
         frame,
         chunk_count,
         op_count,
+        ..
     } = record_frame_for_test(&arena, &roots, &properties, &generations, &recording_ctx);
     assert_eq!((chunk_count, op_count), (1, 1));
     assert!(frame.raster_plan().nodes().is_empty());

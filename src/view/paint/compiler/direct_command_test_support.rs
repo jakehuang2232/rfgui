@@ -84,7 +84,7 @@ pub(crate) fn try_compile_artifact(
         });
     };
     let artifact = artifact.as_ref();
-    let Some(resolved_clips) = try_resolve_clip_values(artifact) else {
+    let Ok(resolved_clips) = try_resolve_clip_values(artifact) else {
         return Err(ArtifactCompileError {
             state: ctx.into_state(),
         });

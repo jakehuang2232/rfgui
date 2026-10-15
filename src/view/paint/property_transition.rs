@@ -71,6 +71,48 @@ pub(crate) enum TransitionError {
     },
 }
 
+impl TransitionError {
+    /// The node whose paint data the error is about, when it names one.
+    pub(crate) fn owner(self) -> Option<NodeKey> {
+        match self {
+            Self::SpatialSnapshot(error) => Some(error.owner()),
+            Self::DuplicateClip(id)
+            | Self::InvalidClip(id)
+            | Self::MissingClip(id)
+            | Self::CyclicClip(id)
+            | Self::UnknownClipReference(id) => Some(id.owner),
+            Self::DuplicateEffect(id)
+            | Self::InvalidEffect(id)
+            | Self::MissingEffect(id)
+            | Self::CyclicEffect(id)
+            | Self::UnknownEffectReference(id) => Some(id.0),
+            Self::UnknownTransformReference(id) => Some(id.0),
+            Self::UnknownScrollReference(id) => Some(id.0),
+            Self::UnknownLayoutPositionReference(id) => Some(id.0),
+            Self::UnknownVisualOffsetReference(id) => Some(id.0),
+            Self::DuplicateOwnerPropertyState(owner)
+            | Self::MissingOwnerPropertyState(owner)
+            | Self::UnreferencedOwnerPropertyState(owner)
+            | Self::InvalidOwnerStableId { owner, .. }
+            | Self::DuplicateOwnerStableId {
+                duplicate_owner: owner,
+                ..
+            }
+            | Self::InvalidOwnerPropertyState { owner, .. }
+            | Self::DuplicateOwner(owner)
+            | Self::InvalidOwner(owner)
+            | Self::MissingOwnerParent(owner)
+            | Self::CyclicOwner(owner)
+            | Self::UnknownTarget(owner)
+            | Self::UnreferencedOwner(owner)
+            | Self::SceneRootOrdinalOverflow(owner) => Some(owner),
+            Self::InvalidArtifactCursor(_)
+            | Self::NonTerminalArtifactCursor(_)
+            | Self::OutOfOrderArtifactCursor { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OwnerPropertyStateEndpoint {
     Paint,

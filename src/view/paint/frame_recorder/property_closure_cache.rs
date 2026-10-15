@@ -169,11 +169,13 @@ impl PropertyClosureCache {
     }
 }
 
+/// [`populate_referenced_property_snapshots`] reusing the closure `cache`
+/// kept from an earlier frame while its inputs are unchanged.
 pub(super) fn populate(
     artifact: &mut PaintArtifact,
     trees: &PropertyTrees,
     cache: &mut crate::view::paint::RecordingCache,
-) {
+) -> Result<(), FxHashSet<NodeKey>> {
     if cache
         .property_closure
         .as_mut()
@@ -181,32 +183,27 @@ pub(super) fn populate(
         .is_some()
     {
         cache.property_closure_hits += 1;
-        return;
+        return Ok(());
     }
     let inputs = Inputs::new(artifact);
-    populate_referenced_property_snapshots(artifact, trees);
+    populate_referenced_property_snapshots(artifact, trees)?;
+    // The closure only appends, so every supplied node keeps a position.
     let supplied_clip_indices = inputs
         .clips
         .iter()
-        .map(|id| {
-            artifact
-                .clip_nodes
-                .iter()
-                .position(|n| n.id == *id)
-                .expect("successful closure keeps supplied clips")
-        })
-        .collect();
+        .map(|id| artifact.clip_nodes.iter().position(|n| n.id == *id))
+        .collect::<Option<Vec<_>>>();
     let supplied_effect_indices = inputs
         .effects
         .iter()
-        .map(|id| {
-            artifact
-                .effect_nodes
-                .iter()
-                .position(|n| n.id == *id)
-                .expect("successful closure keeps supplied effects")
-        })
-        .collect();
+        .map(|id| artifact.effect_nodes.iter().position(|n| n.id == *id))
+        .collect::<Option<Vec<_>>>();
+    let (Some(supplied_clip_indices), Some(supplied_effect_indices)) =
+        (supplied_clip_indices, supplied_effect_indices)
+    else {
+        cache.property_closure = None;
+        return Ok(());
+    };
     cache.property_closure = Some(PropertyClosureCache {
         stamp: trees.property_store_stamp(),
         inputs,
@@ -219,4 +216,5 @@ pub(super) fn populate(
         visuals: artifact.visual_offset_nodes.clone(),
         scrolls: artifact.scroll_nodes.clone(),
     });
+    Ok(())
 }

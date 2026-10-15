@@ -810,13 +810,14 @@ fn emit_prepared_artifact_surface_frame(
         .map(|(((key, action), resident), node)| {
             assert_eq!(*key, resident.resident_key());
             let color = resident.stamp().identity.color_key;
-            let depth = color
-                .depth_stencil()
-                .expect("artifact surface color keys own a depth role");
+            // A key without a depth role cannot be kept: the surface draws
+            // for this frame only.
             let cached = owner.is_some()
                 && node.retained()
                 && !declared.contains(&color)
-                && !declared.contains(&depth);
+                && color
+                    .depth_stencil()
+                    .is_some_and(|depth| !declared.contains(&depth));
             if cached {
                 *action
             } else {

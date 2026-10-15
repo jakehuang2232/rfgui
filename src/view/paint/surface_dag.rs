@@ -1322,6 +1322,39 @@ pub(crate) enum SurfaceDagError {
     MissingMaterializedDescendant(SurfaceDagNodeId),
 }
 
+impl SurfaceDagError {
+    /// The node whose paint data the error is about, when it names one.
+    pub(crate) fn owner(self) -> Option<NodeKey> {
+        match self {
+            Self::InvalidScrollMaskScope { owner } => Some(owner),
+            Self::Transition(error) => error.owner(),
+            Self::MissingScrollContentsClip { scroll, .. } => Some(scroll.0),
+            Self::ArtifactTransitionDerivationStalled { witness, .. }
+            | Self::ConflictingArtifactTransition {
+                conflicting_witness: witness,
+                ..
+            }
+            | Self::ArtifactTransitionTerminalMismatch { witness, .. } => Some(witness),
+            Self::ClipRebaseOutsideBoundary { boundary, .. } => Some(boundary.owner),
+            Self::MissingMaterializationSnapshot(_)
+            | Self::TransitionCount { .. }
+            | Self::TransitionSceneRoot { .. }
+            | Self::TransitionTarget { .. }
+            | Self::TransitionCursor { .. }
+            | Self::TransitionKind { .. }
+            | Self::MissingArtifactTransition { .. }
+            | Self::NonReceiverClosedChunkSurfaceChain { .. }
+            | Self::SurfaceNodeOrdinalOverflow(_)
+            | Self::ExecutionNodeOrdinalOverflow(_)
+            | Self::UnknownSceneRootReceiver(_)
+            | Self::UnknownSurfaceReceiver(_)
+            | Self::CyclicSurfaceReceiver(_)
+            | Self::MaterializationCoverageCount { .. }
+            | Self::MissingMaterializedDescendant(_) => None,
+        }
+    }
+}
+
 impl From<TransitionError> for SurfaceDagError {
     fn from(error: TransitionError) -> Self {
         Self::Transition(error)
