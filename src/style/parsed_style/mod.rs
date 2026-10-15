@@ -545,10 +545,11 @@ pub enum Layout {
         cross_axis: CrossAxis,
     },
     /// Children in order along `direction`, each at the size it measures
-    /// against the element's whole inner size. `Flow` never resizes a
-    /// child: with [`FlowWrap::Wrap`] a child that does not fit the rest of
-    /// a line starts the next one, and with [`FlowWrap::NoWrap`] (the
-    /// default) the line overflows.
+    /// against the element's whole inner size. `Flow` never resizes a child
+    /// along `direction`: with [`FlowWrap::Wrap`] a child that does not fit
+    /// the rest of a line starts the next one, and with [`FlowWrap::NoWrap`]
+    /// (the default) the line overflows. Across the line,
+    /// [`CrossSize::Stretch`] can still size the children to match.
     Flow {
         direction: FlowDirection,
         wrap: FlowWrap,
@@ -701,6 +702,8 @@ pub enum JustifyContent {
     SpaceEvenly,
 }
 
+/// How a `Flex` or `Flow` line sizes and aligns its children across the
+/// line: their height in a row, their width in a column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrossAxis {
     pub size: CrossSize,
@@ -713,12 +716,20 @@ impl CrossAxis {
     }
 }
 
+/// The cross size of the children on a `Flex` or `Flow` line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrossSize {
+    /// Each child keeps the cross size it measures to. The default.
     Fit,
+    /// Each child whose cross size is auto takes the cross size of the
+    /// largest child on its line, so the siblings line up, such as buttons
+    /// and the dividers between them. It matches the siblings, not the
+    /// container: a child fills the container only with a 100% width or
+    /// height of its own.
     Stretch,
 }
 
+/// Where a child sits across its line when it is smaller than the line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
     Start,

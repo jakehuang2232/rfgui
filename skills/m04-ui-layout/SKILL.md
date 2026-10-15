@@ -16,9 +16,10 @@ description: rfgui layout and scroll model reference. Use whenever the user work
     - text and inline children run in lines that wrap at the element's width, like CSS inline formatting
     - an inline child's horizontal padding and border stay on the line of the content they border
 - `Layout::flow()`: children in order along a row or column
-    - each child is measured against the container's whole inner size and keeps that size; Flow never resizes a child
+    - each child is measured against the container's whole inner size and keeps that size; Flow never resizes a child along the line
     - `wrap()`: a child that does not fit the rest of the line starts the next one
     - `no_wrap()` (default): the line overflows
+- `cross_size(CrossSize::Stretch)` on `flow()` or `flex()`: children with an auto cross size take the cross size of the largest child on their line, so siblings line up (buttons and their dividers); it does not fill the container, so give a child a 100% width or height for that
 - `Layout::flex()`: children on a single line, sized by `flex` grow / shrink / basis
     - a child with no width, basis or `min_width` sizes to its content and is not shrunk below it
     - when the line overflows, those children first share the room the others leave and are measured again at it, so their text wraps; shrink then takes any overflow left from the other children
