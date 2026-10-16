@@ -82,7 +82,7 @@ impl StaticSlotNode {
                         .collect::<Option<_>>()?,
                 ))
             }
-            RsxNode::Component(_) | RsxNode::Provider(_) => None,
+            RsxNode::Component(_) | RsxNode::Provider(_) | RsxNode::ErrorBoundary(_) => None,
         }
     }
 }

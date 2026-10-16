@@ -275,17 +275,13 @@ fn erased_props_are_released_on_hit_replacement_unmount_and_panic() {
     assert_eq!(Rc::strong_count(&lifetime), 2);
     build(1, false);
     assert_eq!(Rc::strong_count(&lifetime), 2);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        with_pushed_context_raw(TypeId::of::<Theme>(), Rc::new(Theme("temporary")), || {
-            build(2, true)
-        })
-    }));
-    assert!(result.is_err());
-    assert!(use_context::<Theme>().is_none());
-    assert_eq!(Rc::strong_count(&lifetime), 2);
+    // The panic unmounts the tree, releasing the cached props too.
+    assert_eq!(build(2, true), RsxNode::fragment(Vec::new()));
+    assert_eq!(Rc::strong_count(&lifetime), 1);
     let (node, work) = profile_ui_work(|| build(1, false));
     assert_eq!(work.component_renders, 1);
     assert_eq!(text(&node), "1");
+    assert_eq!(Rc::strong_count(&lifetime), 2);
     let _ = render_root(|| rsx! { <Row value={3}/> });
     assert_eq!(Rc::strong_count(&lifetime), 1);
 }

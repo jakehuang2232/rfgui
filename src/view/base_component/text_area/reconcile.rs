@@ -201,7 +201,7 @@ fn flatten_text_children(node: &RsxNode, out: &mut String) {
             }
         }
         RsxNode::Provider(p) => flatten_text_children(&p.child, out),
-        RsxNode::Element(_) | RsxNode::Component(_) => {}
+        RsxNode::Element(_) | RsxNode::Component(_) | RsxNode::ErrorBoundary(_) => {}
     }
 }
 

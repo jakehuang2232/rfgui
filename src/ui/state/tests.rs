@@ -104,7 +104,9 @@ fn rendered_text(node: &RsxNode) -> String {
         RsxNode::Text(text) => text.content.clone(),
         RsxNode::Element(element) => element.children.iter().map(rendered_text).collect(),
         RsxNode::Fragment(fragment) => fragment.children.iter().map(rendered_text).collect(),
-        RsxNode::Component(_) | RsxNode::Provider(_) => panic!("unresolved node"),
+        RsxNode::Component(_) | RsxNode::Provider(_) | RsxNode::ErrorBoundary(_) => {
+            panic!("unresolved node")
+        }
     }
 }
 

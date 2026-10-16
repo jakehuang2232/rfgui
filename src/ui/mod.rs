@@ -2,6 +2,7 @@
 
 pub(crate) mod component;
 mod context;
+mod error_boundary;
 mod event;
 mod node_id;
 pub(crate) mod work_profile;
@@ -16,6 +17,10 @@ mod use_viewport;
 
 pub use component::*;
 pub use context::{provide_context_node, use_context, use_context_expect, with_pushed_context_raw};
+pub use error_boundary::{
+    ErrorBoundary, ErrorBoundaryHandle, ErrorBoundaryProps, RenderError, ResetKey,
+    catch_render_node,
+};
 pub use event::*;
 pub use node_id::{EventTarget, NodeId, Rect};
 pub use provider::{Provider, ProviderProps};

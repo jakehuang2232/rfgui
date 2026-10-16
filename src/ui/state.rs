@@ -479,6 +479,9 @@ thread_local! {
     static COMPONENT_KEY_STACK: RefCell<Vec<Option<RsxKey>>> = const { RefCell::new(Vec::new()) };
     static REDRAW_CALLBACK: RefCell<Option<Rc<dyn Fn()>>> = RefCell::new(None);
     static STATE_DIRTY: Cell<UiDirtyState> = const { Cell::new(UiDirtyState::NONE) };
+    /// A build asked for another, after the frame that ran it took its dirty
+    /// state; the next build consumes it.
+    static PENDING_REBUILD: Cell<bool> = const { Cell::new(false) };
     static TIMER_STORE: RefCell<FxHashMap<TimerHookKey, TimerEntry>> = RefCell::new(FxHashMap::default());
     static LIVE_TIMER_HOOKS: RefCell<FxHashSet<TimerHookKey>> = RefCell::new(FxHashSet::default());
     static MOUNT_STORE: RefCell<FxHashMap<MountHookKey, MountEntry>> = RefCell::new(FxHashMap::default());
@@ -489,7 +492,9 @@ thread_local! {
     static VIEWPORT_POINTER_STATE_HOOKS: RefCell<FxHashSet<ViewportPointerHookKey>> = RefCell::new(FxHashSet::default());
     static LIVE_VIEWPORT_POINTER_HOOKS: RefCell<FxHashSet<ViewportPointerHookKey>> = RefCell::new(FxHashSet::default());
     static VIEWPORT_POINTER_STATE: RefCell<ViewportPointerState> = RefCell::new(ViewportPointerState::default());
-    static PENDING_MOUNTS: RefCell<Vec<Box<dyn FnOnce()>>> = const { RefCell::new(Vec::new()) };
+    static PENDING_MOUNTS: RefCell<Vec<PendingMount>> = const { RefCell::new(Vec::new()) };
+    /// Error boundaries around the walk in progress, innermost last.
+    static BOUNDARY_STACK: RefCell<Vec<Rc<BoundaryScope>>> = const { RefCell::new(Vec::new()) };
     /// Stack of in-progress memoized-component renders. Every registration of
     /// a `ComponentKey`, `GlobalKey`, or timer hook while this stack is
     /// non-empty is also recorded on the innermost frame so it can be
@@ -662,6 +667,7 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
     STORE.with(|store| {
         let mut store = store.borrow_mut();
         if store.build_depth == 0 {
+            PENDING_REBUILD.set(false);
             store.root_cursor = 0;
             store.live_keys.clear();
             store.live_global_keys.clear();
@@ -790,6 +796,191 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
         drain_pending_mounts();
     }
     out
+}
+
+/// Merges a popped memo frame's captures into the enclosing one.
+fn propagate_memo_frame(frame: &MemoFrame) {
+    MEMO_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(top) = stack.last_mut() {
+            for k in &frame.live_keys {
+                top.live_keys.insert(k.clone());
+            }
+            for k in &frame.live_global_keys {
+                top.live_global_keys.insert(*k);
+            }
+            for k in &frame.live_timer_hooks {
+                top.live_timer_hooks.insert(k.clone());
+            }
+            top.live_mount_hooks
+                .extend(frame.live_mount_hooks.iter().cloned());
+            top.state_dependencies
+                .extend(frame.state_dependencies.iter().cloned());
+            for k in &frame.live_viewport_pointer_hooks {
+                top.live_viewport_pointer_hooks.insert(k.clone());
+            }
+        }
+    });
+}
+
+/// An error boundary's subtree in one build, kept for the mounts queued
+/// under it, which run after the walk.
+struct BoundaryScope {
+    parent: Option<Rc<BoundaryScope>>,
+    on_error: ErrorHandler,
+    /// The root boundary's subtree is the whole build, so it records none.
+    whole_build: bool,
+    /// What the subtree registered, once its walk has returned.
+    subtree: RefCell<MemoFrame>,
+}
+
+impl BoundaryScope {
+    fn subtree(&self) -> MemoFrame {
+        if self.whole_build {
+            live_build_frame()
+        } else {
+            self.subtree.take()
+        }
+    }
+}
+
+/// Everything the current build registered so far.
+fn live_build_frame() -> MemoFrame {
+    let (live_keys, live_global_keys) = STORE.with(|store| {
+        let store = store.borrow();
+        (store.live_keys.clone(), store.live_global_keys.clone())
+    });
+    MemoFrame {
+        live_keys,
+        live_global_keys,
+        live_timer_hooks: LIVE_TIMER_HOOKS.with(|hooks| hooks.borrow().clone()),
+        live_mount_hooks: LIVE_MOUNT_HOOKS.with(|hooks| hooks.borrow().clone()),
+        live_viewport_pointer_hooks: LIVE_VIEWPORT_POINTER_HOOKS
+            .with(|hooks| hooks.borrow().clone()),
+        ..Default::default()
+    }
+}
+
+pub(crate) type ErrorHandler = Rc<dyn Fn(&crate::ui::RenderError) -> crate::ui::RsxNode>;
+
+struct PendingMount {
+    key: MountHookKey,
+    boundary: Option<Rc<BoundaryScope>>,
+    mount: Box<dyn FnOnce() -> Option<Box<dyn FnOnce()>>>,
+}
+
+/// Runs part of a root render as an error boundary. A panic inside it
+/// leaves no trace in the build: the components, hooks and mounts it
+/// registered drop out, so their state retires when the build ends, as on
+/// unmount. The state it read stays recorded, so a change there renders
+/// the caller again. A mount queued under it that panics later unmounts
+/// the subtree and goes to `on_error`, whose result is then discarded.
+pub(crate) fn catch_render<R>(
+    on_error: ErrorHandler,
+    walk: impl FnOnce() -> R,
+) -> Result<R, crate::ui::RenderError> {
+    catch(on_error, false, walk)
+}
+
+/// [`catch_render`] for a walk that is the whole build.
+pub(crate) fn catch_root_render<R>(
+    on_error: ErrorHandler,
+    walk: impl FnOnce() -> R,
+) -> Result<R, crate::ui::RenderError> {
+    catch(on_error, true, walk)
+}
+
+fn catch<R>(
+    on_error: ErrorHandler,
+    whole_build: bool,
+    walk: impl FnOnce() -> R,
+) -> Result<R, crate::ui::RenderError> {
+    let scope = Rc::new(BoundaryScope {
+        parent: BOUNDARY_STACK.with(|stack| stack.borrow().last().cloned()),
+        on_error,
+        whole_build,
+        subtree: RefCell::default(),
+    });
+    let boundaries = BOUNDARY_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        stack.push(scope.clone());
+        stack.len() - 1
+    });
+    let contexts = CONTEXT.with(|context| context.borrow().frames.len());
+    let mounts = PENDING_MOUNTS.with(|mounts| mounts.borrow().len());
+    let global_keys = STORE.with(|store| store.borrow().active_build_global_keys.clone());
+    // Everything the walk registers lands in this frame or in the frames
+    // above it that the panic left behind.
+    let memos = MEMO_STACK.with(|stack| stack.borrow().len());
+    if !whole_build {
+        MEMO_STACK.with(|stack| stack.borrow_mut().push(MemoFrame::default()));
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(walk));
+    BOUNDARY_STACK.with(|stack| stack.borrow_mut().truncate(boundaries));
+    let frames = MEMO_STACK.with(|stack| stack.borrow_mut().split_off(memos));
+    let payload = match result {
+        Ok(out) => {
+            // A completed walk leaves only its own frame.
+            if let Some(frame) = frames.into_iter().next() {
+                propagate_memo_frame(&frame);
+                *scope.subtree.borrow_mut() = frame;
+            }
+            return Ok(out);
+        }
+        Err(payload) => payload,
+    };
+    let frames = if whole_build {
+        vec![live_build_frame()]
+    } else {
+        frames
+    };
+    CONTEXT.with(|context| context.borrow_mut().frames.truncate(contexts));
+    PENDING_MOUNTS.with(|pending| pending.borrow_mut().truncate(mounts));
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        store.components_rendered_in_build = true;
+        store.active_build_global_keys = global_keys;
+        for frame in &frames {
+            frame
+                .live_keys
+                .iter()
+                .for_each(|k| _ = store.live_keys.remove(k));
+            frame
+                .live_global_keys
+                .iter()
+                .for_each(|k| _ = store.live_global_keys.remove(k));
+        }
+    });
+    LIVE_TIMER_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        frames
+            .iter()
+            .flat_map(|f| &f.live_timer_hooks)
+            .for_each(|k| _ = hooks.remove(k));
+    });
+    LIVE_MOUNT_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        frames
+            .iter()
+            .flat_map(|f| &f.live_mount_hooks)
+            .for_each(|k| _ = hooks.remove(k));
+    });
+    LIVE_VIEWPORT_POINTER_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        frames
+            .iter()
+            .flat_map(|f| &f.live_viewport_pointer_hooks)
+            .for_each(|k| _ = hooks.remove(k));
+    });
+    let reads = MemoFrame {
+        state_dependencies: frames
+            .into_iter()
+            .flat_map(|f| f.state_dependencies)
+            .collect(),
+        ..Default::default()
+    };
+    propagate_memo_frame(&reads);
+    Err(crate::ui::RenderError::from_panic(payload))
 }
 
 pub fn component_key_token<T: ?Sized + Hash>(value: &T) -> u64 {
@@ -1097,27 +1288,7 @@ pub(crate) fn render_memoized_component_by_type_id<P: PartialEq + 'static>(
 
     // Propagate the captured descendants into any enclosing memo frame so
     // a memo hit on an outer component keeps our subtree alive too.
-    MEMO_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        if let Some(top) = stack.last_mut() {
-            for k in &frame.live_keys {
-                top.live_keys.insert(k.clone());
-            }
-            for k in &frame.live_global_keys {
-                top.live_global_keys.insert(*k);
-            }
-            for k in &frame.live_timer_hooks {
-                top.live_timer_hooks.insert(k.clone());
-            }
-            top.live_mount_hooks
-                .extend(frame.live_mount_hooks.iter().cloned());
-            top.state_dependencies
-                .extend(frame.state_dependencies.iter().cloned());
-            for k in &frame.live_viewport_pointer_hooks {
-                top.live_viewport_pointer_hooks.insert(k.clone());
-            }
-        }
-    });
+    propagate_memo_frame(&frame);
 
     let retired = STORE.with(|store| {
         store.borrow_mut().replace_memo(
@@ -1520,37 +1691,129 @@ where
         return;
     }
 
-    let run_key = key;
-    let runner: Box<dyn FnOnce()> = Box::new(move || {
-        let new_cleanup = mount().into_cleanup();
-        MOUNT_STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            if let Some(entry) = store.get_mut(&run_key) {
-                entry.cleanup = new_cleanup;
-            } else if let Some(cleanup) = new_cleanup {
-                // Entry was pruned before drain (component unmounted mid-build);
-                // run cleanup immediately to honor symmetry.
-                cleanup();
-            }
-        });
-    });
-
-    PENDING_MOUNTS.with(|pending| pending.borrow_mut().push(runner));
+    let pending = PendingMount {
+        key,
+        boundary: BOUNDARY_STACK.with(|stack| stack.borrow().last().cloned()),
+        mount: Box::new(move || mount().into_cleanup()),
+    };
+    PENDING_MOUNTS.with(|queue| queue.borrow_mut().push(pending));
 }
 
 fn drain_pending_mounts() {
     loop {
-        let batch: Vec<Box<dyn FnOnce()>> = PENDING_MOUNTS.with(|pending| {
-            let mut pending = pending.borrow_mut();
-            std::mem::take(&mut *pending)
-        });
+        let batch = PENDING_MOUNTS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
         if batch.is_empty() {
             break;
         }
-        for runner in batch {
-            runner();
+        for pending in batch {
+            // A failed mount before this one may have unmounted it.
+            if !MOUNT_STORE.with(|store| store.borrow().contains_key(&pending.key)) {
+                continue;
+            }
+            let cleanup =
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(pending.mount)) {
+                    Ok(cleanup) => cleanup,
+                    Err(payload) => {
+                        fail_mount(pending.boundary, payload);
+                        continue;
+                    }
+                };
+            MOUNT_STORE.with(|store| {
+                let mut store = store.borrow_mut();
+                if let Some(entry) = store.get_mut(&pending.key) {
+                    entry.cleanup = cleanup;
+                } else if let Some(cleanup) = cleanup {
+                    // The mount itself unmounted the component; honor symmetry.
+                    cleanup();
+                }
+            });
         }
     }
+}
+
+/// A mount panicked after its walk: unmounts the subtree of the boundary
+/// around it and reports to that boundary, which renders again next frame;
+/// the root boundary's render ends with nothing, so it asks for no other.
+/// A boundary whose handler panics passes the error to the one around it.
+/// Without any boundary the panic continues.
+fn fail_mount(boundary: Option<Rc<BoundaryScope>>, payload: Box<dyn Any + Send>) {
+    let Some(mut scope) = boundary else {
+        std::panic::resume_unwind(payload);
+    };
+    let mut error = crate::ui::RenderError::from_panic(payload);
+    loop {
+        retire_subtree(&scope.subtree());
+        let report = std::panic::AssertUnwindSafe(|| drop((scope.on_error)(&error)));
+        let Err(payload) = std::panic::catch_unwind(report) else {
+            break;
+        };
+        let Some(parent) = scope.parent.clone() else {
+            std::panic::resume_unwind(payload);
+        };
+        error = crate::ui::RenderError::from_panic(payload);
+        scope = parent;
+    }
+    if !scope.whole_build {
+        PENDING_REBUILD.set(true);
+        request_state_wakeup();
+    }
+}
+
+/// Unmounts what a walk registered, outside a build: its state, memos,
+/// timers and hooks go, mount cleanups run, and the memos whose cached
+/// output holds it render again.
+fn retire_subtree(subtree: &MemoFrame) {
+    let mut retired_slots = Vec::new();
+    let mut retired_memos = Vec::new();
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let mut affected = FxHashSet::default();
+        for key in &subtree.live_keys {
+            store.collect_owner_memos(key, &mut affected);
+            if let Some(alive) = store.lifetimes.remove(key) {
+                alive.set(false);
+            }
+            if let Some(slots) = store.slots.remove(key) {
+                retired_slots.extend(slots);
+            }
+            if let Some(entry) = store.remove_memo(key) {
+                retired_memos.push(entry);
+            }
+        }
+        for key in &subtree.live_global_keys {
+            store.global_component_keys.remove(key);
+        }
+        affected.retain(|key| !subtree.live_keys.contains(key));
+        store.invalidate_memos(affected);
+    });
+    let retired_mounts: Vec<_> = MOUNT_STORE.with(|mounts| {
+        let mut mounts = mounts.borrow_mut();
+        subtree
+            .live_mount_hooks
+            .iter()
+            .filter_map(|key| mounts.remove(key))
+            .collect()
+    });
+    TIMER_STORE.with(|timers| {
+        let mut timers = timers.borrow_mut();
+        subtree
+            .live_timer_hooks
+            .iter()
+            .for_each(|key| _ = timers.remove(key));
+    });
+    let hooks = &subtree.live_viewport_pointer_hooks;
+    VIEWPORT_POINTER_DOWN_HOOKS
+        .with(|store| hooks.iter().for_each(|k| _ = store.borrow_mut().remove(k)));
+    VIEWPORT_POINTER_MOVE_HOOKS
+        .with(|store| hooks.iter().for_each(|k| _ = store.borrow_mut().remove(k)));
+    VIEWPORT_POINTER_UP_HOOKS
+        .with(|store| hooks.iter().for_each(|k| _ = store.borrow_mut().remove(k)));
+    VIEWPORT_POINTER_STATE_HOOKS
+        .with(|store| hooks.iter().for_each(|k| _ = store.borrow_mut().remove(k)));
+    // User destructors and mount cleanups must run without a borrowed store.
+    drop(retired_memos);
+    drop(retired_slots);
+    drop(retired_mounts);
 }
 
 /// Earliest component timer or retained viewport animation deadline on this
@@ -1655,21 +1918,24 @@ pub fn clear_redraw_callback() {
 
 pub fn peek_state_dirty() -> UiDirtyState {
     PENDING_STATE.with(|queue| {
-        queue
-            .borrow()
-            .iter()
-            .fold(STATE_DIRTY.with(Cell::get), |dirty, state| {
-                dirty.union(state.dirty())
-            })
+        queue.borrow().iter().fold(
+            with_pending_rebuild(STATE_DIRTY.with(Cell::get)),
+            |dirty, state| dirty.union(state.dirty()),
+        )
     })
 }
 
 pub fn take_state_dirty() -> UiDirtyState {
-    STATE_DIRTY.with(|dirty| {
-        let was_dirty = dirty.get();
-        dirty.set(UiDirtyState::NONE);
-        was_dirty
-    })
+    with_pending_rebuild(STATE_DIRTY.with(|dirty| dirty.replace(UiDirtyState::NONE)))
+}
+
+/// `dirty` plus a rebuild a build asked for, which only a build clears.
+fn with_pending_rebuild(dirty: UiDirtyState) -> UiDirtyState {
+    if PENDING_REBUILD.get() {
+        dirty.union(UiDirtyState::REBUILD)
+    } else {
+        dirty
+    }
 }
 
 impl<T: Clone + PartialEq + 'static> IntoPropValue for Binding<T> {

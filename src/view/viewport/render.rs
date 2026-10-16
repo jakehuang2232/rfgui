@@ -1699,7 +1699,9 @@ impl Viewport {
                     conversion_errors.join("\n")
                 );
             }
-            if converted_descriptors.is_empty() {
+            // An empty tree, such as one a render panic unmounted, still
+            // replaces the previous one.
+            if converted_descriptors.is_empty() && !conversion_errors.is_empty() {
                 eprintln!("[render_rsx] no valid root nodes converted; keep previous render tree");
                 self.scene.last_rsx_root = Some(root.clone());
                 drop(_commit_profile);
@@ -1796,21 +1798,19 @@ impl Viewport {
         frontend.work = crate::ui::work_profile::snapshot().since(before);
         self.frame.frontend = frontend;
         let hover_changed_before_render = self.sync_pointer_hover_visual(needs_rebuild);
-        let mut transition_changed_after_layout = false;
-        if !self.scene.ui_root_keys.is_empty() {
-            transition_changed_after_layout = self.render_render_tree(
-                dt,
-                now_seconds,
-                semantic_now,
-                state_dirty.has_any()
-                    || root_changed
-                    || resource_dirty
-                    || animation_changed
-                    || transition_changed_before_render
-                    || was_animating
-                    || hover_changed_before_render,
-            );
-        }
+        // An empty tree still renders, so the frame it replaced is cleared.
+        let transition_changed_after_layout = self.render_render_tree(
+            dt,
+            now_seconds,
+            semantic_now,
+            state_dirty.has_any()
+                || root_changed
+                || resource_dirty
+                || animation_changed
+                || transition_changed_before_render
+                || was_animating
+                || hover_changed_before_render,
+        );
         let hover_resynced = std::mem::take(&mut self.frame.pointer_hover_resync_pending)
             && self.resync_pointer_hover();
         let hover_changed = self.frame.frame_presented && self.sync_pointer_hover_visual(false);
@@ -1919,7 +1919,12 @@ impl Viewport {
                 width.is_finite() && height.is_finite() && width >= 0. && height >= 0.
             })
         });
-        if self.cached_rsx.is_some() && !has_layout_root {
+        // A tree that renders nothing, such as one a render panic unmounted,
+        // has no layout to wait for.
+        let renders_something = self.cached_rsx.as_ref().is_some_and(
+            |rsx| !matches!(rsx, crate::ui::RsxNode::Fragment(f) if f.children.is_empty()),
+        );
+        if renders_something && !has_layout_root {
             super::RenderFrameResult::NeedsRetry
         } else {
             super::RenderFrameResult::Ok

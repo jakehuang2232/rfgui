@@ -997,6 +997,9 @@ fn convert_node_desc(
         RsxNode::Provider(_) => {
             Err("Provider node must be unwrapped before conversion".to_string())
         }
+        RsxNode::ErrorBoundary(_) => {
+            Err("ErrorBoundary node must be unwrapped before conversion".to_string())
+        }
         RsxNode::Text(text) => Ok(ElementDescriptor::leaf(convert_text_leaf(
             text,
             path,

@@ -857,6 +857,7 @@ fn append_text_area_content_child(out: &mut String, node: &RsxNode) {
         RsxNode::Element(_) => {}
         RsxNode::Component(_) => {}
         RsxNode::Provider(_) => {}
+        RsxNode::ErrorBoundary(_) => {}
     }
 }
 

@@ -130,6 +130,7 @@ fn find_first_text(node: &RsxNode) -> Option<&str> {
         RsxNode::Fragment(f) => f.children.iter().find_map(find_first_text),
         RsxNode::Component(c) => c.children.iter().find_map(find_first_text),
         RsxNode::Provider(p) => find_first_text(&p.child),
+        RsxNode::ErrorBoundary(b) => find_first_text(&b.child),
     }
 }
 
@@ -152,6 +153,7 @@ fn collect_text_nodes(node: &RsxNode, out: &mut Vec<String>) {
             }
         }
         RsxNode::Provider(provider) => collect_text_nodes(&provider.child, out),
+        RsxNode::ErrorBoundary(boundary) => collect_text_nodes(&boundary.child, out),
     }
 }
 
@@ -182,6 +184,7 @@ fn find_first_element_by_tag<'a>(node: &'a RsxNode, tag: &str) -> Option<&'a Rsx
             .iter()
             .find_map(|child| find_first_element_by_tag(child, tag)),
         RsxNode::Provider(provider) => find_first_element_by_tag(&provider.child, tag),
+        RsxNode::ErrorBoundary(boundary) => find_first_element_by_tag(&boundary.child, tag),
         RsxNode::Text(_) => None,
     }
 }

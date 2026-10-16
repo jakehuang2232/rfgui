@@ -86,6 +86,12 @@ pub enum RsxNode {
     /// — Provider never survives past `unwrap_components`. Match sites
     /// outside the walker treat this variant as unreachable.
     Provider(Rc<RsxProviderNode>),
+    /// Walker-ancestry error boundary. Emitted by
+    /// [`crate::ui::catch_render_node`]. The walker renders `child`, and
+    /// when a render under it panics, discards that attempt and renders what
+    /// `on_error` returns in its place. Never survives past
+    /// `unwrap_components`.
+    ErrorBoundary(Rc<RsxErrorBoundaryNode>),
 }
 
 impl RsxNode {
@@ -102,6 +108,7 @@ impl RsxNode {
             (RsxNode::Fragment(x), RsxNode::Fragment(y)) => Rc::ptr_eq(x, y),
             (RsxNode::Component(x), RsxNode::Component(y)) => Rc::ptr_eq(x, y),
             (RsxNode::Provider(x), RsxNode::Provider(y)) => Rc::ptr_eq(x, y),
+            (RsxNode::ErrorBoundary(x), RsxNode::ErrorBoundary(y)) => Rc::ptr_eq(x, y),
             _ => false,
         }
     }
@@ -128,6 +135,30 @@ impl Clone for RsxProviderNode {
             value: Rc::clone(&self.value),
             child: self.child.clone(),
         }
+    }
+}
+
+/// Walker-ancestry error boundary: what `on_error` returns takes the place
+/// of `child` when rendering `child` panics. See [`RsxNode::ErrorBoundary`].
+#[derive(Clone)]
+pub struct RsxErrorBoundaryNode {
+    pub identity: RsxNodeIdentity,
+    pub child: RsxNode,
+    pub on_error: Rc<dyn Fn(&crate::ui::RenderError) -> RsxNode>,
+}
+
+impl fmt::Debug for RsxErrorBoundaryNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RsxErrorBoundaryNode")
+            .field("child", &self.child)
+            .field("on_error_ptr", &Rc::as_ptr(&self.on_error).cast::<()>())
+            .finish()
+    }
+}
+
+impl PartialEq for RsxErrorBoundaryNode {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.on_error, &other.on_error) && self.child == other.child
     }
 }
 
@@ -410,6 +441,7 @@ impl RsxNode {
             Self::Fragment(node) => &node.identity,
             Self::Component(node) => &node.identity,
             Self::Provider(node) => &node.identity,
+            Self::ErrorBoundary(node) => &node.identity,
         }
     }
 
@@ -427,6 +459,7 @@ impl RsxNode {
                     .identity = identity;
             }
             Self::Provider(node) => Rc::make_mut(node).identity = identity,
+            Self::ErrorBoundary(node) => Rc::make_mut(node).identity = identity,
         }
     }
 
@@ -469,7 +502,7 @@ impl RsxNode {
             Self::Element(node) => Some(&node.children),
             Self::Fragment(node) => Some(&node.children),
             Self::Component(node) => Some(&node.children),
-            Self::Text(_) | Self::Provider(_) => None,
+            Self::Text(_) | Self::Provider(_) | Self::ErrorBoundary(_) => None,
         }
     }
 
@@ -482,14 +515,18 @@ impl RsxNode {
                     .expect("Component node children_mut requires unique Rc")
                     .children,
             ),
-            Self::Text(_) | Self::Provider(_) => None,
+            Self::Text(_) | Self::Provider(_) | Self::ErrorBoundary(_) => None,
         }
     }
 
     pub fn tag_descriptor(&self) -> Option<RsxTagDescriptor> {
         match self {
             Self::Element(node) => node.tag_descriptor,
-            Self::Text(_) | Self::Fragment(_) | Self::Component(_) | Self::Provider(_) => None,
+            Self::Text(_)
+            | Self::Fragment(_)
+            | Self::Component(_)
+            | Self::Provider(_)
+            | Self::ErrorBoundary(_) => None,
         }
     }
 }
@@ -1317,6 +1354,9 @@ pub fn rendered_node_id(
         }
         RsxNode::Provider(_) => {
             unreachable!("Provider node should be unwrapped before identity hashing")
+        }
+        RsxNode::ErrorBoundary(_) => {
+            unreachable!("ErrorBoundary node should be unwrapped before identity hashing")
         }
     }
 }

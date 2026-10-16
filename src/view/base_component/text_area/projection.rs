@@ -1104,6 +1104,9 @@ fn reject_user_components(node: &RsxNode) {
              component would never render",
             component.vtable.type_name
         ),
+        RsxNode::ErrorBoundary(_) => {
+            panic!("TextArea `on_render` projections support host tags only, not ErrorBoundary")
+        }
     }
 }
 

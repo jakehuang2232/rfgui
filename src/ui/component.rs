@@ -6,8 +6,8 @@ use std::any::TypeId;
 use std::ptr::NonNull;
 
 use crate::ui::{
-    GlobalKey, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor, build_scope,
-    register_global_key, with_component_key,
+    GlobalKey, RsxErrorBoundaryNode, RsxKey, RsxNode, RsxNodeIdentity, RsxTagDescriptor,
+    build_scope, register_global_key, with_component_key,
 };
 
 pub trait RsxChildrenPolicy {
@@ -657,13 +657,34 @@ mod p2a_walker_tests;
 /// that drives a viewport directly calls it before `render_rsx`. A
 /// description built anywhere else, such as in an event handler, stays
 /// deferred until a later root render places it in the tree.
+///
+/// A render or mount that panics outside any error boundary (see
+/// [`catch_render_node`](crate::ui::catch_render_node)) unmounts the whole
+/// tree, as in React: the result renders nothing, and every component's
+/// state retires.
 pub fn render_root(build: impl FnOnce() -> RsxNode) -> RsxNode {
-    build_scope(|| unwrap_components(build()))
+    let failed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let unmount: crate::ui::state::ErrorHandler = {
+        let failed = failed.clone();
+        std::rc::Rc::new(move |_| {
+            failed.set(true);
+            RsxNode::fragment(Vec::new())
+        })
+    };
+    let root = build_scope(|| {
+        crate::ui::state::catch_root_render(unmount.clone(), || unwrap_components(build()))
+            .unwrap_or_else(|error| unmount(&error))
+    });
+    if failed.get() {
+        eprintln!("[error] a component panicked outside any error boundary; unmounted the tree");
+        return RsxNode::fragment(Vec::new());
+    }
+    root
 }
 
 /// Top-down walker: invokes `vtable.render` for every `RsxNode::Component`
-/// and dissolves every `RsxNode::Provider`, so the output holds only
-/// Element/Text/Fragment nodes.
+/// and dissolves every `RsxNode::Provider` and `RsxNode::ErrorBoundary`, so
+/// the output holds only Element/Text/Fragment nodes.
 ///
 /// Each component render runs inside a `render_component` frame, so the
 /// walk must happen inside a [`build_scope`] (normally [`render_root`])
@@ -705,6 +726,17 @@ pub fn unwrap_components(node: RsxNode) -> RsxNode {
             walked_child
         }
         RsxNode::Component(inner) => memo::render_deferred(inner),
+        RsxNode::ErrorBoundary(boundary_rc) => {
+            let boundary = match std::rc::Rc::try_unwrap(boundary_rc) {
+                Ok(inner) => inner,
+                Err(rc) => (*rc).clone(),
+            };
+            let RsxErrorBoundaryNode {
+                child, on_error, ..
+            } = boundary;
+            crate::ui::state::catch_render(on_error.clone(), || unwrap_components(child))
+                .unwrap_or_else(|error| unwrap_components(on_error(&error)))
+        }
     }
 }
 
