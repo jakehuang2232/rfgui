@@ -60,9 +60,8 @@ fn outer_shadow_artifact_owns_ordered_fractional_payload_and_strict_pass_sequenc
             assert_eq!(graphics.color_attachments.len(), 1);
             assert_eq!(
                 graphics.color_attachments[0].load_op,
-                crate::view::frame_graph::AttachmentLoadOp::Clear
+                crate::view::frame_graph::AttachmentLoadOp::Clear([0.; 4])
             );
-            assert_eq!(graphics.color_attachments[0].clear_color, Some([0.; 4]));
             cleared_fills += 1;
         }
     }

@@ -212,8 +212,8 @@ impl GraphicsPass for DepthStencilWritePass {
         let target = builder
             .texture_target(&self.target)
             .expect("depth/stencil target should exist");
-        builder.write_depth(target, AttachmentLoadOp::Clear, Some(1.0));
-        builder.write_stencil(target, AttachmentLoadOp::Clear, Some(0));
+        builder.write_depth(target, AttachmentLoadOp::Clear(1.0));
+        builder.write_stencil(target, AttachmentLoadOp::Clear(0));
     }
 
     fn execute(&mut self, _ctx: &mut GraphicsCtx<'_, '_, '_, '_>) {}

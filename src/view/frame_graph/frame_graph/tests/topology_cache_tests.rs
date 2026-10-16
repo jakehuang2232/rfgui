@@ -70,12 +70,10 @@ fn signature_fixture() -> FrameGraph {
         .depth_stencil_attachment = Some(GraphicsDepthStencilAttachmentDescriptor {
         target: AttachmentTarget::Surface,
         depth: Some(GraphicsDepthAspectDescriptor::write(
-            AttachmentLoadOp::Clear,
-            Some(1.0),
+            AttachmentLoadOp::Clear(1.0),
         )),
         stencil: Some(GraphicsStencilAspectDescriptor::write(
-            AttachmentLoadOp::Clear,
-            Some(0),
+            AttachmentLoadOp::Clear(0),
         )),
     });
     graph
@@ -125,10 +123,11 @@ fn topology_live_comparison_preserves_every_signature_input() {
                 AttachmentStoreOp::Discard
         }),
         ("color bits", |g| {
-            g.passes[0].descriptor.graphics_mut().color_attachments[0]
-                .clear_color
-                .as_mut()
-                .unwrap()[0] = -0.0
+            let attachment = &mut g.passes[0].descriptor.graphics_mut().color_attachments[0];
+            let AttachmentLoadOp::Clear(color) = &mut attachment.load_op else {
+                panic!("the fixture clears its color");
+            };
+            color[0] = -0.0
         }),
         ("depth attachment", |g| {
             g.passes[0]
@@ -155,7 +154,7 @@ fn topology_live_comparison_preserves_every_signature_input() {
                 .depth
                 .as_mut()
                 .unwrap()
-                .clear_depth = Some(0.5)
+                .load_op = AttachmentLoadOp::Clear(0.5)
         }),
         ("depth usage", |g| {
             g.passes[0]
@@ -203,7 +202,7 @@ fn topology_live_comparison_preserves_every_signature_input() {
                 .stencil
                 .as_mut()
                 .unwrap()
-                .clear_stencil = Some(2)
+                .load_op = AttachmentLoadOp::Clear(2)
         }),
         ("stencil usage", |g| {
             g.passes[0]
@@ -312,8 +311,8 @@ fn topology_live_comparison_preserves_every_signature_input() {
 #[test]
 fn topology_live_comparison_keeps_nan_bits_and_ignores_map_insertion_order() {
     let mut graph = signature_fixture();
-    graph.passes[0].descriptor.graphics_mut().color_attachments[0].clear_color =
-        Some([f64::from_bits(0x7ff8_0000_0000_0042); 4]);
+    graph.passes[0].descriptor.graphics_mut().color_attachments[0].load_op =
+        AttachmentLoadOp::Clear([f64::from_bits(0x7ff8_0000_0000_0042); 4]);
     graph.passes[0]
         .descriptor
         .graphics_mut()
@@ -323,7 +322,7 @@ fn topology_live_comparison_keeps_nan_bits_and_ignores_map_insertion_order() {
         .depth
         .as_mut()
         .unwrap()
-        .clear_depth = Some(f32::from_bits(0x7fc0_0042));
+        .load_op = AttachmentLoadOp::Clear(f32::from_bits(0x7fc0_0042));
     graph
         .texture_attachment_pairs
         .insert(TextureHandle(1), AttachmentTarget::Surface);
@@ -348,7 +347,7 @@ fn topology_live_comparison_keeps_nan_bits_and_ignores_map_insertion_order() {
         .depth
         .as_mut()
         .unwrap()
-        .clear_depth = Some(f32::from_bits(0x7fc0_0043));
+        .load_op = AttachmentLoadOp::Clear(f32::from_bits(0x7fc0_0043));
     assert!(!graph.resolve_topology_cache_key(Some(cached)).1);
 }
 

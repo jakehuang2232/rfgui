@@ -233,14 +233,8 @@ impl GraphicsPass for CompositeLayerPass {
         }
         if self.input.pass_context.uses_depth_stencil {
             if self.params.clear_target {
-                builder.write_output_depth(
-                    crate::view::frame_graph::AttachmentLoadOp::Clear,
-                    Some(1.0),
-                );
-                builder.write_output_stencil(
-                    crate::view::frame_graph::AttachmentLoadOp::Clear,
-                    Some(0),
-                );
+                builder.write_output_depth(crate::view::frame_graph::AttachmentLoadOp::Clear(1.0));
+                builder.write_output_stencil(crate::view::frame_graph::AttachmentLoadOp::Clear(0));
             } else {
                 builder.read_output_depth();
                 builder.read_output_stencil();

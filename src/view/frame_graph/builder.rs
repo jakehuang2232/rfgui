@@ -324,15 +324,10 @@ impl<'a> PassBuilderState<'a> {
         );
     }
 
-    fn write_depth(
-        &mut self,
-        target: AttachmentTarget,
-        load_op: AttachmentLoadOp,
-        clear_depth: Option<f32>,
-    ) {
+    fn write_depth(&mut self, target: AttachmentTarget, load_op: AttachmentLoadOp<f32>) {
         self.merge_depth_stencil_attachment(
             target,
-            Some(GraphicsDepthAspectDescriptor::write(load_op, clear_depth)),
+            Some(GraphicsDepthAspectDescriptor::write(load_op)),
             None,
         );
     }
@@ -345,19 +340,11 @@ impl<'a> PassBuilderState<'a> {
         );
     }
 
-    fn write_stencil(
-        &mut self,
-        target: AttachmentTarget,
-        load_op: AttachmentLoadOp,
-        clear_stencil: Option<u32>,
-    ) {
+    fn write_stencil(&mut self, target: AttachmentTarget, load_op: AttachmentLoadOp<u32>) {
         self.merge_depth_stencil_attachment(
             target,
             None,
-            Some(GraphicsStencilAspectDescriptor::write(
-                load_op,
-                clear_stencil,
-            )),
+            Some(GraphicsStencilAspectDescriptor::write(load_op)),
         );
     }
 
@@ -543,18 +530,13 @@ impl<'a, 'b> GraphicsPassBuilder<'a, 'b> {
         }
     }
 
-    pub fn write_depth(
-        &mut self,
-        target: AttachmentTarget,
-        load_op: AttachmentLoadOp,
-        clear_depth: Option<f32>,
-    ) {
-        self.state.write_depth(target, load_op, clear_depth);
+    pub fn write_depth(&mut self, target: AttachmentTarget, load_op: AttachmentLoadOp<f32>) {
+        self.state.write_depth(target, load_op);
     }
 
-    pub fn write_output_depth(&mut self, load_op: AttachmentLoadOp, clear_depth: Option<f32>) {
+    pub fn write_output_depth(&mut self, load_op: AttachmentLoadOp<f32>) {
         if let Some(target) = self.state.inferred_depth_stencil_target() {
-            self.state.write_depth(target, load_op, clear_depth);
+            self.state.write_depth(target, load_op);
         }
     }
 
@@ -568,18 +550,13 @@ impl<'a, 'b> GraphicsPassBuilder<'a, 'b> {
         }
     }
 
-    pub fn write_stencil(
-        &mut self,
-        target: AttachmentTarget,
-        load_op: AttachmentLoadOp,
-        clear_stencil: Option<u32>,
-    ) {
-        self.state.write_stencil(target, load_op, clear_stencil);
+    pub fn write_stencil(&mut self, target: AttachmentTarget, load_op: AttachmentLoadOp<u32>) {
+        self.state.write_stencil(target, load_op);
     }
 
-    pub fn write_output_stencil(&mut self, load_op: AttachmentLoadOp, clear_stencil: Option<u32>) {
+    pub fn write_output_stencil(&mut self, load_op: AttachmentLoadOp<u32>) {
         if let Some(target) = self.state.inferred_depth_stencil_target() {
-            self.state.write_stencil(target, load_op, clear_stencil);
+            self.state.write_stencil(target, load_op);
         }
     }
 }

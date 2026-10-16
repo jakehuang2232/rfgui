@@ -404,10 +404,23 @@ pub enum AttachmentTarget {
     Texture(TextureHandle),
 }
 
+/// What a pass does with an attachment's contents before it draws: keep
+/// them, or clear them to the value. A clear always names its value, as in
+/// wgpu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum AttachmentLoadOp {
+pub enum AttachmentLoadOp<V> {
     Load,
-    Clear,
+    Clear(V),
+}
+
+impl<V> AttachmentLoadOp<V> {
+    /// The same operation with `f` applied to the clear value.
+    pub fn map<W>(self, f: impl FnOnce(V) -> W) -> AttachmentLoadOp<W> {
+        match self {
+            Self::Load => AttachmentLoadOp::Load,
+            Self::Clear(value) => AttachmentLoadOp::Clear(f(value)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -445,9 +458,8 @@ pub enum GraphicsPassMergePolicy {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsColorAttachmentOps {
-    pub load_op: AttachmentLoadOp,
+    pub load_op: AttachmentLoadOp<[f64; 4]>,
     pub store_op: AttachmentStoreOp,
-    pub clear_color: Option<[f64; 4]>,
 }
 
 impl GraphicsColorAttachmentOps {
@@ -455,15 +467,13 @@ impl GraphicsColorAttachmentOps {
         Self {
             load_op: AttachmentLoadOp::Load,
             store_op: AttachmentStoreOp::Store,
-            clear_color: None,
         }
     }
 
     pub fn clear(clear_color: [f64; 4]) -> Self {
         Self {
-            load_op: AttachmentLoadOp::Clear,
+            load_op: AttachmentLoadOp::Clear(clear_color),
             store_op: AttachmentStoreOp::Store,
-            clear_color: Some(clear_color),
         }
     }
 }
@@ -471,9 +481,8 @@ impl GraphicsColorAttachmentOps {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsColorAttachmentDescriptor {
     pub target: AttachmentTarget,
-    pub load_op: AttachmentLoadOp,
+    pub load_op: AttachmentLoadOp<[f64; 4]>,
     pub store_op: AttachmentStoreOp,
-    pub clear_color: Option<[f64; 4]>,
 }
 
 impl GraphicsColorAttachmentDescriptor {
@@ -482,16 +491,14 @@ impl GraphicsColorAttachmentDescriptor {
             target,
             load_op: ops.load_op,
             store_op: ops.store_op,
-            clear_color: ops.clear_color,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsDepthAspectDescriptor {
-    pub load_op: AttachmentLoadOp,
+    pub load_op: AttachmentLoadOp<f32>,
     pub store_op: AttachmentStoreOp,
-    pub clear_depth: Option<f32>,
     pub usage: ResourceUsage,
 }
 
@@ -500,16 +507,14 @@ impl GraphicsDepthAspectDescriptor {
         Self {
             load_op: AttachmentLoadOp::Load,
             store_op: AttachmentStoreOp::Store,
-            clear_depth: None,
             usage: ResourceUsage::DepthRead,
         }
     }
 
-    pub fn write(load_op: AttachmentLoadOp, clear_depth: Option<f32>) -> Self {
+    pub fn write(load_op: AttachmentLoadOp<f32>) -> Self {
         Self {
             load_op,
             store_op: AttachmentStoreOp::Store,
-            clear_depth,
             usage: ResourceUsage::DepthWrite,
         }
     }
@@ -517,9 +522,8 @@ impl GraphicsDepthAspectDescriptor {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphicsStencilAspectDescriptor {
-    pub load_op: AttachmentLoadOp,
+    pub load_op: AttachmentLoadOp<u32>,
     pub store_op: AttachmentStoreOp,
-    pub clear_stencil: Option<u32>,
     pub usage: ResourceUsage,
 }
 
@@ -528,16 +532,14 @@ impl GraphicsStencilAspectDescriptor {
         Self {
             load_op: AttachmentLoadOp::Load,
             store_op: AttachmentStoreOp::Store,
-            clear_stencil: None,
             usage: ResourceUsage::StencilRead,
         }
     }
 
-    pub fn write(load_op: AttachmentLoadOp, clear_stencil: Option<u32>) -> Self {
+    pub fn write(load_op: AttachmentLoadOp<u32>) -> Self {
         Self {
             load_op,
             store_op: AttachmentStoreOp::Store,
-            clear_stencil,
             usage: ResourceUsage::StencilWrite,
         }
     }
@@ -656,24 +658,23 @@ struct PassNode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TopologyGraphicsColorAttachment {
     target: AttachmentTarget,
-    load_op: AttachmentLoadOp,
+    /// The clear color as bits.
+    load_op: AttachmentLoadOp<[u64; 4]>,
     store_op: AttachmentStoreOp,
-    clear_color_bits: Option<[u64; 4]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TopologyDepthAspect {
-    load_op: AttachmentLoadOp,
+    /// The clear depth as bits.
+    load_op: AttachmentLoadOp<u32>,
     store_op: AttachmentStoreOp,
-    clear_depth_bits: Option<u32>,
     usage: ResourceUsage,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TopologyStencilAspect {
-    load_op: AttachmentLoadOp,
+    load_op: AttachmentLoadOp<u32>,
     store_op: AttachmentStoreOp,
-    clear_stencil: Option<u32>,
     usage: ResourceUsage,
 }
 
@@ -768,9 +769,8 @@ fn topology_color_attachment(
 ) -> TopologyGraphicsColorAttachment {
     TopologyGraphicsColorAttachment {
         target: attachment.target,
-        load_op: attachment.load_op,
+        load_op: attachment.load_op.map(|color| color.map(f64::to_bits)),
         store_op: attachment.store_op,
-        clear_color_bits: attachment.clear_color.map(|color| color.map(f64::to_bits)),
     }
 }
 
@@ -780,15 +780,13 @@ fn topology_depth_stencil_attachment(
     TopologyDepthStencilAttachment {
         target: attachment.target,
         depth: attachment.depth.map(|depth| TopologyDepthAspect {
-            load_op: depth.load_op,
+            load_op: depth.load_op.map(f32::to_bits),
             store_op: depth.store_op,
-            clear_depth_bits: depth.clear_depth.map(f32::to_bits),
             usage: depth.usage,
         }),
         stencil: attachment.stencil.map(|stencil| TopologyStencilAspect {
             load_op: stencil.load_op,
             store_op: stencil.store_op,
-            clear_stencil: stencil.clear_stencil,
             usage: stencil.usage,
         }),
     }
@@ -966,23 +964,22 @@ pub struct AllocationPlan {
 pub struct RenderPassCompatibleColorAttachment {
     pub target: AttachmentTarget,
     pub resolve_target: Option<AttachmentTarget>,
-    pub load_op: AttachmentLoadOp,
+    /// The clear color as bits.
+    pub load_op: AttachmentLoadOp<[u64; 4]>,
     pub store_op: AttachmentStoreOp,
-    pub clear_color_bits: Option<[u64; 4]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RenderPassCompatibleDepthAspect {
-    pub load_op: AttachmentLoadOp,
+    /// The clear depth as bits.
+    pub load_op: AttachmentLoadOp<u32>,
     pub store_op: AttachmentStoreOp,
-    pub clear_depth_bits: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RenderPassCompatibleStencilAspect {
-    pub load_op: AttachmentLoadOp,
+    pub load_op: AttachmentLoadOp<u32>,
     pub store_op: AttachmentStoreOp,
-    pub clear_stencil: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -2178,12 +2175,6 @@ impl FrameGraph {
                                 a.store_op, b.store_op
                             ));
                         }
-                        if a.clear_color_bits != b.clear_color_bits {
-                            reasons.push(format!(
-                                "color[{idx}].clear {:?} -> {:?}",
-                                a.clear_color_bits, b.clear_color_bits
-                            ));
-                        }
                     }
                 }
             }
@@ -2861,8 +2852,7 @@ impl FrameGraph {
                     continue;
                 }
                 if seen_transient_color_targets.insert(handle) {
-                    attachment.load_op = AttachmentLoadOp::Clear;
-                    attachment.clear_color = Some([0.0, 0.0, 0.0, 0.0]);
+                    attachment.load_op = AttachmentLoadOp::Clear([0.0, 0.0, 0.0, 0.0]);
                 }
             }
         }
@@ -3533,7 +3523,7 @@ impl FrameGraph {
                 view,
                 resolve_target: resolve_target.as_ref(),
                 ops: wgpu::Operations {
-                    load: to_wgpu_load_op(attachment.load_op, attachment.clear_color_bits),
+                    load: to_wgpu_load_op(attachment.load_op),
                     store: to_wgpu_store_op(attachment.store_op),
                 },
                 depth_slice: None,
@@ -3568,11 +3558,11 @@ impl FrameGraph {
                 |(view, depth, stencil)| wgpu::RenderPassDepthStencilAttachment {
                     view,
                     depth_ops: depth.as_ref().map(|aspect| wgpu::Operations {
-                        load: to_wgpu_depth_load_op(aspect.load_op, aspect.clear_depth_bits),
+                        load: to_wgpu_depth_load_op(aspect.load_op),
                         store: to_wgpu_store_op(aspect.store_op),
                     }),
                     stencil_ops: stencil.as_ref().map(|aspect| wgpu::Operations {
-                        load: to_wgpu_stencil_load_op(aspect.load_op, aspect.clear_stencil),
+                        load: to_wgpu_stencil_load_op(aspect.load_op),
                         store: to_wgpu_store_op(aspect.store_op),
                     }),
                 },
@@ -3727,44 +3717,27 @@ fn to_wgpu_store_op(store_op: AttachmentStoreOp) -> wgpu::StoreOp {
     }
 }
 
-fn to_wgpu_load_op(
-    load_op: AttachmentLoadOp,
-    clear_color_bits: Option<[u64; 4]>,
-) -> wgpu::LoadOp<wgpu::Color> {
+fn to_wgpu_load_op(load_op: AttachmentLoadOp<[u64; 4]>) -> wgpu::LoadOp<wgpu::Color> {
     match load_op {
         AttachmentLoadOp::Load => wgpu::LoadOp::Load,
-        AttachmentLoadOp::Clear => {
-            let [r, g, b, a] = clear_color_bits
-                .expect("clear color bits should exist when load_op is Clear")
-                .map(f64::from_bits);
+        AttachmentLoadOp::Clear(bits) => {
+            let [r, g, b, a] = bits.map(f64::from_bits);
             wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a })
         }
     }
 }
 
-fn to_wgpu_depth_load_op(
-    load_op: AttachmentLoadOp,
-    clear_depth_bits: Option<u32>,
-) -> wgpu::LoadOp<f32> {
+fn to_wgpu_depth_load_op(load_op: AttachmentLoadOp<u32>) -> wgpu::LoadOp<f32> {
     match load_op {
         AttachmentLoadOp::Load => wgpu::LoadOp::Load,
-        AttachmentLoadOp::Clear => wgpu::LoadOp::Clear(
-            clear_depth_bits
-                .map(f32::from_bits)
-                .expect("clear depth bits should exist when load_op is Clear"),
-        ),
+        AttachmentLoadOp::Clear(bits) => wgpu::LoadOp::Clear(f32::from_bits(bits)),
     }
 }
 
-fn to_wgpu_stencil_load_op(
-    load_op: AttachmentLoadOp,
-    clear_stencil: Option<u32>,
-) -> wgpu::LoadOp<u32> {
+fn to_wgpu_stencil_load_op(load_op: AttachmentLoadOp<u32>) -> wgpu::LoadOp<u32> {
     match load_op {
         AttachmentLoadOp::Load => wgpu::LoadOp::Load,
-        AttachmentLoadOp::Clear => wgpu::LoadOp::Clear(
-            clear_stencil.expect("clear stencil should exist when load_op is Clear"),
-        ),
+        AttachmentLoadOp::Clear(stencil) => wgpu::LoadOp::Clear(stencil),
     }
 }
 
@@ -4567,10 +4540,9 @@ fn can_absorb_leading_clear_pass(
         {
             return false;
         }
-        if clear.load_op != AttachmentLoadOp::Clear {
-            return false;
-        }
-        if load.load_op != AttachmentLoadOp::Load {
+        if !matches!(clear.load_op, AttachmentLoadOp::Clear(_))
+            || load.load_op != AttachmentLoadOp::Load
+        {
             return false;
         }
     }
@@ -4591,7 +4563,7 @@ fn can_absorb_leading_clear_pass(
                 (None, None) => {}
                 (Some(clear_depth), Some(load_depth)) => {
                     if clear_depth.store_op != load_depth.store_op
-                        || clear_depth.load_op != AttachmentLoadOp::Clear
+                        || !matches!(clear_depth.load_op, AttachmentLoadOp::Clear(_))
                         || load_depth.load_op != AttachmentLoadOp::Load
                     {
                         return false;
@@ -4603,7 +4575,7 @@ fn can_absorb_leading_clear_pass(
                 (None, None) => {}
                 (Some(clear_stencil), Some(load_stencil)) => {
                     if clear_stencil.store_op != load_stencil.store_op
-                        || clear_stencil.load_op != AttachmentLoadOp::Clear
+                        || !matches!(clear_stencil.load_op, AttachmentLoadOp::Clear(_))
                         || load_stencil.load_op != AttachmentLoadOp::Load
                     {
                         return false;
@@ -4631,9 +4603,8 @@ fn render_pass_compatibility_for_graphics(
                     attachment.target,
                     graphics.sample_count,
                 ),
-                load_op: attachment.load_op,
+                load_op: attachment.load_op.map(|color| color.map(f64::to_bits)),
                 store_op: attachment.store_op,
-                clear_color_bits: attachment.clear_color.map(|color| color.map(f64::to_bits)),
             })
             .collect(),
         depth_stencil_attachment: graphics.depth_stencil_attachment.map(|attachment| {
@@ -4642,16 +4613,14 @@ fn render_pass_compatibility_for_graphics(
                 attachment
                     .depth
                     .map(|depth| RenderPassCompatibleDepthAspect {
-                        load_op: depth.load_op,
+                        load_op: depth.load_op.map(f32::to_bits),
                         store_op: depth.store_op,
-                        clear_depth_bits: depth.clear_depth.map(f32::to_bits),
                     }),
                 attachment
                     .stencil
                     .map(|stencil| RenderPassCompatibleStencilAspect {
                         load_op: stencil.load_op,
                         store_op: stencil.store_op,
-                        clear_stencil: stencil.clear_stencil,
                     }),
             )
         }),

@@ -78,13 +78,13 @@ impl GraphicsPass for ClearPass {
                 GraphicsColorAttachmentOps::clear(color),
             );
             if self.input.clear_depth_stencil {
-                builder.write_output_depth(AttachmentLoadOp::Clear, Some(1.0));
-                builder.write_output_stencil(AttachmentLoadOp::Clear, Some(0));
+                builder.write_output_depth(AttachmentLoadOp::Clear(1.0));
+                builder.write_output_stencil(AttachmentLoadOp::Clear(0));
             }
         } else {
             builder.write_surface_color(GraphicsColorAttachmentOps::clear(color));
-            builder.write_output_depth(AttachmentLoadOp::Clear, Some(1.0));
-            builder.write_output_stencil(AttachmentLoadOp::Clear, Some(0));
+            builder.write_output_depth(AttachmentLoadOp::Clear(1.0));
+            builder.write_output_stencil(AttachmentLoadOp::Clear(0));
         }
     }
 

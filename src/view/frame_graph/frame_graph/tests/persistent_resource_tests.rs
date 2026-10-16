@@ -26,11 +26,7 @@ fn compiler_clears_first_transient_color_load_attachment() {
     assert_eq!(graphics.color_attachments.len(), 1);
     assert_eq!(
         graphics.color_attachments[0].load_op,
-        AttachmentLoadOp::Clear
-    );
-    assert_eq!(
-        graphics.color_attachments[0].clear_color,
-        Some([0.0, 0.0, 0.0, 0.0])
+        AttachmentLoadOp::Clear([0.0, 0.0, 0.0, 0.0])
     );
 }
 
@@ -66,7 +62,6 @@ fn compiler_keeps_first_persistent_color_load_attachment() {
         graphics.color_attachments[0].load_op,
         AttachmentLoadOp::Load
     );
-    assert_eq!(graphics.color_attachments[0].clear_color, None);
 }
 
 #[test]

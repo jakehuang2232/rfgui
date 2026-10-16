@@ -17,7 +17,7 @@ fn compile_captures_graphics_pass_descriptor() {
     assert_eq!(graphics.color_attachments.len(), 1);
     assert_eq!(
         graphics.color_attachments[0].load_op,
-        AttachmentLoadOp::Clear
+        AttachmentLoadOp::Clear([0.0, 0.0, 0.0, 0.0])
     );
 }
 
