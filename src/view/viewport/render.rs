@@ -1569,6 +1569,7 @@ impl Viewport {
         {
             needs_rebuild = false;
         }
+        let input_targets = self.input_target_ids();
         // Keep pre-commit scroll state until a possibly partial failed batch
         // has completed its cold recovery too.
         let mut incremental_scroll_offsets = FxHashMap::default();
@@ -1757,6 +1758,7 @@ impl Viewport {
                 self.request_redraw();
             }
         }
+        self.fix_up_input_targets(input_targets);
         self.sync_focus_dispatch();
         let animation_changed = {
             let mut arena = std::mem::take(&mut self.scene.node_arena);

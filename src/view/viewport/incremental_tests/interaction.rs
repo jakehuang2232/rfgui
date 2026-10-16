@@ -273,6 +273,7 @@ fn projection_caret_probe_at(cursor_char: usize) {
     );
 }
 
+mod focus_fixup_tests;
 mod hit_test_tests;
 mod hover_cascade_tests;
 mod rerender_hit_test_tests;

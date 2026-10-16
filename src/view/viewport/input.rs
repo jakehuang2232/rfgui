@@ -74,6 +74,9 @@ pub(super) struct InputState {
     /// click, Tab key, programmatic `set_focus`) set this before
     /// triggering the sync. Defaults to `Programmatic`.
     pub pending_focus_reason: crate::ui::FocusReason,
+    /// Whether the last IME command enabled composition, so a focus target
+    /// that is removed without a blur can still turn it off.
+    pub ime_enabled: bool,
     /// Active drag operation, `Some` from the moment
     /// [`crate::ui::EventViewport::start_drag`] is applied until the
     /// pointer_up that releases the drag. Normal pointer_move /

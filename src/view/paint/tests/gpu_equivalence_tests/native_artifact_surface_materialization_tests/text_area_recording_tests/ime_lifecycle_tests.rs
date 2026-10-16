@@ -94,9 +94,11 @@ fn apply_event(viewport: &mut Viewport, owner: NodeKey, frame: usize, now: crate
             assert!(viewport.dispatch_ime_preedit_event("文".into(), Some((3, 3))))
         }
         15 => click(viewport, 219.0, 95.0),
-        16 => assert!(
-            !viewport.dispatch_ime_preedit_event("must not reach blurred owner".into(), None)
-        ),
+        // Without focus the event goes to the root; `assert_state` checks
+        // that the blurred owner keeps no preedit.
+        16 => {
+            viewport.dispatch_ime_preedit_event("must not reach blurred owner".into(), None);
+        }
         18 | 20 => assert!(viewport.dispatch_ime_preedit_event(String::new(), None)),
         19 => assert!(viewport.dispatch_ime_preedit_event("x".into(), Some((1, 1)))),
         27 | 30 => {

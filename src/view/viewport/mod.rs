@@ -908,12 +908,18 @@ impl Viewport {
     }
 
     /// Target for key / text / IME dispatch: keyboard capture takes
-    /// precedence over focus. Used by all `dispatch_key_*` /
-    /// `dispatch_text_input_*` / `dispatch_ime_*` entry points.
+    /// precedence over focus. With neither, the first root takes key
+    /// events, as the body does in a web page. Used by all
+    /// `dispatch_key_*` / `dispatch_text_input_*` / `dispatch_ime_*` entry
+    /// points.
     pub fn keyboard_dispatch_target(&self) -> Option<crate::view::node_arena::NodeKey> {
+        let arena = &self.scene.node_arena;
+        let live = |key: &crate::view::node_arena::NodeKey| arena.contains_key(*key);
         self.input_state
             .keyboard_capture_node_id
-            .or(self.input_state.focused_node_id)
+            .filter(live)
+            .or(self.input_state.focused_node_id.filter(live))
+            .or(self.scene.ui_root_keys.first().copied())
     }
 
     pub fn set_pointer_capture_node_id(

@@ -1553,6 +1553,49 @@ impl Viewport {
         self.input_state.modifiers
     }
 
+    /// The stable ids of the nodes input is aimed at, taken before a commit
+    /// so [`Self::fix_up_input_targets`] can find the same elements after it.
+    pub(super) fn input_target_ids(&self) -> InputTargetIds {
+        let arena = &self.scene.node_arena;
+        let stable_id = |key: Option<crate::view::node_arena::NodeKey>| {
+            key.and_then(|key| arena.get(key))
+                .map(|node| node.element.stable_id())
+        };
+        InputTargetIds {
+            focused: stable_id(self.input_state.focused_node_id),
+        }
+    }
+
+    /// Keeps input aimed at the elements it was aimed at before a commit.
+    /// A focused element the commit rebuilt keeps focus under its new key,
+    /// and the new instance gets a focus event, since it starts unfocused.
+    /// One the commit removed loses it, as in the HTML focus fixup rule:
+    /// nothing is focused, key events go to the first root, and no blur
+    /// reaches the removed node. Capture on a node that is gone ends.
+    pub(super) fn fix_up_input_targets(&mut self, before: InputTargetIds) {
+        let arena = &self.scene.node_arena;
+        let live = |key: &crate::view::node_arena::NodeKey| arena.contains_key(*key);
+        if self
+            .input_state
+            .focused_node_id
+            .is_some_and(|key| !live(&key))
+        {
+            let rebuilt = before.focused.and_then(|id| arena.find_by_stable_id(id));
+            self.input_state.focused_node_id = rebuilt;
+            if rebuilt.is_none() && std::mem::take(&mut self.input_state.ime_enabled) {
+                self.pending_platform_requests
+                    .ime_commands
+                    .push(crate::platform::ImeCommand::Disable);
+            }
+        }
+        if self.dispatched_focus_node_id.is_some_and(|key| !live(&key)) {
+            self.dispatched_focus_node_id = None;
+        }
+        let input = &mut self.input_state;
+        input.keyboard_capture_node_id = input.keyboard_capture_node_id.filter(live);
+        input.pointer_capture_node_id = input.pointer_capture_node_id.filter(live);
+    }
+
     pub(super) fn sync_focus_dispatch(&mut self) {
         if self.scene.ui_root_keys.is_empty() {
             return;
@@ -1605,6 +1648,11 @@ impl Viewport {
         self.last_recorded_cursor = Some(cursor);
         self.pending_platform_requests.cursor = Some(cursor);
     }
+}
+
+/// See [`Viewport::input_target_ids`].
+pub(super) struct InputTargetIds {
+    focused: Option<u64>,
 }
 
 impl Viewport {
@@ -1692,6 +1740,13 @@ impl Viewport {
                     self.pending_platform_requests.window_commands.push(command);
                 }
                 EventCommand::Ime(command) => {
+                    match command {
+                        crate::platform::ImeCommand::Enable => self.input_state.ime_enabled = true,
+                        crate::platform::ImeCommand::Disable => {
+                            self.input_state.ime_enabled = false
+                        }
+                        _ => {}
+                    }
                     self.pending_platform_requests.ime_commands.push(command);
                 }
                 EventCommand::StartDrag {
