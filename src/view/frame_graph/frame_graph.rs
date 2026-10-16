@@ -3470,13 +3470,16 @@ impl FrameGraph {
         let mut owned_color_views: Vec<(wgpu::TextureView, Option<wgpu::TextureView>)> = Vec::new();
         let mut color_attachments = Vec::with_capacity(compatibility.color_attachments.len());
         for attachment in &compatibility.color_attachments {
-            let (view, resolve_target) = resolve_color_attachment_views(
+            let (view, resolve_target) = match resolve_color_attachment_views(
                 ctx,
                 attachment.target,
                 attachment.resolve_target,
                 surface_view.as_ref(),
                 surface_resolve_view.as_ref(),
-            );
+            ) {
+                Ok(views) => views,
+                Err(reason) => return self.skip_graphics_passes(pass_indices, ctx, reason),
+            };
             let Some(view) = view else {
                 ctx.execution_failed = true;
                 return;
@@ -3488,33 +3491,19 @@ impl FrameGraph {
             let actual_sample_count =
                 color_attachment_sample_count(ctx, attachment.target, attachment.resolve_target);
             if expected_sample_count != actual_sample_count {
-                let pass_names = pass_names_for_error(pass_indices, &self.passes);
-                eprintln!(
-                    "[error] frame graph color attachment sample-count mismatch before wgpu validation: passes=[{}], target={:?}, expected_sample_count={}, actual_sample_count={}, resolve_target={:?}",
-                    pass_names,
-                    attachment.target,
-                    expected_sample_count,
-                    actual_sample_count,
-                    attachment.resolve_target,
+                let reason = format!(
+                    "a color attachment has sample count {actual_sample_count}, the pass {expected_sample_count}"
                 );
-                panic!(
-                    "frame graph color attachment sample-count mismatch: passes=[{}]",
-                    pass_names
-                );
+                return self.skip_graphics_passes(pass_indices, ctx, reason);
             }
         }
         if let Some((target, _, _)) = compatibility.depth_stencil_attachment.as_ref() {
             let depth_sample_count = depth_attachment_sample_count(ctx, *target);
             if expected_sample_count != depth_sample_count {
-                let pass_names = pass_names_for_error(pass_indices, &self.passes);
-                eprintln!(
-                    "[error] frame graph depth attachment sample-count mismatch before wgpu validation: passes=[{}], expected_sample_count={}, depth_target={:?}, depth_sample_count={}",
-                    pass_names, expected_sample_count, target, depth_sample_count,
+                let reason = format!(
+                    "the depth attachment has sample count {depth_sample_count}, the pass {expected_sample_count}"
                 );
-                panic!(
-                    "frame graph depth attachment sample-count mismatch: passes=[{}]",
-                    pass_names
-                );
+                return self.skip_graphics_passes(pass_indices, ctx, reason);
             }
         }
         for (index, attachment) in compatibility.color_attachments.iter().enumerate() {
@@ -3607,6 +3596,22 @@ impl FrameGraph {
     }
 }
 
+impl FrameGraph {
+    /// Leaves out a render pass whose attachments do not fit together, as a
+    /// graphics API ignores a draw into an incomplete framebuffer: the rest of
+    /// the frame still draws, and what this pass would have drawn is missing.
+    fn skip_graphics_passes(
+        &self,
+        pass_indices: &[usize],
+        ctx: &mut RecordContext<'_, '_>,
+        reason: String,
+    ) {
+        let pass_names = pass_names_for_error(pass_indices, &self.passes);
+        ctx.viewport
+            .report_skipped_render_pass(format!("frame graph skipped [{pass_names}]: {reason}"));
+    }
+}
+
 fn pass_names_for_error(pass_indices: &[usize], passes: &[PassNode]) -> String {
     pass_indices
         .iter()
@@ -3629,47 +3634,44 @@ fn acquire_surface_for_pass(
     Ok(())
 }
 
+/// The attachment view and its resolve target. The error says why the pass
+/// cannot use them.
 fn resolve_color_attachment_views(
     ctx: &mut RecordContext<'_, '_>,
     target: AttachmentTarget,
     resolve_target: Option<AttachmentTarget>,
     surface_view: Option<&wgpu::TextureView>,
     surface_resolve_view: Option<&wgpu::TextureView>,
-) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
+) -> Result<(Option<wgpu::TextureView>, Option<wgpu::TextureView>), String> {
     match target {
         AttachmentTarget::Surface => {
             let Some(surface_view) = surface_view else {
-                return (None, None);
+                return Ok((None, None));
             };
             if resolve_target.is_some() {
-                (
+                Ok((
                     Some(surface_view.clone()),
                     resolve_target.and_then(|_| surface_resolve_view.cloned()),
-                )
+                ))
             } else {
                 let attachment_view = surface_resolve_view
                     .cloned()
                     .unwrap_or_else(|| surface_view.clone());
-                (Some(attachment_view), None)
+                Ok((Some(attachment_view), None))
             }
         }
         AttachmentTarget::Texture(handle) => {
             let resolve_view = render_target_view(ctx, handle);
-            if resolve_target.is_some() && render_target_msaa_view(ctx, handle).is_none() {
-                panic!(
-                    "frame graph resolve target mismatch before wgpu validation: texture {:?} requested resolve attachment but has no MSAA view",
-                    handle
-                );
+            if resolve_target.is_none() {
+                return Ok((resolve_view, None));
             }
-            let attachment_view = if resolve_target.is_some() {
-                render_target_msaa_view(ctx, handle).or_else(|| resolve_view.clone())
-            } else {
-                resolve_view.clone()
+            let Some(msaa_view) = render_target_msaa_view(ctx, handle) else {
+                return Err(
+                    "a color attachment resolves, but its texture has no multisampled view"
+                        .to_string(),
+                );
             };
-            (
-                attachment_view,
-                resolve_view.filter(|_| resolve_target.is_some()),
-            )
+            Ok((Some(msaa_view), resolve_view))
         }
     }
 }

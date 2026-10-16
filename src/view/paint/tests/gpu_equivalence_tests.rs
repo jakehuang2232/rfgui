@@ -1222,6 +1222,7 @@ mod buffer_binding_tests;
 mod native_pixel_oracle_tests;
 mod oracle_tests;
 mod rect_instancing_tests;
+mod skipped_render_pass_tests;
 mod text_buffer_tests;
 
 mod artifact_scroll_content_contract_tests;

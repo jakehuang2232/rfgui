@@ -305,6 +305,8 @@ struct FrameRuntime {
     surface_diagnostics: Vec<gpu_paint::SurfaceDiagnostic>,
     /// The nodes the last frame left out of its paint, already warned about.
     left_out_paint: FxHashSet<crate::view::node_arena::NodeKey>,
+    /// Render passes the frame graph left out, already reported.
+    skipped_render_passes: FxHashSet<String>,
     /// F9 asked for a text report of the next RetainedAuto frame.
     retained_auto_report_pending: bool,
     frame_state: Option<FrameState>,
@@ -365,6 +367,7 @@ impl FrameRuntime {
             shadow_templates: FxHashMap::default(),
             surface_diagnostics: Vec::new(),
             left_out_paint: FxHashSet::default(),
+            skipped_render_passes: FxHashSet::default(),
             retained_auto_report_pending: false,
             frame_buffer_pool: FxHashMap::default(),
             rect_instances: rect_instances::RectInstanceFrame::default(),

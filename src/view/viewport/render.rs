@@ -1434,6 +1434,19 @@ impl Viewport {
             || (post_layout_animation_changed && !self.frame.frame_presented)
     }
 
+    /// Reports a render pass the frame graph left out, once per message.
+    pub(crate) fn report_skipped_render_pass(&mut self, message: String) {
+        if !self.frame.skipped_render_passes.contains(&message) {
+            eprintln!("[error] {message}");
+            self.frame.skipped_render_passes.insert(message);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skipped_render_passes_for_test(&self) -> usize {
+        self.frame.skipped_render_passes.len()
+    }
+
     /// Warns once about each node a frame leaves out, until it paints again.
     fn report_left_out_paint(&mut self, left_out: &FxHashSet<crate::view::node_arena::NodeKey>) {
         for key in left_out {
