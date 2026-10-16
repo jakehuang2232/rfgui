@@ -1945,7 +1945,9 @@ impl Viewport {
         services: crate::platform::PlatformServices<'_>,
     ) {
         let _batch = crate::ui::begin_state_batch();
-        self.with_app(services, |app, ctx| app.on_event(event, ctx));
+        self.with_app(services, |app, ctx| {
+            crate::ui::run_callback("App::on_event", || app.on_event(event, ctx))
+        });
     }
 
     /// Call `App::on_ready` exactly once (subsequent calls are no-ops).

@@ -106,6 +106,55 @@ fn drag_over_bubble_recomputes_local_pointer_for_current_target() {
     assert_eq!(event.drop_effect, Some(DragEffect::Move));
 }
 
+/// A panicking handler is cut short; the click still bubbles, as after an
+/// exception in a browser event listener.
+#[test]
+fn click_handler_panic_cuts_only_that_handler_short() {
+    let mut root = Element::new(0.0, 0.0, 120.0, 120.0);
+    let root_clicked = Rc::new(Cell::new(false));
+    let root_clicked_flag = root_clicked.clone();
+    root.on_click(move |_, _| root_clicked_flag.set(true));
+    let mut child = Element::new(0.0, 0.0, 60.0, 60.0);
+    child.on_click(|_, _| panic!("click handler failed"));
+
+    let mut arena = new_test_arena();
+    let root_key = commit_element(&mut arena, Box::new(root));
+    commit_child(&mut arena, root_key, Box::new(child));
+    measure_and_place(
+        &mut arena,
+        root_key,
+        constraints(120.0, 120.0),
+        placement(120.0, 120.0),
+    );
+
+    let mut viewport = Viewport::new();
+    let mut control = ViewportControl::new(&mut viewport);
+    let mut click = ClickEvent {
+        meta: EventMeta::new(NodeId::default()),
+        pointer: PointerEventData {
+            viewport_x: 10.0,
+            viewport_y: 10.0,
+            local_x: 0.0,
+            local_y: 0.0,
+            button: Some(PointerButton::Left),
+            buttons: PointerButtons::default(),
+            modifiers: Modifiers::default(),
+            pointer_id: 0,
+            pointer_type: crate::platform::input::PointerType::Mouse,
+            pressure: 0.0,
+            timestamp: crate::time::Instant::now(),
+        },
+        click_count: 1,
+    };
+    assert!(dispatch_click_from_hit_test(
+        &mut arena,
+        root_key,
+        &mut click,
+        &mut control
+    ));
+    assert!(root_clicked.get());
+}
+
 #[test]
 fn click_on_scrollbar_does_not_reach_click_handlers() {
     let mut root = Element::new(0.0, 0.0, 120.0, 120.0);

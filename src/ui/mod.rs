@@ -17,6 +17,7 @@ mod use_viewport;
 
 pub use component::*;
 pub use context::{provide_context_node, use_context, use_context_expect, with_pushed_context_raw};
+pub(crate) use error_boundary::run_callback;
 pub use error_boundary::{
     ErrorBoundary, ErrorBoundaryHandle, ErrorBoundaryProps, RenderError, ResetKey,
     catch_render_node,

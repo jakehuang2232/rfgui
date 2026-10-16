@@ -1360,9 +1360,11 @@ impl<A: 'static, B: 'static> Handler<dyn FnMut(A, B)> {
         }
     }
 
-    pub fn call(&self, a: A, b: B) {
+    /// Runs the handler, and returns whether it ran to the end: one that
+    /// panics is cut short, and the app carries on.
+    pub fn call(&self, a: A, b: B) -> bool {
         let _batch = crate::ui::begin_state_batch();
-        (self.handler.borrow_mut())(a, b);
+        crate::ui::run_callback("an event handler", || (self.handler.borrow_mut())(a, b))
     }
 }
 
@@ -1495,9 +1497,11 @@ macro_rules! impl_handler_prop {
                 }
             }
 
-            pub fn call(&self, event: &mut $event_ty) {
+            /// Runs the handler, and returns whether it ran to the end: one
+            /// that panics is cut short, and the app carries on.
+            pub fn call(&self, event: &mut $event_ty) -> bool {
                 let _batch = crate::ui::begin_state_batch();
-                (self.handler.borrow_mut())(event);
+                crate::ui::run_callback("an event handler", || (self.handler.borrow_mut())(event))
             }
         }
 

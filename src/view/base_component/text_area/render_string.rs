@@ -49,8 +49,8 @@ impl TextAreaRenderString {
     ///
     /// The subtree may hold host tags only (`Element`, `Text`, ...). The
     /// handler runs during layout, outside any root render, so a user
-    /// component (`#[component]`) would never render; the TextArea panics
-    /// when it finds one.
+    /// component (`#[component]`) would never render; the TextArea leaves
+    /// out a projection holding one, with a warning.
     pub fn range<R, F>(&mut self, range: R, render: F)
     where
         R: RangeBounds<usize>,

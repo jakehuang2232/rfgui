@@ -535,11 +535,17 @@ impl TextArea {
             return Vec::new();
         };
         let mut render_string = TextAreaRenderString::new(self.content.clone());
-        handler.call(&mut render_string);
-        for projection in render_string.projections() {
-            reject_user_components(&projection.node);
+        // A handler cut short by a panic leaves the text plain.
+        if !handler.call(&mut render_string) {
+            return Vec::new();
         }
-        normalize_projections(self.content.as_str(), render_string.projections())
+        let projections: Vec<_> = render_string
+            .projections()
+            .iter()
+            .filter(|projection| holds_host_tags_only(&projection.node))
+            .cloned()
+            .collect();
+        normalize_projections(self.content.as_str(), &projections)
     }
 
     pub(super) fn cursor_is_inside_projection(&self) -> bool {
@@ -1090,23 +1096,35 @@ fn expand_plain_paragraphs(
 }
 
 /// `on_render` runs during layout, outside any root render, so a user
-/// component in a projection would never render. Fail loudly instead of
-/// dropping the projection.
-fn reject_user_components(node: &RsxNode) {
+/// component in a projection would never render. Such a projection is left
+/// out, with a warning once per component.
+fn holds_host_tags_only(node: &RsxNode) -> bool {
     match node {
-        RsxNode::Text(_) => {}
-        RsxNode::Element(element) => element.children.iter().for_each(reject_user_components),
-        RsxNode::Fragment(fragment) => fragment.children.iter().for_each(reject_user_components),
-        RsxNode::Provider(provider) => reject_user_components(&provider.child),
-        RsxNode::Component(component) => panic!(
-            "TextArea `on_render` projections support host tags only, but `{}` is a user \
-             component; the handler runs during layout, outside any root render, so the \
-             component would never render",
-            component.vtable.type_name
-        ),
-        RsxNode::ErrorBoundary(_) => {
-            panic!("TextArea `on_render` projections support host tags only, not ErrorBoundary")
+        RsxNode::Text(_) => true,
+        RsxNode::Element(element) => element.children.iter().all(holds_host_tags_only),
+        RsxNode::Fragment(fragment) => fragment.children.iter().all(holds_host_tags_only),
+        RsxNode::Provider(provider) => holds_host_tags_only(&provider.child),
+        RsxNode::Component(component) => {
+            warn_unrendered_projection(component.vtable.type_name);
+            false
         }
+        RsxNode::ErrorBoundary(_) => {
+            warn_unrendered_projection("ErrorBoundary");
+            false
+        }
+    }
+}
+
+fn warn_unrendered_projection(name: &'static str) {
+    thread_local! {
+        static WARNED: std::cell::RefCell<rustc_hash::FxHashSet<&'static str>> =
+            std::cell::RefCell::default();
+    }
+    if WARNED.with(|warned| warned.borrow_mut().insert(name)) {
+        eprintln!(
+            "[warn] TextArea `on_render` projections support host tags only; left out one \
+             holding `{name}`, which would never render during layout"
+        );
     }
 }
 

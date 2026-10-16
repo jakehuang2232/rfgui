@@ -359,6 +359,20 @@ fn use_mount_runs_once_and_cleans_up_on_unmount() {
 }
 
 #[test]
+fn panicking_cleanup_leaves_the_other_cleanups_running() {
+    let cleanups = Rc::new(Cell::new(0));
+    let counted = cleanups.clone();
+    build_scope(|| {
+        crate::ui::render_component::<u8, _>(|| use_mount(|| || panic!("cleanup failed")));
+        crate::ui::render_component::<u16, _>(|| {
+            use_mount(move || move || counted.set(counted.get() + 1))
+        });
+    });
+    build_scope(|| crate::ui::render_component::<u32, _>(|| {}));
+    assert_eq!(cleanups.get(), 1);
+}
+
+#[test]
 fn memoized_component_reruns_when_its_own_state_changes() {
     let renders = Rc::new(Cell::new(0));
     let captured_state: Rc<std::cell::RefCell<Option<super::State<i32>>>> =

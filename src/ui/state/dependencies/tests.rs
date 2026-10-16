@@ -255,20 +255,19 @@ fn no_op_and_redraw_only_batches_do_not_invalidate_memos() {
 }
 
 #[test]
-fn updater_panic_still_invalidates_values_already_committed() {
+fn panicking_updater_drops_its_state_batch_and_the_rest_commits() {
     let a = Binding::new(0);
     let b = Binding::new(0);
     let count = Cell::new(0);
     let build =
         || build_scope(|| memo(1, &count, || RsxNode::text(a.snapshot().get().to_string())));
     build();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        batch_state_updates(|| {
-            a.set(1);
-            b.update(|_| panic!("updater"));
-        });
-    }));
-    assert!(result.is_err());
+    batch_state_updates(|| {
+        a.set(1);
+        b.set(5);
+        b.update(|_| panic!("updater"));
+    });
+    assert_eq!(b.get(), 0);
     assert!(take_state_dirty().needs_rebuild());
     assert!(!FLUSHING_STATE.get());
     assert_eq!(build(), RsxNode::text("1"));

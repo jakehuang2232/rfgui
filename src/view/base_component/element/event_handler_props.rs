@@ -48,95 +48,141 @@ pub(crate) fn try_assign_event_handler_prop(
     match key {
         "on_pointer_down" => {
             let handler = as_mouse_down_handler(value, key)?;
-            element.on_pointer_down(move |event, _control| handler.call(event));
+            element.on_pointer_down(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_pointer_up" => {
             let handler = as_mouse_up_handler(value, key)?;
-            element.on_pointer_up(move |event, _control| handler.call(event));
+            element.on_pointer_up(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_pointer_move" => {
             let handler = as_mouse_move_handler(value, key)?;
-            element.on_pointer_move(move |event, _control| handler.call(event));
+            element.on_pointer_move(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_pointer_enter" => {
             let handler = as_mouse_enter_handler(value, key)?;
-            element.on_pointer_enter(move |event| handler.call(event));
+            element.on_pointer_enter(move |event| {
+                handler.call(event);
+            });
         }
         "on_pointer_leave" => {
             let handler = as_mouse_leave_handler(value, key)?;
-            element.on_pointer_leave(move |event| handler.call(event));
+            element.on_pointer_leave(move |event| {
+                handler.call(event);
+            });
         }
         "on_click" => {
             let handler = as_click_handler(value, key)?;
-            element.on_click(move |event, _control| handler.call(event));
+            element.on_click(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_context_menu" => {
             let handler = as_context_menu_handler(value, key)?;
-            element.on_context_menu(move |event, _control| handler.call(event));
+            element.on_context_menu(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_wheel" => {
             let handler = as_wheel_handler(value, key)?;
-            element.on_wheel(move |event, _control| handler.call(event));
+            element.on_wheel(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_key_down" => {
             let handler = as_key_down_handler(value, key)?;
-            element.on_key_down(move |event, _control| handler.call(event));
+            element.on_key_down(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_key_up" => {
             let handler = as_key_up_handler(value, key)?;
-            element.on_key_up(move |event, _control| handler.call(event));
+            element.on_key_up(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_focus" => {
             let handler = as_focus_handler(value, key)?;
-            element.on_focus(move |event, _control| handler.call(event));
+            element.on_focus(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_blur" => {
             let handler = as_blur_handler(value, key)?;
-            element.on_blur(move |event, _control| handler.call(event));
+            element.on_blur(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_ime_commit" => {
             let handler = as_ime_commit_handler(value, key)?;
-            element.on_ime_commit(move |event, _control| handler.call(event));
+            element.on_ime_commit(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_ime_enabled" => {
             let handler = as_ime_enabled_handler(value, key)?;
-            element.on_ime_enabled(move |event, _control| handler.call(event));
+            element.on_ime_enabled(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_ime_disabled" => {
             let handler = as_ime_disabled_handler(value, key)?;
-            element.on_ime_disabled(move |event, _control| handler.call(event));
+            element.on_ime_disabled(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_drag_start" => {
             let handler = as_drag_start_handler(value, key)?;
-            element.on_drag_start(move |event, _control| handler.call(event));
+            element.on_drag_start(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_drag_over" => {
             let handler = as_drag_over_handler(value, key)?;
-            element.on_drag_over(move |event, _control| handler.call(event));
+            element.on_drag_over(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_drag_leave" => {
             let handler = as_drag_leave_handler(value, key)?;
-            element.on_drag_leave(move |event, _control| handler.call(event));
+            element.on_drag_leave(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_drop" => {
             let handler = as_drop_handler(value, key)?;
-            element.on_drop(move |event, _control| handler.call(event));
+            element.on_drop(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_drag_end" => {
             let handler = as_drag_end_handler(value, key)?;
-            element.on_drag_end(move |event, _control| handler.call(event));
+            element.on_drag_end(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_copy" => {
             let handler = as_copy_handler(value, key)?;
-            element.on_copy(move |event, _control| handler.call(event));
+            element.on_copy(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_cut" => {
             let handler = as_cut_handler(value, key)?;
-            element.on_cut(move |event, _control| handler.call(event));
+            element.on_cut(move |event, _control| {
+                handler.call(event);
+            });
         }
         "on_paste" => {
             let handler = as_paste_handler(value, key)?;
-            element.on_paste(move |event, _control| handler.call(event));
+            element.on_paste(move |event, _control| {
+                handler.call(event);
+            });
         }
         _ => return Ok(false),
     }

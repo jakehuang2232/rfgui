@@ -13,7 +13,7 @@ impl EventTarget for Element {
         }
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_down {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -32,7 +32,7 @@ impl EventTarget for Element {
         }
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_up {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -51,7 +51,7 @@ impl EventTarget for Element {
         }
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_move {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -70,7 +70,7 @@ impl EventTarget for Element {
         }
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.click {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -85,7 +85,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.wheel {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -104,7 +104,7 @@ impl EventTarget for Element {
         }
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.context_menu {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -119,7 +119,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.key_down {
-                handler(event, _control);
+                crate::ui::run_callback("an event handler", || handler(event, _control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -134,7 +134,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.key_up {
-                handler(event, _control);
+                crate::ui::run_callback("an event handler", || handler(event, _control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -149,7 +149,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.focus {
-                handler(event, _control);
+                crate::ui::run_callback("an event handler", || handler(event, _control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -164,7 +164,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.blur {
-                handler(event, _control);
+                crate::ui::run_callback("an event handler", || handler(event, _control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -179,7 +179,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.ime_commit {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -194,7 +194,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.ime_enabled {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -209,7 +209,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.ime_disabled {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -224,7 +224,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.drag_start {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -239,7 +239,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.drag_over {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -254,7 +254,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.drag_leave {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -269,7 +269,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.drop {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -284,7 +284,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.drag_end {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -299,7 +299,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.copy {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -314,7 +314,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.cut {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -329,7 +329,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.paste {
-                handler(event, control);
+                crate::ui::run_callback("an event handler", || handler(event, control));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -369,7 +369,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_enter {
-                handler(event);
+                crate::ui::run_callback("an event handler", || handler(event));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }
@@ -383,7 +383,7 @@ impl EventTarget for Element {
     ) {
         if let Some(h) = &mut self.event_handlers {
             for handler in &mut h.pointer_leave {
-                handler(event);
+                crate::ui::run_callback("an event handler", || handler(event));
                 if event.meta.immediate_propagation_stopped() { break; }
             }
         }

@@ -28,6 +28,10 @@
 //! what it returns shows in this one. It also takes the place of
 //! `componentDidCatch`, so it is the place to log.
 //!
+//! A panic in a callback outside a render, such as an event handler, a
+//! timer, a state updater or a mount cleanup, cuts that callback short and
+//! leaves the tree alone.
+//!
 //! Outside any boundary, a render or mount panic unmounts the whole tree
 //! (see [`render_root`](crate::ui::render_root)). Panics are caught by
 //! unwinding, so a build with `panic = "abort"`, the default on wasm, still
@@ -74,6 +78,18 @@ impl fmt::Display for RenderError {
 }
 
 impl std::error::Error for RenderError {}
+
+/// Runs a callback from outside a render, such as an event handler, a timer,
+/// a state updater or a mount cleanup, and returns whether it ran to the end. One that panics is cut
+/// short and reported, and the app carries on, as after an exception in a
+/// browser event listener; no error boundary is involved.
+pub(crate) fn run_callback(kind: &str, callback: impl FnOnce()) -> bool {
+    let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)).is_ok();
+    if !completed {
+        eprintln!("[error] {kind} panicked; cut it short");
+    }
+    completed
+}
 
 /// Builds an error boundary node around `child`. When a render under it
 /// panics, `on_error` gets the error and returns what renders instead. When

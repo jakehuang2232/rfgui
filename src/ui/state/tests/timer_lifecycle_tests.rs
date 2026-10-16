@@ -3,18 +3,35 @@ use super::*;
 #[test]
 fn unmount_during_dispatch_cancels_other_due_hooks() {
     clear_test_timers();
+    let fired = Rc::new(Cell::new(false));
+    let unmounted_fired = fired.clone();
     build_scope(|| {
         crate::ui::render_component::<u32, _>(|| {
             use_timeout(true, Duration::ZERO, || {
                 clear_test_timers();
             });
-            use_timeout(true, Duration::ZERO, || {
-                panic!("unmounted hook must not fire")
-            });
+            use_timeout(true, Duration::ZERO, move || unmounted_fired.set(true));
         });
     });
     run_due_timers(Instant::now() + Duration::from_secs(1));
+    assert!(!fired.get(), "unmounted hook must not fire");
     assert_eq!(next_timer_deadline(), None);
+}
+
+#[test]
+fn panicking_hook_leaves_the_other_due_hooks_firing() {
+    clear_test_timers();
+    let fired = Rc::new(Cell::new(false));
+    let later_fired = fired.clone();
+    build_scope(|| {
+        crate::ui::render_component::<u32, _>(|| {
+            use_timeout(true, Duration::ZERO, || panic!("timer failed"));
+            use_timeout(true, Duration::ZERO, move || later_fired.set(true));
+        });
+    });
+    run_due_timers(Instant::now() + Duration::from_secs(1));
+    assert!(fired.get());
+    clear_test_timers();
 }
 
 #[test]

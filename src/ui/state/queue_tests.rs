@@ -123,11 +123,12 @@ fn unmounted_setter_does_not_dirty_or_change_a_remounted_slot() {
     let fresh = counter();
     let _ = take_state_dirty();
     stale.set(50);
-    stale
-        .binding()
-        .update(|_| panic!("unmounted updater must not run"));
+    let ran = Rc::new(Cell::new(false));
+    let stale_ran = ran.clone();
+    stale.binding().update(move |_| stale_ran.set(true));
     assert!(!peek_state_dirty().has_any());
     batch_state_updates(|| fresh.update(|n| *n += 1));
+    assert!(!ran.get(), "unmounted updater must not run");
     assert_eq!(counter().get(), 1);
     assert_eq!(stale.get(), 0);
 }

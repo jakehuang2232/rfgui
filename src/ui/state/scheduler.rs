@@ -29,13 +29,17 @@ impl<T: Clone + PartialEq + 'static> PendingState for BindingPropPayload<T> {
             }
             let previous = self.value.borrow().clone();
             let mut next = (*previous).clone();
-            for action in actions {
-                match action {
-                    StateUpdate::Replace(value) => next = value,
-                    StateUpdate::Update(update) => update(&mut next),
+            // An updater that panics may leave the value half changed, so
+            // this state keeps none of the batch's updates; others commit.
+            let applied = crate::ui::run_callback("a state updater", || {
+                for action in actions {
+                    match action {
+                        StateUpdate::Replace(value) => next = value,
+                        StateUpdate::Update(update) => update(&mut next),
+                    }
                 }
-            }
-            if next != *previous {
+            });
+            if applied && next != *previous {
                 crate::ui::work_profile::count(|p| p.changed_targets += 1);
                 if let Some(cell) = &self.legacy_cell {
                     *cell.borrow_mut() = next.clone();
@@ -80,6 +84,7 @@ pub(super) fn request_state_wakeup() {
 /// Settle one batch of queued updates before constructing a new render.
 /// No-op during a render or event batch. Updaters must be pure; they run in
 /// order against preceding queued values, outside any state-store borrow.
+/// One that panics drops its state's updates from the batch.
 pub fn flush_state_updates() {
     if BATCH_DEPTH.with(Cell::get) != 0
         || FRAME_DEPTH.with(Cell::get) != 0

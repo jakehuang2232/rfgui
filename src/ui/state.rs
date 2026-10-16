@@ -416,7 +416,7 @@ struct MountEntry {
 impl Drop for MountEntry {
     fn drop(&mut self) {
         if let Some(cleanup) = self.cleanup.take() {
-            cleanup();
+            crate::ui::run_callback("a mount cleanup", cleanup);
         }
     }
 }
@@ -1422,7 +1422,7 @@ where
                 let timer = crate::time::timers::Timer::new(move || {
                     let callback = callback_for_timer.borrow().clone();
                     let _batch = begin_state_batch();
-                    (callback.borrow_mut())();
+                    crate::ui::run_callback("a timer", || (callback.borrow_mut())());
                 });
                 if enabled {
                     timer.schedule(now + duration, interval);
@@ -1594,7 +1594,9 @@ pub fn dispatch_viewport_pointer_down_hook(event: ViewportPointerDownEvent) {
     });
     notify_viewport_pointer_state_changed();
     for callback in callbacks {
-        (callback.borrow_mut())(&event);
+        crate::ui::run_callback("a viewport pointer hook", || {
+            (callback.borrow_mut())(&event)
+        });
     }
 }
 
@@ -1617,7 +1619,9 @@ pub fn dispatch_viewport_pointer_move_hook(event: ViewportPointerMoveEvent) {
     });
     notify_viewport_pointer_state_changed();
     for callback in callbacks {
-        (callback.borrow_mut())(&event);
+        crate::ui::run_callback("a viewport pointer hook", || {
+            (callback.borrow_mut())(&event)
+        });
     }
 }
 
@@ -1640,7 +1644,9 @@ pub fn dispatch_viewport_pointer_up_hook(event: ViewportPointerUpEvent) {
     });
     notify_viewport_pointer_state_changed();
     for callback in callbacks {
-        (callback.borrow_mut())(&event);
+        crate::ui::run_callback("a viewport pointer hook", || {
+            (callback.borrow_mut())(&event)
+        });
     }
 }
 
@@ -1724,7 +1730,7 @@ fn drain_pending_mounts() {
                     entry.cleanup = cleanup;
                 } else if let Some(cleanup) = cleanup {
                     // The mount itself unmounted the component; honor symmetry.
-                    cleanup();
+                    crate::ui::run_callback("a mount cleanup", cleanup);
                 }
             });
         }

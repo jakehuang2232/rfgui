@@ -335,14 +335,27 @@ fn ProjectionBadge() -> RsxNode {
 }
 
 #[test]
-#[should_panic(expected = "TextArea `on_render` projections support host tags only")]
-fn projection_rejects_user_component() {
+fn projection_leaves_out_user_components_and_a_panicking_handler() {
     let mut text_area = TextArea::new();
     text_area.content = "abc".to_string();
     text_area.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
         render.range(0..1, |_| crate::ui::rsx! { <ProjectionBadge /> });
+        render.range(1..2, |slice| slice);
     }));
-    let _ = text_area.collect_normalized_projections();
+    let projections = text_area.collect_normalized_projections();
+    assert_eq!(
+        projections
+            .iter()
+            .map(|p| p.range.clone())
+            .collect::<Vec<_>>(),
+        [1..2]
+    );
+
+    text_area.on_render_handler = Some(crate::ui::on_text_area_render(|render| {
+        render.range(1..2, |slice| slice);
+        panic!("on_render failed");
+    }));
+    assert!(text_area.collect_normalized_projections().is_empty());
 }
 
 mod atomic_placement_tests;
