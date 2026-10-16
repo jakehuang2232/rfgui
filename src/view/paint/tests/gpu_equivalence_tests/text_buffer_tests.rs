@@ -173,10 +173,11 @@ fn native_text_globals_reuse_buffers_without_overwriting_other_passes() -> Resul
                 } else {
                     baseline = Some(pixels);
                 }
-                // Four distinct Text allocations plus Present's uniform.
-                // Graph/pass destruction must not destroy these pooled buffers.
+                // Four distinct Text allocations; Present binds a cached
+                // uniform outside the pool. Graph/pass destruction must not
+                // destroy these pooled buffers.
                 let buffers = viewport.frame_buffers_for_test();
-                assert_eq!(buffers.len(), 5);
+                assert_eq!(buffers.len(), 4);
                 assert!(
                     buffers.iter().all(|(_, buffer)| {
                         released.iter().all(|(_, previous)| buffer != previous)
