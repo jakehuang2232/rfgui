@@ -1,5 +1,10 @@
 use super::*;
 
+/// The device scale factors a viewport accepts: from a 25% browser zoom on a
+/// 1x screen to a 500% zoom on a 3x one.
+const MIN_SCALE_FACTOR: f32 = 0.25;
+const MAX_SCALE_FACTOR: f32 = 16.0;
+
 impl Viewport {
     /// Attach a surface target to the viewport.
     ///
@@ -84,8 +89,18 @@ impl Viewport {
         std::mem::take(&mut self.pending_platform_requests)
     }
 
+    /// Sets the device scale factor. A value outside `MIN_SCALE_FACTOR` and
+    /// `MAX_SCALE_FACTOR` takes the nearest bound, and one that is not a
+    /// number takes the minimum, with a warning.
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
-        self.scale_factor = scale_factor.max(0.0001);
+        let kept = scale_factor.max(MIN_SCALE_FACTOR).min(MAX_SCALE_FACTOR);
+        if kept != scale_factor {
+            eprintln!(
+                "[warn] scale factor {scale_factor} is outside \
+                 {MIN_SCALE_FACTOR}..={MAX_SCALE_FACTOR}; using {kept}"
+            );
+        }
+        self.scale_factor = kept;
         self.update_logical_size(
             self.gpu.surface_config.width,
             self.gpu.surface_config.height,

@@ -871,9 +871,8 @@ impl Viewport {
     }
 
     fn update_logical_size(&mut self, physical_width: u32, physical_height: u32) {
-        let scale = self.scale_factor.max(0.0001);
-        let width = (physical_width as f32 / scale).max(1.0);
-        let height = (physical_height as f32 / scale).max(1.0);
+        let width = (physical_width as f32 / self.scale_factor).max(1.0);
+        let height = (physical_height as f32 / self.scale_factor).max(1.0);
         self.frame.render_required |= (width, height) != self.logical_size();
         self.logical_width = width;
         self.logical_height = height;
