@@ -954,6 +954,8 @@ fn stage_c_depth_four_scroll_fixture() -> (
         element.set_scroll_offset((15.0, 25.0));
         element.clear_local_dirty_flags(DirtyPassMask::LAYOUT.union(DirtyPassMask::PLACEMENT));
     }
+    // `0x12f0_NN` numbers the fixture's nodes; `_16` is no type suffix.
+    #[allow(clippy::mistyped_literal_suffixes)]
     let leaf = arena.insert(Node::new(Box::new(Element::new_with_id(
         0x12f0_16, -5.0, -5.0, 900.0, 900.0,
     ))));

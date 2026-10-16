@@ -50,7 +50,9 @@ fn shared_readers_do_not_copy_and_mutation_detaches_old_snapshots() {
     assert_eq!(copies.get(), 6);
     assert!(sequence.get(6).is_none());
     assert!(sequence.get(6..6).unwrap().is_empty());
-    assert!(sequence.get(4..3).is_none());
+    #[allow(clippy::reversed_empty_ranges)]
+    let reversed = 4..3; // Rejected, not read as empty.
+    assert!(sequence.get(reversed).is_none());
     assert!(sequence.get(..=usize::MAX).is_none());
     assert_eq!(
         sequence
@@ -144,7 +146,9 @@ fn block_range_view_never_flattens_or_clones_payloads() {
     assert_eq!(view.last().unwrap().0, 3);
     assert_eq!(copies.get(), 0);
     assert!(sequence.flattened.get().is_none());
-    assert!(sequence.view(4..3).is_none());
+    #[allow(clippy::reversed_empty_ranges)]
+    let reversed = 4..3; // Rejected, not read as empty.
+    assert!(sequence.view(reversed).is_none());
     assert!(sequence.view(0..5).is_none());
 }
 
