@@ -1687,6 +1687,23 @@ fn walk_artifact_surface_path(
                     let clips = match mode {
                         ArtifactSurfaceWalkMode::BoundaryTransition => {
                             if receiver_state.clip != Some(contents_clip) {
+                                // A witness under a clip of its own inside the
+                                // scrollport, such as an AnchorParent clip, still
+                                // crosses this boundary: its later edges sit in
+                                // the receiver. The scroll's own edge comes from
+                                // witnesses on the boundary.
+                                if clip_chain_below(
+                                    receiver_state.clip,
+                                    Some(contents_clip),
+                                    &[],
+                                    artifact_clips,
+                                )
+                                .is_some()
+                                {
+                                    receiver_state.scroll = None;
+                                    receiver_state.clip = snapshots.clip_parent(contents_clip)?;
+                                    localized_state.scroll = None;
+                                }
                                 continue;
                             }
                             Vec::new()

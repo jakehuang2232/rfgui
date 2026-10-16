@@ -82,6 +82,8 @@ enum ClipSource {
     FoldedScroll,
     AnchorAncestor,
     AnchorOnBox,
+    /// A scrolled scroll box with a scrollbar, around an AnchorParent clip.
+    ScrollAroundAnchor,
     /// A scroll box that folds, around an AnchorParent clip.
     FoldedScrollAroundAnchor,
 }
@@ -129,6 +131,23 @@ fn scene(source: ClipSource, opacity: f32, reach: bool) -> (RsxNode, [u32; 4], b
             opacity,
             matches!(source, ClipSource::AnchorOnBox),
         ),
+        ClipSource::ScrollAroundAnchor => rsx! {
+            <Element style={{
+                width: Length::px(260.0),
+                height: Length::px(160.0),
+                scroll_direction: ScrollDirection::Vertical,
+                layout: Layout::flow().column().no_wrap(),
+            }}>
+                <Element style={{
+                    width: Length::px(260.0),
+                    height: Length::px(400.0),
+                    padding: Padding::new().top(Length::px(30.0)),
+                    layout: Layout::flow().column().no_wrap(),
+                }}>
+                    {anchor_clipped(if reach { 170.0 } else { 100.0 }, opacity, false)}
+                </Element>
+            </Element>
+        },
         ClipSource::FoldedScrollAroundAnchor => rsx! {
             <Element style={{
                 width: Length::px(260.0),
@@ -156,7 +175,8 @@ fn scene(source: ClipSource, opacity: f32, reach: bool) -> (RsxNode, [u32; 4], b
             {content}
         </Element>
     };
-    (root, clip, matches!(source, ClipSource::Scroll))
+    let scrolls = matches!(source, ClipSource::Scroll | ClipSource::ScrollAroundAnchor);
+    (root, clip, scrolls)
 }
 
 fn render(gpu: &gpu::Gpu, scene: &RsxNode, scroll: bool) -> Result<Vec<u8>, String> {
@@ -200,6 +220,7 @@ fn ancestor_clips_cut_a_transformed_box_on_screen() -> Result<(), String> {
         ClipSource::FoldedScroll,
         ClipSource::AnchorAncestor,
         ClipSource::AnchorOnBox,
+        ClipSource::ScrollAroundAnchor,
         ClipSource::FoldedScrollAroundAnchor,
     ] {
         for opacity in [1.0, 0.8] {
