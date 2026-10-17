@@ -824,14 +824,22 @@ impl Element {
         target_width: f32,
         target_height: f32,
     ) {
-        let current_width = self
-            .layout_transition_override_width
-            .unwrap_or(prev_width)
-            .max(0.0);
-        let current_height = self
-            .layout_transition_override_height
-            .unwrap_or(prev_height)
-            .max(0.0);
+        // Size samples land on whole pixels, so a track runs between the
+        // whole pixels nearest a fractional size and its target. Compared
+        // with the exact sizes, the track could never finish, and a box
+        // that settled on a fractional size would start one again.
+        let target_width = round_layout_value(target_width);
+        let target_height = round_layout_value(target_height);
+        let current_width = round_layout_value(
+            self.layout_transition_override_width
+                .unwrap_or(prev_width)
+                .max(0.0),
+        );
+        let current_height = round_layout_value(
+            self.layout_transition_override_height
+                .unwrap_or(prev_height)
+                .max(0.0),
+        );
         let width_is_close_enough =
             (current_width - target_width).abs() < Self::LAYOUT_TRANSITION_FINISH_EPSILON;
         let height_is_close_enough =
