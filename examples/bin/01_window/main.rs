@@ -5,11 +5,13 @@ extern crate rfgui_components;
 #[global_allocator]
 static ALLOCATOR: rlsf::SmallGlobalTlsf = rlsf::SmallGlobalTlsf::new();
 
-mod components;
+mod inspector_panel;
+mod page;
+mod pages;
 mod scene;
-mod scene_windows;
+mod showcase;
+mod sidebar;
 mod utils;
-mod window_manager;
 
 use rfgui::app::{App, AppConfig, AppContext, WheelConfig};
 use rfgui::style::Color;

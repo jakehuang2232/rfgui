@@ -42,7 +42,7 @@ A host element paints only through retained hooks; the engine records, reuses, a
 
 1. Compose built-in `Element` / `Text` / `Image` / `Svg` nodes.
 2. `ElementTrait::record_custom_leaf_paint` / `record_custom_wrapper_paint`: typed fills covering exactly the engine-provided bounds. The engine traverses children; a host never paints them itself.
-3. `ElementTrait::prepared_gpu_paint_source`: a `GpuPaintSource` frozen in `Layoutable::prepare_paint_resources` (`requires_paint_resource_preparation` returns `true`). One WGSL draw validated by `GpuPaintProgram::new`; extent = ceil(layout size × device scale); bump the revision only when input bytes change. Reference: `examples/bin/01_window/scene_windows/particle_demo.rs`.
+3. `ElementTrait::prepared_gpu_paint_source`: a `GpuPaintSource` frozen in `Layoutable::prepare_paint_resources` (`requires_paint_resource_preparation` returns `true`). One WGSL draw validated by `GpuPaintProgram::new`; extent = ceil(layout size × device scale); bump the revision only when input bytes change. Reference: `examples/bin/01_window/pages/custom_gpu/particle_demo.rs`.
 
 Rules:
 

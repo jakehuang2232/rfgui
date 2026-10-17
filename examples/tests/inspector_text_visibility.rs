@@ -6,22 +6,27 @@ use rfgui::ui::{PointerButton, RsxNode, rsx};
 use rfgui::view::base_component::{BoxModelSnapshot, Text};
 use rfgui::view::{NodeArena, NodeKey, Viewport};
 
-#[path = "../bin/01_window/components.rs"]
-mod components;
 #[path = "../../lib/rfgui-components/tests/retained_controls/gpu.rs"]
 mod gpu;
+#[path = "../bin/01_window/inspector_panel.rs"]
+mod inspector_panel;
+#[path = "../bin/01_window/page.rs"]
+mod page;
+#[path = "../bin/01_window/pages/mod.rs"]
+mod pages;
 #[path = "../bin/01_window/scene.rs"]
 mod scene;
-#[path = "../bin/01_window/scene_windows/mod.rs"]
-mod scene_windows;
+#[path = "../bin/01_window/showcase.rs"]
+mod showcase;
+#[path = "../bin/01_window/sidebar.rs"]
+mod sidebar;
 #[path = "../bin/01_window/utils.rs"]
 mod utils;
-#[path = "../bin/01_window/window_manager.rs"]
-mod window_manager;
+use page::Page;
 use scene::MainScene;
 
-fn scene(case: u32) -> RsxNode {
-    rfgui::ui::render_root(|| rsx! { <MainScene key={case} /> })
+fn scene(case: u32, page: Page) -> RsxNode {
+    rfgui::ui::render_root(|| rsx! { <MainScene key={case} initial_page={Some(page)} /> })
 }
 
 fn text_bounds(viewport: &Viewport, label: &str) -> Option<BoxModelSnapshot> {
@@ -78,8 +83,9 @@ fn inspector_labels_survive_enabling_scroll_in_complete_demo() -> Result<(), Str
         let size = [1280 * dpr, 800 * dpr];
         for frame in 0_u64..10 {
             match frame {
+                // The Inspector opens from the sidebar.
                 1 => {
-                    pointer_down(&mut viewport, 188.0, 60.0);
+                    press_label(&mut viewport, "Inspector");
                     pointer_up_and_click(&mut viewport);
                 }
                 2 => press_label(&mut viewport, "Debug Render Time"),
@@ -88,9 +94,9 @@ fn inspector_labels_survive_enabling_scroll_in_complete_demo() -> Result<(), Str
                 _ => {}
             }
             // Match App::render_frame: preserve the root until state
-            // requests a rebuild. Keep every other demo window present.
+            // requests a rebuild.
             if root.is_none() || rfgui::ui::peek_state_dirty().needs_rebuild() {
-                root = Some(scene(case));
+                root = Some(scene(case, Page::Welcome));
             }
             let output = viewport
                 .render_rsx_offscreen_for_test(
@@ -118,12 +124,11 @@ fn inspector_labels_survive_enabling_scroll_in_complete_demo() -> Result<(), Str
             let inspector_height = viewport.node_arena().roots().iter().find_map(|&key| {
                 let node = viewport.node_arena().get(key)?;
                 let b = node.element.box_model_snapshot();
-                (b.x == 48.0 && b.y == 48.0 && b.width == 360.0).then_some(b.height)
+                (b.x == 896.0 && b.y == 24.0 && b.width == 360.0).then_some(b.height)
             });
             assert_eq!(inspector_height, Some(240.0));
             let pixels = gpu.read(&output.texture, size)?;
-            // Dark mode can be covered by another window's debug title.
-            // These two labels remain unobscured and visible in the scrollport.
+            // These two labels remain visible in the scrollport.
             for label in ["Debug Render Time", "Debug Geometry Overlay"] {
                 let b = text_bounds(&viewport, label).expect("persistent label");
                 assert!(b.should_render && b.width > 0.0 && b.height > 0.0);

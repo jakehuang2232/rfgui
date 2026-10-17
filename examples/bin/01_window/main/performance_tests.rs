@@ -2,9 +2,6 @@ use super::*;
 use rfgui::time::Instant;
 use rfgui::view::Viewport;
 
-#[path = "performance_tests/about_resize.rs"]
-mod about_resize;
-
 #[path = "performance_tests/incremental.rs"]
 mod incremental;
 

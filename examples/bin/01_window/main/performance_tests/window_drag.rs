@@ -1,9 +1,35 @@
 use super::*;
+use crate::page::Page;
+use rfgui::view::base_component::Text;
 use rfgui::view::viewport::PointerButton;
+use rfgui::view::{NodeArena, NodeKey};
 
 const CPU_PHASES: [&str; 10] = [
     "total", "begin", "layout", "prepare", "sync", "build", "compile", "execute", "finish", "end",
 ];
+
+/// The viewport position of the middle of the first Text reading `label`.
+fn text_center(viewport: &Viewport, label: &str) -> Option<(f32, f32)> {
+    fn find(arena: &NodeArena, key: NodeKey, label: &str) -> Option<(f32, f32)> {
+        let node = arena.get(key)?;
+        if let Some(text) = node.element.as_any().downcast_ref::<Text>()
+            && text.content() == label
+        {
+            let b = node.element.box_model_snapshot();
+            return Some((b.x + b.width / 2.0, b.y + b.height / 2.0));
+        }
+        drop(node);
+        arena
+            .children_of(key)
+            .iter()
+            .find_map(|&key| find(arena, key, label))
+    }
+    let arena = viewport.node_arena();
+    arena
+        .roots()
+        .iter()
+        .find_map(|&key| find(arena, key, label))
+}
 
 fn median(values: &mut [f64]) -> f64 {
     values.sort_by(f64::total_cmp);
@@ -15,10 +41,10 @@ fn median(values: &mut [f64]) -> f64 {
     }
 }
 
-/// Drag the top demo window by its title bar through the production input,
-/// App rebuild and offscreen render path. One pointer move per frame, as the
-/// window runner coalesces moves to frame boundaries. Offscreen CPU only; no
-/// host presentation latency.
+/// Drag the Notes window on the Containers page by its title bar through the
+/// production input, App rebuild and offscreen render path. One pointer move
+/// per frame, as the window runner coalesces moves to frame boundaries.
+/// Offscreen CPU only; no host presentation latency.
 #[test]
 #[ignore = "native hardware benchmark; run alone in release mode"]
 fn native_demo_window_drag() -> Result<(), String> {
@@ -46,15 +72,13 @@ fn native_demo_window_drag() -> Result<(), String> {
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(2);
     const WARM: u64 = 10;
-    // The last pushed window ("About") starts on top at (384, 384);
-    // `RFGUI_DRAG_GRAB=x,y` grabs another window's title bar instead.
-    let grab = std::env::var("RFGUI_DRAG_GRAB")
-        .ok()
-        .and_then(|v| {
-            let (x, y) = v.split_once(',')?;
-            Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
-        })
-        .unwrap_or((384.0 + 150.0, 384.0 + 12.0));
+    // The Notes window's title by default; `RFGUI_DRAG_GRAB=x,y` grabs
+    // another point instead.
+    let grab_override = std::env::var("RFGUI_DRAG_GRAB").ok().and_then(|v| {
+        let (x, y) = v.split_once(',')?;
+        Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
+    });
+    let mut grab = (0.0, 0.0);
     let mut viewport = Viewport::new();
     let now = Instant::now();
     let mut input_ms = Vec::new();
@@ -66,21 +90,26 @@ fn native_demo_window_drag() -> Result<(), String> {
     for frame in 0..WARM + frames {
         let started = Instant::now();
         if frame == WARM {
+            grab = grab_override
+                .or_else(|| text_center(&viewport, "Notes"))
+                .ok_or("the Notes window is not on screen")?;
             viewport.set_pointer_position_viewport(grab.0, grab.1);
             viewport.dispatch_pointer_move_event();
             viewport.set_pointer_button_pressed(PointerButton::Left, true);
             viewport.dispatch_pointer_down_event(PointerButton::Left);
         }
         if frame > WARM {
-            // Sweep back and forth so the window stays inside the viewport.
+            // Sweep back and forth so the window stays inside its area.
             let step = ((frame - WARM) % 80) as f32;
             let offset = if step < 40.0 { step } else { 80.0 - step } * 4.0;
-            viewport.set_pointer_position_viewport(grab.0 - offset, grab.1 - offset * 0.5);
+            viewport.set_pointer_position_viewport(grab.0 + offset, grab.1 + offset * 0.5);
             viewport.dispatch_pointer_move_event();
         }
         let input_done = Instant::now();
         // Production render_frame rebuilds App only when state is dirty.
-        let root = rfgui::ui::render_root(|| rsx! { <MainScene /> });
+        let root = rfgui::ui::render_root(|| {
+            rsx! { <MainScene initial_page={Some(Page::Containers)} /> }
+        });
         let build_done = Instant::now();
         let observation = viewport.render_rsx_offscreen_for_test(
             &root,

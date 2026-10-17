@@ -1,86 +1,79 @@
-use crate::rfgui::style::ColorLike;
+use crate::inspector_panel::InspectorPanel;
+use crate::page::Page;
+use crate::pages::PageView;
+use crate::rfgui::style::{Color, ColorLike, Layout, Length, ScrollDirection, flex};
 use crate::rfgui::ui::{RsxNode, component, rsx, use_mount, use_state, use_viewport};
-use crate::rfgui_components::use_theme;
-use crate::scene_windows::about_panel::Build as AboutPanel;
-use crate::scene_windows::component_test::ComponentTest;
-use crate::scene_windows::inline_test::InlineTest;
-use crate::scene_windows::inspector_panel::build as build_inspector_panel;
-use crate::scene_windows::particle_demo::ParticleDemo;
-use crate::scene_windows::render_test::RenderTest;
-use crate::scene_windows::textarea_test::TextareaTest;
-use crate::scene_windows::transition_lab::TransitionLab;
-use crate::window_manager::WindowManager;
+use crate::rfgui::view::Element;
+use crate::rfgui_components::{Theme, use_theme};
+use crate::sidebar::Sidebar;
+use std::rc::Rc;
 
+/// The sidebar and the selected page, with the Inspector floating above.
 #[component]
-pub fn MainScene() -> RsxNode {
+pub fn MainScene(initial_page: Option<Page>) -> RsxNode {
+    let page = use_state(|| initial_page.unwrap_or(Page::Welcome));
+    let dark_mode = use_state(|| true);
     let animation_on = use_state(|| true);
-    let animations_enabled = animation_on.get();
-    let window_z_order = use_state(Vec::<usize>::new);
-    let window_positions = use_state(Vec::<(f32, f32)>::new);
+    let inspector_open = use_state(|| false);
 
-    let (theme, _) = use_theme();
-
-    let background = theme.color.background.base.clone();
+    let (theme, set_theme) = use_theme();
     let viewport = use_viewport();
+    let background = theme.color.background.base.clone();
     use_mount(move || {
         viewport.set_clear_color(background.to_style_color().to_color());
     });
+    let on_dark_mode = Rc::new(move |on: bool| {
+        if on {
+            set_theme(Theme::dark());
+            viewport.set_clear_color(Color::rgb(40, 44, 52));
+        } else {
+            set_theme(Theme::light());
+            viewport.set_clear_color(Color::rgb(240, 240, 240));
+        }
+    }) as Rc<dyn Fn(bool)>;
 
-    let mut window_manager = WindowManager::new(window_positions.binding());
-    window_manager.push(
-        "Inspector Panel",
-        vec![build_inspector_panel(&theme, animation_on.binding())],
-        (
-            WindowManager::WINDOW_DEFAULT_WIDTH,
-            WindowManager::WINDOW_DEFAULT_HEIGHT,
-        ),
-    );
-    window_manager.push(
-        "Component Test",
-        vec![rsx! {
-            <ComponentTest theme={theme.clone()} animation_on={animations_enabled} />
-        }],
-        (460.0, 380.0),
-    );
-
-    window_manager.push(
-        "Render test",
-        vec![rsx! {
-            <RenderTest theme={theme.clone()} animation_on={animations_enabled} />
-        }],
-        (640.0, 420.0),
-    );
-    window_manager.push(
-        "Textarea Test",
-        vec![rsx! {
-            <TextareaTest theme={theme.clone()} />
-        }],
-        (520.0, 360.0),
-    );
-    window_manager.push(
-        "Inline test",
-        vec![rsx! {
-            <InlineTest theme={theme.clone()} />
-        }],
-        (620.0, 560.0),
-    );
-    window_manager.push(
-        "Transition Plugin Lab",
-        vec![rsx! {
-            <TransitionLab theme={theme.clone()} />
-        }],
-        (760.0, 520.0),
-    );
-
-    window_manager.push(
-        "Custom Native Component Demo",
-        vec![rsx! { <ParticleDemo animation_on={animation_on.binding()} /> }],
-        (600.0, 400.0),
-    );
-    window_manager.push(
-        "About",
-        vec![rsx! {<AboutPanel theme={theme.clone()} />}],
-        (360.0, 280.0),
-    );
-    RsxNode::fragment(window_manager.into_nodes(window_z_order.binding()))
+    let current = page.get();
+    let shell = rsx! {
+        <Element style={{
+            width: Length::percent(100.0),
+            height: Length::percent(100.0),
+            layout: Layout::flex().row(),
+            background: theme.color.background.base.clone(),
+            color: theme.color.text.primary.clone(),
+            font: theme.typography.font_family.clone(),
+            font_size: theme.typography.size.sm,
+        }}>
+            <Sidebar
+                page={page.binding()}
+                dark_mode={dark_mode.binding()}
+                on_dark_mode={on_dark_mode.clone()}
+                inspector_open={inspector_open.binding()}
+            />
+            // Keyed by page, so each page opens scrolled to its top.
+            <Element key={current.key()} style={{
+                flex: flex().grow(1.0).shrink(1.0),
+                min_width: Length::Zero,
+                height: Length::percent(100.0),
+                layout: Layout::flow().column().no_wrap(),
+                scroll_direction: ScrollDirection::Vertical,
+            }}>
+                <PageView
+                    page={current}
+                    navigate={page.binding()}
+                    animation_on={animation_on.binding()}
+                />
+            </Element>
+        </Element>
+    };
+    RsxNode::fragment(vec![
+        shell,
+        rsx! {
+            <InspectorPanel
+                open={inspector_open.get()}
+                dark_mode={dark_mode.binding()}
+                on_dark_mode={on_dark_mode}
+                animation_on={animation_on.binding()}
+            />
+        },
+    ])
 }

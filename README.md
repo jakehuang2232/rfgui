@@ -180,7 +180,7 @@ impl RsxChildrenPolicy for Card {
 A host element that paints content of its own implements a retained paint hook on `ElementTrait` instead of building render passes:
 
 - `record_custom_leaf_paint` / `record_custom_wrapper_paint` record typed fill commands covering the engine-provided bounds, before or after the children the engine traverses.
-- `prepared_gpu_paint_source` returns a `GpuPaintSource` frozen in `Layoutable::prepare_paint_resources`: one validated WGSL draw that the engine renders into its own texture and composites with the scene's transforms, clips, and effects. `examples/bin/01_window/scene_windows/particle_demo.rs` is a complete example.
+- `prepared_gpu_paint_source` returns a `GpuPaintSource` frozen in `Layoutable::prepare_paint_resources`: one validated WGSL draw that the engine renders into its own texture and composites with the scene's transforms, clips, and effects. `examples/bin/01_window/pages/custom_gpu/particle_demo.rs` is a complete example.
 
 Prefer composing built-in elements when they can express the content.
 

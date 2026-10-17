@@ -1,19 +1,8 @@
-<Element>
-    Third Party Licenses
-</Element>
-
 {{#each licenses}}
-<Element>
-    {{name}}
-</Element>
-
-<Element>Used by:</Element>
-
+=== {{{name}}}
 {{#each used_by}}
-<Element>{{crate.name}} {{crate.version}}</Element>
+- {{{crate.name}}} {{{crate.version}}}
 {{/each}}
 
-<Element>
-    {{text}}
-</Element>
+{{{text}}}
 {{/each}}

@@ -70,7 +70,7 @@ fn stage_c_retained_native_pixel_and_reuse_gate_names_are_a_closed_set() {
         include_str!("../../render_pass/render_target/pending_submission_tests.rs"),
         include_str!("../../render_pass/render_target/working_set_tests.rs"),
         include_str!("../../../../lib/rfgui-components/tests/retained_controls.rs"),
-        include_str!("../../../../examples/bin/01_window/scene_windows/particle_demo/native_tests.rs"),
+        include_str!("../../../../examples/bin/01_window/pages/custom_gpu/particle_demo/native_tests.rs"),
         include_str!("portable_renderer_tests.rs"),
         include_str!("gpu_equivalence_tests/native_transform_surface_tests.rs"),
         include_str!("gpu_equivalence_tests/native_artifact_surface_tests.rs"),

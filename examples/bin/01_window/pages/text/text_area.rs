@@ -1,0 +1,187 @@
+use crate::rfgui::style::{
+    Align, Border, BorderRadius, Color, Layout, Length, Padding, VerticalAlign,
+};
+use crate::rfgui::ui::{RsxNode, component, on_text_area_render, rsx, use_state};
+use crate::rfgui::view::{Element, Text, TextArea};
+use crate::rfgui_components::{
+    ButtonSize, Switch, ToggleButton, ToggleButtonGroup, ToggleGroupChangeHandler, use_theme,
+};
+use crate::showcase::Demo;
+use std::rc::Rc;
+
+fn projection_token_ranges(content: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = content.chars().collect();
+    let mut ranges = Vec::new();
+    let mut index = 0_usize;
+    while index + 1 < chars.len() {
+        if chars[index] == '{' && chars[index + 1] == '{' {
+            let start = index;
+            let mut cursor = index + 2;
+            while cursor + 1 < chars.len() {
+                if chars[cursor] == '}' && chars[cursor + 1] == '}' {
+                    ranges.push((start, cursor + 2));
+                    index = cursor + 2;
+                    break;
+                }
+                cursor += 1;
+            }
+            if cursor + 1 >= chars.len() {
+                break;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    ranges
+}
+
+#[component]
+pub fn TextAreaDemo() -> RsxNode {
+    let (theme, _) = use_theme();
+    let content = use_state(|| {
+        String::from(
+            "First line with a long value that can wrap when auto wrap is enabled.{{API_HOST}}/v1/users/{{USER_ID}}/activity/with/a/very/long/path\nTail line",
+        )
+    });
+    let multiline = use_state(|| true);
+    let projection = use_state(|| true);
+    let fixed_width = use_state(|| true);
+    let fixed_height = use_state(|| true);
+    let auto_wrap = use_state(|| true);
+    let vertical_align = use_state(|| VerticalAlign::Baseline);
+    let vertical_align_group = use_state(|| Some(String::from("baseline")));
+
+    let multiline_value = multiline.get();
+    let projection_value = projection.get();
+    let fixed_width_value = fixed_width.get();
+    let fixed_height_value = fixed_height.get();
+    let auto_wrap_value = auto_wrap.get();
+    let va = vertical_align.get();
+
+    let vertical_align_change = {
+        let vertical_align = vertical_align.binding();
+        let vertical_align_group = vertical_align_group.binding();
+        Rc::new(
+            move |_: &mut crate::rfgui::ui::ClickEvent, value: Option<String>| {
+                let selected = value.unwrap_or_else(|| match vertical_align.get() {
+                    VerticalAlign::Top => String::from("top"),
+                    VerticalAlign::Middle => String::from("middle"),
+                    VerticalAlign::Bottom => String::from("bottom"),
+                    _ => String::from("baseline"),
+                });
+                let next = match selected.as_str() {
+                    "top" => VerticalAlign::Top,
+                    "middle" => VerticalAlign::Middle,
+                    "bottom" => VerticalAlign::Bottom,
+                    _ => VerticalAlign::Baseline,
+                };
+                vertical_align.set(next);
+                vertical_align_group.set(Some(selected));
+            },
+        ) as ToggleGroupChangeHandler
+    };
+
+    let badge_background = Color::hex("#233241");
+    let badge_border = Color::hex("#42566f");
+    let badge_text = Color::hex("#9fbdd9");
+    let textarea_width = Length::px(360.0);
+    let textarea_height = Length::px(176.0);
+
+    let projection_renderer = projection_value.then(|| {
+        let bg = badge_background.clone();
+        let bd = badge_border.clone();
+        let tx = badge_text.clone();
+        let badge_font_size = theme.typography.size.xl;
+        on_text_area_render(
+            move |render: &mut rfgui::view::base_component::TextAreaRenderString| {
+                let content_chars: Vec<char> = render.content().chars().collect();
+                for (start, end) in projection_token_ranges(render.content()) {
+                    let badge_background = bg.clone();
+                    let badge_border = bd.clone();
+                    let badge_text = tx.clone();
+                    let slice: String = content_chars[start..end].iter().collect();
+                    render.range(start..end, move |_text_area_node| {
+                        rsx! {
+                            <Element style={{
+                                background: badge_background.clone(),
+                                border: Border::uniform(Length::px(1.0), &badge_border),
+                                border_radius: BorderRadius::uniform(Length::px(4.0)),
+                                padding: Padding::uniform(Length::px(0.0)).x(Length::px(20.0)),
+                                color: badge_text.clone(),
+                                font_size: badge_font_size,
+                            }}>
+                                <Text>{slice}</Text>
+                            </Element>
+                        }
+                    });
+                }
+            },
+        )
+    });
+
+    rsx! {
+        <Demo
+            title="TextArea"
+            description="An editable text field with selection, IME composition and the clipboard. Projection renders ranges of the text as elements: here each {{TOKEN}} shows as a badge while it stays plain text to edit."
+        >
+            <Element style={{
+                width: Length::percent(100.0),
+                layout: Layout::flow().row().wrap(),
+                gap: theme.spacing.md,
+            }}>
+                <Switch label="Multiline" binding={multiline.binding()} />
+                <Switch label="Projection" binding={projection.binding()} />
+                <Switch label="Fixed width" binding={fixed_width.binding()} />
+                <Switch label="Fixed height" binding={fixed_height.binding()} />
+                <Switch label="Auto wrap" binding={auto_wrap.binding()} />
+            </Element>
+            <Element style={{
+                layout: Layout::flow().row().wrap().align(Align::Center),
+                gap: theme.spacing.sm,
+            }}>
+                <Text>vertical-align</Text>
+                <ToggleButtonGroup
+                    value={vertical_align_group.binding()}
+                    on_change={Some(vertical_align_change)}
+                    size={Some(ButtonSize::Small)}
+                >
+                    <ToggleButton value="baseline">Baseline</ToggleButton>
+                    <ToggleButton value="top">Top</ToggleButton>
+                    <ToggleButton value="middle">Middle</ToggleButton>
+                    <ToggleButton value="bottom">Bottom</ToggleButton>
+                </ToggleButtonGroup>
+            </Element>
+            <Text>{format!("chars={} lines={} width={} height={} projection={} wrap={}",
+                content.get().chars().count(),
+                content.get().lines().count(),
+                if fixed_width_value { "fixed" } else { "auto" },
+                if fixed_height_value { "fixed" } else { "auto" },
+                projection_value,
+                auto_wrap_value,
+            )}</Text>
+            // TextArea styles only its text; its box (size, background,
+            // border, padding) comes from the Element around it.
+            <Element style={{
+                width: fixed_width_value.then_some(textarea_width),
+                height: fixed_height_value.then_some(textarea_height),
+                background: theme.color.background.base.clone(),
+                border: Border::uniform(Length::px(1.0), theme.color.divider.as_ref()),
+                border_radius: theme.radius.md,
+                padding: Padding::uniform(Length::px(8.0)),
+            }}>
+                <TextArea
+                    style={{
+                        color: theme.color.text.primary.clone(),
+                        font_size: 14,
+                        vertical_align: va,
+                    }}
+                    multiline={multiline_value}
+                    auto_wrap={auto_wrap_value}
+                    placeholder="Type text here..."
+                    binding={content.binding()}
+                    on_render={projection_renderer}
+                />
+            </Element>
+        </Demo>
+    }
+}
