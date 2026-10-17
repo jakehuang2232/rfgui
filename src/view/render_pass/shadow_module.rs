@@ -10,8 +10,8 @@ use crate::view::render_pass::composite_layer_pass::LayerIn;
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{GraphicsPassContext, render_target_ref};
 use crate::view::render_pass::texture_composite_pass::{
-    NinePatchComposite, TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput,
-    TextureCompositeParams, TextureCompositePass, TextureCompositeSourceIn,
+    NinePatchComposite, NinePatchKnockout, TextureCompositeInput, TextureCompositeMaskIn,
+    TextureCompositeOutput, TextureCompositeParams, TextureCompositePass, TextureCompositeSourceIn,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -354,6 +354,8 @@ pub struct ShadowParams {
     pub opacity: f32,
     /// Show the shadow only inside the unshifted shape.
     pub clip_to_geometry: bool,
+    /// Hide the shadow inside the box that casts it.
+    pub caster: Option<ShadowCaster>,
 }
 
 impl Default for ShadowParams {
@@ -365,8 +367,19 @@ impl Default for ShadowParams {
             color: [0.0, 0.0, 0.0, 1.0],
             opacity: 1.0,
             clip_to_geometry: false,
+            caster: None,
         }
     }
+}
+
+/// The box that casts an outer shadow, as the shadow's shape inset by
+/// `spread` on each side, with the box's own corner radii. As in CSS, an
+/// outer shadow is clipped to outside its box: a box with a translucent
+/// background does not show its own shadow through it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowCaster {
+    pub spread: f32,
+    pub radii: [f32; 4],
 }
 
 #[derive(Clone)]
@@ -503,6 +516,19 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
     else {
         return false;
     };
+    // The caster's box from the layer's top-left, in physical pixels.
+    let knockout = spec.params.caster.map(|caster| {
+        let shape = spec.shape;
+        NinePatchKnockout {
+            rect: [
+                (shape.x + caster.spread) * scale - shadow.x.origin as f32,
+                (shape.y + caster.spread) * scale - shadow.y.origin as f32,
+                (shape.width - caster.spread * 2.0).max(0.0) * scale,
+                (shape.height - caster.spread * 2.0).max(0.0) * scale,
+            ],
+            radii: caster.radii.map(|radius| radius * scale),
+        }
+    });
     let mask = if spec.params.clip_to_geometry {
         let Some(mask) = TemplatePlan::new(spec.shape.scaled(scale), 0.0) else {
             return false;
@@ -540,6 +566,7 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
                     ]
                 }),
                 tint: [r * alpha, g * alpha, b * alpha, alpha],
+                knockout,
             }),
             ..Default::default()
         },

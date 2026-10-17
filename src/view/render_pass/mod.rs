@@ -20,7 +20,9 @@ pub mod text_pass;
 pub mod texture_composite_pass;
 pub use clear_pass::ClearPass;
 pub use draw_rect_pass::{DrawRectPass, OpaqueRectPass, RectRenderMode};
-pub use shadow_module::{ShadowModuleSpec, ShadowParams, ShadowShape, build_shadow_module};
+pub use shadow_module::{
+    ShadowCaster, ShadowModuleSpec, ShadowParams, ShadowShape, build_shadow_module,
+};
 pub use text_pass::prewarm_text_pipeline;
 pub use texture_composite_pass::{
     TextureCompositeInput, TextureCompositeMaskIn, TextureCompositeOutput, TextureCompositeParams,

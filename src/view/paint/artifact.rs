@@ -789,6 +789,8 @@ pub(crate) struct PreparedShadowIdentity {
     color_bits: [u32; 4],
     opacity_bits: u32,
     clip_to_geometry: bool,
+    /// Spread, then the caster's four corner radii.
+    caster_bits: Option<[u32; 5]>,
 }
 
 /// One indivisible, fixed-order scrollbar overlay. Keeping the two shadows
@@ -924,6 +926,7 @@ impl PreparedScrollbarOverlayOp {
                 color: [0.0, 0.0, 0.0, alpha],
                 opacity: 1.0,
                 clip_to_geometry: true,
+                caster: None,
             },
         };
         PreparedScrollbarShadowIdentity::from_parts(&shadow.shape, shadow.params)?;
@@ -1130,6 +1133,13 @@ impl PreparedShadowIdentity {
                 .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(channel))
             || !params.opacity.is_finite()
             || !(0.0..=1.0).contains(&params.opacity)
+            || params.caster.is_some_and(|caster| {
+                !caster.spread.is_finite()
+                    || caster
+                        .radii
+                        .iter()
+                        .any(|radius| !radius.is_finite() || *radius < 0.0)
+            })
         {
             return None;
         }
@@ -1142,6 +1152,10 @@ impl PreparedShadowIdentity {
             color_bits: params.color.map(f32::to_bits),
             opacity_bits: params.opacity.to_bits(),
             clip_to_geometry: params.clip_to_geometry,
+            caster_bits: params.caster.map(|caster| {
+                let [tl, tr, br, bl] = caster.radii;
+                [caster.spread, tl, tr, br, bl].map(f32::to_bits)
+            }),
         })
     }
 }

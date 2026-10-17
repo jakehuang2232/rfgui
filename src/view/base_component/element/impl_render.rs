@@ -563,6 +563,10 @@ impl Element {
                         color,
                         opacity,
                         clip_to_geometry: shadow.inset,
+                        caster: (!shadow.inset).then_some(crate::view::render_pass::ShadowCaster {
+                            spread,
+                            radii: outer_radii.to_array(),
+                        }),
                     },
                 )?);
             }

@@ -60,6 +60,17 @@ pub struct NinePatchComposite {
     pub mask_offset: [i32; 2],
     /// Premultiplied color applied to the coverage.
     pub tint: [f32; 4],
+    /// A rounded rect the coverage is removed from.
+    pub knockout: Option<NinePatchKnockout>,
+}
+
+/// A rounded rect relative to the layer origin, in pixels: x, y, width and
+/// height, then the top-left, top-right, bottom-right and bottom-left radii.
+/// Its edge is antialiased as a box's own edge is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NinePatchKnockout {
+    pub rect: [f32; 4],
+    pub radii: [f32; 4],
 }
 
 impl Default for TextureCompositeParams {
@@ -152,6 +163,10 @@ struct TextureCompositeUniform {
     /// Mask stretch, then mask offset.
     nine_patch_mask_stretch_offset: [f32; 4],
     tint: [f32; 4],
+    /// Knockout corners from the layer origin, in pixels: left, top, right,
+    /// bottom. Empty without a knockout.
+    nine_patch_knockout_rect: [f32; 4],
+    nine_patch_knockout_radii: [f32; 4],
 }
 
 impl TextureCompositeUniform {
@@ -167,6 +182,8 @@ impl TextureCompositeUniform {
         ]
         .map(pair);
         let mask_offset = nine_patch.mask_offset.map(|v| v as f32);
+        let knockout = nine_patch.knockout.unwrap_or_default();
+        let [x, y, width, height] = knockout.rect;
         Self {
             use_mask: flag(params.use_mask),
             source_is_premultiplied: flag(params.source_is_premultiplied),
@@ -181,6 +198,8 @@ impl TextureCompositeUniform {
                 mask_offset[1],
             ],
             tint: nine_patch.tint,
+            nine_patch_knockout_rect: [x, y, x + width, y + height],
+            nine_patch_knockout_radii: knockout.radii,
         }
     }
 }
