@@ -103,7 +103,6 @@ pub fn TextAreaDemo() -> RsxNode {
                     render.range(start..end, move |_text_area_node| {
                         rsx! {
                             <Element style={{
-                                background: badge_background.clone(),
                                 border: Border::uniform(Length::px(1.0), &badge_border),
                                 border_radius: BorderRadius::uniform(Length::px(4.0)),
                                 padding: Padding::uniform(Length::px(0.0)).x(Length::px(20.0)),
