@@ -429,10 +429,10 @@ impl Element {
             let child_bottom = child_rect.y + child_rect.height;
             let inner_right = inner.x + inner.width;
             let inner_bottom = inner.y + inner.height;
-            if child_rect.x < inner.x
-                || child_rect.y < inner.y
-                || child_right > inner_right
-                || child_bottom > inner_bottom
+            if child_rect.x < inner.x - LAYOUT_FIT_TOLERANCE
+                || child_rect.y < inner.y - LAYOUT_FIT_TOLERANCE
+                || child_right > inner_right + LAYOUT_FIT_TOLERANCE
+                || child_bottom > inner_bottom + LAYOUT_FIT_TOLERANCE
             {
                 return true;
             }

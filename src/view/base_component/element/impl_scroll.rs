@@ -19,11 +19,19 @@ impl Element {
     }
 
     fn max_scroll(&self) -> (f32, f32) {
+        let overflow = |content: f32, inner: f32| {
+            let overflow = content - inner;
+            if overflow > LAYOUT_FIT_TOLERANCE {
+                overflow
+            } else {
+                0.0
+            }
+        };
+        let content = self.layout_state.content_size;
+        let inner = self.layout_state.layout_inner_size;
         (
-            (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width)
-                .max(0.0),
-            (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height)
-                .max(0.0),
+            overflow(content.width, inner.width),
+            overflow(content.height, inner.height),
         )
     }
 

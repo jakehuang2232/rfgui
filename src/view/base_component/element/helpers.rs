@@ -88,6 +88,12 @@ fn intersect_scissor_rects(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[
     }
 }
 
+/// How far content may end past its box and still fit. Positions and sizes
+/// are summed in different orders, so content that fits can end a rounding
+/// error past the edge; counting that as overflow would clip the box's
+/// children, and their shadows with them.
+const LAYOUT_FIT_TOLERANCE: f32 = 0.01;
+
 fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.0001
 }
