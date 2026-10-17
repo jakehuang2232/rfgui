@@ -567,6 +567,9 @@ impl Viewport {
                     sample.value.clone(),
                 ) {
                     redraw_changed = true;
+                    // The offset applies when the element is placed; place
+                    // it in this frame, before the property trees read it.
+                    relayout_required = true;
                     break;
                 }
             }

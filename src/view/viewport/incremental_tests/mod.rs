@@ -10,6 +10,7 @@ mod commit;
 mod common;
 mod dirty;
 mod interaction;
+mod layout_transition_frame_tests;
 mod placement;
 
 mod update_pipeline_tests;
