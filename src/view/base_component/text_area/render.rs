@@ -97,11 +97,7 @@ impl TextArea {
                 && selection.end > segment.char_range.start
                 && selection.start < segment.char_range.end
         })?;
-        let projection_children = arena.children_of(projection_owner);
-        let [target_owner] = projection_children.as_slice() else {
-            return None;
-        };
-        let target_owner = *target_owner;
+        let target_owner = projection_text(arena, projection_owner)?;
         let target_stable_id = arena.get(target_owner)?.element.stable_id();
         Some(ProjectionSelectionAuthority {
             witness: crate::view::paint::PaintTextSelectionWitness {
@@ -134,11 +130,7 @@ impl TextArea {
                 && cursor < segment.char_range.end
         })?;
         let projection_owner = segment.child_key;
-        let projection_children = arena.children_of(projection_owner);
-        let [target_owner] = projection_children.as_slice() else {
-            return None;
-        };
-        let target_owner = *target_owner;
+        let target_owner = projection_text(arena, projection_owner)?;
         let target = arena.get(target_owner)?;
         let text = target.element.as_any().downcast_ref::<Text>()?;
         let target_stable_id = target.element.stable_id();
@@ -1004,6 +996,21 @@ fn query_caret_on(
             None
         })
         .flatten()
+}
+
+/// The Text a projection renders, which shows the selection and the
+/// preedit inside it. A projection may wrap it in elements, as a badge
+/// does; with no Text, or several, neither shows.
+fn projection_text(arena: &NodeArena, projection_owner: NodeKey) -> Option<NodeKey> {
+    let mut found = None;
+    let mut stack = arena.children_of(projection_owner);
+    while let Some(key) = stack.pop() {
+        if arena.get(key)?.element.as_any().is::<Text>() && found.replace(key).is_some() {
+            return None;
+        }
+        stack.extend(arena.children_of(key));
+    }
+    found
 }
 
 fn glyph_selection_rects_in_projection(

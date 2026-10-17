@@ -130,6 +130,59 @@ fn text_area_projection_selection_is_path_scoped_and_ordered() {
     );
 }
 
+/// A projection may wrap its Text, as a badge does. The selection reaches
+/// that Text through the wrapper, and no other child of it.
+#[test]
+fn text_area_projection_selection_reaches_a_wrapped_text() {
+    let (arena, roots, root, projection, projected_text) =
+        prepared_projection_text_area_tree_with("before projected after", 7..16, || {
+            crate::ui::rsx! {
+                <crate::view::Element>
+                    <crate::view::Element />
+                    <crate::view::Text>projected</crate::view::Text>
+                </crate::view::Element>
+            }
+        });
+    {
+        let mut node = arena.get_mut(root).unwrap();
+        let text_area = node
+            .element
+            .as_any_mut()
+            .downcast_mut::<TextArea>()
+            .unwrap();
+        text_area.selection_anchor_char = Some(8);
+        text_area.selection_focus_char = Some(15);
+    }
+    let (properties, generations) = sync_identity(&arena, &roots);
+    let artifact = whole_frame_artifact(&arena, &roots, &properties, &generations);
+    assert!(artifact.chunks.iter().any(|chunk| {
+        chunk.owner == projected_text && chunk.id.role == PaintChunkRole::SelectionUnderlay
+    }));
+
+    let context_for_child = |parent: NodeKey, child: NodeKey, context: &PaintRecordingContext| {
+        let node = arena.get(parent).unwrap();
+        let own = node.element.shadow_paint_recording_context(context);
+        node.element
+            .shadow_paint_recording_context_for_child(child, &arena, &own)
+    };
+    let [wrapper] = arena.children_of(projection)[..] else {
+        panic!("the projection renders one wrapper");
+    };
+    let projection_context = context_for_child(root, projection, &PaintRecordingContext::default());
+    let wrapper_context = context_for_child(projection, wrapper, &projection_context);
+    let witness = wrapper_context
+        .text_area_selection
+        .expect("the wrapper leads to the selected Text");
+    assert_eq!(witness.target_owner, projected_text);
+    for child in arena.children_of(wrapper) {
+        let expected = (child == projected_text).then_some(witness);
+        assert_eq!(
+            context_for_child(wrapper, child, &wrapper_context).text_area_selection,
+            expected
+        );
+    }
+}
+
 #[test]
 fn text_area_atomic_projection_disjoint_root_selection_is_ordered() {
     let fixture = || {
@@ -241,7 +294,9 @@ fn text_area_selection_crossing_projection_is_split_between_root_and_child() {
 fn text_area_projection_selection_utf8_local_range_and_metadata_full_identity_are_exact() {
     let utf8_fixture = || {
         let (arena, roots, root, projection, projected_text) =
-            prepared_projection_text_area_tree_with("前🙂投影中文後", 2..6, "投影中文");
+            prepared_projection_text_area_tree_with("前🙂投影中文後", 2..6, || {
+                crate::ui::RsxNode::text("投影中文")
+            });
         {
             let mut node = arena.get_mut(root).unwrap();
             let text_area = node

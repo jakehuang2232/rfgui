@@ -6724,6 +6724,18 @@ impl ElementTrait for Element {
         })
     }
 
+    /// A projection may wrap the Text it renders, as a badge does. The
+    /// TextArea's authority passes only toward that Text.
+    #[allow(private_interfaces)]
+    fn shadow_paint_recording_context_for_child(
+        &self,
+        child: crate::view::node_arena::NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+        parent: &crate::view::paint::PaintRecordingContext,
+    ) -> crate::view::paint::PaintRecordingContext {
+        parent.text_area_child_authority_toward(child, arena)
+    }
+
     #[allow(private_interfaces)]
     fn shadow_paint_recording_capability(
         &self,

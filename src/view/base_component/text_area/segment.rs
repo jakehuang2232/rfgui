@@ -403,27 +403,23 @@ impl ElementTrait for TextAreaProjectionSegment {
         let exact_child = arena.parent_of(child) == Some(self_key)
             && self.children.as_slice() == [child]
             && arena.children_of(self_key) == [child];
-        if let Some(witness) = parent.text_area_selection {
-            let target_matches = exact_child
-                && witness.target_owner == child
-                && arena
-                    .get(child)
-                    .is_some_and(|node| node.element.stable_id() == witness.target_stable_id);
-            if target_matches {
-                child_context.text_area_selection = Some(witness);
-            }
+        if !exact_child {
+            return child_context;
         }
-        if let Some(witness) = parent.text_area_preedit.clone() {
-            let target_matches = exact_child
-                && witness.projection_owner == self_key
-                && witness.target_owner == child
-                && arena
-                    .get(child)
-                    .is_some_and(|node| node.element.stable_id() == witness.target_stable_id);
-            if target_matches {
-                child_context.text_area_preedit = Some(witness);
-            }
-        }
+        // The target is the child itself, or a Text the child wraps.
+        let toward = parent.text_area_child_authority_toward(child, arena);
+        let target_is_live = |target: NodeKey, stable_id: u64| {
+            arena
+                .get(target)
+                .is_some_and(|node| node.element.stable_id() == stable_id)
+        };
+        child_context.text_area_selection = toward
+            .text_area_selection
+            .filter(|witness| target_is_live(witness.target_owner, witness.target_stable_id));
+        child_context.text_area_preedit = toward.text_area_preedit.filter(|witness| {
+            witness.projection_owner == self_key
+                && target_is_live(witness.target_owner, witness.target_stable_id)
+        });
         child_context
     }
 

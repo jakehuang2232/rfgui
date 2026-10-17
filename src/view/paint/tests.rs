@@ -1615,7 +1615,7 @@ fn prepared_plain_text_area_preedit_tree(
 fn prepared_projection_text_area_tree_with(
     content: &'static str,
     projection_range: std::ops::Range<usize>,
-    projected_content: &'static str,
+    projected: fn() -> crate::ui::RsxNode,
 ) -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey) {
     let width = 132.0;
     let (mut arena, roots, root) =
@@ -1623,9 +1623,7 @@ fn prepared_projection_text_area_tree_with(
     arena.with_element_taken(root, |element, _arena| {
         let text_area = element.as_any_mut().downcast_mut::<TextArea>().unwrap();
         text_area.on_render_handler = Some(crate::ui::on_text_area_render(move |render| {
-            render.range(projection_range.clone(), move |_text_area| {
-                crate::ui::RsxNode::text(projected_content)
-            })
+            render.range(projection_range.clone(), move |_text_area| projected())
         }));
         text_area.children_dirty = true;
         text_area.bump_unified_ifc_source_revision();
@@ -1690,7 +1688,9 @@ fn prepared_projection_text_area_tree_with(
 }
 
 fn prepared_projection_text_area_tree() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeKey, NodeKey) {
-    prepared_projection_text_area_tree_with("before projected after", 7..16, "projected")
+    prepared_projection_text_area_tree_with("before projected after", 7..16, || {
+        crate::ui::RsxNode::text("projected")
+    })
 }
 
 fn prepared_projection_text_area_preedit_tree(

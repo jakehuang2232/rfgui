@@ -102,4 +102,26 @@ impl PaintRecordingContext {
             ..self.clone()
         }
     }
+
+    /// The TextArea authority `child` may carry: a witness follows the path
+    /// down to its target and reaches no other child.
+    pub(crate) fn text_area_child_authority_toward(
+        &self,
+        child: NodeKey,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> Self {
+        let leads_to = |target: NodeKey| {
+            std::iter::successors(Some(target), |key| arena.parent_of(*key)).any(|key| key == child)
+        };
+        Self {
+            text_area_selection: self
+                .text_area_selection
+                .filter(|witness| leads_to(witness.target_owner)),
+            text_area_preedit: self
+                .text_area_preedit
+                .clone()
+                .filter(|witness| leads_to(witness.target_owner)),
+            ..self.clone()
+        }
+    }
 }
