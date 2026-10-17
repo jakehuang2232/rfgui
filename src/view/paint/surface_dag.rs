@@ -1,10 +1,11 @@
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::view::{
     compositor::property_tree::{
-        ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
+        ClipBehavior, ClipNodeId, ClipNodeRole, ClipNodeSnapshot, EffectNodeId, EffectNodeSnapshot,
         PropertyStateTransition, PropertyTreeState, ScrollNodeId, ScrollNodeSnapshot,
         TransformNodeId, TransformNodeSnapshot,
     },
@@ -665,6 +666,11 @@ pub(crate) struct SurfaceDagNode {
     transition: PropertyStateTransition,
     clip_rebase: Option<SurfaceDagClipRebase>,
     transfer: Result<SurfaceBoundaryTransfer, SurfaceMaterializationOutcome>,
+    /// The root Replace clip of the content this copy of a transform or
+    /// effect surface holds: content that escapes what the original
+    /// composites under, so cannot composite with it. `None` for an
+    /// original surface.
+    escape_clip: Option<ClipNodeId>,
 }
 
 impl SurfaceDagNode {
@@ -773,6 +779,7 @@ impl SurfaceDag {
                 transition: _,
                 clip_rebase,
                 transfer: _,
+                escape_clip,
             } = *node;
             (
                 id,
@@ -783,6 +790,7 @@ impl SurfaceDag {
                 kind,
                 receiver,
                 clip_rebase,
+                escape_clip,
             )
         };
         self.roots == other.roots
@@ -1476,11 +1484,17 @@ enum ArtifactSurfaceWalkMode {
     ChunkCoverage,
 }
 
+/// A surface a chunk walk met: its kind, and in chunk coverage the root
+/// Replace clip through which the chunk escapes what the surface composites
+/// under, if it does. Such a chunk belongs to the copy of the surface for
+/// that clip.
+type ArtifactSurfaceWalkKey = (SurfaceDagNodeKind, Option<ClipNodeId>);
+
 struct ArtifactSurfaceWalk {
     edges: Vec<(SurfaceDagNodeKind, PropertyTreeState, PropertyTreeState)>,
-    matched: Vec<SurfaceDagNodeKind>,
+    matched: Vec<ArtifactSurfaceWalkKey>,
     localized_state: PropertyTreeState,
-    local_clips: Vec<(SurfaceDagNodeKind, Vec<ClipNodeSnapshot>)>,
+    local_clips: Vec<(ArtifactSurfaceWalkKey, Vec<ClipNodeSnapshot>)>,
 }
 
 /// Command scopes, not ancestry alone, determine membership in a detached
@@ -1617,6 +1631,246 @@ fn clip_chain_below(
     None
 }
 
+/// The root clip that the chain from `leaf` ends in when that clip
+/// replaces, rather than intersects, everything above it: the viewport clip
+/// of an element painted in the root viewport's late phase. Content under
+/// it escapes every ancestor clip and mask, and since that clip is fixed on
+/// screen, it applies where its surface composites, never inside a raster.
+/// An `AnchorParent` clip also replaces, but keeps its parent and lies in
+/// its owner's frame.
+fn root_replace_clip(
+    leaf: Option<ClipNodeId>,
+    artifact_clips: &FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+) -> Option<ClipNodeId> {
+    let mut cursor = leaf;
+    // A chain longer than the clips it draws from has a cycle.
+    for _ in 0..=artifact_clips.len() {
+        let snapshot = artifact_clips.get(&cursor?)?;
+        if snapshot.parent.is_none() {
+            return (snapshot.behavior == ClipBehavior::Replace).then_some(snapshot.id);
+        }
+        cursor = snapshot.parent;
+    }
+    None
+}
+
+/// The clip a transform or effect surface's owner paints under, per owner,
+/// from the original surfaces; a copy for escaping content shares its
+/// original's owner.
+fn original_owner_clips(surface_dag: &SurfaceDag) -> FxHashMap<NodeKey, Option<ClipNodeId>> {
+    surface_dag
+        .nodes
+        .iter()
+        .filter(|node| node.escape_clip.is_none())
+        .map(|node| (node.target, node.owner_properties.clip))
+        .collect()
+}
+
+/// What a transform or effect surface's composite applies beyond its own
+/// raster: the clip its owner paints under with every clip above it, and
+/// the child masks of the owner's ancestors open where it composites, at
+/// its first chunk. Content of the owner's subtree under a root Replace
+/// clip, painted late, escapes the surface when it has either.
+struct EscapeScopes<'a> {
+    artifact_clips: &'a FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+    owner_clips: &'a FxHashMap<NodeKey, Option<ClipNodeId>>,
+    owners: &'a ArtifactOwnerGraph,
+    /// Per surface owner, the chunk ranges of those open child masks.
+    masks: FxHashMap<NodeKey, Vec<Range<usize>>>,
+}
+
+impl<'a> EscapeScopes<'a> {
+    /// `None` when nothing can escape: no element below a scene root owns
+    /// a root Replace clip.
+    fn new(
+        inputs: &'a ArtifactSurfaceInputs<'_>,
+        artifact_clips: &'a FxHashMap<ClipNodeId, ClipNodeSnapshot>,
+        owner_clips: &'a FxHashMap<NodeKey, Option<ClipNodeId>>,
+    ) -> Result<Option<Self>, SurfaceDagError> {
+        let escaping = artifact_clips.values().any(|clip| {
+            clip.parent.is_none()
+                && clip.behavior == ClipBehavior::Replace
+                && matches!(inputs.owners.parent(clip.id.owner), Ok(Some(_)))
+        });
+        if !escaping {
+            return Ok(None);
+        }
+        let mut open = Vec::<(NodeKey, usize)>::new();
+        let mut ranges = Vec::<(NodeKey, Range<usize>)>::new();
+        for (index, chunk) in inputs.artifact.chunks.iter().enumerate() {
+            if chunk.id.slot != RETAINED_CHILD_MASK_SLOT {
+                continue;
+            }
+            match chunk.id.phase {
+                PaintNodePhase::BeforeChildren => open.push((chunk.owner, index)),
+                PaintNodePhase::AfterChildren => {
+                    if let Some(at) = open.iter().rposition(|(owner, _)| *owner == chunk.owner) {
+                        let (owner, start) = open.remove(at);
+                        ranges.push((owner, start..index + 1));
+                    }
+                }
+            }
+        }
+        let mut masks = FxHashMap::<NodeKey, Vec<Range<usize>>>::default();
+        for candidate in &inputs.candidates {
+            let target = candidate.target();
+            if matches!(candidate.kind(), SurfaceDagNodeKind::ScrollContent { .. })
+                || masks.contains_key(&target)
+            {
+                continue;
+            }
+            let first = candidate.cursor().chunk_index();
+            let mut open_at_first = Vec::new();
+            for (owner, range) in &ranges {
+                if range.contains(&first)
+                    && *owner != target
+                    && owner_is_ancestor_of(&inputs.owners, *owner, target)?
+                {
+                    open_at_first.push(range.clone());
+                }
+            }
+            masks.insert(target, open_at_first);
+        }
+        Ok(Some(Self {
+            artifact_clips,
+            owner_clips,
+            owners: &inputs.owners,
+            masks,
+        }))
+    }
+
+    /// The root Replace clip through which content at `chunk_index` under
+    /// the clip `leaf` escapes the transform or effect surface `target`
+    /// owns.
+    fn escape(
+        &self,
+        chunk_index: usize,
+        leaf: Option<ClipNodeId>,
+        target: NodeKey,
+    ) -> Option<ClipNodeId> {
+        let replace = root_replace_clip(leaf, self.artifact_clips)?;
+        if replace.owner == target
+            || !owner_is_ancestor_of(self.owners, target, replace.owner).unwrap_or(false)
+        {
+            return None;
+        }
+        let clipped = self.owner_clips.get(&target).copied().flatten().is_some();
+        let masked = self
+            .masks
+            .get(&target)
+            .is_some_and(|ranges| ranges.iter().any(|range| !range.contains(&chunk_index)));
+        (clipped || masked).then_some(replace)
+    }
+}
+
+/// Copies each transform and effect surface for the content that escapes
+/// what it composites under through a root Replace clip, such as a
+/// viewport-clipped element in a transformed box. A surface composites once,
+/// under one clip and mask, so that content gets a surface of its own with
+/// the same transform or effect, compositing under its Replace clip where
+/// it is painted. Surfaces inside the escaping content composite into the
+/// copy.
+fn add_escape_surfaces(
+    inputs: &ArtifactSurfaceInputs<'_>,
+    nodes: &mut Vec<SurfaceDagNode>,
+) -> Result<(), SurfaceDagError> {
+    let artifact = inputs.artifact;
+    let artifact_clips = artifact
+        .clip_nodes
+        .iter()
+        .map(|snapshot| (snapshot.id, *snapshot))
+        .collect::<FxHashMap<_, _>>();
+    let owner_clips = nodes
+        .iter()
+        .map(|node| (node.target, node.owner_properties.clip))
+        .collect::<FxHashMap<_, _>>();
+    let originals = nodes
+        .iter()
+        .map(|node| (node.kind, node.id))
+        .collect::<FxHashMap<_, _>>();
+    let Some(scopes) = EscapeScopes::new(inputs, &artifact_clips, &owner_clips)? else {
+        return Ok(());
+    };
+    let mut copies = FxHashMap::<(SurfaceDagNodeKind, ClipNodeId), SurfaceDagNodeId>::default();
+    for (chunk_index, chunk) in artifact.chunks.iter().enumerate() {
+        if root_replace_clip(chunk.properties.clip, &artifact_clips).is_none() {
+            continue;
+        }
+        let owner_path = artifact_owner_path(&inputs.owners, chunk.owner)?;
+        let walk = walk_artifact_surface_path(
+            chunk.properties,
+            &owner_path,
+            &inputs.candidates_by_owner,
+            &inputs.snapshots,
+            &artifact_clips,
+            ArtifactSurfaceWalkMode::ChunkCoverage,
+            &inputs.scroll_scopes.excluded_at(chunk_index, None),
+            &owner_clips,
+            Some((&scopes, chunk_index)),
+        )?;
+        // Outer surfaces come first, so a receiver's copy already exists.
+        for (kind, escape) in walk.matched {
+            let Some(escape) = escape else {
+                continue;
+            };
+            if copies.contains_key(&(kind, escape)) {
+                continue;
+            }
+            let original = originals
+                .get(&kind)
+                .map(|id| nodes[id.index()])
+                .ok_or(SurfaceDagError::MissingArtifactTransition { kind })?;
+            let receiver = match original.receiver {
+                SurfaceDagTargetId::Surface(parent) => copies
+                    .get(&(nodes[parent.index()].kind, escape))
+                    .copied()
+                    .map_or(original.receiver, SurfaceDagTargetId::Surface),
+                root @ SurfaceDagTargetId::SceneRoot(_) => root,
+            };
+            let index = nodes.len();
+            let id = SurfaceDagNodeId(
+                u32::try_from(index)
+                    .map_err(|_| SurfaceDagError::SurfaceNodeOrdinalOverflow(index))?,
+            );
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (original.stable_id, inputs.owners.stable_id(escape.owner)?).hash(&mut hasher);
+            nodes.push(SurfaceDagNode {
+                id,
+                stable_id: hasher.finish(),
+                owner_properties: PropertyTreeState {
+                    clip: Some(escape),
+                    ..original.owner_properties
+                },
+                receiver,
+                escape_clip: Some(escape),
+                ..original
+            });
+            copies.insert((kind, escape), id);
+        }
+    }
+    for index in 0..nodes.len() {
+        let node = nodes[index];
+        let SurfaceDagTargetId::Surface(parent) = node.receiver else {
+            continue;
+        };
+        let parent = nodes[parent.index()];
+        if node.escape_clip.is_some() || parent.escape_clip.is_some() {
+            continue;
+        }
+        let Some(escape) = scopes.escape(
+            node.cursor.chunk_index(),
+            node.owner_properties.clip,
+            parent.target,
+        ) else {
+            continue;
+        };
+        if let Some(copy) = copies.get(&(parent.kind, escape)) {
+            nodes[index].receiver = SurfaceDagTargetId::Surface(*copy);
+        }
+    }
+    Ok(())
+}
+
 fn walk_artifact_surface_path(
     state: PropertyTreeState,
     owner_path: &[NodeKey],
@@ -1626,6 +1880,7 @@ fn walk_artifact_surface_path(
     mode: ArtifactSurfaceWalkMode,
     excluded_scrolls: &FxHashSet<ScrollNodeId>,
     owner_clips: &FxHashMap<NodeKey, Option<ClipNodeId>>,
+    escapes: Option<(&EscapeScopes<'_>, usize)>,
 ) -> Result<ArtifactSurfaceWalk, SurfaceDagError> {
     // Boundary transitions describe only dimensions actually consumed by a
     // surface edge. Chunk coverage additionally includes ancestor membership:
@@ -1719,12 +1974,24 @@ fn walk_artifact_surface_path(
                     if matches!(mode, ArtifactSurfaceWalkMode::ChunkCoverage) {
                         localized_chain = Some(clips.clone());
                     }
-                    local_clips.push((candidate.kind(), clips));
+                    local_clips.push(((candidate.kind(), None), clips));
                     true
                 }
                 SurfaceDagNodeKind::Transform(_)
                 | SurfaceDagNodeKind::Effect(_)
                 | SurfaceDagNodeKind::ScrollContent { .. } => false,
+            };
+            let owner_clip = owner_clips.get(&candidate.target()).copied().flatten();
+            // Content that escapes what this surface composites under cannot
+            // composite with the rest of it; it goes to a copy.
+            let escape = match (escapes, kind) {
+                (
+                    Some((scopes, chunk_index)),
+                    SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_),
+                ) if consumed || is_member => {
+                    scopes.escape(chunk_index, state.clip, candidate.target())
+                }
+                _ => None,
             };
             if consumed
                 && matches!(mode, ArtifactSurfaceWalkMode::ChunkCoverage)
@@ -1733,11 +2000,11 @@ fn walk_artifact_surface_path(
                 // This raster holds the owner's subtree. The clip the owner
                 // paints under, and every clip above it, is applied when the
                 // surface composites, in the receiver's space; applied again
-                // here, before a transform, it would turn with it.
-                let owner_clip = owner_clips.get(&candidate.target()).copied().flatten();
+                // here, before a transform, it would turn with it. A copy for
+                // escaping content composites under its root Replace clip.
                 if let Some(chain) = clip_chain_below(
                     localized_state.clip,
-                    owner_clip,
+                    escape.or(owner_clip),
                     localized_chain.as_deref().unwrap_or(&[]),
                     artifact_clips,
                 ) {
@@ -1745,14 +2012,14 @@ fn walk_artifact_surface_path(
                     localized_chain = Some(chain);
                 }
                 if let Some(chain) = &localized_chain {
-                    local_clips.push((kind, chain.clone()));
+                    local_clips.push(((kind, escape), chain.clone()));
                 }
             }
             if consumed {
                 edges.push((kind, from, receiver_state));
             }
-            if (consumed || is_member) && !matched.contains(&kind) {
-                matched.push(kind);
+            if (consumed || is_member) && !matched.iter().any(|(matched, _)| *matched == kind) {
+                matched.push((kind, escape));
             }
         }
     }
@@ -1958,6 +2225,7 @@ fn derive_surface_requests_from_inputs(
             ArtifactSurfaceWalkMode::BoundaryTransition,
             &excluded_scrolls,
             &FxHashMap::default(),
+            None,
         )?;
         let cursor = walk
             .edges
@@ -2195,10 +2463,20 @@ fn derive_surface_coverage_from_inputs(
     let owners = &inputs.owners;
     let scroll_scopes = &inputs.scroll_scopes;
     let candidates = &inputs.candidates;
-    if candidates.len() != surface_dag.nodes.len() {
+    // Copies for escaping content follow the original surfaces.
+    let originals = surface_dag
+        .nodes
+        .iter()
+        .take_while(|node| node.escape_clip.is_none())
+        .count();
+    if candidates.len() != originals
+        || surface_dag.nodes[originals..]
+            .iter()
+            .any(|node| node.escape_clip.is_none())
+    {
         return Err(SurfaceDagError::TransitionCount {
             candidates: candidates.len(),
-            events: surface_dag.nodes.len(),
+            events: originals,
         });
     }
     for (index, (candidate, node)) in candidates.iter().zip(&surface_dag.nodes).enumerate() {
@@ -2232,13 +2510,10 @@ fn derive_surface_coverage_from_inputs(
     let node_by_kind = surface_dag
         .nodes
         .iter()
-        .map(|node| (node.kind, node.id))
+        .map(|node| ((node.kind, node.escape_clip), node.id))
         .collect::<FxHashMap<_, _>>();
-    let owner_clips = surface_dag
-        .nodes
-        .iter()
-        .map(|node| (node.target, node.owner_properties.clip))
-        .collect::<FxHashMap<_, _>>();
+    let owner_clips = original_owner_clips(surface_dag);
+    let escape_scopes = EscapeScopes::new(inputs, &artifact_clips, &owner_clips)?;
     let mut roots = surface_dag
         .roots
         .iter()
@@ -2277,6 +2552,7 @@ fn derive_surface_coverage_from_inputs(
             ArtifactSurfaceWalkMode::ChunkCoverage,
             &excluded_scrolls,
             &owner_clips,
+            escape_scopes.as_ref().map(|scopes| (scopes, chunk_index)),
         )?;
         let matched_ids = walk
             .matched
@@ -2334,8 +2610,8 @@ fn derive_surface_coverage_from_inputs(
             Vec::new()
         };
 
-        for (kind, clips) in &walk.local_clips {
-            let Some(surface) = node_by_kind.get(kind).copied() else {
+        for ((kind, escape), clips) in &walk.local_clips {
+            let Some(surface) = node_by_kind.get(&(*kind, *escape)).copied() else {
                 continue;
             };
             let Some(closure) = nodes[surface.index()].clip_closure.as_mut() else {
@@ -2610,9 +2886,11 @@ fn reconstruct_surface_from_inputs(
                 &scrolls,
                 spatial,
             )?,
+            escape_clip: None,
         });
         previous_id_by_owner.insert(owner, id);
     }
+    add_escape_surfaces(inputs, &mut nodes)?;
 
     let surface_dag = SurfaceDag { roots, nodes };
     surface_dag.validate_receiver_acyclicity()?;
