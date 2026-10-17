@@ -373,8 +373,6 @@ impl Default for ShadowParams {
 pub struct ShadowModuleSpec {
     pub shape: ShadowShape,
     pub params: ShadowParams,
-    pub viewport_width: u32,
-    pub viewport_height: u32,
     pub scale_factor: f32,
     pub pass_context: GraphicsPassContext,
     pub output: RenderTargetOut,
@@ -505,14 +503,6 @@ pub fn build_shadow_module(graph: &mut FrameGraph, spec: ShadowModuleSpec) -> bo
     else {
         return false;
     };
-    // Skip a layer entirely outside the target, as the per-frame blur did.
-    let target = [spec.viewport_width as i64, spec.viewport_height as i64];
-    let visible = |axis: TemplateAxis, extent: i64| {
-        axis.origin.clamp(0, extent) < (axis.origin + axis.layer as i64).clamp(0, extent)
-    };
-    if !visible(shadow.x, target[0]) || !visible(shadow.y, target[1]) {
-        return false;
-    }
     let mask = if spec.params.clip_to_geometry {
         let Some(mask) = TemplatePlan::new(spec.shape.scaled(scale), 0.0) else {
             return false;

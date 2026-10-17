@@ -4003,8 +4003,6 @@ fn emit_artifact_surface_paint_op(op: &PaintOp, graph: &mut FrameGraph, ctx: &mu
                 ShadowModuleSpec {
                     shape: op.shape,
                     params: op.params,
-                    viewport_width: viewport.target_width(),
-                    viewport_height: viewport.target_height(),
                     scale_factor: viewport.scale_factor(),
                     pass_context: ctx.graphics_pass_context(),
                     output,
@@ -4197,8 +4195,6 @@ fn emit_prepared_scrollbar_shadow(
         ShadowModuleSpec {
             shape: op.shape,
             params: op.params,
-            viewport_width: viewport.target_width(),
-            viewport_height: viewport.target_height(),
             scale_factor: viewport.scale_factor(),
             pass_context: ctx.graphics_pass_context(),
             output,

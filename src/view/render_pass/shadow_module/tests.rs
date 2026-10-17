@@ -103,8 +103,6 @@ fn spec(x: f32) -> super::ShadowModuleSpec {
             blur_radius: 10.0,
             ..Default::default()
         },
-        viewport_width: 1600,
-        viewport_height: 1200,
         scale_factor: 2.0,
         pass_context: Default::default(),
         output: Default::default(),
