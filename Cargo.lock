@@ -2640,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "rfgui"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "arboard",
  "bitflags 2.11.0",
@@ -2681,7 +2681,7 @@ dependencies = [
 
 [[package]]
 name = "rfgui-rsx"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "rfgui-segmenter"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
