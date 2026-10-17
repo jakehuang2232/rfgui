@@ -1,6 +1,6 @@
 [package]
 name = "rfgui"
-version = "0.1.0-alpha.7"
+version = "0.1.0-alpha.8"
 edition = "2024"
 description = "An innovative gui framework"
 license = "MIT"
