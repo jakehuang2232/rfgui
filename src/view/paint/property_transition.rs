@@ -461,6 +461,16 @@ impl PropertySnapshotGraph {
             .ok_or(TransitionError::UnknownClipReference(id))
     }
 
+    pub(crate) fn scroll_parent(
+        &self,
+        id: ScrollNodeId,
+    ) -> Result<Option<ScrollNodeId>, TransitionError> {
+        self.scrolls
+            .get(&id)
+            .copied()
+            .ok_or(TransitionError::UnknownScrollReference(id))
+    }
+
     /// Expands the three surface-producing property leaves into
     /// ancestor-inclusive membership sets. One implementation owns missing
     /// and cycle behavior so transition and coverage users cannot grow

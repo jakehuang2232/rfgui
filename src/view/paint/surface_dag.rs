@@ -1939,6 +1939,13 @@ fn walk_artifact_surface_path(
                     scroll,
                     contents_clip,
                 } if receiver_state.scroll == Some(scroll) => {
+                    // The raster composites into its parent scroll's raster,
+                    // where that scroll is local. Paint that escapes the
+                    // parent's raster, as a viewport-clipped popup does,
+                    // composites outside it and still scrolls with it.
+                    let receiver_scroll = snapshots
+                        .scroll_parent(scroll)?
+                        .filter(|parent| excluded_scrolls.contains(parent));
                     let clips = match mode {
                         ArtifactSurfaceWalkMode::BoundaryTransition => {
                             if receiver_state.clip != Some(contents_clip) {
@@ -1955,7 +1962,7 @@ fn walk_artifact_surface_path(
                                 )
                                 .is_some()
                                 {
-                                    receiver_state.scroll = None;
+                                    receiver_state.scroll = receiver_scroll;
                                     receiver_state.clip = snapshots.clip_parent(contents_clip)?;
                                     localized_state.scroll = None;
                                 }
@@ -1967,7 +1974,7 @@ fn walk_artifact_surface_path(
                             local_clip_chain(artifact_clips, receiver_state.clip, contents_clip)?
                         }
                     };
-                    receiver_state.scroll = None;
+                    receiver_state.scroll = receiver_scroll;
                     receiver_state.clip = snapshots.clip_parent(contents_clip)?;
                     localized_state.scroll = None;
                     localized_state.clip = clips.first().map(|clip| clip.id);
