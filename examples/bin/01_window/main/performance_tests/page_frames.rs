@@ -37,7 +37,9 @@ fn percentile(sorted: &[f64], p: usize) -> f64 {
 /// Steady frames of heavy showcase pages through the production input,
 /// App rebuild and offscreen render path (no window). The CPU phases split
 /// layout, paint preparation, property sync and paint recording/planning
-/// (`build`) from the GPU side.
+/// (`build`) from the GPU side. `RFGUI_PAGE_UI_PROFILE` also breaks down the
+/// RSX work (component expansion, reconcile, commit); its counters add their
+/// own cost, so compare frame times only between runs without it.
 #[test]
 #[ignore = "native hardware benchmark; run alone in release mode"]
 fn native_showcase_page_frames() -> Result<(), String> {
@@ -61,6 +63,7 @@ fn native_showcase_page_frames() -> Result<(), String> {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(120);
     let only = std::env::var("RFGUI_PAGE_SCENE").ok();
+    let ui_profile = std::env::var_os("RFGUI_PAGE_UI_PROFILE").is_some();
     const WARM: u64 = 40;
     const DPR: u32 = 2;
     let scenes = [
@@ -91,6 +94,7 @@ fn native_showcase_page_frames() -> Result<(), String> {
         let mut frame_ms = Vec::new();
         let mut app_build_ms = Vec::new();
         let mut phases: [Vec<f64>; 6] = Default::default();
+        let mut ui_work: Vec<rfgui::ui::UiWorkProfile> = Vec::new();
         for frame in 0..WARM + frames {
             let started = Instant::now();
             // Wheel the page until the control this scene needs is on screen.
@@ -151,23 +155,34 @@ fn native_showcase_page_frames() -> Result<(), String> {
                 }
             }
             let mut build_ms = 0.0;
-            let observation = rfgui::ui::batch_state_updates(|| {
-                if root.is_none() || rfgui::ui::peek_state_dirty().needs_rebuild() {
-                    let build_started = Instant::now();
-                    root = Some(rfgui::ui::render_root(
-                        || rsx! { <MainScene key={case} initial_page={Some(page)} /> },
-                    ));
-                    build_ms = build_started.elapsed().as_secs_f64() * 1000.0;
+            let mut run = || {
+                rfgui::ui::batch_state_updates(|| {
+                    if root.is_none() || rfgui::ui::peek_state_dirty().needs_rebuild() {
+                        let build_started = Instant::now();
+                        root = Some(rfgui::ui::render_root(
+                            || rsx! { <MainScene key={case} initial_page={Some(page)} /> },
+                        ));
+                        build_ms = build_started.elapsed().as_secs_f64() * 1000.0;
+                    }
+                    viewport.render_rsx_offscreen_for_test(
+                        root.as_ref().unwrap(),
+                        device.clone(),
+                        queue.clone(),
+                        [1280 * DPR, 800 * DPR],
+                        DPR as f32,
+                        now + std::time::Duration::from_millis(frame * 16),
+                    )
+                })
+            };
+            let observation = if ui_profile {
+                let (observation, work) = rfgui::ui::profile_ui_work(run);
+                if frame > WARM {
+                    ui_work.push(work);
                 }
-                viewport.render_rsx_offscreen_for_test(
-                    root.as_ref().unwrap(),
-                    device.clone(),
-                    queue.clone(),
-                    [1280 * DPR, 800 * DPR],
-                    DPR as f32,
-                    now + std::time::Duration::from_millis(frame * 16),
-                )
-            })?;
+                observation
+            } else {
+                run()
+            }?;
             let finished = Instant::now();
             device
                 .poll(wgpu::PollType::wait_indefinitely())
@@ -203,6 +218,30 @@ fn native_showcase_page_frames() -> Result<(), String> {
             percentile(&app_build_ms, 50),
             percentile(&app_build_ms, 95),
         );
+        if !ui_work.is_empty() {
+            let p50 = |f: &dyn Fn(&rfgui::ui::UiWorkProfile) -> f64| {
+                let mut values = ui_work.iter().map(f).collect::<Vec<_>>();
+                values.sort_by(f64::total_cmp);
+                percentile(&values, 50)
+            };
+            println!(
+                "page-frames-ui scene={name} p50 state_flush={:.3} unwrap={:.3} reconcile={:.3} placement={:.3} translate={:.3} incr_commit={:.3} cold_commit={:.3} | renders={} memo_hits={} unwrap_nodes={} reconciled={} shared_hits={} patches={} fiber_works={}",
+                p50(&|w| w.state_flush_ms),
+                p50(&|w| w.unwrap_ms),
+                p50(&|w| w.reconcile_ms),
+                p50(&|w| w.placement_ms),
+                p50(&|w| w.translate_ms),
+                p50(&|w| w.incremental_commit_ms),
+                p50(&|w| w.cold_commit_ms),
+                p50(&|w| w.component_renders as f64),
+                p50(&|w| w.memo_hits as f64),
+                p50(&|w| w.unwrap_nodes as f64),
+                p50(&|w| w.reconciled_nodes as f64),
+                p50(&|w| w.shared_subtree_hits as f64),
+                p50(&|w| w.patches as f64),
+                p50(&|w| w.fiber_works as f64),
+            );
+        }
     }
     Ok(())
 }
