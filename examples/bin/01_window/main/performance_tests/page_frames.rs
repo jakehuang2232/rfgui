@@ -18,6 +18,9 @@ enum Interaction {
     Toggle(&'static str),
     /// Open the select showing `Option 1`, then wheel through its options.
     SelectScroll,
+    /// Click the first sidebar entry, then the second, every frame; only the
+    /// frames that switch to the first page are reported.
+    Switch(&'static str, &'static str),
 }
 
 fn click(viewport: &mut Viewport, (x, y): (f32, f32)) {
@@ -81,6 +84,11 @@ fn native_showcase_page_frames() -> Result<(), String> {
             Interaction::SelectScroll,
         ),
         ("containers-hover", Page::Containers, Interaction::Hover),
+        (
+            "inputs-switch",
+            Page::Welcome,
+            Interaction::Switch("Inputs", "Welcome"),
+        ),
     ];
     // Component state is thread-local: key each scene's scene root apart.
     for (case, (name, page, interaction)) in scenes.into_iter().enumerate() {
@@ -91,6 +99,7 @@ fn native_showcase_page_frames() -> Result<(), String> {
         let now = Instant::now();
         let mut root = None;
         let mut target = (0.0, 0.0);
+        let mut back = (0.0, 0.0);
         let mut frame_ms = Vec::new();
         let mut app_build_ms = Vec::new();
         let mut phases: [Vec<f64>; 6] = Default::default();
@@ -128,6 +137,11 @@ fn native_showcase_page_frames() -> Result<(), String> {
                     Interaction::SelectScroll => {
                         text_center(&viewport, "Option 5").ok_or("the select menu is not open")?
                     }
+                    Interaction::Switch(to, from) => {
+                        back =
+                            text_center(&viewport, from).ok_or("the sidebar entry is missing")?;
+                        text_center(&viewport, to).ok_or("the sidebar entry is missing")?
+                    }
                     _ => (760.0, 400.0),
                 };
             }
@@ -152,8 +166,21 @@ fn native_showcase_page_frames() -> Result<(), String> {
                         viewport.dispatch_pointer_move_event();
                     }
                     Interaction::Toggle(_) => click(&mut viewport, target),
+                    Interaction::Switch(..) => click(
+                        &mut viewport,
+                        if (frame - WARM) % 2 == 0 {
+                            target
+                        } else {
+                            back
+                        },
+                    ),
                 }
             }
+            let reported = frame > WARM
+                && match interaction {
+                    Interaction::Switch(..) => (frame - WARM) % 2 == 0,
+                    _ => true,
+                };
             let mut build_ms = 0.0;
             let mut run = || {
                 rfgui::ui::batch_state_updates(|| {
@@ -176,7 +203,7 @@ fn native_showcase_page_frames() -> Result<(), String> {
             };
             let observation = if ui_profile {
                 let (observation, work) = rfgui::ui::profile_ui_work(run);
-                if frame > WARM {
+                if reported {
                     ui_work.push(work);
                 }
                 observation
@@ -187,7 +214,29 @@ fn native_showcase_page_frames() -> Result<(), String> {
             device
                 .poll(wgpu::PollType::wait_indefinitely())
                 .map_err(|e| e.to_string())?;
-            if frame > WARM {
+            // The first switches meet caches the warm-up page never filled.
+            if let Interaction::Switch(to, _) = interaction
+                && (frame == WARM || frame == WARM + 2)
+            {
+                let ms = &observation.cpu_ms;
+                println!(
+                    "page-frames-switch scene={name} to={to} switch={} frame_ms={:.3} app_build={:.3} render[total={:.3} begin={:.3} layout={:.3} prepare={:.3} sync={:.3} build={:.3} compile={:.3} execute={:.3} finish={:.3} end={:.3}]",
+                    (frame - WARM) / 2 + 1,
+                    (finished - started).as_secs_f64() * 1000.0,
+                    build_ms,
+                    ms[0],
+                    ms[1],
+                    ms[2],
+                    ms[3],
+                    ms[4],
+                    ms[5],
+                    ms[6],
+                    ms[7],
+                    ms[8],
+                    ms[9],
+                );
+            }
+            if reported {
                 frame_ms.push((finished - started).as_secs_f64() * 1000.0);
                 app_build_ms.push(build_ms);
                 for (values, index) in phases.iter_mut().zip(CPU_PHASE_INDEX) {
