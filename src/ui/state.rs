@@ -254,28 +254,44 @@ impl<T: 'static> PartialEq for State<T> {
     }
 }
 
+/// Every live set, memo entry and dependency index holds clones of these
+/// keys, so the path is shared and hashed once, at creation.
 #[derive(Clone, Eq)]
 struct ComponentKey {
     type_id: TypeId,
-    path: Vec<usize>,
+    path: Rc<[usize]>,
+    hash: u64,
+}
+
+impl ComponentKey {
+    fn new(type_id: TypeId, path: Rc<[usize]>) -> Self {
+        let mut hasher = rustc_hash::FxHasher::default();
+        type_id.hash(&mut hasher);
+        path.hash(&mut hasher);
+        Self {
+            type_id,
+            path,
+            hash: hasher.finish(),
+        }
+    }
 }
 
 impl PartialEq for ComponentKey {
     fn eq(&self, other: &Self) -> bool {
-        self.type_id == other.type_id && self.path == other.path
+        self.hash == other.hash
+            && self.type_id == other.type_id
+            && (Rc::ptr_eq(&self.path, &other.path) || self.path == other.path)
     }
 }
 
 impl Hash for ComponentKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.type_id.hash(state);
-        self.path.hash(state);
+        state.write_u64(self.hash);
     }
 }
 
 struct Frame {
     key: ComponentKey,
-    path: Vec<usize>,
     child_cursor: usize,
     /// Monotonic index for keyed hooks (timers, mounts) whose identity is
     /// derived from `(component, hook_index)`. Does NOT track `use_state`
@@ -1044,16 +1060,17 @@ fn next_component_key_by_type_id(type_id: TypeId) -> ComponentKey {
             let child_index = parent.child_cursor;
             parent.child_cursor += 1;
             if let Some(RsxKey::Global(global_key)) = component_key {
-                vec![GLOBAL_KEYED_PATH_MARKER, global_key.id() as usize]
+                Rc::<[usize]>::from([GLOBAL_KEYED_PATH_MARKER, global_key.id() as usize])
             } else {
-                let mut path = parent.path.clone();
+                // One exact-size allocation for the parent path plus the step.
+                let parent_path = parent.key.path.iter().copied();
                 if let Some(RsxKey::Local(key)) = component_key {
-                    path.push(KEYED_PATH_MARKER);
-                    path.push(key as usize);
+                    parent_path
+                        .chain([KEYED_PATH_MARKER, key as usize])
+                        .collect()
                 } else {
-                    path.push(child_index);
+                    parent_path.chain([child_index]).collect()
                 }
-                path
             }
         } else {
             STORE.with(|store| {
@@ -1061,16 +1078,16 @@ fn next_component_key_by_type_id(type_id: TypeId) -> ComponentKey {
                 let root_index = store.root_cursor;
                 store.root_cursor += 1;
                 if let Some(RsxKey::Global(global_key)) = component_key {
-                    vec![GLOBAL_KEYED_PATH_MARKER, global_key.id() as usize]
+                    Rc::<[usize]>::from([GLOBAL_KEYED_PATH_MARKER, global_key.id() as usize])
                 } else if let Some(RsxKey::Local(key)) = component_key {
-                    vec![KEYED_PATH_MARKER, key as usize]
+                    Rc::<[usize]>::from([KEYED_PATH_MARKER, key as usize])
                 } else {
-                    vec![root_index]
+                    Rc::<[usize]>::from([root_index])
                 }
             })
         }
     });
-    ComponentKey { type_id, path }
+    ComponentKey::new(type_id, path)
 }
 
 pub fn render_component<T: 'static, R>(f: impl FnOnce() -> R) -> R {
@@ -1101,7 +1118,6 @@ pub fn render_component_by_type_id<R>(type_id: TypeId, f: impl FnOnce() -> R) ->
     CONTEXT.with(|context| {
         context.borrow_mut().frames.push(Frame {
             key: key.clone(),
-            path: key.path.clone(),
             child_cursor: 0,
             hook_cursor: 0,
             state_cursor: 0,
@@ -1264,7 +1280,6 @@ pub(crate) fn render_memoized_component_by_type_id<P: PartialEq + 'static>(
     CONTEXT.with(|context| {
         context.borrow_mut().frames.push(Frame {
             key: key.clone(),
-            path: key.path.clone(),
             child_cursor: 0,
             hook_cursor: 0,
             state_cursor: 0,
