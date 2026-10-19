@@ -6,12 +6,11 @@
 //! - Safari 14.1 (2021-04)
 //! - Firefox 125 (2024-04)
 //!
-//! Each segment object exposes `index` (UTF-16 code-unit offset into the
-//! input) and `segment` (the substring). We use `index +
-//! segment.length(utf16)` as the segment end, then map back to char or
-//! byte indices via shared lookup tables. Browsers do not expose line
-//! segmentation via `Intl.Segmenter`, so line boundaries use the Unicode
-//! fallback.
+//! Each segment object exposes `index`, its start as a UTF-16 code-unit
+//! offset into the input. Segments are contiguous, so their starts plus the
+//! input length are the boundaries; they map back to char or byte indices
+//! via shared lookup tables. Browsers do not expose line segmentation via
+//! `Intl.Segmenter`, so line boundaries use the Unicode fallback.
 
 use js_sys::{Object, Reflect};
 use wasm_bindgen::JsValue;
@@ -28,10 +27,12 @@ extern "C" {
     #[wasm_bindgen(js_namespace = Intl, js_name = Segmenter)]
     type RawIntlSegmenter;
 
-    #[wasm_bindgen(catch, constructor, js_namespace = Intl, js_name = Segmenter)]
+    // A constructor names its class with `js_class`; `js_name` would leave
+    // the Rust type name in the generated `new Intl.RawIntlSegmenter`.
+    #[wasm_bindgen(catch, constructor, js_namespace = Intl, js_class = "Segmenter")]
     fn new(locales: &JsValue, options: &JsValue) -> Result<RawIntlSegmenter, JsValue>;
 
-    #[wasm_bindgen(method, structural)]
+    #[wasm_bindgen(method, structural, js_class = "Segmenter")]
     fn segment(this: &RawIntlSegmenter, input: &str) -> JsValue;
 }
 
@@ -138,19 +139,20 @@ fn intl_boundaries(
     let mut out = Vec::new();
     out.push(0usize);
 
+    // Segments are contiguous: each one ends where the next starts, and the
+    // last at the end of the text. Reading only `index`, with its key made
+    // once, keeps each segment to one number crossing into wasm instead of
+    // two key strings out and the segment's text back in.
+    let index_key = JsValue::from_str("index");
     for item in iter {
         let Ok(obj) = item else { continue };
-        let index = Reflect::get(&obj, &JsValue::from_str("index"))
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as usize;
-        let segment_str = Reflect::get(&obj, &JsValue::from_str("segment"))
-            .ok()
-            .and_then(|v| v.as_string())
-            .unwrap_or_default();
-        let utf16_len = segment_str.encode_utf16().count();
-        let end_utf16 = index + utf16_len;
-        let end = utf16_to_index.get(end_utf16).copied().unwrap_or(total);
+        let Some(start_utf16) = Reflect::get(&obj, &index_key).ok().and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        let end = utf16_to_index
+            .get(start_utf16 as usize)
+            .copied()
+            .unwrap_or(total);
         if Some(&end) != out.last() {
             out.push(end);
         }
