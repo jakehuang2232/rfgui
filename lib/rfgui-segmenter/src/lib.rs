@@ -94,6 +94,13 @@ pub fn system_segmenter() -> Box<dyn TextSegmenter> {
     }
 }
 
+/// Lets this thread's segmenter caches drop the text they last read. Call
+/// once a frame's text work is done; segmentation stays valid afterwards.
+pub fn release_cached_text() {
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    macos::release_cached_text();
+}
+
 /// Char-index lookup table for UTF-16 code-unit offsets. `vec[utf16_off]`
 /// = char index of the code point starting at that offset; surrogate
 /// continuation positions map to the same char index as the lead. A

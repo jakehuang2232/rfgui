@@ -1428,6 +1428,9 @@ impl Viewport {
         // Only persist the graph when compile succeeded; a failed compile
         // leaves the graph in an inconsistent state.
         self.frame.last_frame_graph = if compiled { Some(graph) } else { None };
+        // This frame's text layout is done; the reused segmenter state must
+        // not keep the last laid-out text alive until the next frame.
+        crate::platform::word_segmenter::release_cached_text();
         // Animation dirtiness has already been painted in this frame. Only
         // retry it if submission failed; future samples use the deadline API.
         post_layout_transition.redraw_changed

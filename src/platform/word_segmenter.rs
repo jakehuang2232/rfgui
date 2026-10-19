@@ -4,7 +4,9 @@
 //! and web runners do not need a host-side adapter or install step.
 
 use once_cell::sync::OnceCell;
-pub use rfgui_segmenter::{GraphemeSegmenter, LineSegmenter, TextSegmenter, WordSegmenter};
+pub use rfgui_segmenter::{
+    GraphemeSegmenter, LineSegmenter, TextSegmenter, WordSegmenter, release_cached_text,
+};
 
 static SYSTEM: OnceCell<Box<dyn TextSegmenter>> = OnceCell::new();
 

@@ -59,3 +59,51 @@ fn byte_indices() {
     assert_eq!(bs.first(), Some(&0));
     assert_eq!(bs.last(), Some(&8));
 }
+
+/// The same text through a tokenizer created for this call: a new thread
+/// starts without cached tokenizers.
+fn fresh(text: &'static str, unit: CFOptionFlags) -> Vec<usize> {
+    std::thread::spawn(move || cf_token_boundaries_byte_indices(text, unit))
+        .join()
+        .unwrap()
+}
+
+#[test]
+fn released_tokenizer_matches_a_fresh_one() {
+    const TEXTS: [&str; 4] = [
+        "The quick brown fox jumps over the lazy dog.",
+        "今天天氣很好，我們去公園散步吧。",
+        "hello 世界 a 😀 b",
+        "x",
+    ];
+    for unit in [
+        kCFStringTokenizerUnitWordBoundary,
+        kCFStringTokenizerUnitLineBreak,
+    ] {
+        for (previous, text) in TEXTS.iter().zip(TEXTS.iter().cycle().skip(1)) {
+            cf_token_boundaries_byte_indices(previous, unit);
+            release_cached_text();
+            assert_eq!(
+                cf_token_boundaries_byte_indices(text, unit),
+                fresh(text, unit),
+                "{text:?} after {previous:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn release_drops_the_tokenized_string() {
+    use core_foundation_sys::base::CFGetRetainCount;
+    // Long enough not to be a tagged pointer, whose retain count is fixed.
+    let text = "A string long enough to be heap allocated, 足夠長的字串。".repeat(4);
+    let cf_string = CFString::new(&text);
+    let cf_ref = cf_string.as_concrete_TypeRef();
+    let retains = || unsafe { CFGetRetainCount(cf_ref as _) };
+    let before = retains();
+    let map = build_utf16_to_byte_map(&text);
+    cf_string_token_boundaries(cf_ref, kCFStringTokenizerUnitLineBreak, &map, text.len());
+    assert!(retains() > before, "the cached tokenizer holds the text");
+    release_cached_text();
+    assert_eq!(retains(), before);
+}
