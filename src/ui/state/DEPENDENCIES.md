@@ -10,10 +10,12 @@
 
 `MemoEntry` 保留正向依賴，StateStore 維護兩組反向索引：
 
-- `target_consumers`：target → 讀取它的 memo，以及包含其已解析輸出的 memo 祖先。
-- `component_memos`：狀態 owner → 自身 memo，以及包含該元件輸出的 memo 祖先。自己的 state 即使未讀值，仍需要讓 owner 重新 render。
+- `target_consumers`：target → 直接讀取它的 memo（memo 的 render，或其中非 memo 元件的讀取）。
+- `component_memos`：元件 → 直接 render 它的 memo；memo 也索引自己。自己的 state 即使未讀值，仍需要讓 owner 重新 render。
 
-cache hit 重播既有依賴到外層 frame；成功 render 時移除舊邊並安裝新邊。因此條件式讀取從 A 切到 B 後，更新 A 不再失效該 memo。卸載移除所有相關邊與空索引項。每次 build 的既有生命週期清理仍會掃描 cache；state flush 不再掃描整份 cache。
+`MemoEntry` 只記 render 直接登記的 key、hook 與讀取；子 memo 只留 key，其餘由子 memo 自己的 entry 保存，一棵子樹只存一次，不在每層祖先重複。失效時從受影響的 memo 沿 `component_memos` 往上走，補齊所有包含其輸出的祖先，結果與每層都存全部後代相同。cache hit 不把依賴複製到外層 frame，而是沿子 memo 的 entry 遞迴，把整棵快取子樹標為存活；錯誤邊界需要整棵子樹時（panic 卸載、mount 失敗）也這樣展開。
+
+成功 render 時只更新與舊 entry 不同的邊。因此條件式讀取從 A 切到 B 後，更新 A 不再失效該 memo。卸載移除所有相關邊與空索引項。每次 build 的既有生命週期清理仍會掃描 cache；state flush 不再掃描整份 cache。
 
 ## 批次提交
 

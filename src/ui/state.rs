@@ -320,11 +320,13 @@ struct StateStore {
     active_build_global_keys: FxHashSet<GlobalKey>,
     components_rendered_in_build: bool,
     /// Component-memoization cache. Entries are keyed by `ComponentKey` and
-    /// store the last props/output pair plus the set of descendant keys that
-    /// were registered during that render, so we can keep them alive on a
-    /// memo hit without re-entering the render function.
+    /// store the last props/output pair plus the keys that render registered,
+    /// so we can keep its subtree alive on a memo hit without re-entering the
+    /// render function.
     memo_cache: FxHashMap<ComponentKey, MemoEntry>,
-    /// Reverse indexes contain only cached memo consumers / resolved ancestors.
+    /// Reverse indexes to the memos whose render read a target or rendered a
+    /// component directly (a memo also indexes itself). Their ancestors are
+    /// reached through these, at invalidation.
     target_consumers: FxHashMap<StateTargetId, FxHashSet<ComponentKey>>,
     component_memos: FxHashMap<ComponentKey, FxHashSet<ComponentKey>>,
     /// Memos invalidated since their last successful render.
@@ -334,6 +336,11 @@ struct StateStore {
 
 /// A cached component render. `props` holds a type-erased clone of the last
 /// props value, compared via the monomorphized `props_eq` function pointer.
+///
+/// The key and hook sets hold only what the render registered directly. The
+/// memos among `live_keys` hold their own part of the cached subtree, so a
+/// subtree is stored once, not again in every memo above it. Context
+/// dependencies and `volatile` cover the whole subtree.
 struct MemoEntry {
     context_dependencies: super::context::ContextDependencies,
     volatile: bool,
@@ -351,9 +358,13 @@ struct MemoEntry {
 /// A scope that captures which keys/hooks were registered during a render
 /// inside a memoized component. Pushed by `render_memoized_component` and
 /// popped once the render returns; the captured sets are stored in the
-/// resulting [`MemoEntry`].
+/// resulting [`MemoEntry`]. An error boundary pushes one too, with no `key`.
+/// A frame captures what was registered directly inside it: a nested memo
+/// leaves only its key, and [`expand_subtree`] recovers the rest.
 #[derive(Default)]
 struct MemoFrame {
+    /// The memo rendering into this frame.
+    key: Option<ComponentKey>,
     context_boundary: u64,
     context_dependencies: super::context::ContextDependencies,
     volatile: bool,
@@ -814,7 +825,8 @@ pub fn build_scope<R>(f: impl FnOnce() -> R) -> R {
     out
 }
 
-/// Merges a popped memo frame's captures into the enclosing one.
+/// Merges a popped error boundary frame's captures into the enclosing one,
+/// for which they were registered directly.
 fn propagate_memo_frame(frame: &MemoFrame) {
     MEMO_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
@@ -839,6 +851,102 @@ fn propagate_memo_frame(frame: &MemoFrame) {
     });
 }
 
+/// Everything a subtree registered: what its frames captured directly and,
+/// recursively, the cached registrations of the memos among their keys. A
+/// memo whose frame is among `frames` was cut short, so its cached entry,
+/// from an earlier render, is not part of the subtree.
+fn expand_subtree(frames: Vec<MemoFrame>) -> MemoFrame {
+    let cut_short: FxHashSet<ComponentKey> = frames
+        .iter()
+        .filter_map(|frame| frame.key.clone())
+        .collect();
+    let mut subtree = MemoFrame::default();
+    for frame in frames {
+        subtree.live_keys.extend(frame.live_keys);
+        subtree.live_global_keys.extend(frame.live_global_keys);
+        subtree.live_timer_hooks.extend(frame.live_timer_hooks);
+        subtree.live_mount_hooks.extend(frame.live_mount_hooks);
+        subtree.state_dependencies.extend(frame.state_dependencies);
+        subtree
+            .live_viewport_pointer_hooks
+            .extend(frame.live_viewport_pointer_hooks);
+    }
+    STORE.with(|store| {
+        let store = store.borrow();
+        let mut pending: Vec<ComponentKey> = subtree.live_keys.iter().cloned().collect();
+        while let Some(key) = pending.pop() {
+            if cut_short.contains(&key) {
+                continue;
+            }
+            let Some(entry) = store.memo_cache.get(&key) else {
+                continue;
+            };
+            for child in &entry.live_keys {
+                if subtree.live_keys.insert(child.clone()) {
+                    pending.push(child.clone());
+                }
+            }
+            subtree
+                .live_global_keys
+                .extend(entry.live_global_keys.iter().copied());
+            subtree
+                .live_timer_hooks
+                .extend(entry.live_timer_hooks.iter().cloned());
+            subtree
+                .live_mount_hooks
+                .extend(entry.live_mount_hooks.iter().cloned());
+            subtree
+                .state_dependencies
+                .extend(entry.state_dependencies.iter().copied());
+            subtree
+                .live_viewport_pointer_hooks
+                .extend(entry.live_viewport_pointer_hooks.iter().cloned());
+        }
+    });
+    subtree
+}
+
+/// Marks a reused memo's cached subtree live for this build: what it
+/// registered directly and, recursively, what the memos it rendered did.
+fn replay_memo_subtree(key: &ComponentKey) {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        let StateStore {
+            memo_cache,
+            live_keys,
+            live_global_keys,
+            ..
+        } = &mut *store;
+        let mut pending = vec![key];
+        while let Some(key) = pending.pop() {
+            let Some(entry) = memo_cache.get(key) else {
+                continue;
+            };
+            for child in &entry.live_keys {
+                if live_keys.insert(child.clone()) {
+                    pending.push(child);
+                }
+            }
+            live_global_keys.extend(entry.live_global_keys.iter().copied());
+            LIVE_TIMER_HOOKS.with(|hooks| {
+                hooks
+                    .borrow_mut()
+                    .extend(entry.live_timer_hooks.iter().cloned())
+            });
+            LIVE_MOUNT_HOOKS.with(|hooks| {
+                hooks
+                    .borrow_mut()
+                    .extend(entry.live_mount_hooks.iter().cloned())
+            });
+            LIVE_VIEWPORT_POINTER_HOOKS.with(|hooks| {
+                hooks
+                    .borrow_mut()
+                    .extend(entry.live_viewport_pointer_hooks.iter().cloned())
+            });
+        }
+    });
+}
+
 /// An error boundary's subtree in one build, kept for the mounts queued
 /// under it, which run after the walk.
 struct BoundaryScope {
@@ -855,7 +963,7 @@ impl BoundaryScope {
         if self.whole_build {
             live_build_frame()
         } else {
-            self.subtree.take()
+            expand_subtree(vec![self.subtree.take()])
         }
     }
 }
@@ -945,10 +1053,12 @@ fn catch<R>(
         }
         Err(payload) => payload,
     };
-    let frames = if whole_build {
-        vec![live_build_frame()]
+    // The walk's frames hold what it registered directly; the memos it
+    // completed hold the rest.
+    let subtree = if whole_build {
+        live_build_frame()
     } else {
-        frames
+        expand_subtree(frames)
     };
     CONTEXT.with(|context| context.borrow_mut().frames.truncate(contexts));
     PENDING_MOUNTS.with(|pending| pending.borrow_mut().truncate(mounts));
@@ -956,43 +1066,38 @@ fn catch<R>(
         let mut store = store.borrow_mut();
         store.components_rendered_in_build = true;
         store.active_build_global_keys = global_keys;
-        for frame in &frames {
-            frame
-                .live_keys
-                .iter()
-                .for_each(|k| _ = store.live_keys.remove(k));
-            frame
-                .live_global_keys
-                .iter()
-                .for_each(|k| _ = store.live_global_keys.remove(k));
-        }
+        subtree
+            .live_keys
+            .iter()
+            .for_each(|k| _ = store.live_keys.remove(k));
+        subtree
+            .live_global_keys
+            .iter()
+            .for_each(|k| _ = store.live_global_keys.remove(k));
     });
     LIVE_TIMER_HOOKS.with(|hooks| {
         let mut hooks = hooks.borrow_mut();
-        frames
+        subtree
+            .live_timer_hooks
             .iter()
-            .flat_map(|f| &f.live_timer_hooks)
             .for_each(|k| _ = hooks.remove(k));
     });
     LIVE_MOUNT_HOOKS.with(|hooks| {
         let mut hooks = hooks.borrow_mut();
-        frames
+        subtree
+            .live_mount_hooks
             .iter()
-            .flat_map(|f| &f.live_mount_hooks)
             .for_each(|k| _ = hooks.remove(k));
     });
     LIVE_VIEWPORT_POINTER_HOOKS.with(|hooks| {
         let mut hooks = hooks.borrow_mut();
-        frames
+        subtree
+            .live_viewport_pointer_hooks
             .iter()
-            .flat_map(|f| &f.live_viewport_pointer_hooks)
             .for_each(|k| _ = hooks.remove(k));
     });
     let reads = MemoFrame {
-        state_dependencies: frames
-            .into_iter()
-            .flat_map(|f| f.state_dependencies)
-            .collect(),
+        state_dependencies: subtree.state_dependencies,
         ..Default::default()
     };
     propagate_memo_frame(&reads);
@@ -1204,64 +1309,15 @@ pub(crate) fn render_memoized_component_by_type_id<P: PartialEq + 'static>(
         if !eq {
             return None;
         }
-        Some((
-            entry.node.clone(),
-            entry.live_keys.clone(),
-            entry.live_global_keys.clone(),
-            entry.live_timer_hooks.clone(),
-            entry.live_mount_hooks.clone(),
-            entry.state_dependencies.clone(),
-            entry.live_viewport_pointer_hooks.clone(),
-            entry.context_dependencies.clone(),
-        ))
+        Some((entry.node.clone(), entry.context_dependencies.clone()))
     });
 
-    if let Some((node, lk, lgk, lth, lmh, deps, lvph, contexts)) = cached_hit {
+    if let Some((node, contexts)) = cached_hit {
         contexts.replay();
         crate::ui::work_profile::count(|p| p.memo_hits += 1);
-        // Replay descendants — both into the thread-local live sets that
-        // `build_scope` uses for GC, and into any enclosing memo frame.
-        STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            for k in &lk {
-                store.live_keys.insert(k.clone());
-            }
-            for k in &lgk {
-                store.live_global_keys.insert(*k);
-            }
-        });
-        LIVE_TIMER_HOOKS.with(|hooks| {
-            let mut hooks = hooks.borrow_mut();
-            for k in &lth {
-                hooks.insert(k.clone());
-            }
-        });
-        LIVE_MOUNT_HOOKS.with(|hooks| hooks.borrow_mut().extend(lmh.iter().cloned()));
-        LIVE_VIEWPORT_POINTER_HOOKS.with(|hooks| {
-            let mut hooks = hooks.borrow_mut();
-            for k in &lvph {
-                hooks.insert(k.clone());
-            }
-        });
-        MEMO_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            if let Some(top) = stack.last_mut() {
-                for k in &lk {
-                    top.live_keys.insert(k.clone());
-                }
-                for k in &lgk {
-                    top.live_global_keys.insert(*k);
-                }
-                for k in &lth {
-                    top.live_timer_hooks.insert(k.clone());
-                }
-                top.live_mount_hooks.extend(lmh.iter().cloned());
-                top.state_dependencies.extend(deps.iter().cloned());
-                for k in &lvph {
-                    top.live_viewport_pointer_hooks.insert(k.clone());
-                }
-            }
-        });
+        // The enclosing frame already holds this memo's key, which stands for
+        // its subtree there; `build_scope` needs every key live.
+        replay_memo_subtree(&key);
         return node;
     }
 
@@ -1270,9 +1326,10 @@ pub(crate) fn render_memoized_component_by_type_id<P: PartialEq + 'static>(
     STORE.with(|store| store.borrow_mut().dirty_memo_components.insert(key.clone()));
 
     // Miss — run the render closure under a fresh `MemoFrame` so we can
-    // capture every descendant key that gets registered.
+    // capture every key the render registers directly.
     MEMO_STACK.with(|stack| {
         stack.borrow_mut().push(MemoFrame {
+            key: Some(key.clone()),
             context_boundary: super::context::current_epoch(),
             ..Default::default()
         });
@@ -1301,10 +1358,8 @@ pub(crate) fn render_memoized_component_by_type_id<P: PartialEq + 'static>(
         .with(|stack| stack.borrow_mut().pop())
         .unwrap_or_default();
 
-    // Propagate the captured descendants into any enclosing memo frame so
-    // a memo hit on an outer component keeps our subtree alive too.
-    propagate_memo_frame(&frame);
-
+    // Nothing propagates: the enclosing frame holds this memo's key, and the
+    // entry below holds what it registered.
     let retired = STORE.with(|store| {
         store.borrow_mut().replace_memo(
             key,

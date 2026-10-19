@@ -68,8 +68,8 @@ impl StateStore {
         for component in old_components.difference(&entry.live_keys) {
             remove_consumer(&mut self.component_memos, component, &key);
         }
-        // Resolved cached output includes descendant owners, even when they
-        // didn't read their own state. Those ancestors must be re-entered.
+        // Resolved cached output includes the owners it rendered, even when
+        // they didn't read their own state; it must be re-entered for them.
         let added = entry.live_keys.difference(old_components);
         for component in added.chain(retired.is_none().then_some(&key)) {
             self.component_memos
@@ -91,7 +91,18 @@ impl StateStore {
         }
     }
 
-    pub(super) fn invalidate_memos(&mut self, affected: FxHashSet<ComponentKey>) {
+    /// Marks `affected` and every memo whose cached output holds one of them.
+    pub(super) fn invalidate_memos(&mut self, mut affected: FxHashSet<ComponentKey>) {
+        // A memo indexes only what it rendered directly, itself included, so
+        // the memos above one are reached through each one's renderer.
+        let mut pending: Vec<ComponentKey> = affected.iter().cloned().collect();
+        while let Some(key) = pending.pop() {
+            for memo in self.component_memos.get(&key).into_iter().flatten() {
+                if affected.insert(memo.clone()) {
+                    pending.push(memo.clone());
+                }
+            }
+        }
         let visits = affected.len();
         let mut invalidations = 0;
         for key in affected {
