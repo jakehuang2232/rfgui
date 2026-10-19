@@ -1031,34 +1031,53 @@ pub(crate) fn reconcile_transition_runtime_state(
     root_keys: &[crate::view::node_arena::NodeKey],
     active_channels_by_node: &FxHashMap<u64, FxHashSet<ChannelId>>,
 ) -> bool {
-    fn walk(
-        arena: &mut crate::view::node_arena::NodeArena,
+    // Read-only census first: taking an element out records a mutation,
+    // which would invalidate every retained observation of the whole tree.
+    fn collect_stale(
+        arena: &crate::view::node_arena::NodeArena,
         key: crate::view::node_arena::NodeKey,
         active_channels_by_node: &FxHashMap<u64, FxHashSet<ChannelId>>,
-    ) -> bool {
-        arena
+        stale: &mut Vec<crate::view::node_arena::NodeKey>,
+    ) {
+        let Some(node) = arena.get(key) else {
+            return;
+        };
+        let element = node.element.as_ref();
+        if element
+            .as_any()
+            .downcast_ref::<Element>()
+            .is_some_and(|el| {
+                el.has_stale_transition_runtime_state(
+                    active_channels_by_node.get(&element.stable_id()),
+                )
+            })
+        {
+            stale.push(key);
+        }
+        for &child_key in element.children() {
+            collect_stale(arena, child_key, active_channels_by_node, stale);
+        }
+    }
+
+    let mut stale = Vec::new();
+    for &root_key in root_keys {
+        collect_stale(arena, root_key, active_channels_by_node, &mut stale);
+    }
+    let mut changed = false;
+    for key in stale {
+        changed |= arena
             .mutate_element_with_invalidation(key, |element, cx| {
-                let mut changed = false;
                 let node_id = element.stable_id();
-                if let Some(el) = element.as_any_mut().downcast_mut::<Element>() {
-                    changed |= el
-                        .reconcile_transition_runtime_state(active_channels_by_node.get(&node_id));
-                }
+                let el = element.as_any_mut().downcast_mut::<Element>()?;
+                let changed =
+                    el.reconcile_transition_runtime_state(active_channels_by_node.get(&node_id));
                 if changed {
                     cx.invalidate(element.local_dirty_flags());
                 }
-                let children: Vec<_> = element.children().to_vec();
-                for child_key in children {
-                    changed |= walk(cx.arena(), child_key, active_channels_by_node);
-                }
-                changed
+                Some(changed)
             })
-            .unwrap_or(false)
-    }
-
-    let mut changed = false;
-    for &root_key in root_keys {
-        changed |= walk(arena, root_key, active_channels_by_node);
+            .flatten()
+            .unwrap_or(false);
     }
     changed
 }
