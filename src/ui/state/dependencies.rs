@@ -47,16 +47,31 @@ impl StateStore {
         key: ComponentKey,
         entry: MemoEntry,
     ) -> Option<MemoEntry> {
-        let retired = self.remove_memo(&key);
-        for target in &entry.state_dependencies {
+        self.dirty_memo_components.remove(&key);
+        let retired = self.memo_cache.remove(&key);
+        // A re-render usually reads the same state and owns the same
+        // descendants, so only the difference from the retired entry touches
+        // the indexes.
+        let none = (FxHashSet::default(), FxHashSet::default());
+        let (old_targets, old_components) = retired.as_ref().map_or((&none.0, &none.1), |old| {
+            (&old.state_dependencies, &old.live_keys)
+        });
+        for target in old_targets.difference(&entry.state_dependencies) {
+            remove_consumer(&mut self.target_consumers, target, &key);
+        }
+        for target in entry.state_dependencies.difference(old_targets) {
             self.target_consumers
                 .entry(*target)
                 .or_default()
                 .insert(key.clone());
         }
+        for component in old_components.difference(&entry.live_keys) {
+            remove_consumer(&mut self.component_memos, component, &key);
+        }
         // Resolved cached output includes descendant owners, even when they
         // didn't read their own state. Those ancestors must be re-entered.
-        for component in entry.live_keys.iter().chain(std::iter::once(&key)) {
+        let added = entry.live_keys.difference(old_components);
+        for component in added.chain(retired.is_none().then_some(&key)) {
             self.component_memos
                 .entry(component.clone())
                 .or_default()
