@@ -8,6 +8,9 @@ mod incremental;
 #[path = "performance_tests/window_drag.rs"]
 mod window_drag;
 
+#[path = "performance_tests/page_frames.rs"]
+mod page_frames;
+
 // Release cached GPU handles while the test thread's wgpu TLS is still alive.
 struct TextCacheCleanup;
 

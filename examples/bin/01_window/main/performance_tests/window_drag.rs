@@ -9,7 +9,7 @@ const CPU_PHASES: [&str; 10] = [
 ];
 
 /// The viewport position of the middle of the first Text reading `label`.
-fn text_center(viewport: &Viewport, label: &str) -> Option<(f32, f32)> {
+pub(super) fn text_center(viewport: &Viewport, label: &str) -> Option<(f32, f32)> {
     fn find(arena: &NodeArena, key: NodeKey, label: &str) -> Option<(f32, f32)> {
         let node = arena.get(key)?;
         if let Some(text) = node.element.as_any().downcast_ref::<Text>()
