@@ -464,8 +464,20 @@ impl IntoOptionalProp<crate::style::FontSize> for usize {
     }
 }
 
+/// A user component's render. Props are borrowed: the component node keeps
+/// them, so a memoized node can render again without copying its props, and
+/// the next render compares against them. Clone a field to move it into the
+/// output.
 pub trait RsxComponent<Props>: Sized {
-    fn render(props: Props, children: Vec<RsxNode>) -> RsxNode;
+    fn render(props: &Props, children: Vec<RsxNode>) -> RsxNode;
+}
+
+/// `#[component]` copies a by-value parameter out of the borrowed props, so
+/// its type must be `Copy`; take any other parameter by reference (`&T`).
+#[doc(hidden)]
+#[inline(always)]
+pub fn copy_component_param<T: Copy>(value: &T) -> T {
+    *value
 }
 
 pub trait IntoRsxChildren {
@@ -530,19 +542,12 @@ where
 /// Per-component-type static dispatch table. One `const` lives per `T` that
 /// implements `ComponentTag`, emitted by the `#[component]` macro.
 pub struct ComponentVTable {
-    /// Invoke `T::render(*Box::from_raw(props), children)`. Consumes props.
+    /// Invoke `T::render(&*props, children)`. Borrows props; the node
+    /// keeps them.
     pub render: unsafe fn(NonNull<()>, Vec<RsxNode>) -> RsxNode,
     /// Drop `Box<T::Props>` when the containing `ComponentNodeInner` is
-    /// dropped without being rendered.
+    /// dropped.
     pub drop_props: unsafe fn(NonNull<()>),
-    /// Deep-clone `Box<T::Props>` into a freshly boxed owned value,
-    /// leaving the original intact. Used by the walker when a
-    /// `RsxNode::Component` arrives with a shared `Rc` — one copy
-    /// survives in the other holder, the clone is consumed by
-    /// `vtable.render`. Requires `T::StrictProps: Clone`; the
-    /// `#[component]` macro emits `#[derive(Clone)]` on the Props
-    /// struct and the corresponding shim.
-    pub clone_props: unsafe fn(NonNull<()>) -> NonNull<()>,
     /// Structural equality of two boxed `T::Props`. `None` opts out of
     /// memoization (each render re-invokes `render`). Generated comparators
     /// compare supported fields and conservatively miss for unknown types.
@@ -572,75 +577,6 @@ impl Drop for ComponentNodeInner {
         // at construction, and the vtable's `drop_props` shim is the
         // monomorphized `Box<T::Props>` dropper for exactly that T.
         unsafe { (self.vtable.drop_props)(self.props) };
-    }
-}
-
-/// Destructured form of a [`ComponentNodeInner`] prepared for the
-/// `unwrap_components` walker. Obtaining a `RenderParts` transfers
-/// ownership of the boxed props to the caller, so the caller becomes
-/// responsible for either invoking `vtable.render` (which consumes them)
-/// or calling `vtable.drop_props`.
-pub struct ComponentRenderParts {
-    pub identity: RsxNodeIdentity,
-    pub type_id: TypeId,
-    pub key: Option<RsxKey>,
-    pub children: Vec<RsxNode>,
-    pub props: NonNull<()>,
-    pub vtable: &'static ComponentVTable,
-}
-
-impl ComponentNodeInner {
-    /// Extract owned fields for the rendering walker. Suppresses the
-    /// normal `Drop` impl (which would call `drop_props`) because the
-    /// caller now owns the boxed props — typically to feed them into
-    /// `vtable.render`, which takes ownership in turn.
-    ///
-    /// # Panics
-    /// Panics if the `Rc` is shared. rsx-macro always constructs
-    /// Component nodes with a fresh unique `Rc`; the walker pops one
-    /// reference when descending, and no other code should hold one.
-    pub fn into_render_parts(self: std::rc::Rc<Self>) -> ComponentRenderParts {
-        match std::rc::Rc::try_unwrap(self) {
-            Ok(inner) => {
-                // Unique Rc — move props ownership out. Suppress Drop
-                // via `ManuallyDrop` since the caller now owns `props`
-                // and will consume it through `vtable.render`.
-                let me = std::mem::ManuallyDrop::new(inner);
-                // Safety: `me` is a `ManuallyDrop` wrapper we never read
-                // again after this extraction; the duplicated
-                // `Vec<RsxNode>` ownership from `ptr::read` is fine
-                // because the source is never dropped.
-                let children = unsafe { std::ptr::read(&me.children) };
-                ComponentRenderParts {
-                    identity: me.identity,
-                    type_id: me.type_id,
-                    key: me.key,
-                    children,
-                    props: me.props,
-                    vtable: me.vtable,
-                }
-            }
-            Err(rc) => {
-                // Shared Rc — another holder exists (common when a
-                // subtree is extracted into a variable and `.clone()`
-                // ed into two positions, or when memo stores a prior
-                // render). Deep-clone the boxed props via the vtable's
-                // shim so this call site owns its copy; the other
-                // holder keeps the original and will run `drop_props`
-                // on its own drop.
-                // Safety: `clone_props` was emitted by the `#[component]`
-                // macro as a monomorphized shim over `<T::Props as Clone>`.
-                let cloned_props = unsafe { (rc.vtable.clone_props)(rc.props) };
-                ComponentRenderParts {
-                    identity: rc.identity,
-                    type_id: rc.type_id,
-                    key: rc.key,
-                    children: rc.children.clone(),
-                    props: cloned_props,
-                    vtable: rc.vtable,
-                }
-            }
-        }
     }
 }
 
@@ -698,8 +634,8 @@ pub fn unwrap_components(node: RsxNode) -> RsxNode {
             // `Rc::make_mut` clones the inner only if the Rc is shared,
             // which is rare in the unwrap path (subtrees here were just
             // built by rsx-macro). We take children by value so the
-            // recursive call owns its Component Rcs uniquely — critical
-            // for `into_render_parts`'s `Rc::try_unwrap`.
+            // recursive call owns its Component Rcs uniquely and can move
+            // their children out instead of cloning them.
             let inner = std::rc::Rc::make_mut(&mut element_rc);
             let old_children = std::mem::take(&mut inner.children);
             inner.children = old_children.into_iter().map(unwrap_components).collect();

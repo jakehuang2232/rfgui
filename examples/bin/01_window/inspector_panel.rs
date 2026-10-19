@@ -16,9 +16,9 @@ const INITIAL_POSITION: (f32, f32) = (896.0, 24.0);
 #[component]
 pub fn InspectorPanel(
     open: bool,
-    dark_mode: Binding<bool>,
-    on_dark_mode: Rc<dyn Fn(bool)>,
-    animation_on: Binding<bool>,
+    dark_mode: &Binding<bool>,
+    on_dark_mode: &Rc<dyn Fn(bool)>,
+    animation_on: &Binding<bool>,
 ) -> RsxNode {
     let position = use_state(|| INITIAL_POSITION);
     let debug_geometry_overlay = use_state(|| false);
@@ -107,12 +107,12 @@ pub fn InspectorPanel(
             }}>
                 <Switch
                     label="Dark mode"
-                    binding={dark_mode}
-                    on_change={on_dark_mode}
+                    binding={dark_mode.clone()}
+                    on_change={on_dark_mode.clone()}
                 />
                 <Switch
                     label="Animation On"
-                    binding={animation_on}
+                    binding={animation_on.clone()}
                 />
                 <Element style={{ layout: Layout::flow().column().no_wrap() }}>
                     <Switch

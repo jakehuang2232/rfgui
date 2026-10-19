@@ -37,11 +37,11 @@ use welcome::WelcomePage;
 
 /// A page's title and summary above its demos.
 #[component]
-pub fn PageView(page: Page, navigate: Binding<Page>, animation_on: Binding<bool>) -> RsxNode {
+pub fn PageView(page: Page, navigate: &Binding<Page>, animation_on: &Binding<bool>) -> RsxNode {
     let (theme, _) = use_theme();
     let animations = animation_on.get();
     let content = match page {
-        Page::Welcome => rsx! { <WelcomePage navigate={navigate} /> },
+        Page::Welcome => rsx! { <WelcomePage navigate={navigate.clone()} /> },
         Page::Layout => rsx! { <LayoutPage /> },
         Page::Appearance => rsx! { <AppearancePage /> },
         Page::Text => rsx! { <TextPage /> },
@@ -52,7 +52,7 @@ pub fn PageView(page: Page, navigate: Binding<Page>, animation_on: Binding<bool>
         Page::Transform => rsx! { <TransformPage /> },
         Page::Animation => rsx! { <AnimationPage animation_on={animations} /> },
         Page::State => rsx! { <StatePage /> },
-        Page::CustomGpu => rsx! { <CustomGpuPage animation_on={animation_on} /> },
+        Page::CustomGpu => rsx! { <CustomGpuPage animation_on={animation_on.clone()} /> },
         Page::ErrorBoundary => rsx! { <ErrorBoundaryPage /> },
         Page::Licenses => rsx! { <LicensesPage /> },
     };

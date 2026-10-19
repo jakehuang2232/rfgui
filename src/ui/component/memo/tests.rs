@@ -65,17 +65,17 @@ fn children_are_inputs_and_shared_resolved_output_is_reused() {
 }
 
 #[component]
-fn Callback(callback: Rc<dyn Fn() -> usize>) -> RsxNode {
+fn Callback(callback: &Rc<dyn Fn() -> usize>) -> RsxNode {
     RsxNode::text(callback().to_string())
 }
 #[derive(Clone)]
 struct Opaque(usize);
 #[component]
-fn Unknown(value: Opaque) -> RsxNode {
+fn Unknown(value: &Opaque) -> RsxNode {
     RsxNode::text(value.0.to_string())
 }
 #[component]
-fn Generic<T: Clone + PartialEq + ToString + 'static>(value: T) -> RsxNode {
+fn Generic<T: Clone + PartialEq + ToString + 'static>(value: &T) -> RsxNode {
     RsxNode::text(value.to_string())
 }
 
@@ -256,7 +256,7 @@ struct Tracked {
     lifetime: Rc<()>,
 }
 #[component]
-fn OwnedProps(value: Tracked, fail: bool) -> RsxNode {
+fn OwnedProps(value: &Tracked, fail: bool) -> RsxNode {
     assert!(!fail, "render panic");
     RsxNode::text(value.value.to_string())
 }
@@ -313,7 +313,7 @@ struct Handwritten;
 #[derive(Clone, Default, PartialEq)]
 struct HandwrittenProps(usize);
 impl crate::ui::RsxComponent<HandwrittenProps> for Handwritten {
-    fn render(props: HandwrittenProps, _: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &HandwrittenProps, _: Vec<RsxNode>) -> RsxNode {
         RsxNode::text(props.0.to_string())
     }
 }
@@ -330,7 +330,7 @@ impl crate::ui::RsxTag for Handwritten {
         children: Vec<RsxNode>,
         _: Option<crate::ui::RsxKey>,
     ) -> RsxNode {
-        <Self as crate::ui::RsxComponent<HandwrittenProps>>::render(props, children)
+        <Self as crate::ui::RsxComponent<HandwrittenProps>>::render(&props, children)
     }
 }
 

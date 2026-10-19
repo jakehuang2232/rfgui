@@ -22,7 +22,7 @@ const HIGHLIGHTS: [(&str, &str); 3] = [
 ];
 
 #[component]
-pub fn WelcomePage(navigate: Binding<Page>) -> RsxNode {
+pub fn WelcomePage(navigate: &Binding<Page>) -> RsxNode {
     let (theme, _) = use_theme();
     let highlights = HIGHLIGHTS
         .iter()

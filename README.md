@@ -76,7 +76,7 @@ use rfgui::ui::{ClickEvent, RsxNode, component, rsx, use_state};
 use rfgui::view::{Element, Text};
 
 #[component]
-fn Counter(label: String) -> RsxNode {
+fn Counter(label: &str) -> RsxNode {
     let count = use_state(|| 0);
     let increment = {
         let count = count.clone();
@@ -176,7 +176,7 @@ fn Card() -> RsxNode {
 
 ### 2) Props and children
 
-A component's parameters are its props. An `Option` prop may be left out, or given its value directly; a `children: Vec<RsxNode>` parameter takes the nested content.
+A component's parameters are its props. An `Option` prop may be left out, or given its value directly; a `children: Vec<RsxNode>` parameter takes the nested content. The component node keeps its props and the render borrows them, so a parameter is `&T` (`&str` and `&[T]` for a `String` or `Vec<T>` prop), or a `Copy` value; clone what the output takes.
 
 ```rust
 use rfgui::style::{Border, BorderRadius, Color, Layout, Length, Padding};
@@ -184,7 +184,7 @@ use rfgui::ui::{RsxNode, component, rsx};
 use rfgui::view::{Element, Text};
 
 #[component]
-fn Panel(title: String, accent: Option<Color>, children: Vec<RsxNode>) -> RsxNode {
+fn Panel(title: &str, accent: Option<Color>, children: Vec<RsxNode>) -> RsxNode {
     let accent = accent.unwrap_or(Color::rgb(31, 41, 55));
     rsx! {
         <Element style={{

@@ -320,15 +320,15 @@ impl<V> RsxComponent<TreeViewProps<V>> for TreeView<V>
 where
     V: Clone + PartialEq + std::hash::Hash + 'static,
 {
-    fn render(props: TreeViewProps<V>, _children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &TreeViewProps<V>, _children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <TreeViewView::<V>
-                nodes={props.nodes}
-                default_expanded_items={props.default_expanded_items}
-                expanded_binding={props.expanded_binding}
-                default_selected_item={props.default_selected_item}
-                selected_binding={props.selected_binding}
-                on_move={props.on_move}
+                nodes={props.nodes.clone()}
+                default_expanded_items={props.default_expanded_items.clone()}
+                expanded_binding={props.expanded_binding.clone()}
+                default_selected_item={props.default_selected_item.clone()}
+                selected_binding={props.selected_binding.clone()}
+                on_move={props.on_move.clone()}
             />
         }
     }
@@ -352,7 +352,7 @@ where
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<TreeViewProps<V>>>::render(props, children)
+        <Self as RsxComponent<TreeViewProps<V>>>::render(&props, children)
     }
 }
 
@@ -363,22 +363,24 @@ const TREE_ITEM_ICON_SLOT_PX: f32 = 18.0;
 
 #[component]
 fn TreeViewView<V: Clone + PartialEq + std::hash::Hash + 'static>(
-    nodes: Vec<TreeNode<V>>,
-    default_expanded_items: Option<Vec<V>>,
-    expanded_binding: Option<Binding<Vec<V>>>,
-    default_selected_item: Option<V>,
-    selected_binding: Option<Binding<Option<V>>>,
-    on_move: Option<Rc<dyn Fn(TreeMoveEvent<V>)>>,
+    nodes: &[TreeNode<V>],
+    default_expanded_items: &Option<Vec<V>>,
+    expanded_binding: &Option<Binding<Vec<V>>>,
+    default_selected_item: &Option<V>,
+    selected_binding: &Option<Binding<Option<V>>>,
+    on_move: &Option<Rc<dyn Fn(TreeMoveEvent<V>)>>,
 ) -> RsxNode {
     let theme = use_theme().0;
 
     let fallback_expanded = use_state(|| default_expanded_items.clone().unwrap_or_default());
     let expanded = expanded_binding
+        .clone()
         .unwrap_or_else(|| fallback_expanded.binding())
         .snapshot();
 
     let fallback_selected = use_state(|| default_selected_item.clone());
     let selected = selected_binding
+        .clone()
         .unwrap_or_else(|| fallback_selected.binding())
         .snapshot();
 
@@ -398,7 +400,7 @@ fn TreeViewView<V: Clone + PartialEq + std::hash::Hash + 'static>(
     let drag_enabled = on_move.is_some();
 
     let mut row_nodes: Vec<RsxNode> = Vec::new();
-    for node in &nodes {
+    for node in nodes {
         emit_rows(
             node,
             0,

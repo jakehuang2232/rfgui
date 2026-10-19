@@ -140,23 +140,23 @@ pub struct WindowContentStyleSlot {
 }
 
 impl RsxComponent<WindowProps> for Window {
-    fn render(props: WindowProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &WindowProps, children: Vec<RsxNode>) -> RsxNode {
         let width = props.width.unwrap_or(360.0).max(MIN_WIDTH as f64) as f32;
         let height = props.height.unwrap_or(240.0).max(MIN_HEIGHT as f64) as f32;
         let scrollable = props.scrollable.unwrap_or(true);
 
         rsx! {
             <WindowView
-                title={props.title}
+                title={props.title.clone()}
                 draggable={props.draggable.unwrap_or(true)}
                 initial_width={width}
                 initial_height={height}
                 position={props.position}
-                on_move={props.on_move}
-                on_resize={props.on_resize}
-                on_focus={props.on_focus}
-                on_blur={props.on_blur}
-                window_slots={props.window_slots}
+                on_move={props.on_move.clone()}
+                on_resize={props.on_resize.clone()}
+                on_focus={props.on_focus.clone()}
+                on_blur={props.on_blur.clone()}
+                window_slots={props.window_slots.clone()}
                 scrollable={scrollable}
             >
                 {children}
@@ -180,22 +180,22 @@ impl rfgui::ui::RsxTag for Window {
         children: Vec<RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> RsxNode {
-        <Self as RsxComponent<WindowProps>>::render(props, children)
+        <Self as RsxComponent<WindowProps>>::render(&props, children)
     }
 }
 
 #[rfgui::ui::component]
 fn WindowView(
-    title: String,
+    title: &str,
     draggable: bool,
     initial_width: f32,
     initial_height: f32,
     position: Option<(f32, f32)>,
-    on_move: Option<MoveHandlerProp>,
-    on_resize: Option<ResizeHandlerProp>,
-    on_focus: Option<FocusHandlerProp>,
-    on_blur: Option<BlurHandlerProp>,
-    window_slots: Option<WindowSlotsProp>,
+    on_move: &Option<MoveHandlerProp>,
+    on_resize: &Option<ResizeHandlerProp>,
+    on_focus: &Option<FocusHandlerProp>,
+    on_blur: &Option<BlurHandlerProp>,
+    window_slots: &Option<WindowSlotsProp>,
     scrollable: bool,
     children: Vec<RsxNode>,
 ) -> RsxNode {
@@ -209,10 +209,10 @@ fn WindowView(
     let (root_style_slot, title_bar_style_slot, title_text_style_slot, content_style_slot) =
         if let Some(slots) = window_slots {
             (
-                slots.root_style,
-                slots.title_bar_style,
-                slots.title_text_style,
-                slots.content_style,
+                slots.root_style.clone(),
+                slots.title_bar_style.clone(),
+                slots.title_text_style.clone(),
+                slots.content_style.clone(),
             )
         } else {
             (None, None, None, None)
@@ -448,8 +448,8 @@ fn WindowView(
                     theme.shadow.level_3,
                 ],
             }}
-            on_focus={on_focus}
-            on_blur={on_blur}
+            on_focus={on_focus.clone()}
+            on_blur={on_blur.clone()}
         >
             <Element
                 style={{

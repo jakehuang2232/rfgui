@@ -32,13 +32,14 @@ fn Forecast(broken: bool) -> RsxNode {
 
 /// What the boundary shows instead; it reads the caught error from context.
 #[component]
-fn ForecastFallback(on_recover: Rc<dyn Fn()>) -> RsxNode {
+fn ForecastFallback(on_recover: &Rc<dyn Fn()>) -> RsxNode {
     let (theme, _) = use_theme();
     let handle = use_context::<ErrorBoundaryHandle>();
     let message = handle
         .as_ref()
         .map(|handle| handle.error().message().to_string())
         .unwrap_or_default();
+    let on_recover = on_recover.clone();
     let retry = move |_: &mut ClickEvent| {
         on_recover();
         if let Some(handle) = &handle {

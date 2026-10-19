@@ -187,7 +187,7 @@ pub struct ButtonProps {
 }
 
 impl RsxComponent<ButtonProps> for Button {
-    fn render(props: ButtonProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &ButtonProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <ButtonView
                 variant={props.variant}
@@ -196,10 +196,10 @@ impl RsxComponent<ButtonProps> for Button {
                 disabled={props.disabled}
                 repeat={props.repeat}
                 full_width={props.full_width}
-                start_icon={props.start_icon}
-                end_icon={props.end_icon}
-                on_click={props.on_click}
-                tooltip={props.tooltip}
+                start_icon={props.start_icon.clone()}
+                end_icon={props.end_icon.clone()}
+                on_click={props.on_click.clone()}
+                tooltip={props.tooltip.clone()}
             >
                 {children}
             </ButtonView>
@@ -222,7 +222,7 @@ impl rfgui::ui::RsxTag for Button {
         children: Vec<RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> RsxNode {
-        <Self as RsxComponent<ButtonProps>>::render(props, children)
+        <Self as RsxComponent<ButtonProps>>::render(&props, children)
     }
 }
 
@@ -263,10 +263,10 @@ fn ButtonView(
     disabled: Option<bool>,
     repeat: Option<bool>,
     full_width: Option<bool>,
-    start_icon: Option<RsxNode>,
-    end_icon: Option<RsxNode>,
-    on_click: Option<ClickHandlerProp>,
-    tooltip: Option<RsxNode>,
+    start_icon: &Option<RsxNode>,
+    end_icon: &Option<RsxNode>,
+    on_click: &Option<ClickHandlerProp>,
+    tooltip: &Option<RsxNode>,
     children: Vec<RsxNode>,
 ) -> RsxNode {
     const REPEAT_DELAY: Duration = Duration::from_millis(400);
@@ -535,12 +535,12 @@ fn ButtonView(
             on_pointer_down={mouse_down}
             on_pointer_enter={mouse_enter}
             on_pointer_leave={mouse_leave}
-            on_click={if !disabled && !repeat_enabled { on_click } else { None }}
+            on_click={if !disabled && !repeat_enabled { on_click.clone() } else { None }}
         >
-            {start_icon}
+            {start_icon.clone()}
             {children}
-            {end_icon}
-            {if tooltip_hovered { tooltip } else { None }}
+            {end_icon.clone()}
+            {if tooltip_hovered { tooltip.clone() } else { None }}
         </Element>
     }
 }

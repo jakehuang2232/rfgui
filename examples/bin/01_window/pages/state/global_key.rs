@@ -9,7 +9,7 @@ use crate::showcase::Demo;
 /// A card with state of every kind: a count, a scroll offset and a
 /// running transition.
 #[component]
-fn MovableCard(title: String) -> RsxNode {
+fn MovableCard(title: &str) -> RsxNode {
     let count = use_state(|| 0_i32);
     let transition_alt = use_state(|| false);
     let theme = use_theme().0;

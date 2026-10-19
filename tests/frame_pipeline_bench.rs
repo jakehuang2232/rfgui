@@ -15,7 +15,7 @@ mod gpu;
 const SIZE: [u32; 2] = [640, 480];
 
 #[component]
-fn Row(label: String, red: bool, wide: bool) -> RsxNode {
+fn Row(label: &str, red: bool, wide: bool) -> RsxNode {
     rsx! {
         <Element style={{width:Length::px(if wide {360.0} else {320.0}),height:Length::px(24.0),background:if red {Color::rgb(180,40,40)} else {Color::rgb(40,60,80)}}}>
             <Text>{label}</Text>

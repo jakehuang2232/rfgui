@@ -24,15 +24,15 @@ pub struct ToggleButtonProps {
 }
 
 impl RsxComponent<ToggleButtonProps> for ToggleButton {
-    fn render(props: ToggleButtonProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &ToggleButtonProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <ToggleButtonView
-                value={props.value}
+                value={props.value.clone()}
                 selected={props.selected}
                 size={props.size}
                 color={props.color}
                 disabled={props.disabled}
-                on_click={props.on_click}
+                on_click={props.on_click.clone()}
             >
                 {children}
             </ToggleButtonView>
@@ -55,7 +55,7 @@ impl rfgui::ui::RsxTag for ToggleButton {
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<ToggleButtonProps>>::render(props, children)
+        <Self as RsxComponent<ToggleButtonProps>>::render(&props, children)
     }
 }
 
@@ -66,12 +66,12 @@ fn resolve(color: &dyn ColorLike) -> Color {
 
 #[component]
 fn ToggleButtonView(
-    value: Option<String>,
+    value: &Option<String>,
     selected: Option<bool>,
     size: Option<ButtonSize>,
     color: Option<ButtonColor>,
     disabled: Option<bool>,
-    on_click: Option<ClickHandlerProp>,
+    on_click: &Option<ClickHandlerProp>,
     children: Vec<RsxNode>,
 ) -> RsxNode {
     let theme = use_theme().0;
@@ -126,7 +126,7 @@ fn ToggleButtonView(
             size.unwrap_or(ButtonSize::Medium),
             color.unwrap_or(ButtonColor::Inherit),
             disabled.unwrap_or(false),
-            on_click,
+            on_click.clone(),
         ),
     };
 

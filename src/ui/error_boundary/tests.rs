@@ -35,7 +35,7 @@ enum Fail {
 
 /// Renders its name and the id its state got on mount, and logs mounts.
 #[component]
-fn Leaf(name: String, fail: Fail) -> RsxNode {
+fn Leaf(name: &str, fail: Fail) -> RsxNode {
     let id: State<u32> = use_state(|| {
         NEXT_ID.set(NEXT_ID.get() + 1);
         NEXT_ID.get()

@@ -115,7 +115,7 @@ fn generate_module(symbols: &[Symbol<'_>], codepoints: &BTreeSet<u32>) -> String
             "impl rfgui::ui::RsxComponent<MaterialSymbolIconProps> for {component_name} {{\n"
         ));
         output.push_str(
-            "    fn render(props: MaterialSymbolIconProps, _children: Vec<rfgui::ui::RsxNode>) -> rfgui::ui::RsxNode {\n",
+            "    fn render(props: &MaterialSymbolIconProps, _children: Vec<rfgui::ui::RsxNode>) -> rfgui::ui::RsxNode {\n",
         );
         output.push_str(&format!(
             "        render_material_symbol_icon(&{static_name}, props)\n"
@@ -136,7 +136,7 @@ fn generate_module(symbols: &[Symbol<'_>], codepoints: &BTreeSet<u32>) -> String
         output.push_str("        _key: Option<rfgui::ui::RsxKey>,\n");
         output.push_str("    ) -> rfgui::ui::RsxNode {\n");
         output.push_str(&format!(
-            "        <Self as rfgui::ui::RsxComponent<MaterialSymbolIconProps>>::render(props, children)\n"
+            "        <Self as rfgui::ui::RsxComponent<MaterialSymbolIconProps>>::render(&props, children)\n"
         ));
         output.push_str("    }\n");
         output.push_str("}\n\n");

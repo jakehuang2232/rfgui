@@ -18,7 +18,7 @@ const BAR: [u8; 3] = [229, 57, 53];
 const FALLBACK: [u8; 3] = [120, 52, 0];
 
 #[component]
-fn Stat(label: String, value: String) -> RsxNode {
+fn Stat(label: &str, value: &str) -> RsxNode {
     rsx! {
         <Element style={{ layout: Layout::flow().column().no_wrap() }}>
             <Text style={{ color: Color::rgb(255, 255, 255), font_size: FontSize::px(22.0) }}>
@@ -31,7 +31,7 @@ fn Stat(label: String, value: String) -> RsxNode {
 
 /// Panics on an empty series, the way a render body that trusts its data does.
 #[component]
-fn RevenueChart(points: Vec<f32>) -> RsxNode {
+fn RevenueChart(points: &[f32]) -> RsxNode {
     let peak = points
         .iter()
         .copied()
@@ -56,7 +56,7 @@ fn RevenueChart(points: Vec<f32>) -> RsxNode {
 }
 
 #[component]
-fn ChartPanel(points: Vec<f32>) -> RsxNode {
+fn ChartPanel(points: &[f32]) -> RsxNode {
     let [r, g, b] = PANEL;
     rsx! {
         <Element style={{
@@ -66,13 +66,13 @@ fn ChartPanel(points: Vec<f32>) -> RsxNode {
             border_radius: BorderRadius::uniform(Length::px(4.0)),
             padding: Padding::new().top(Length::px(10.0)).left(Length::px(10.0)),
         }}>
-            <RevenueChart points={points} />
+            <RevenueChart points={points.to_vec()} />
         </Element>
     }
 }
 
 #[component]
-fn Card(title: String, accent: [u8; 3], children: Vec<RsxNode>) -> RsxNode {
+fn Card(title: &str, accent: [u8; 3], children: Vec<RsxNode>) -> RsxNode {
     let [r, g, b] = accent;
     rsx! {
         <Element style={{
@@ -108,8 +108,8 @@ fn ChartUnavailable() -> RsxNode {
 
 /// The revenue chart sits inside an `ErrorBoundary` when `boundary` is set.
 #[component]
-fn Dashboard(revenue: Vec<f32>, boundary: bool) -> RsxNode {
-    let chart = rsx! { <ChartPanel points={revenue} /> };
+fn Dashboard(revenue: &[f32], boundary: bool) -> RsxNode {
+    let chart = rsx! { <ChartPanel points={revenue.to_vec()} /> };
     let chart = if boundary {
         rsx! { <ErrorBoundary fallback={rsx! { <ChartUnavailable /> }}>{chart}</ErrorBoundary> }
     } else {

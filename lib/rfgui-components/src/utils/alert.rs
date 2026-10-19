@@ -131,14 +131,14 @@ pub struct AlertProps {
 }
 
 impl RsxComponent<AlertProps> for Alert {
-    fn render(props: AlertProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &AlertProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <AlertView
                 severity={props.severity.unwrap_or_default()}
                 variant={props.variant.unwrap_or_default()}
-                icon={props.icon}
-                action={props.action}
-                on_close={props.on_close}
+                icon={props.icon.clone()}
+                action={props.action.clone()}
+                on_close={props.on_close.clone()}
             >
                 {children}
             </AlertView>
@@ -161,7 +161,7 @@ impl rfgui::ui::RsxTag for Alert {
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<AlertProps>>::render(props, children)
+        <Self as RsxComponent<AlertProps>>::render(&props, children)
     }
 }
 
@@ -213,9 +213,9 @@ fn tinted_background(severity: AlertSeverity, theme: &Theme) -> Box<dyn ColorLik
 fn AlertView(
     severity: AlertSeverity,
     variant: AlertVariant,
-    icon: Option<RsxNode>,
-    action: Option<RsxNode>,
-    on_close: Option<Rc<dyn Fn()>>,
+    icon: &Option<RsxNode>,
+    action: &Option<RsxNode>,
+    on_close: &Option<Rc<dyn Fn()>>,
     children: Vec<RsxNode>,
 ) -> RsxNode {
     let theme = use_theme().0;
@@ -241,11 +241,12 @@ fn AlertView(
     };
 
     let icon_node = icon
+        .clone()
         .unwrap_or_else(|| severity_icon(severity, theme.typography.size.md, foreground.clone()));
 
-    let action_node = action.unwrap_or_else(|| RsxNode::fragment(vec![]));
+    let action_node = action.clone().unwrap_or_else(|| RsxNode::fragment(vec![]));
 
-    let close_button = if let Some(cb) = on_close {
+    let close_button = if let Some(cb) = on_close.clone() {
         let click_handler = ClickHandlerProp::new(move |_| cb());
         let close_color = foreground.clone();
         let close_size = theme.typography.size.sm;

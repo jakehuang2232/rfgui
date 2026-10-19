@@ -154,7 +154,7 @@ fn rsx_nested_hover_object() {
 // ---------- #[component] + rsx end-to-end ----------
 
 #[crate::ui::component]
-pub fn V2PanelLabel(text: String, color: Option<crate::style::Color>) -> RsxNode {
+pub fn V2PanelLabel(text: &str, color: Option<crate::style::Color>) -> RsxNode {
     // Render path doesn't matter for this test; just return an empty element.
     // Intentionally use old `rsx!` inside component body to confirm
     // v1 body still compiles within a v2-tagged component.

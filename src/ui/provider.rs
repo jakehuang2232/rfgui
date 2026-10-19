@@ -31,7 +31,7 @@ pub struct ProviderProps<T> {
 }
 
 impl<T: Clone + 'static> RsxComponent<ProviderProps<T>> for Provider<T> {
-    fn render(props: ProviderProps<T>, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &ProviderProps<T>, children: Vec<RsxNode>) -> RsxNode {
         let child = match children.len() {
             1 => children.into_iter().next().unwrap(),
             _ => RsxNode::Fragment(Rc::new(RsxFragmentNode {
@@ -39,7 +39,7 @@ impl<T: Clone + 'static> RsxComponent<ProviderProps<T>> for Provider<T> {
                 children,
             })),
         };
-        provide_context_node(props.value, child)
+        provide_context_node(props.value.clone(), child)
     }
 }
 
@@ -61,6 +61,6 @@ where
         children: Vec<RsxNode>,
         _key: Option<crate::ui::RsxKey>,
     ) -> RsxNode {
-        <Self as RsxComponent<ProviderProps<T>>>::render(props, children)
+        <Self as RsxComponent<ProviderProps<T>>>::render(&props, children)
     }
 }

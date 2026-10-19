@@ -43,10 +43,10 @@ impl MaterialSymbolGlyph {
 
 pub(crate) fn render_material_symbol_icon(
     glyph: &'static MaterialSymbolGlyph,
-    props: MaterialSymbolIconProps,
+    props: &MaterialSymbolIconProps,
 ) -> RsxNode {
     glyph.ensure_registered();
-    let style = material_symbol_icon_style(glyph.family, props.style);
+    let style = material_symbol_icon_style(glyph.family, props.style.clone());
     let line_height = props.line_height.unwrap_or(1.0);
 
     rsx! {

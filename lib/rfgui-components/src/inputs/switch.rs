@@ -33,12 +33,15 @@ pub struct SwitchProps {
 }
 
 impl RsxComponent<SwitchProps> for Switch {
-    fn render(props: SwitchProps, _children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &SwitchProps, _children: Vec<RsxNode>) -> RsxNode {
         let checked = props.checked.unwrap_or(false);
         let has_binding = props.binding.is_some();
-        let binding = props.binding.unwrap_or_else(|| Binding::new(checked));
+        let binding = props
+            .binding
+            .clone()
+            .unwrap_or_else(|| Binding::new(checked));
         let disabled = props.disabled.unwrap_or(false);
-        let label = props.label;
+        let label = props.label.clone();
         let theme = use_theme().0;
         let switch_theme = &theme.component.switch;
         let thumb_travel = Length::calc(
@@ -62,7 +65,7 @@ impl RsxComponent<SwitchProps> for Switch {
         };
         let checked = checked_binding.get();
 
-        let on_change = props.on_change;
+        let on_change = props.on_change.clone();
         let click = on_click(move |_event| {
             if disabled {
                 return;
@@ -175,6 +178,6 @@ impl rfgui::ui::RsxTag for Switch {
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<SwitchProps>>::render(props, children)
+        <Self as RsxComponent<SwitchProps>>::render(&props, children)
     }
 }

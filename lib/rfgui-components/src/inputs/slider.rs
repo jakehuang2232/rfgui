@@ -26,17 +26,17 @@ pub struct SliderProps {
 }
 
 impl RsxComponent<SliderProps> for Slider {
-    fn render(props: SliderProps, _children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &SliderProps, _children: Vec<RsxNode>) -> RsxNode {
         const HORIZONTAL_PADDING: f32 = 8.0;
 
         let value = props.value.unwrap_or(30.0);
         let has_binding = props.binding.is_some();
-        let binding = props.binding.unwrap_or_else(|| Binding::new(value));
+        let binding = props.binding.clone().unwrap_or_else(|| Binding::new(value));
         let min = props.min.unwrap_or(0.0);
         let max = props.max.unwrap_or(100.0);
         let step_count = resolve_option_count(min, max, props.option_count);
         let disabled = props.disabled.unwrap_or(false);
-        let label = props.label;
+        let label = props.label.clone();
         let theme = use_theme().0;
         let slider_theme = &theme.component.slider;
         let height = slider_theme.height.max(1.0);
@@ -217,7 +217,7 @@ impl rfgui::ui::RsxTag for Slider {
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<SliderProps>>::render(props, children)
+        <Self as RsxComponent<SliderProps>>::render(&props, children)
     }
 }
 

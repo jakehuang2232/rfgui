@@ -15,6 +15,8 @@ description: "rfgui component and RSX authoring rules — typed-only RSX, #[prop
 - #[props]
 - Option<T> → optional
 - non-Option → required
+- render borrows props (`RsxComponent::render(props: &P, children)`); clone a field only to move it into the output
+- `#[component] fn` parameters: `&T` (`&str` / `&[T]` for `String` / `Vec<T>`), or a `Copy` value
 
 ## Rules
 
@@ -26,7 +28,7 @@ description: "rfgui component and RSX authoring rules — typed-only RSX, #[prop
 When adding an optional host prop:
 
 1. Declare `Option<T>` in the `#[props]` schema; the macro treats non-`Option` fields as required.
-2. Forward `Some(value)` from `RsxComponent::render` into the `RsxNode`.
+2. Forward `Some(value)` from the host tag's `host_node` (in `view/tags.rs`, owned props) into the `RsxNode`.
 3. Prefer a concrete runtime field when the value has a natural default; normalize omission at the host boundary.
 4. Decode and store it in `ElementTrait::ingest_props` for cold conversion.
 5. Decode and replace it in `ElementTrait::apply_prop` for incremental reconciliation.

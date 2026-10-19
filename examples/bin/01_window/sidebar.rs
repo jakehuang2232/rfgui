@@ -13,10 +13,10 @@ const WIDTH: f32 = 232.0;
 /// The page navigation, with the theme and Inspector switches below it.
 #[component]
 pub fn Sidebar(
-    page: Binding<Page>,
-    dark_mode: Binding<bool>,
-    on_dark_mode: Rc<dyn Fn(bool)>,
-    inspector_open: Binding<bool>,
+    page: &Binding<Page>,
+    dark_mode: &Binding<bool>,
+    on_dark_mode: &Rc<dyn Fn(bool)>,
+    inspector_open: &Binding<bool>,
 ) -> RsxNode {
     let (theme, _) = use_theme();
     let current = page.get();
@@ -101,8 +101,8 @@ pub fn Sidebar(
                     gap: theme.spacing.sm,
                     padding: Padding::uniform(Length::Zero).x(theme.spacing.md).y(theme.spacing.xs),
                 }}>
-                    <Switch label="Dark mode" binding={dark_mode} on_change={on_dark_mode} />
-                    <Switch label="Inspector" binding={inspector_open} />
+                    <Switch label="Dark mode" binding={dark_mode.clone()} on_change={on_dark_mode.clone()} />
+                    <Switch label="Inspector" binding={inspector_open.clone()} />
                 </Element>
             </Element>
         </Element>

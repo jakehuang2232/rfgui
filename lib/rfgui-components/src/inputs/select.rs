@@ -43,7 +43,7 @@ where
     DataType: Clone + 'static,
     ValueType: Clone + PartialEq + 'static,
 {
-    fn render(props: SelectProps<DataType, ValueType>, _children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &SelectProps<DataType, ValueType>, _children: Vec<RsxNode>) -> RsxNode {
         let selected_value = props.value.snapshot().get();
         let selected_index =
             resolve_selected_index(&props.data, &selected_value, props.to_value, props.to_label);
@@ -108,12 +108,12 @@ where
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<SelectProps<DataType, ValueType>>>::render(props, children)
+        <Self as RsxComponent<SelectProps<DataType, ValueType>>>::render(&props, children)
     }
 }
 
 #[component]
-fn SelectView(selected_label: String, menu_items: Vec<SelectMenuItem>) -> RsxNode {
+fn SelectView(selected_label: &str, menu_items: &[SelectMenuItem]) -> RsxNode {
     const SELECT_TRIGGER_ANCHOR: &str = "__rfgui_select_trigger_anchor";
 
     let fallback_open = use_state(|| false);

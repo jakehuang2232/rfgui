@@ -67,25 +67,24 @@ pub(super) fn render_deferred(inner: Rc<ComponentNodeInner>) -> RsxNode {
     })
 }
 
-fn render_resolved(inner: Rc<ComponentNodeInner>) -> RsxNode {
-    let ComponentRenderParts {
-        identity,
-        type_id,
-        children,
-        props,
-        vtable,
-        ..
-    } = inner.into_render_parts();
+fn render_resolved(mut inner: Rc<ComponentNodeInner>) -> RsxNode {
     crate::ui::work_profile::count(|p| p.component_renders += 1);
-    // render takes ownership of the boxed props, including on unwind.
-    let rendered = unsafe { (vtable.render)(props, children) };
+    // The node keeps its props and render borrows them, so a node the memo
+    // cache shares renders without a copy. Children move unless shared.
+    let children = match Rc::get_mut(&mut inner) {
+        Some(unique) => std::mem::take(&mut unique.children),
+        None => inner.children.clone(),
+    };
+    // Safety: the vtable's render shim reads `props` as the props type it was
+    // emitted for, and `inner` keeps them alive, including on unwind.
+    let rendered = unsafe { (inner.vtable.render)(inner.props, children) };
     let mut walked = unwrap_components(rendered);
-    walked.set_identity(identity);
+    walked.set_identity(inner.identity);
     if let RsxNode::Element(el) = &mut walked {
         let inner_builder = el.tag_descriptor.and_then(|d| d.host_builder);
         Rc::make_mut(el).tag_descriptor = Some(RsxTagDescriptor {
-            type_id,
-            type_name: identity.invocation_type,
+            type_id: inner.type_id,
+            type_name: inner.identity.invocation_type,
             host_builder: inner_builder,
         });
     }

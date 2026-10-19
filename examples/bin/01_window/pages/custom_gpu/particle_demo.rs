@@ -650,9 +650,9 @@ impl HostBuilder for ParticleCanvas {
 }
 
 #[component]
-pub fn ParticleDemo(animation_on: Binding<bool>) -> RsxNode {
+pub fn ParticleDemo(animation_on: &Binding<bool>) -> RsxNode {
     host_builder_node::<ParticleCanvas>("ParticleCanvas")
-        .with_prop("animation_on", animation_on.into_prop_value())
+        .with_prop("animation_on", animation_on.clone().into_prop_value())
 }
 
 #[cfg(test)]

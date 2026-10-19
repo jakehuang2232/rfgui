@@ -8,7 +8,7 @@ use crate::showcase::Demo;
 use particle_demo::ParticleDemo;
 
 #[component]
-pub fn CustomGpuPage(animation_on: Binding<bool>) -> RsxNode {
+pub fn CustomGpuPage(animation_on: &Binding<bool>) -> RsxNode {
     let (theme, _) = use_theme();
     rsx! {
         <Demo
@@ -22,7 +22,7 @@ pub fn CustomGpuPage(animation_on: Binding<bool>) -> RsxNode {
                 border: Border::uniform(Length::px(1.0), theme.color.divider.as_ref()),
                 border_radius: theme.radius.md,
             }}>
-                <ParticleDemo animation_on={animation_on} />
+                <ParticleDemo animation_on={animation_on.clone()} />
             </Element>
         </Demo>
     }

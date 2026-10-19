@@ -15,8 +15,8 @@ use crate::ui::{
     DragOverHandlerProp, DragStartHandlerProp, DropHandlerProp, FocusHandlerProp, FromPropValue,
     IntoPropValue, KeyDownHandlerProp, KeyUpHandlerProp, PointerDownHandlerProp,
     PointerEnterHandlerProp, PointerLeaveHandlerProp, PointerMoveHandlerProp, PointerUpHandlerProp,
-    RsxComponent, SharedPropValue, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp,
-    TextChangeHandlerProp, props,
+    SharedPropValue, TextAreaFocusHandlerProp, TextAreaRenderHandlerProp, TextChangeHandlerProp,
+    props,
 };
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -679,8 +679,10 @@ pub struct SvgPropSchema {
     pub error: Option<RsxNode>,
 }
 
-impl RsxComponent<ElementPropSchema> for Element {
-    fn render(props: ElementPropSchema, children: Vec<RsxNode>) -> RsxNode {
+impl Element {
+    /// Host tags build their node from owned props; they are not
+    /// components, so nothing keeps the props for a later render.
+    pub(crate) fn host_node(props: ElementPropSchema, children: Vec<RsxNode>) -> RsxNode {
         let mut node =
             RsxNode::tagged("Element", crate::ui::RsxTagDescriptor::for_tag::<Element>());
         if let Some(anchor) = props.anchor {
@@ -747,8 +749,10 @@ impl RsxComponent<ElementPropSchema> for Element {
     }
 }
 
-impl RsxComponent<TextPropSchema> for Text {
-    fn render(props: TextPropSchema, children: Vec<RsxNode>) -> RsxNode {
+impl Text {
+    /// Host tags build their node from owned props; they are not
+    /// components, so nothing keeps the props for a later render.
+    pub(crate) fn host_node(props: TextPropSchema, children: Vec<RsxNode>) -> RsxNode {
         let mut node = RsxNode::tagged("Text", crate::ui::RsxTagDescriptor::for_tag::<Text>());
         if let Some(style) = props.style {
             node = node.with_prop("style", style);
@@ -760,8 +764,13 @@ impl RsxComponent<TextPropSchema> for Text {
     }
 }
 
-impl RsxComponent<TextAreaProjectionSegmentPropSchema> for TextAreaProjectionSegment {
-    fn render(props: TextAreaProjectionSegmentPropSchema, children: Vec<RsxNode>) -> RsxNode {
+impl TextAreaProjectionSegment {
+    /// Host tags build their node from owned props; they are not
+    /// components, so nothing keeps the props for a later render.
+    pub(crate) fn host_node(
+        props: TextAreaProjectionSegmentPropSchema,
+        children: Vec<RsxNode>,
+    ) -> RsxNode {
         let mut node = RsxNode::tagged(
             "TextAreaProjectionSegment",
             crate::ui::RsxTagDescriptor::for_tag::<TextAreaProjectionSegment>(),
@@ -779,8 +788,10 @@ impl RsxComponent<TextAreaProjectionSegmentPropSchema> for TextAreaProjectionSeg
     }
 }
 
-impl RsxComponent<TextAreaPropSchema> for TextArea {
-    fn render(mut props: TextAreaPropSchema, children: Vec<RsxNode>) -> RsxNode {
+impl TextArea {
+    /// Host tags build their node from owned props; they are not
+    /// components, so nothing keeps the props for a later render.
+    pub(crate) fn host_node(mut props: TextAreaPropSchema, children: Vec<RsxNode>) -> RsxNode {
         props.binding = props.binding.map(|binding| binding.snapshot());
         let mut resolved_content = props
             .binding
@@ -861,8 +872,10 @@ fn append_text_area_content_child(out: &mut String, node: &RsxNode) {
     }
 }
 
-impl RsxComponent<ImagePropSchema> for Image {
-    fn render(props: ImagePropSchema, _children: Vec<RsxNode>) -> RsxNode {
+impl Image {
+    /// Host tags build their node from owned props; they are not
+    /// components, so nothing keeps the props for a later render.
+    pub(crate) fn host_node(props: ImagePropSchema, _children: Vec<RsxNode>) -> RsxNode {
         let mut node = RsxNode::tagged("Image", crate::ui::RsxTagDescriptor::for_tag::<Image>())
             .with_prop(
                 "source",
@@ -893,8 +906,10 @@ impl RsxComponent<ImagePropSchema> for Image {
     }
 }
 
-impl RsxComponent<SvgPropSchema> for Svg {
-    fn render(props: SvgPropSchema, _children: Vec<RsxNode>) -> RsxNode {
+impl Svg {
+    /// Host tags build their node from owned props; they are not
+    /// components, so nothing keeps the props for a later render.
+    pub(crate) fn host_node(props: SvgPropSchema, _children: Vec<RsxNode>) -> RsxNode {
         let mut node = RsxNode::tagged("Svg", crate::ui::RsxTagDescriptor::for_tag::<Svg>())
             .with_prop(
                 "source",
@@ -948,7 +963,7 @@ macro_rules! impl_rsx_tag_v2_trivial {
                 children: Vec<RsxNode>,
                 _key: Option<crate::ui::RsxKey>,
             ) -> RsxNode {
-                <$tag as RsxComponent<$props>>::render(props, children)
+                <$tag>::host_node(props, children)
             }
         }
 
@@ -1090,7 +1105,7 @@ impl crate::ui::RsxTag for Image {
         children: Vec<RsxNode>,
         _key: Option<crate::ui::RsxKey>,
     ) -> RsxNode {
-        <Image as RsxComponent<ImagePropSchema>>::render(props, children)
+        <Image>::host_node(props, children)
     }
 }
 
@@ -1153,7 +1168,7 @@ impl crate::ui::RsxTag for Svg {
         children: Vec<RsxNode>,
         _key: Option<crate::ui::RsxKey>,
     ) -> RsxNode {
-        <Svg as RsxComponent<SvgPropSchema>>::render(props, children)
+        <Svg>::host_node(props, children)
     }
 }
 

@@ -22,7 +22,7 @@ pub(crate) fn demo_animator(enabled: bool, animator: Animator) -> Option<Animato
 
 /// A card on a page: a title, what it shows, and the live demo below.
 #[component]
-pub fn Demo(title: String, description: String, children: Vec<RsxNode>) -> RsxNode {
+pub fn Demo(title: &str, description: &str, children: Vec<RsxNode>) -> RsxNode {
     let (theme, _) = use_theme();
     rsx! {
         <Element style={{
@@ -52,7 +52,7 @@ pub fn Demo(title: String, description: String, children: Vec<RsxNode>) -> RsxNo
 
 /// One sample inside a demo, captioned with what it shows.
 #[component]
-pub fn Sample(label: String, children: Vec<RsxNode>) -> RsxNode {
+pub fn Sample(label: &str, children: Vec<RsxNode>) -> RsxNode {
     let (theme, _) = use_theme();
     rsx! {
         <Element style={{
@@ -89,7 +89,7 @@ pub fn SampleRow(children: Vec<RsxNode>) -> RsxNode {
 
 /// A secondary heading inside a demo.
 #[component]
-pub fn Caption(text: String) -> RsxNode {
+pub fn Caption(text: &str) -> RsxNode {
     let (theme, _) = use_theme();
     rsx! {
         <Text style={{ color: theme.color.text.secondary.clone() }}>{text}</Text>

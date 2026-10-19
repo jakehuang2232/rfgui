@@ -20,7 +20,6 @@ One component per file. mod.rs just wires `mod X; pub use X::*;`.
 ```rust
 pub struct Foo;
 
-#[derive(Clone)]
 #[props]
 pub struct FooProps {
     pub required_thing: String,        // required
@@ -28,7 +27,7 @@ pub struct FooProps {
 }
 
 impl RsxComponent<FooProps> for Foo {
-    fn render(props: FooProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &FooProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <FooView ...>{children}</FooView>
         }
@@ -43,12 +42,12 @@ impl rfgui::ui::RsxTag for Foo {
 
     fn into_strict(p: Self::Props) -> Self::StrictProps { p.into() }
     fn create_node(props, children, _key) -> RsxNode {
-        <Self as RsxComponent<FooProps>>::render(props, children)
+        <Self as RsxComponent<FooProps>>::render(&props, children)
     }
 }
 
 #[component]
-fn FooView(required_thing: String, optional_thing: Option<Bar>, children: Vec<RsxNode>) -> RsxNode {
+fn FooView(required_thing: &str, optional_thing: &Option<Bar>, children: Vec<RsxNode>) -> RsxNode {
     let theme = use_theme().0;
     // resolve Option defaults here
     rsx! { <Element ...>{children}</Element> }
@@ -56,7 +55,8 @@ fn FooView(required_thing: String, optional_thing: Option<Bar>, children: Vec<Rs
 ```
 
 Rules:
-- `#[derive(Clone)]` on Props — required by vtable `clone_props` shim
+- `render` borrows the props: the component node keeps them, so a memo hit or miss never copies them. Clone a field only to move it into the output
+- `#[component] fn` parameters borrow too: `&T` (`&str` / `&[T]` for a `String` / `Vec<T>` prop), or a `Copy` value; a non-`Copy` by-value parameter is a compile error
 - `#[rfgui::ui::component]` on `impl RsxTag` block (not `#[component]`) — emits vtable
 - `ACCEPTS_CHILDREN: true` if children used; macro checks at call site
 - Render body = thin; real work in inner `#[component] fn FooView`
@@ -237,8 +237,7 @@ Hard-coded icons inside a component (e.g. `<ChevronRightIcon/>` for the expand a
 - Hardcode colors / sizes — always go through theme
 - Write a new native view component to avoid composing (`Element` + `Text` covers everything)
 - Use `#[component]` on `impl RsxTag` — use `#[rfgui::ui::component]` (emits vtable)
-- Skip `#[derive(Clone)]` on Props — vtable needs it
-- Mutate `RsxNode::Component` props directly — use `into_render_parts` / reconstruct
+- Mutate `RsxNode::Component` props directly — the node owns them; build a new node
 - Use `options: Vec<...>` prop to avoid context when compound API makes sense — prefer children + context (but see §Data-driven vs composition first)
 - Use `children: Vec<RsxNode>` if component has no children — set `ACCEPTS_CHILDREN: false`
 - Rely on `<Provider>` to reach nested Component children of caller-supplied `children` — snapshot wipe breaks it (see §Walker-ancestry)

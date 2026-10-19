@@ -178,11 +178,12 @@ struct Caught {
 }
 
 impl RsxComponent<ErrorBoundaryProps> for ErrorBoundary {
-    fn render(props: ErrorBoundaryProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &ErrorBoundaryProps, children: Vec<RsxNode>) -> RsxNode {
         let caught: State<Option<Caught>> = use_state(|| None);
-        let reset_key = props.reset_key;
+        let reset_key = props.reset_key.clone();
         let fallback = props
             .fallback
+            .clone()
             .unwrap_or_else(|| RsxNode::fragment(Vec::new()));
         let show_fallback = {
             let caught = caught.clone();
@@ -200,7 +201,7 @@ impl RsxComponent<ErrorBoundaryProps> for ErrorBoundary {
             Some(_) => caught.set(None),
             None => {}
         }
-        let on_error = props.on_error;
+        let on_error = props.on_error.clone();
         catch_render_node(RsxNode::fragment(children), move |error| {
             caught.set(Some(Caught {
                 error: error.clone(),
@@ -229,7 +230,7 @@ impl crate::ui::RsxTag for ErrorBoundary {
         children: Vec<RsxNode>,
         _key: Option<crate::ui::RsxKey>,
     ) -> RsxNode {
-        <Self as RsxComponent<ErrorBoundaryProps>>::render(props, children)
+        <Self as RsxComponent<ErrorBoundaryProps>>::render(&props, children)
     }
 }
 

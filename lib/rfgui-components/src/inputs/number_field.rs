@@ -36,12 +36,12 @@ impl<T> RsxComponent<NumberFieldProps<T>> for NumberField<T>
 where
     T: NumberFieldValue,
 {
-    fn render(props: NumberFieldProps<T>, _children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &NumberFieldProps<T>, _children: Vec<RsxNode>) -> RsxNode {
         let value = props.value.unwrap_or_else(T::zero);
         let has_binding = props.binding.is_some();
-        let binding = props.binding.unwrap_or_else(|| Binding::new(value));
+        let binding = props.binding.clone().unwrap_or_else(|| Binding::new(value));
         let theme = use_theme().0;
-        let label = props.label;
+        let label = props.label.clone();
 
         let fallback_value = use_state(|| value);
         let value_binding = if has_binding {
@@ -194,7 +194,7 @@ where
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<NumberFieldProps<T>>>::render(props, children)
+        <Self as RsxComponent<NumberFieldProps<T>>>::render(&props, children)
     }
 }
 

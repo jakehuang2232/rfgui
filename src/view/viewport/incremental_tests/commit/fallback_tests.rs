@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn structural_slot_failure_after_root_create_cold_rebuilds_without_orphans() {
-    use crate::ui::{IntoPropValue, RsxComponent};
+    use crate::ui::IntoPropValue;
     use crate::view::ImageSource;
     use crate::view::base_component::{Element as ElementHost, Image};
     use crate::view::fiber_work::{FiberWork, UpdateFailure, apply_fiber_works};
@@ -11,7 +11,7 @@ fn structural_slot_failure_after_root_create_cold_rebuilds_without_orphans() {
     use crate::view::tags::{Image as ImageTag, ImagePropSchema};
 
     fn image_tree(source: ImageSource, loading: RsxNode) -> RsxNode {
-        <ImageTag as RsxComponent<ImagePropSchema>>::render(
+        ImageTag::host_node(
             ImagePropSchema {
                 source,
                 style: None,
@@ -151,14 +151,13 @@ fn structural_slot_failure_after_root_create_cold_rebuilds_without_orphans() {
 
 #[test]
 fn viewport_structural_slot_failure_automatically_falls_back_to_cold_rebuild() {
-    use crate::ui::RsxComponent;
     use crate::view::ImageSource;
     use crate::view::base_component::Element as ElementHost;
     use crate::view::node_arena::Node;
     use crate::view::tags::{Image as ImageTag, ImagePropSchema};
 
     fn image_tree(source: ImageSource, loading: RsxNode) -> RsxNode {
-        <ImageTag as RsxComponent<ImagePropSchema>>::render(
+        ImageTag::host_node(
             ImagePropSchema {
                 source,
                 style: None,

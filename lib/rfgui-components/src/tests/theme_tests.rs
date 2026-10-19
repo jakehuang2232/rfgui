@@ -25,7 +25,7 @@ fn theme_clones_share_identity_and_edits_copy_on_write() {
 }
 
 #[component]
-fn ThemedPanel(theme: Theme) -> RsxNode {
+fn ThemedPanel(theme: &Theme) -> RsxNode {
     rsx! { <Element style={{ font_size: theme.typography.size.md }} /> }
 }
 

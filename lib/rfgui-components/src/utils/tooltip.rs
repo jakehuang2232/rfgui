@@ -118,10 +118,10 @@ pub struct TooltipProps {
 }
 
 impl RsxComponent<TooltipProps> for Tooltip {
-    fn render(props: TooltipProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &TooltipProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <TooltipView
-                handle={props.handle}
+                handle={props.handle.clone()}
                 placement={props.placement.unwrap_or_default()}
                 arrow={props.arrow.unwrap_or(false)}
             >
@@ -146,7 +146,7 @@ impl rfgui::ui::RsxTag for Tooltip {
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<TooltipProps>>::render(props, children)
+        <Self as RsxComponent<TooltipProps>>::render(&props, children)
     }
 }
 
@@ -187,7 +187,7 @@ fn placement_position(placement: TooltipPlacement, gap: Length) -> Position {
 
 #[component]
 fn TooltipView(
-    handle: Option<TooltipRef>,
+    handle: &Option<TooltipRef>,
     placement: TooltipPlacement,
     arrow: bool,
     children: Vec<RsxNode>,

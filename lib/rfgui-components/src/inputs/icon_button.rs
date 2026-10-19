@@ -56,14 +56,14 @@ pub struct IconButtonProps {
 }
 
 impl RsxComponent<IconButtonProps> for IconButton {
-    fn render(props: IconButtonProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &IconButtonProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <IconButtonView
                 size={props.size}
                 color={props.color}
                 disabled={props.disabled}
                 edge={props.edge}
-                on_click={props.on_click}
+                on_click={props.on_click.clone()}
             >
                 {children}
             </IconButtonView>
@@ -86,7 +86,7 @@ impl rfgui::ui::RsxTag for IconButton {
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<IconButtonProps>>::render(props, children)
+        <Self as RsxComponent<IconButtonProps>>::render(&props, children)
     }
 }
 
@@ -101,7 +101,7 @@ fn IconButtonView(
     color: Option<ButtonColor>,
     disabled: Option<bool>,
     edge: Option<IconButtonEdge>,
-    on_click: Option<ClickHandlerProp>,
+    on_click: &Option<ClickHandlerProp>,
     children: Vec<RsxNode>,
 ) -> RsxNode {
     let theme = use_theme().0;
@@ -149,7 +149,7 @@ fn IconButtonView(
                     background: resolve(hover_background.as_ref()),
                 },
             }}
-            on_click={if !disabled { on_click } else { None }}
+            on_click={if !disabled { on_click.clone() } else { None }}
         >
             {children}
         </Element>

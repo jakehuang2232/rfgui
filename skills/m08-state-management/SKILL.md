@@ -75,15 +75,16 @@ struct ToggleGroupCtx {
 }
 
 #[component]
-fn ToggleButtonGroup(value: Binding<Option<String>>, children: Vec<RsxNode>) -> RsxNode {
-    let ctx = ToggleGroupCtx { value };
+fn ToggleButtonGroup(value: &Binding<Option<String>>, children: Vec<RsxNode>) -> RsxNode {
+    let ctx = ToggleGroupCtx { value: value.clone() };
     provide_context(ctx, || rsx! { <Fragment>{children}</Fragment> })
 }
 
 #[component]
-fn ToggleButton(value: String, children: Vec<RsxNode>) -> RsxNode {
+fn ToggleButton(value: &str, children: Vec<RsxNode>) -> RsxNode {
     let ctx = use_context_expect::<ToggleGroupCtx>();
-    let selected = ctx.value.get().as_ref() == Some(&value);
+    let selected = ctx.value.get().as_deref() == Some(value);
+    let value = value.to_string();
     let on_click = move |_| ctx.value.set(Some(value.clone()));
     rsx! { <Element on_click={on_click}>{children}</Element> }
 }

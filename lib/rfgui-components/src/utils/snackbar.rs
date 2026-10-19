@@ -120,15 +120,15 @@ pub struct SnackbarProps {
 }
 
 impl RsxComponent<SnackbarProps> for Snackbar {
-    fn render(props: SnackbarProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &SnackbarProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <SnackbarView
                 open={props.open}
-                message={props.message}
-                action={props.action}
+                message={props.message.clone()}
+                action={props.action.clone()}
                 auto_hide_duration={props.auto_hide_duration}
                 anchor_origin={props.anchor_origin.unwrap_or_default()}
-                on_close={props.on_close}
+                on_close={props.on_close.clone()}
             >
                 {children}
             </SnackbarView>
@@ -151,7 +151,7 @@ impl rfgui::ui::RsxTag for Snackbar {
         children: Vec<RsxNode>,
         _key: Option<RsxKey>,
     ) -> RsxNode {
-        <Self as RsxComponent<SnackbarProps>>::render(props, children)
+        <Self as RsxComponent<SnackbarProps>>::render(&props, children)
     }
 }
 
@@ -179,11 +179,11 @@ fn horizontal_justify(origin: SnackbarOrigin) -> JustifyContent {
 #[component]
 fn SnackbarView(
     open: bool,
-    message: Option<RsxNode>,
-    action: Option<RsxNode>,
+    message: &Option<RsxNode>,
+    action: &Option<RsxNode>,
     auto_hide_duration: Option<Duration>,
     anchor_origin: SnackbarOrigin,
-    on_close: Option<Rc<dyn Fn(SnackbarCloseReason)>>,
+    on_close: &Option<Rc<dyn Fn(SnackbarCloseReason)>>,
     children: Vec<RsxNode>,
 ) -> RsxNode {
     let timer_enabled = open && auto_hide_duration.is_some();
@@ -205,7 +205,7 @@ fn SnackbarView(
 
     let body: Vec<RsxNode> = if children.is_empty() {
         vec![rsx! {
-            <SnackbarContent message={message} action={action} />
+            <SnackbarContent message={message.clone()} action={action.clone()} />
         }]
     } else {
         children
@@ -241,9 +241,9 @@ pub struct SnackbarContentProps {
 }
 
 impl RsxComponent<SnackbarContentProps> for SnackbarContent {
-    fn render(props: SnackbarContentProps, _children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &SnackbarContentProps, _children: Vec<RsxNode>) -> RsxNode {
         rsx! {
-            <SnackbarContentView message={props.message} action={props.action} />
+            <SnackbarContentView message={props.message.clone()} action={props.action.clone()} />
         }
     }
 }
@@ -263,15 +263,15 @@ impl rfgui::ui::RsxTag for SnackbarContent {
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<SnackbarContentProps>>::render(props, children)
+        <Self as RsxComponent<SnackbarContentProps>>::render(&props, children)
     }
 }
 
 #[component]
-fn SnackbarContentView(message: Option<RsxNode>, action: Option<RsxNode>) -> RsxNode {
+fn SnackbarContentView(message: &Option<RsxNode>, action: &Option<RsxNode>) -> RsxNode {
     let theme = use_theme().0;
-    let message_node = message.unwrap_or_else(|| RsxNode::fragment(vec![]));
-    let action_node = action.unwrap_or_else(|| RsxNode::fragment(vec![]));
+    let message_node = message.clone().unwrap_or_else(|| RsxNode::fragment(vec![]));
+    let action_node = action.clone().unwrap_or_else(|| RsxNode::fragment(vec![]));
 
     // A flex row, not a flow row: a flow row measures the message against
     // the whole row, so a long one would push the action out of the box

@@ -1021,10 +1021,8 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl, memo: bool) -> proc_macr
                 props: ::core::ptr::NonNull<()>,
                 children: ::std::vec::Vec<#rfgui::ui::RsxNode>,
             ) -> #rfgui::ui::RsxNode {
-                let boxed: ::std::boxed::Box<#strict_props_ty> = unsafe {
-                    ::std::boxed::Box::from_raw(props.as_ptr().cast())
-                };
-                <#self_ty as #rfgui::ui::RsxComponent<#strict_props_ty>>::render(*boxed, children)
+                let props: &#strict_props_ty = unsafe { &*props.as_ptr().cast() };
+                <#self_ty as #rfgui::ui::RsxComponent<#strict_props_ty>>::render(props, children)
             }
 
             #[doc(hidden)]
@@ -1034,19 +1032,6 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl, memo: bool) -> proc_macr
                 });
             }
 
-            #[doc(hidden)]
-            unsafe fn __rsx_vtable_clone_props_shim(
-                props: ::core::ptr::NonNull<()>,
-            ) -> ::core::ptr::NonNull<()> {
-                let source: &#strict_props_ty = unsafe {
-                    &*props.as_ptr().cast::<#strict_props_ty>()
-                };
-                let cloned = <#strict_props_ty as ::core::clone::Clone>::clone(source);
-                let boxed = ::std::boxed::Box::new(cloned);
-                let raw = ::std::boxed::Box::into_raw(boxed);
-                ::core::ptr::NonNull::new(raw.cast())
-                    .expect("Box::into_raw returns non-null")
-            }
         }
 
         impl #impl_generics #rfgui::ui::ComponentTag for #self_ty #where_clause {
@@ -1054,7 +1039,6 @@ fn expand_component_impl(mut input_impl: syn::ItemImpl, memo: bool) -> proc_macr
                 &#rfgui::ui::ComponentVTable {
                     render: <#self_ty>::__rsx_vtable_render_shim,
                     drop_props: <#self_ty>::__rsx_vtable_drop_props_shim,
-                    clone_props: <#self_ty>::__rsx_vtable_clone_props_shim,
                     props_eq: #props_eq,
                     type_name: #type_name_str,
                 };
@@ -1134,7 +1118,7 @@ fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::Toke
         let field_ident = ident.clone();
         let ty = pat_ty.ty.as_ref().clone();
 
-        let props_field_ty = if field_ident == "children" {
+        if field_ident == "children" {
             // `children` is the only rsx-semantic reserved param: it maps to
             // the second positional arg of `RsxComponent::render`. The macro
             // does not constrain its declared type — the generated
@@ -1145,8 +1129,35 @@ fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::Toke
             helper_args.push(arg.clone());
             helper_call_args.push(quote!(children));
             continue;
-        } else {
-            ty.clone()
+        };
+        // Render borrows the props: `&T` reads the field in place, and a
+        // by-value parameter copies it out, so its type must be `Copy`. A
+        // borrowed `str` or slice is stored owned.
+        let (props_field_ty, call_arg): (Type, _) = match &ty {
+            Type::Reference(reference) => {
+                if reference.mutability.is_some() {
+                    return syn::Error::new(
+                        reference.span(),
+                        "#[component] parameters borrow the props immutably; use `&T`",
+                    )
+                    .to_compile_error();
+                }
+                let field_ty = match reference.elem.as_ref() {
+                    Type::Path(path) if path.qself.is_none() && path.path.is_ident("str") => {
+                        parse_quote!(::std::string::String)
+                    }
+                    Type::Slice(slice) => {
+                        let elem = &slice.elem;
+                        parse_quote!(::std::vec::Vec<#elem>)
+                    }
+                    elem => elem.clone(),
+                };
+                (field_ty, quote!(&props.#field_ident))
+            }
+            _ => (
+                ty.clone(),
+                quote_spanned!(ty.span()=> #rfgui::ui::copy_component_param(&props.#field_ident)),
+            ),
         };
         prop_fields.push(quote!(pub #field_ident: #props_field_ty));
         prop_comparisons
@@ -1180,7 +1191,7 @@ fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::Toke
         }
 
         helper_args.push(arg.clone());
-        helper_call_args.push(quote!(props.#field_ident));
+        helper_call_args.push(call_arg);
     }
 
     let props_eq = if memo {
@@ -1227,11 +1238,6 @@ fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::Toke
         #(#component_attrs)*
         #component_struct_tokens
 
-        // React parity P2: Props must be `Clone` so the `unwrap_components`
-        // walker can handle shared `Rc<ComponentNodeInner>` (e.g. when the
-        // caller extracts a subtree into a variable and embeds it in two
-        // places, or when the memo cache replays a prior render).
-        #[derive(::core::clone::Clone)]
         #vis struct #props_name #fn_generics {
             #(#prop_fields,)*
         }
@@ -1258,7 +1264,7 @@ fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::Toke
         }
 
         impl #impl_generics #rfgui::ui::RsxComponent<#props_name #ty_generics> for #comp_name #ty_generics #where_clause {
-            fn render(props: #props_name #ty_generics, children: ::std::vec::Vec<#rfgui::ui::RsxNode>) -> #rfgui::ui::RsxNode {
+            fn render(props: &#props_name #ty_generics, children: ::std::vec::Vec<#rfgui::ui::RsxNode>) -> #rfgui::ui::RsxNode {
                 let _ = &children;
                 #helper_name(#(#helper_call_args),*)
             }
@@ -1278,7 +1284,7 @@ fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::Toke
                 children: ::std::vec::Vec<#rfgui::ui::RsxNode>,
                 _key: ::core::option::Option<#rfgui::ui::RsxKey>,
             ) -> #rfgui::ui::RsxNode {
-                <#comp_name #ty_generics as #rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(props, children)
+                <#comp_name #ty_generics as #rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(&props, children)
             }
 
             fn component_vtable() -> ::core::option::Option<&'static #rfgui::ui::ComponentVTable> {
@@ -1309,9 +1315,8 @@ fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::Toke
                 props: ::core::ptr::NonNull<()>,
                 children: ::std::vec::Vec<#rfgui::ui::RsxNode>,
             ) -> #rfgui::ui::RsxNode {
-                let boxed: ::std::boxed::Box<#props_name #ty_generics> =
-                    unsafe { ::std::boxed::Box::from_raw(props.as_ptr().cast()) };
-                <#comp_name #ty_generics as #rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(*boxed, children)
+                let props: &#props_name #ty_generics = unsafe { &*props.as_ptr().cast() };
+                <#comp_name #ty_generics as #rfgui::ui::RsxComponent<#props_name #ty_generics>>::render(props, children)
             }
 
             #[doc(hidden)]
@@ -1321,19 +1326,6 @@ fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::Toke
                 });
             }
 
-            #[doc(hidden)]
-            unsafe fn __rsx_vtable_clone_props_shim(
-                props: ::core::ptr::NonNull<()>,
-            ) -> ::core::ptr::NonNull<()> {
-                let source: &#props_name #ty_generics = unsafe {
-                    &*props.as_ptr().cast::<#props_name #ty_generics>()
-                };
-                let cloned = <#props_name #ty_generics as ::core::clone::Clone>::clone(source);
-                let boxed = ::std::boxed::Box::new(cloned);
-                let raw = ::std::boxed::Box::into_raw(boxed);
-                ::core::ptr::NonNull::new(raw.cast())
-                    .expect("Box::into_raw returns non-null")
-            }
         }
 
         impl #impl_generics #rfgui::ui::ComponentTag for #comp_name #ty_generics #where_clause {
@@ -1341,7 +1333,6 @@ fn expand_component_with_memo(input_fn: ItemFn, memo: bool) -> proc_macro2::Toke
                 &#rfgui::ui::ComponentVTable {
                     render: <Self>::__rsx_vtable_render_shim,
                     drop_props: <Self>::__rsx_vtable_drop_props_shim,
-                    clone_props: <Self>::__rsx_vtable_clone_props_shim,
                     props_eq: #props_eq,
                     type_name: ::core::stringify!(#comp_name),
                 };

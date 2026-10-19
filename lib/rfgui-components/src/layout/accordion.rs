@@ -20,12 +20,12 @@ pub struct AccordionProps {
 }
 
 impl RsxComponent<AccordionProps> for Accordion {
-    fn render(props: AccordionProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &AccordionProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <AccordionView
-                title={props.title}
+                title={props.title.clone()}
                 default_expanded={props.default_expanded.unwrap_or(false)}
-                expanded_binding={props.expanded_binding}
+                expanded_binding={props.expanded_binding.clone()}
                 disabled={props.disabled.unwrap_or(false)}
             >
                 {children}
@@ -49,19 +49,19 @@ impl rfgui::ui::RsxTag for Accordion {
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<AccordionProps>>::render(props, children)
+        <Self as RsxComponent<AccordionProps>>::render(&props, children)
     }
 }
 
 #[component]
 fn AccordionView(
-    title: String,
+    title: &str,
     default_expanded: bool,
-    expanded_binding: Option<Binding<bool>>,
+    expanded_binding: &Option<Binding<bool>>,
     disabled: bool,
     children: Vec<RsxNode>,
 ) -> RsxNode {
-    let expanded_binding = expanded_binding.map(|binding| binding.snapshot());
+    let expanded_binding = expanded_binding.clone().map(|binding| binding.snapshot());
     let theme = use_theme().0;
     let fallback_expanded = use_state(|| default_expanded);
     let is_expanded = expanded_binding

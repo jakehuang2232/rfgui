@@ -31,13 +31,16 @@ pub struct CheckboxProps {
 }
 
 impl RsxComponent<CheckboxProps> for Checkbox {
-    fn render(props: CheckboxProps, _children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &CheckboxProps, _children: Vec<RsxNode>) -> RsxNode {
         let checked = props.checked.unwrap_or(false);
         let has_binding = props.binding.is_some();
-        let binding = props.binding.unwrap_or_else(|| Binding::new(checked));
+        let binding = props
+            .binding
+            .clone()
+            .unwrap_or_else(|| Binding::new(checked));
         let disabled = props.disabled.unwrap_or(false);
-        let on_change = props.on_change;
-        let label = props.label;
+        let on_change = props.on_change.clone();
+        let label = props.label.clone();
         let theme = use_theme().0;
         let checkbox_theme = &theme.component.checkbox;
         let fallback_checked = use_state(|| checked);
@@ -140,6 +143,6 @@ impl rfgui::ui::RsxTag for Checkbox {
         children: Vec<rfgui::ui::RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> rfgui::ui::RsxNode {
-        <Self as RsxComponent<CheckboxProps>>::render(props, children)
+        <Self as RsxComponent<CheckboxProps>>::render(&props, children)
     }
 }

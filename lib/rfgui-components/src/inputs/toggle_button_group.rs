@@ -77,11 +77,11 @@ pub struct ToggleButtonGroupProps {
 }
 
 impl RsxComponent<ToggleButtonGroupProps> for ToggleButtonGroup {
-    fn render(props: ToggleButtonGroupProps, children: Vec<RsxNode>) -> RsxNode {
+    fn render(props: &ToggleButtonGroupProps, children: Vec<RsxNode>) -> RsxNode {
         rsx! {
             <ToggleButtonGroupView
-                value={props.value}
-                on_change={props.on_change}
+                value={props.value.clone()}
+                on_change={props.on_change.clone()}
                 orientation={props.orientation}
                 full_width={props.full_width}
                 size={props.size}
@@ -109,7 +109,7 @@ impl RsxTag for ToggleButtonGroup {
         children: Vec<RsxNode>,
         _key: Option<rfgui::ui::RsxKey>,
     ) -> RsxNode {
-        <Self as RsxComponent<ToggleButtonGroupProps>>::render(props, children)
+        <Self as RsxComponent<ToggleButtonGroupProps>>::render(&props, children)
     }
 }
 
@@ -123,8 +123,8 @@ fn is_toggle_button(node: &RsxNode) -> bool {
 
 #[component]
 fn ToggleButtonGroupView(
-    value: Option<Binding<Option<String>>>,
-    on_change: Option<ToggleGroupChangeHandler>,
+    value: &Option<Binding<Option<String>>>,
+    on_change: &Option<ToggleGroupChangeHandler>,
     orientation: Option<ToggleOrientation>,
     full_width: Option<bool>,
     size: Option<ButtonSize>,
@@ -138,13 +138,14 @@ fn ToggleButtonGroupView(
     let disabled = disabled.unwrap_or(false);
 
     let binding = value
+        .clone()
         .unwrap_or_else(|| global_state::<Option<String>>(|| None).binding())
         .snapshot();
 
     let ctx = ToggleButtonGroupContext {
         in_group: true,
         value: binding,
-        on_change,
+        on_change: on_change.clone(),
         size,
         color,
         disabled,

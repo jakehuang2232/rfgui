@@ -14,26 +14,19 @@ struct TestProps {
 }
 
 unsafe fn test_render_shim(props: NonNull<()>, _children: Vec<RsxNode>) -> RsxNode {
-    let boxed: Box<TestProps> = unsafe { Box::from_raw(props.as_ptr().cast()) };
+    let props: &TestProps = unsafe { &*props.as_ptr().cast() };
     RENDER_CALLS.with(|c| c.set(c.get() + 1));
-    RENDER_SUM.with(|c| c.set(c.get() + boxed.value));
-    RsxNode::text(format!("r:{}", boxed.value))
+    RENDER_SUM.with(|c| c.set(c.get() + props.value));
+    RsxNode::text(format!("r:{}", props.value))
 }
 
 unsafe fn test_drop_shim(props: NonNull<()>) {
     drop(unsafe { Box::from_raw(props.as_ptr().cast::<TestProps>()) });
 }
 
-unsafe fn test_clone_shim(props: NonNull<()>) -> NonNull<()> {
-    let src: &TestProps = unsafe { &*props.as_ptr().cast::<TestProps>() };
-    let cloned = TestProps { value: src.value };
-    NonNull::new(Box::into_raw(Box::new(cloned)).cast()).unwrap()
-}
-
 static TEST_VTABLE: ComponentVTable = ComponentVTable {
     render: test_render_shim,
     drop_props: test_drop_shim,
-    clone_props: test_clone_shim,
     props_eq: None,
     type_name: "TestComp",
 };
