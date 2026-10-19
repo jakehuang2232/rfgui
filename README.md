@@ -7,7 +7,7 @@
     <abbr>(Since WASM cannot release allocated memory back to OS, it is not recommended to use the web version of RFGUI)</abbr>
 </div>
 
-![example](https://github.com/user-attachments/assets/5274eb04-0329-46c2-9e14-424fd0dd3791)
+![The 01_window showcase, rendered by RFGUI](examples/screenshots/showcase.png)
 
 **RFGUI** is a **🦀 Rust-based retained-mode GUI framework** built on top of a **🧠 frame graph–driven rendering architecture**.
 
@@ -28,16 +28,20 @@ Each UI component records what it paints; the engine works out which content can
 RFGUI is **not** an immediate-mode GUI like egui or imgui.  
 It is closer in spirit to **🏗 retained UI frameworks combined with 🎮 engine-style render pipelines**.
 
-🛠 This project is currently under active development and focuses on **core architecture, correctness, and composability** before higher-level widgets.
+🛠 This project is under active development and in alpha: APIs still change between releases. It focuses on **core architecture, correctness, and composability**; a widget library, `rfgui-components`, lives in this repository.
 
 ## Features
 
-- `wgpu` rendering pipeline
-- RSX-style UI declaration via `rust-gui-rsx`
-- `#[component]` for reusable UI composition
-- Custom host-element extension by composing from `Element`
+- `wgpu` rendering pipeline, on desktop and in the browser through WebAssembly
+- RSX-style UI declaration via `rfgui-rsx`
+- `#[component]` functions with typed props, children and hooks (`use_state`, `use_context`, `use_mount`, …), with local and global keys
+- Layout: flow, flex and inline formatting with baselines; absolute positioning anchored to other elements, with collision handling; scrolling
+- Text shaping and wrapping across scripts, selection, and an editable `TextArea` with IME, clipboard and projections (ranges of the text rendered as elements)
+- Typed styles: per-side borders, per-corner radii, gradients, box shadows, group opacity, 2D and 3D transforms with back-face hiding
+- Keyframe animations and style transitions, including size and position
+- Pointer, wheel, keyboard and focus events that bubble up the tree as in the DOM
+- Error boundaries that catch a panicking component (desktop)
 - Custom paint through typed retained hooks, including engine-scheduled GPU sources (`GpuPaintSource`)
-- Typed style/layout model (`Length`, `Border`, `BorderRadius`, `ColorLike`)
 - Frame Graph abstraction for pass/resource orchestration
 - Built-in interaction primitives: hover, scroll, bubbling events, transitions
 
@@ -46,33 +50,75 @@ It is closer in spirit to **🏗 retained UI frameworks combined with 🎮 engin
 ### Requirements
 
 - Rust (stable recommended)
-- A graphics-capable environment (macOS / Linux / Windows)
+- A graphics-capable environment (macOS / Linux / Windows), or a browser for the WebAssembly build
 
-### Build
-
-```bash
-cargo build
-```
-
-### Run demo
+### Run the demos
 
 ```bash
 cargo run -r -p examples --bin 01_window
 cargo run -r -p examples --bin 00_hello_world
 ```
 
+`01_window` is the feature showcase: a sidebar of pages for layout, appearance, text, images and SVG, inputs, feedback, containers, transforms and 3D, animation, component state, custom GPU paint and error boundaries. The floating Inspector toggles dark mode, animations, render-time tracing and the debug overlays.
+
+### Use it in a project
+
+```bash
+cargo add rfgui
+```
+
+An app implements `App`, whose `build` returns the tree to show:
+
+```rust
+use rfgui::app::{App, AppContext};
+use rfgui::style::{Layout, Length};
+use rfgui::ui::{ClickEvent, RsxNode, component, rsx, use_state};
+use rfgui::view::{Element, Text};
+
+#[component]
+fn Counter(label: String) -> RsxNode {
+    let count = use_state(|| 0);
+    let increment = {
+        let count = count.clone();
+        move |_: &mut ClickEvent| count.update(|n| *n += 1)
+    };
+    rsx! {
+        <Element style={{ layout: Layout::flow().column(), width: Length::px(200.0) }} on_click={increment}>
+            <Text>{format!("{label}: {}", count.get())}</Text>
+        </Element>
+    }
+}
+
+struct CounterApp;
+
+impl App for CounterApp {
+    fn build(&mut self, _ctx: &mut AppContext<'_>) -> RsxNode {
+        rsx! { <Counter label="Clicks" /> }
+    }
+}
+```
+
+`rfgui` does not open windows itself. A runner hosts the app: the examples' `winit_runner` opens a native window and `web_runner` a browser canvas, both in `examples/src/`. Copy one into your project, or host a `Viewport` yourself (see [Rendering](#rendering)). `rfgui-components` is not on crates.io yet; depend on it by path or git.
+
 ## Project Layout
 
 ```text
 .
 ├── src/
+│   ├── app.rs         # the App trait and configuration a runner hosts
+│   ├── platform/      # input types and the desktop, web and headless backends
 │   ├── style/         # typed style model + parsing/computation
-│   ├── ui/            # RSX tree, events, runtime, host elements
-│   ├── view/          # viewport, paint recording, compositor, frame graph
+│   ├── ui/            # RSX tree, components, hooks, events
+│   ├── view/          # elements, layout, viewport, paint recording, compositor, frame graph
 │   ├── transition/    # animation/transition system
+│   ├── time/          # timers
 │   └── shader/        # WGSL shaders
-├── rsx-macro/         # proc-macro crate for RSX
-└── examples/          # runnable demos
+├── rsx-macro/         # rfgui-rsx: the rsx! and #[component] proc macros
+├── lib/
+│   ├── rfgui-components/  # widget library
+│   └── rfgui-segmenter/   # word, grapheme and line-break segmentation
+├── examples/          # runnable demos and the winit / web runners
+└── tests/             # integration tests and benchmarks
 ```
 
 ## Style Model
@@ -110,9 +156,9 @@ Key files:
 ### 1) `#[component]` reusable composition
 
 ```rust
-use rfgui::ui::{component, rsx, RsxNode};
-use rfgui::view::Element;
-use rfgui::{Layout, Length};
+use rfgui::style::{Layout, Length};
+use rfgui::ui::{RsxNode, component, rsx};
+use rfgui::view::{Element, Text};
 
 #[component]
 fn Card() -> RsxNode {
@@ -120,58 +166,46 @@ fn Card() -> RsxNode {
         <Element style={{
             width: Length::px(180.0),
             height: Length::px(100.0),
-            display: Layout::flow().column(),
+            layout: Layout::flow().column(),
         }}>
-            Hello Component
+            <Text>Hello Component</Text>
         </Element>
     }
 }
 ```
 
-### 2) Hand-written typed `create_tag_element(...)`
+### 2) Props and children
+
+A component's parameters are its props. An `Option` prop may be left out, or given its value directly; a `children: Vec<RsxNode>` parameter takes the nested content.
 
 ```rust
-use rfgui::view::{Element, ElementPropSchema};
-use rfgui::ui::{create_tag_element, RsxChildrenPolicy, RsxComponent, RsxNode, props};
-use rfgui::{Border, BorderRadius, Color, Length, Padding, Style};
+use rfgui::style::{Border, BorderRadius, Color, Layout, Length, Padding};
+use rfgui::ui::{RsxNode, component, rsx};
+use rfgui::view::{Element, Text};
 
-pub struct Card;
-
-#[props]
-pub struct CardProps {
-    pub style: Option<Style>,
-}
-
-impl RsxComponent<CardProps> for Card {
-    fn render(props: CardProps, children: Vec<RsxNode>) -> RsxNode {
-        let mut style = props.style.unwrap_or_else(Style::new);
-        style = style
-            .with_padding(Padding::uniform(Length::px(12.0)))
-            .with_border(Border::uniform(Length::px(2.0), &Color::hex("#1f2937")))
-            .with_border_radius(BorderRadius::uniform(Length::px(10.0)));
-
-        create_tag_element::<Element, _, _>(
-            ElementPropSchema {
-                anchor: None,
-                style: Some(style),
-                on_mouse_down: None,
-                on_mouse_up: None,
-                on_mouse_move: None,
-                on_mouse_enter: None,
-                on_mouse_leave: None,
-                on_click: None,
-                on_key_down: None,
-                on_key_up: None,
-                on_focus: None,
-                on_blur: None,
-            },
-            children,
-        )
+#[component]
+fn Panel(title: String, accent: Option<Color>, children: Vec<RsxNode>) -> RsxNode {
+    let accent = accent.unwrap_or(Color::rgb(31, 41, 55));
+    rsx! {
+        <Element style={{
+            layout: Layout::flow().column(),
+            gap: Length::px(8.0),
+            padding: Padding::uniform(Length::px(12.0)),
+            border: Border::uniform(Length::px(2.0), &accent),
+            border_radius: BorderRadius::uniform(Length::px(10.0)),
+        }}>
+            <Text>{title}</Text>
+            {children}
+        </Element>
     }
 }
 
-impl RsxChildrenPolicy for Card {
-    const ACCEPTS_CHILDREN: bool = true;
+fn danger_zone() -> RsxNode {
+    rsx! {
+        <Panel title="Danger zone" accent={Color::rgb(224, 108, 117)}>
+            <Text>Deleting a project cannot be undone.</Text>
+        </Panel>
+    }
 }
 ```
 
@@ -230,3 +264,11 @@ cargo fmt
 cargo clippy --all-targets --all-features
 cargo test
 ```
+
+Tests that need a GPU adapter are ignored by default; run them with:
+
+```bash
+cargo test -- --ignored --test-threads=1
+```
+
+A few of them share global state and can fail when run in parallel.
