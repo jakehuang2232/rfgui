@@ -85,11 +85,13 @@ fn compose_all_variants() {
                                     has_border_gradient,
                                 };
                                 // Validate as well as compose: the emitted WGSL
-                                // is what the device compiles.
+                                // is what the device compiles. The shared
+                                // composer, reused across every variant here,
+                                // must emit what a fresh one does.
                                 let module = compose(key).unwrap_or_else(|e| panic!("{}", e));
-                                if let Err(e) = compose_rect_shader_wgsl(module) {
-                                    panic!("validate ({:?}): {}", key, e);
-                                }
+                                let fresh = compose_rect_shader_wgsl(module)
+                                    .unwrap_or_else(|e| panic!("validate ({:?}): {}", key, e));
+                                assert_eq!(rect_shader_wgsl(key), fresh, "{key:?}");
                             }
                         }
                     }

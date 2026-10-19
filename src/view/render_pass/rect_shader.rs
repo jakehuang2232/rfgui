@@ -5,6 +5,13 @@ use super::draw_rect_pass::RectRenderMode;
 
 const RECT_WGSL: &str = include_str!("../../shader/rect.wgsl");
 
+thread_local! {
+    /// Building a `Composer` costs about as much as composing a variant, and
+    /// a variant is composed on its first use, mid-frame. Without imports or
+    /// `@binding(auto)`, composing leaves no state behind to carry over.
+    static COMPOSER: std::cell::RefCell<Composer> = std::cell::RefCell::new(Composer::default());
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum RectBorderKind {
     None,
@@ -24,7 +31,15 @@ pub(crate) struct RectShaderKey {
 }
 
 pub(crate) fn build_rect_shader(device: &wgpu::Device, key: RectShaderKey) -> wgpu::ShaderModule {
-    let mut composer = Composer::default();
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(&format!("Rect Shader {:?}", key)),
+        source: wgpu::ShaderSource::Wgsl(rect_shader_wgsl(key).into()),
+    })
+}
+
+/// The validated WGSL of one rect shader variant.
+fn rect_shader_wgsl(key: RectShaderKey) -> String {
+    debug_assert!(!RECT_WGSL.contains("@binding(auto)"));
     let mut defs: FxHashMap<String, ShaderDefValue> = FxHashMap::default();
     let set = |defs: &mut FxHashMap<String, ShaderDefValue>, name: &str| {
         defs.insert(name.to_string(), ShaderDefValue::Bool(true));
@@ -57,23 +72,21 @@ pub(crate) fn build_rect_shader(device: &wgpu::Device, key: RectShaderKey) -> wg
 
     let shader_defs: std::collections::HashMap<String, ShaderDefValue> = defs.into_iter().collect();
 
-    let module = composer
-        .make_naga_module(NagaModuleDescriptor {
-            source: RECT_WGSL,
-            file_path: "rect.wgsl",
-            shader_type: ShaderType::Wgsl,
-            shader_defs,
-            additional_imports: &[],
+    let module = COMPOSER
+        .with(|composer| {
+            composer
+                .borrow_mut()
+                .make_naga_module(NagaModuleDescriptor {
+                    source: RECT_WGSL,
+                    file_path: "rect.wgsl",
+                    shader_type: ShaderType::Wgsl,
+                    shader_defs,
+                    additional_imports: &[],
+                })
         })
         .unwrap_or_else(|e| panic!("compose rect shader (key={:?}): {}", key, e));
 
-    let shader_source =
-        compose_rect_shader_wgsl(module).unwrap_or_else(|e| panic!("emit rect WGSL: {}", e));
-
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(&format!("Rect Shader {:?}", key)),
-        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-    })
+    compose_rect_shader_wgsl(module).unwrap_or_else(|e| panic!("emit rect WGSL: {}", e))
 }
 
 fn compose_rect_shader_wgsl(module: naga29::Module) -> Result<String, String> {
