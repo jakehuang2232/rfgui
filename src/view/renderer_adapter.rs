@@ -238,18 +238,17 @@ fn build_container_element_shell(
         }
     }
     let effective_style = if has_user_style {
-        base_style + user_style.clone()
+        base_style.merge_borrowed(&user_style)
     } else {
         base_style
     };
-    element.apply_style(effective_style);
+    element.apply_layered_style(effective_style, user_style);
     // 軌 1 #14 Phase 1: cold-path prop dispatch lives on the host
     // (`Element::ingest_props`), the same code path the incremental
     // commit reaches via `apply_prop`. The shell here only owns
     // identity, layered style, and child cascade — anchor / padding /
     // opacity / event handlers all flow through the host.
     element.ingest_props(node)?;
-    element.set_text_cascade_style(user_style);
     // Phase 3: child cascade goes through the host. Element merges
     // its user-authored text cascade style onto `parent`. The layered
     // base style may include inherited text props needed for this

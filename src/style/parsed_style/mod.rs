@@ -2887,7 +2887,19 @@ impl Style {
         self
     }
 
+    fn is_empty(&self) -> bool {
+        self.declarations.is_empty() && self.hover.is_none() && self.selection.is_none()
+    }
+
     pub fn merge(self, rhs: Self) -> Self {
+        // A new element's style starts empty: take the other side whole
+        // instead of inserting its declarations one by one.
+        if self.is_empty() {
+            return rhs;
+        }
+        if rhs.is_empty() {
+            return self;
+        }
         let mut merged = self;
         for declaration in rhs.declarations {
             merged.insert(declaration.property, declaration.value);
@@ -2905,6 +2917,27 @@ impl Style {
             (None, None) => None,
         };
         merged
+    }
+
+    /// [`merge`](Self::merge) for an `rhs` its owner keeps.
+    pub(crate) fn merge_borrowed(mut self, rhs: &Self) -> Self {
+        if self.is_empty() {
+            return rhs.clone();
+        }
+        for declaration in &rhs.declarations {
+            self.insert(declaration.property, declaration.value.clone());
+        }
+        self.hover = match (self.hover.take(), &rhs.hover) {
+            (Some(lhs), Some(rhs)) => Some(Box::new((*lhs).merge_borrowed(rhs))),
+            (lhs, None) => lhs,
+            (None, Some(rhs)) => Some(rhs.clone()),
+        };
+        self.selection = match (self.selection.take(), rhs.selection.as_deref()) {
+            (Some(lhs), Some(rhs)) => Some(Box::new((*lhs).merge(*rhs))),
+            (lhs, None) => lhs,
+            (None, Some(rhs)) => Some(Box::new(*rhs)),
+        };
+        self
     }
 
     pub fn set_padding(&mut self, padding: Padding) {

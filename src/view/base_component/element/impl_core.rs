@@ -1301,6 +1301,16 @@ impl Element {
         self.recompute_style();
     }
 
+    /// [`apply_style`](Self::apply_style) for a style layered over inherited
+    /// declarations: the text cascade gets only `authored`, so a later
+    /// recascade does not replay stale inherited values.
+    pub(crate) fn apply_layered_style(&mut self, style: Style, authored: Style) {
+        let base = std::mem::take(&mut self.parsed_style);
+        self.parsed_style = base + style;
+        self.text_cascade_style = Some(authored);
+        self.recompute_style();
+    }
+
     /// Non-additive counterpart of [`apply_style`]: swaps `parsed_style`
     /// outright with `style`. Declarations present before but absent in
     /// `style` are dropped (including `hover` / `selection` sub-styles
