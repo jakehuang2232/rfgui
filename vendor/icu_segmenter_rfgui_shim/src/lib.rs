@@ -7,6 +7,20 @@
 
 use std::marker::PhantomData;
 
+use rfgui_segmenter::TextSegmenter;
+
+thread_local! {
+    /// Parley segments every laid-out run. Platform segmenters can own system
+    /// objects (a WinRT `WordsSegmenter`, browser `Intl.Segmenter`s) that cost
+    /// far more to create than a typical run takes to segment, so each thread
+    /// creates one and keeps it.
+    static SEGMENTER: Box<dyn TextSegmenter> = rfgui_segmenter::system_segmenter();
+}
+
+fn with_segmenter<R>(f: impl FnOnce(&dyn TextSegmenter) -> R) -> R {
+    SEGMENTER.with(|segmenter| f(segmenter.as_ref()))
+}
+
 pub mod options {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct WordBreakInvariantOptions;
@@ -75,8 +89,8 @@ pub struct GraphemeClusterSegmenterBorrowed<'data> {
 
 impl GraphemeClusterSegmenterBorrowed<'_> {
     pub fn segment_str(self, input: &str) -> SegmentIterator {
-        let seg = rfgui_segmenter::system_segmenter();
-        let mut boundaries = seg.grapheme_boundaries_byte_indices(input);
+        let mut boundaries =
+            with_segmenter(|segmenter| segmenter.grapheme_boundaries_byte_indices(input));
         boundaries.sort_unstable();
         boundaries.dedup();
         SegmentIterator::new(split_oversized_grapheme_segments(input, boundaries))
@@ -133,8 +147,9 @@ pub struct WordSegmenterBorrowed<'data> {
 
 impl WordSegmenterBorrowed<'_> {
     pub fn segment_str(self, input: &str) -> SegmentIterator {
-        let seg = rfgui_segmenter::system_segmenter();
-        SegmentIterator::new(seg.word_boundaries_byte_indices(input))
+        SegmentIterator::new(with_segmenter(|segmenter| {
+            segmenter.word_boundaries_byte_indices(input)
+        }))
     }
 }
 
@@ -163,10 +178,7 @@ impl LineSegmenterBorrowed<'_> {
         let boundaries = match self.word_option {
             Some(LineBreakWordOption::BreakAll) => break_all_boundaries(input),
             Some(LineBreakWordOption::KeepAll) => keep_all_boundaries(input),
-            _ => {
-                let seg = rfgui_segmenter::system_segmenter();
-                seg.line_boundaries_byte_indices(input)
-            }
+            _ => with_segmenter(|segmenter| segmenter.line_boundaries_byte_indices(input)),
         };
         SegmentIterator::new(boundaries)
     }
