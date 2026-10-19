@@ -432,11 +432,21 @@ impl PaintChunk {
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         let mut bounds = self.bounds;
-        let mut payload_identity = self.payload_identity.clone();
-        for delta in deltas {
+        for delta in deltas.clone() {
             bounds = translated_rect(&|bits| translated_point_bits(bits, delta), bounds)?;
-            payload_identity = payload_identity.translated(delta)?;
         }
+        // Text identities are the translated ops' own frozen identities;
+        // translating the payload again would redo every glyph.
+        let payload_identity = match &self.payload_identity {
+            PaintPayloadIdentity::PreparedTexts(_) => {
+                self.payload_identity.rebuild_from_localized_ops(&ops)?
+            }
+            identity => deltas
+                .clone()
+                .try_fold(identity.clone(), |identity, delta| {
+                    identity.translated(delta)
+                })?,
+        };
         Some((
             Self {
                 frame: PaintChunkFrame::Viewport,
