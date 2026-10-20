@@ -31,14 +31,16 @@ pub(crate) struct RectShaderKey {
 }
 
 pub(crate) fn build_rect_shader(device: &wgpu::Device, key: RectShaderKey) -> wgpu::ShaderModule {
+    // naga_oil and wgpu share one naga, so wgpu takes the composed IR and
+    // validates it as is, instead of parsing WGSL written out from it.
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&format!("Rect Shader {:?}", key)),
-        source: wgpu::ShaderSource::Wgsl(rect_shader_wgsl(key).into()),
+        source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(rect_shader_module(key))),
     })
 }
 
-/// The validated WGSL of one rect shader variant.
-fn rect_shader_wgsl(key: RectShaderKey) -> String {
+/// The composed module of one rect shader variant.
+fn rect_shader_module(key: RectShaderKey) -> naga::Module {
     debug_assert!(!RECT_WGSL.contains("@binding(auto)"));
     let mut defs: FxHashMap<String, ShaderDefValue> = FxHashMap::default();
     let set = |defs: &mut FxHashMap<String, ShaderDefValue>, name: &str| {
@@ -72,7 +74,7 @@ fn rect_shader_wgsl(key: RectShaderKey) -> String {
 
     let shader_defs: std::collections::HashMap<String, ShaderDefValue> = defs.into_iter().collect();
 
-    let module = COMPOSER
+    COMPOSER
         .with(|composer| {
             composer
                 .borrow_mut()
@@ -84,20 +86,7 @@ fn rect_shader_wgsl(key: RectShaderKey) -> String {
                     additional_imports: &[],
                 })
         })
-        .unwrap_or_else(|e| panic!("compose rect shader (key={:?}): {}", key, e));
-
-    compose_rect_shader_wgsl(module).unwrap_or_else(|e| panic!("emit rect WGSL: {}", e))
-}
-
-fn compose_rect_shader_wgsl(module: naga29::Module) -> Result<String, String> {
-    let info = naga29::valid::Validator::new(
-        naga29::valid::ValidationFlags::default(),
-        naga29::valid::Capabilities::default(),
-    )
-    .validate(&module)
-    .map_err(|e| e.to_string())?;
-    naga29::back::wgsl::write_string(&module, &info, naga29::back::wgsl::WriterFlags::empty())
-        .map_err(|e| e.to_string())
+        .unwrap_or_else(|e| panic!("compose rect shader (key={:?}): {}", key, e))
 }
 
 #[cfg(test)]

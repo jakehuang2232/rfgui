@@ -30,9 +30,8 @@ rfgui-segmenter = { version = "0.1.0-alpha.2", path = "lib/rfgui-segmenter" }
 glam = "0.33.2"
 rustc-hash = "2"
 foldhash = "0.2"
-naga_oil = { version = "0.22", default-features = false }
+naga_oil = { version = "0.23", default-features = false }
 naga = { version = "30.0.0", features = ["wgsl-in"] }
-naga29 = { package = "naga", version = "29", features = ["wgsl-out"] }
 smol_str = "0.3"
 bitflags = "2"
 slotmap = "1.0"
@@ -40,6 +39,7 @@ parley = "0.11.0"
 swash = "0.2.7"
 
 [dev-dependencies]
+naga = { version = "30.0.0", features = ["wgsl-out"] }
 pollster = "0.4.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

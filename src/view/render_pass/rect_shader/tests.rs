@@ -1,6 +1,6 @@
 use super::*;
 
-fn compose(key: RectShaderKey) -> Result<naga29::Module, String> {
+fn compose(key: RectShaderKey) -> Result<naga::Module, String> {
     let mut composer = Composer::default();
     let mut defs: FxHashMap<String, ShaderDefValue> = FxHashMap::default();
     let mut set = |n: &str| {
@@ -42,6 +42,18 @@ fn compose(key: RectShaderKey) -> Result<naga29::Module, String> {
             additional_imports: &[],
         })
         .map_err(|e| format!("main ({:?}): {}", key, e))
+}
+
+/// Validates a module as wgpu does and writes it out, to compare modules.
+fn validated_wgsl(module: &naga::Module) -> Result<String, String> {
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::default(),
+        naga::valid::Capabilities::default(),
+    )
+    .validate(module)
+    .map_err(|e| e.to_string())?;
+    naga::back::wgsl::write_string(module, &info, naga::back::wgsl::WriterFlags::empty())
+        .map_err(|e| e.to_string())
 }
 
 #[test]
@@ -89,9 +101,11 @@ fn compose_all_variants() {
                                 // composer, reused across every variant here,
                                 // must emit what a fresh one does.
                                 let module = compose(key).unwrap_or_else(|e| panic!("{}", e));
-                                let fresh = compose_rect_shader_wgsl(module)
+                                let fresh = validated_wgsl(&module)
                                     .unwrap_or_else(|e| panic!("validate ({:?}): {}", key, e));
-                                assert_eq!(rect_shader_wgsl(key), fresh, "{key:?}");
+                                let shared = validated_wgsl(&rect_shader_module(key))
+                                    .unwrap_or_else(|e| panic!("validate ({:?}): {}", key, e));
+                                assert_eq!(shared, fresh, "{key:?}");
                             }
                         }
                     }
