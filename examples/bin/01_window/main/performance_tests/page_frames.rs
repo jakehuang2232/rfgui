@@ -89,6 +89,16 @@ fn native_showcase_page_frames() -> Result<(), String> {
             Page::Welcome,
             Interaction::Switch("Inputs", "Welcome"),
         ),
+        (
+            "inputs-from-feedback",
+            Page::Feedback,
+            Interaction::Switch("Inputs", "Feedback"),
+        ),
+        (
+            "feedback-from-inputs",
+            Page::Inputs,
+            Interaction::Switch("Feedback", "Inputs"),
+        ),
     ];
     // Component state is thread-local: key each scene's scene root apart.
     for (case, (name, page, interaction)) in scenes.into_iter().enumerate() {
