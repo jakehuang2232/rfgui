@@ -2,7 +2,7 @@
 //! certify paint payloads, external colors, resources or GPU residency.
 use super::*;
 use crate::view::base_component::{Element, Text};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub(super) struct PruneProof {
     pub(super) seen: FxHashSet<NodeKey>,
@@ -15,13 +15,24 @@ pub(super) struct NativeSubtrees {
     roots: Vec<NodeKey>,
     entries: FxHashMap<NodeKey, Entry>,
 }
+/// One closed subtree. A stored owner's children were stored or replayed in
+/// the same sync. An entry goes only when its owner is visited again or goes
+/// unseen, and neither happens to a member while a stored ancestor replays,
+/// so every member of a stored subtree has its own entry.
 struct Entry {
     revision: u64,
     boundary: BoundaryInputs,
     inherited: PropertyTreeState,
     is_root: bool,
-    members: Arc<[NodeKey]>,
-    inactive_scroll_owners: Arc<[NodeKey]>,
+    children: Arc<[NodeKey]>,
+    inactive_scroll_owner: bool,
+    /// The whole subtree, flattened the first time it replays: a subtree
+    /// that keeps replaying then costs one pass over a list per sync.
+    members: OnceLock<Members>,
+}
+struct Members {
+    keys: Box<[NodeKey]>,
+    inactive_scroll_owners: Box<[NodeKey]>,
 }
 impl NativeSubtrees {
     pub(super) fn begin(&mut self, arena: &NodeArena, roots: &[NodeKey]) {
@@ -37,6 +48,8 @@ impl NativeSubtrees {
             self.roots = roots.to_vec();
         }
     }
+    /// Marks every member of `key`'s unchanged subtree seen and restores its
+    /// inactive scroll owners. Returns how many members it covered.
     pub(super) fn replay(
         &self,
         key: NodeKey,
@@ -44,17 +57,40 @@ impl NativeSubtrees {
         boundary: BoundaryInputs,
         inherited: PropertyTreeState,
         is_root: bool,
+        seen: &mut FxHashSet<NodeKey>,
         inactive_scroll_owners: &mut FxHashSet<NodeKey>,
-    ) -> Option<Arc<[NodeKey]>> {
+    ) -> Option<usize> {
         let old = self.entries.get(&key)?;
         let matches = revision == Some(old.revision)
             && boundary == old.boundary
             && inherited == old.inherited
             && is_root == old.is_root;
-        matches.then(|| {
-            inactive_scroll_owners.extend(old.inactive_scroll_owners.iter().copied());
-            old.members.clone()
-        })
+        if !matches {
+            return None;
+        }
+        let members = old.members.get_or_init(|| self.members(key));
+        seen.extend(members.keys.iter().copied());
+        inactive_scroll_owners.extend(members.inactive_scroll_owners.iter().copied());
+        Some(members.keys.len())
+    }
+    fn members(&self, key: NodeKey) -> Members {
+        let mut keys = Vec::new();
+        let mut inactive_scroll_owners = Vec::new();
+        let mut stack = vec![key];
+        while let Some(member) = stack.pop() {
+            keys.push(member);
+            let Some(entry) = self.entries.get(&member) else {
+                continue;
+            };
+            if entry.inactive_scroll_owner {
+                inactive_scroll_owners.push(member);
+            }
+            stack.extend(entry.children.iter().copied());
+        }
+        Members {
+            keys: keys.into(),
+            inactive_scroll_owners: inactive_scroll_owners.into(),
+        }
     }
     pub(super) fn store(
         &mut self,
@@ -63,8 +99,8 @@ impl NativeSubtrees {
         boundary: BoundaryInputs,
         inherited: PropertyTreeState,
         is_root: bool,
-        members: Arc<[NodeKey]>,
-        inactive_scroll_owners: Arc<[NodeKey]>,
+        children: Arc<[NodeKey]>,
+        inactive_scroll_owner: bool,
     ) {
         self.entries.insert(
             key,
@@ -73,8 +109,9 @@ impl NativeSubtrees {
                 boundary,
                 inherited,
                 is_root,
-                members,
-                inactive_scroll_owners,
+                children,
+                inactive_scroll_owner,
+                members: OnceLock::new(),
             },
         );
     }

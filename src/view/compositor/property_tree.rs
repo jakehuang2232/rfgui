@@ -1829,27 +1829,29 @@ impl PropertyTrees {
         is_frame_root: bool,
         seen: &mut FxHashSet<NodeKey>,
         ancestors_tracked: bool,
-    ) -> Option<std::sync::Arc<[NodeKey]>> {
+    ) -> bool {
         if !arena.contains_key(key) || !seen.insert(key) {
-            return None;
+            return false;
         }
-        let node = arena.get(key)?;
+        let Some(node) = arena.get(key) else {
+            return false;
+        };
         let boundary = ancestors_tracked
             .then(|| incremental::BoundaryInputs::observe(self, arena, key, &node, is_frame_root))
             .flatten();
         let subtree_revision = arena.subtree_mutation_revision(key);
         if let Some(boundary) = boundary {
-            if let Some(keys) = self.native_subtrees.replay(
+            if let Some(members) = self.native_subtrees.replay(
                 key,
                 subtree_revision,
                 boundary,
                 inherited,
                 is_frame_root,
+                seen,
                 &mut self.inactive_scroll_owners,
             ) {
-                seen.extend(keys.iter().copied());
-                self.replayed_nodes += keys.len();
-                return Some(keys);
+                self.replayed_nodes += members;
+                return true;
             }
         }
         self.observed_nodes += 1;
@@ -2211,14 +2213,11 @@ impl PropertyTrees {
             self.states.insert(key, next_state);
         }
 
-        let children = node.children().to_vec();
+        let children: std::sync::Arc<[NodeKey]> = node.children().into();
         drop(node);
-        let mut members = vec![key];
         let mut complete = tracked;
-        for child in children {
-            if let Some(keys) = self.sync_subtree(arena, child, descendants, false, seen, tracked) {
-                members.extend(keys.iter().copied());
-            } else {
+        for &child in children.iter() {
+            if !self.sync_subtree(arena, child, descendants, false, seen, tracked) {
                 complete = false;
             }
         }
@@ -2231,25 +2230,19 @@ impl PropertyTrees {
             && subtree_revision.is_some()
             && subtree_revision == arena.subtree_mutation_revision(key)
         {
-            let inactive = members
-                .iter()
-                .copied()
-                .filter(|key| self.inactive_scroll_owners.contains(key))
-                .collect::<Vec<_>>();
-            let members = std::sync::Arc::from(members);
             self.native_subtrees.store(
                 key,
                 subtree_revision.unwrap(),
                 boundary.expect("complete native subtree has boundary observations"),
                 inherited,
                 is_frame_root,
-                std::sync::Arc::clone(&members),
-                inactive.into(),
+                children,
+                self.inactive_scroll_owners.contains(&key),
             );
-            Some(members)
+            true
         } else {
             self.native_subtrees.remove(key);
-            None
+            false
         }
     }
 
