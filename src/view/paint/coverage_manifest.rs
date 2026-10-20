@@ -489,6 +489,10 @@ pub(super) fn record_cached_coverage_manifest(
             if self.left_out.contains(&key) {
                 return;
             }
+            // A deferred root records only in the deferred phase.
+            if !deferred_phase_root && self.deferred_roots.contains(&key) {
+                return;
+            }
             let candidate = if self.subtree_replay && self.subtree_capture_depth == 0 {
                 self.recording_cache.as_deref_mut().and_then(|cache| {
                     cache.subtree_key(
@@ -581,9 +585,6 @@ pub(super) fn record_cached_coverage_manifest(
             let Some(node) = self.arena.get(key) else {
                 return;
             };
-            if self.deferred_roots.contains(&key) && !deferred_phase_root {
-                return;
-            }
             let stable_id = node.element.stable_id();
             if !node.element.supports_retained_command_replay() {
                 if let Some(cache) = self.recording_cache.as_deref_mut() {
