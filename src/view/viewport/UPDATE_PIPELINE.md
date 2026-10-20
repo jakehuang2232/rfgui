@@ -34,7 +34,7 @@
 ## Scroll 搬移邊界
 
 - 純排序、插入、原生文字修改，以及保證不替換子節點的 props，不保存整棵 scene 的 scroll。
-- Delete、ReplaceRootAt 只保存被移除的子樹。
+- Delete、ReplaceRoots 只保存被移除的子樹。
 - ReplaceNode 的索引可能被前面的工作改動，保守保存其 parent 子樹；重疊範圍去重。
 - ReplaceAllRoots 保存整組 roots。
 - `ElementTrait::prop_preserves_child_identity` 是 host 宣告的 apply/reset contract，預設保守。Image／SVG 的 loading/error 更新仍保存該 host 的子樹。未知 host 不會被誤認為無結構修改。

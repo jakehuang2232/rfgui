@@ -11,9 +11,8 @@ impl Viewport {
         let mut roots = Vec::new();
         for work in works {
             match work {
-                FiberWork::Delete { key, .. } | FiberWork::ReplaceRootAt { key, .. } => {
-                    roots.push(*key)
-                }
+                FiberWork::Delete { key, .. } => roots.push(*key),
+                FiberWork::ReplaceRoots { remove, .. } => roots.extend_from_slice(remove),
                 // Earlier moves/inserts/removals may shift this index. Capture
                 // the parent subtree conservatively, never guess the old child.
                 FiberWork::ReplaceNode { parent, .. } => roots.push(*parent),

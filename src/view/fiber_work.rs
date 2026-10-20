@@ -242,18 +242,19 @@ pub enum FiberWork {
     /// apply caller from `arena.roots()` after. The descriptor list has
     /// N >= 1 entries — Fragment roots produce multiple.
     ReplaceAllRoots { descriptors: Vec<ElementDescriptor> },
-    /// Replace exactly one root — the subtree currently rooted at
-    /// `key` — with N freshly-built descriptors (N >= 1; a Fragment
-    /// root node yields multiple). Emitted when the reconciler's
-    /// root-level identity or tag changes for a single root
-    /// (`Patch::ReplaceRoot`). Sibling roots keep their NodeKeys and
-    /// any GPU resources cached against them.
+    /// Replace the arena roots one RSX root committed as — `remove`,
+    /// starting at `position` — with freshly-built descriptors. Either
+    /// side may hold none (an empty Fragment root) or several (a Fragment
+    /// of elements). Emitted when the reconciler's root-level identity or
+    /// tag changes for a single root (`Patch::ReplaceRoot`). Sibling roots
+    /// keep their NodeKeys and any GPU resources cached against them.
     ///
-    /// Targeted by NodeKey rather than root index: a `ReorderRoots`
-    /// leading the same batch permutes `arena.roots()` before this
-    /// work applies, so a translate-time index would be stale.
-    ReplaceRootAt {
-        key: NodeKey,
+    /// `position` is where the run sits once every earlier work of the
+    /// batch has applied, including a leading `ReorderRoots`; applying
+    /// checks that `remove` is still there.
+    ReplaceRoots {
+        position: usize,
+        remove: Vec<NodeKey>,
         descriptors: Vec<ElementDescriptor>,
     },
     /// Wholesale replace the `index`-th child of `parent` with N
@@ -362,45 +363,24 @@ fn patch_to_fiber_work_with_rsx_at_root(
     // the `resolve_path` calls below. rsx-path is still passed to
     // `walk_rsx_by_index_path*` which needs rsx-space indices.
     let arena_path_for = |rsx_path: &[usize]| old_rsx_arena_path(per_root_old_rsx, rsx_path);
-    let full_new_path_for =
-        |relative_path: &[usize]| full_new_rsx_path(ctx, new_root_index, relative_path);
     match patch {
         Patch::ReplaceRoot(new_node) => {
             // Need DescriptorContext — without it we can't build the
             // new subtree's descriptor. Callers lacking context (unit
             // tests, ad-hoc translation) fall back.
-            let ctx = ctx?;
-            let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
-                ctx.inherited_style,
-                ctx.viewport_width,
-                ctx.viewport_height,
-            );
-            let full_path = full_new_path_for(&[])?;
-            let target = walk_rsx_by_index_path(ctx.new_rsx_root, &full_path)?;
-            if target.identity() != new_node.identity() {
-                return None;
-            }
-            let descriptors =
-                crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
-                    ctx.new_rsx_root,
-                    &full_path,
-                    &inherited,
-                )
-                .ok()?;
-            // 軌 1 #5: Fragment root → N descriptors. Empty result
-            // (e.g. an empty Fragment) is rejected — apply would
-            // leave the arena root-less which the dispatch loop
-            // can't handle.
-            if descriptors.is_empty() {
+            let descriptors = replace_root_descriptors(ctx?, new_root_index, &new_node)?;
+            let roots = arena.roots();
+            // An empty Fragment would leave the arena root-less, which the
+            // dispatch loop can't handle.
+            if descriptors.is_empty() && roots.len() == 1 {
                 return None;
             }
             // Single-root replacement: `root` is the currently-live
-            // NodeKey for this patch's root (the caller already
-            // resolved it through any pending root permutation).
-            // Sibling roots must survive, so never route this through
-            // the root-set wipe.
-            Some(FiberWork::ReplaceRootAt {
-                key: root,
+            // NodeKey for this patch's root. Sibling roots must survive,
+            // so never route this through the root-set wipe.
+            Some(FiberWork::ReplaceRoots {
+                position: roots.iter().position(|&key| key == root)?,
+                remove: vec![root],
                 descriptors,
             })
         }
@@ -610,6 +590,41 @@ fn old_rsx_arena_path(
     }
 }
 
+/// The descriptors a `Patch::ReplaceRoot` commits for the new root at
+/// `new_root_index`: one, several for a Fragment, none for an empty one.
+fn replace_root_descriptors(
+    ctx: &DescriptorContext<'_>,
+    new_root_index: Option<usize>,
+    new_node: &RsxNode,
+) -> Option<Vec<ElementDescriptor>> {
+    let inherited = crate::view::renderer_adapter::StyleCascadeContext::from_viewport_style(
+        ctx.inherited_style,
+        ctx.viewport_width,
+        ctx.viewport_height,
+    );
+    let full_path = full_new_rsx_path(Some(ctx), new_root_index, &[])?;
+    let target = walk_rsx_by_index_path(ctx.new_rsx_root, &full_path)?;
+    if target.identity() != new_node.identity() {
+        return None;
+    }
+    crate::view::renderer_adapter::rsx_subtree_to_descriptors_with_inherited(
+        ctx.new_rsx_root,
+        &full_path,
+        &inherited,
+    )
+    .ok()
+}
+
+/// How many arena roots a root of the authored tree commits as: a
+/// Fragment's children are flattened into the root list, so an empty one
+/// commits none.
+fn arena_root_count(node: &RsxNode) -> usize {
+    match node {
+        RsxNode::Fragment(fragment) => fragment.children.iter().map(arena_root_count).sum(),
+        _ => 1,
+    }
+}
+
 /// A per-root rsx path as a path from `ctx.new_rsx_root`, which holds every
 /// root of a fragment-at-root scene.
 fn full_new_rsx_path(
@@ -800,6 +815,24 @@ pub fn translate_rooted_patches_all_or_nothing(
     ctx: Option<&DescriptorContext<'_>>,
 ) -> Option<Vec<FiberWork>> {
     let mut out = Vec::with_capacity(patches.len());
+    // Each authored root commits as a run of arena roots: one for an
+    // element, none for an empty Fragment, several for a Fragment of
+    // elements. `runs[i]` is old root i's run in the arena's root list.
+    let mut runs = Vec::with_capacity(old_roots.len());
+    let mut next = 0;
+    for old_root in old_roots {
+        let count = arena_root_count(old_root);
+        runs.push(next..next + count);
+        next += count;
+    }
+    if next != roots.len() {
+        return None;
+    }
+    let one_to_one = runs.iter().all(|run| run.len() == 1);
+    // Root replacements earlier in the batch shift the runs after them;
+    // the reconciler emits them in root order.
+    let mut root_count = roots.len();
+    let mut last_replaced: Option<usize> = None;
     // Reconciler emits patches keyed by *new* root_index. When a
     // ReorderRoots patch leads the batch, subsequent patches reference
     // post-reorder indices but the arena still holds the OLD root order
@@ -808,18 +841,56 @@ pub fn translate_rooted_patches_all_or_nothing(
     let mut permutation: Option<Vec<usize>> = None;
     let mut slots = child_slots::ChildSlotTracker::default();
     for rp in patches {
+        let old_index = |root_index: usize| match &permutation {
+            Some(perm) => perm.get(root_index).copied(),
+            None => Some(root_index),
+        };
         let root = match &rp.patch {
             Patch::ReplaceAllRoots(_) => roots.first().copied().unwrap_or(NodeKey::default()),
             Patch::ReorderRoots(mapping) => {
+                // The permutation moves whole roots, so every root must
+                // hold exactly one arena root.
+                if !one_to_one {
+                    return None;
+                }
                 permutation = Some(mapping.clone());
                 roots.first().copied().unwrap_or(NodeKey::default())
             }
+            Patch::ReplaceRoot(new_node) => {
+                if last_replaced.is_some_and(|last| last >= rp.root_index) {
+                    return None;
+                }
+                last_replaced = Some(rp.root_index);
+                let run = runs.get(old_index(rp.root_index)?)?.clone();
+                let descriptors = replace_root_descriptors(ctx?, Some(rp.root_index), new_node)?;
+                // The run sits after the runs of the roots before it, in
+                // the order any leading ReorderRoots left them, as earlier
+                // replacements resized them.
+                let mut position = 0;
+                for index in 0..rp.root_index {
+                    position += runs.get(old_index(index)?)?.len();
+                }
+                position = position + root_count - roots.len();
+                root_count = root_count + descriptors.len() - run.len();
+                // An empty root set leaves nothing for the dispatch loop.
+                if root_count == 0 {
+                    return None;
+                }
+                out.push(FiberWork::ReplaceRoots {
+                    position,
+                    remove: roots[run].to_vec(),
+                    descriptors,
+                });
+                continue;
+            }
             _ => {
-                let resolved_index = match &permutation {
-                    Some(perm) => *perm.get(rp.root_index)?,
-                    None => rp.root_index,
-                };
-                *roots.get(resolved_index)?
+                let run = runs.get(old_index(rp.root_index)?)?;
+                // Paths inside a Fragment root are not mapped onto its
+                // run of arena roots.
+                if run.len() != 1 {
+                    return None;
+                }
+                roots[run.start]
             }
         };
         // Rewrite patch paths from rsx-space (reconciler emits paths
@@ -984,8 +1055,8 @@ impl FiberWork {
     /// - `Delete` / `Move` / `Create` / `CreateMany` /
     ///   `ReplaceAllRoots` / `ReplaceNode` / `ReorderRoots`: always
     ///   committable.
-    /// - `ReplaceRootAt`: committable iff the target key is still a
-    ///   live arena root.
+    /// - `ReplaceRoots`: committable iff every root it removes is
+    ///   still a live arena root.
     /// - `SetText`: committable iff the target (after the
     ///   text-child-to-host remap done in `patch_to_fiber_work`) is
     ///   an arena node whose element downcasts to `Text` or
@@ -1011,7 +1082,9 @@ impl FiberWork {
             // is invariant under a preceding `ReorderRoots` (which
             // permutes but never adds or drops keys), so a gate-time
             // check stays valid through the batch.
-            FiberWork::ReplaceRootAt { key, .. } => arena.roots().contains(key),
+            FiberWork::ReplaceRoots { remove, .. } => {
+                remove.iter().all(|key| arena.roots().contains(key))
+            }
             FiberWork::ReorderRoots { .. } => true,
             // 軌 1 #5: fragment expansion. Apply does N successive
             // arena_insert_child calls — each is the same shape as
@@ -1270,24 +1343,29 @@ pub fn apply_fiber_works(
                     arena.push_root(new_key);
                 }
             }
-            FiberWork::ReplaceRootAt { key, descriptors } => {
-                // Splice the replacement in at the old root's slot so
+            FiberWork::ReplaceRoots {
+                position,
+                remove,
+                descriptors,
+            } => {
+                // Splice the replacement in at the old run's slot so
                 // sibling roots keep both their NodeKeys and their
-                // relative order. The gate guarantees `key` is a live
-                // root; a vanished target means the batch is stale.
-                let position = arena
-                    .roots()
-                    .iter()
-                    .position(|&root_key| root_key == key)
-                    .ok_or(UpdateFailure::MissingTarget)?;
+                // relative order. A run no longer at `position` means the
+                // batch is stale.
+                let mut roots = arena.roots().to_vec();
+                let run = position..position + remove.len();
+                if roots.get(run.clone()) != Some(remove.as_slice()) {
+                    return Err(UpdateFailure::MissingTarget);
+                }
                 let new_keys: Vec<NodeKey> = descriptors
                     .into_iter()
                     .map(|desc| commit_descriptor_tree(arena, None, desc))
                     .collect();
-                let mut roots = arena.roots().to_vec();
-                roots.splice(position..position + 1, new_keys);
+                roots.splice(run, new_keys);
                 arena.set_roots(roots);
-                arena.remove_subtree(key);
+                for key in remove {
+                    arena.remove_subtree(key);
+                }
             }
             FiberWork::ReplaceNode {
                 parent,

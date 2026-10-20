@@ -222,6 +222,68 @@ fn rooted_replace_root_replaces_one_root_and_keeps_siblings() {
     );
 }
 
+/// A root that renders an empty Fragment commits no arena root, so the
+/// authored roots and the arena roots no longer line up by index. A
+/// `Patch::ReplaceRoot` between that empty root and an element must still
+/// splice only its own run, in both directions, keeping its siblings.
+#[test]
+fn rooted_replace_root_swaps_an_empty_fragment_root_and_keeps_siblings() {
+    let without = RsxNode::fragment(vec![
+        host_element_node(),
+        RsxNode::fragment(Vec::new()),
+        host_element_node(),
+    ]);
+    let with = RsxNode::fragment(vec![
+        host_element_node(),
+        host_element_node().with_child(host_element_node()),
+        host_element_node(),
+    ]);
+    let roots_of = |tree: &RsxNode| match tree {
+        RsxNode::Fragment(fragment) => fragment.children.clone(),
+        _ => unreachable!("fixture has a Fragment root"),
+    };
+    let mut arena = crate::view::test_support::new_test_arena();
+    let root_keys = crate::view::test_support::commit_rsx_tree(&mut arena, &without);
+    arena.set_roots(root_keys.clone());
+    assert_eq!(root_keys.len(), 2, "the empty Fragment commits no root");
+
+    let style = Style::new();
+    let replace = |arena: &mut NodeArena, old: &RsxNode, new: &RsxNode| {
+        let (old_roots, new_roots) = (roots_of(old), roots_of(new));
+        let works = translate_rooted_patches_all_or_nothing(
+            vec![crate::ui::RootedPatch {
+                root_index: 1,
+                patch: Patch::ReplaceRoot(new_roots[1].clone()),
+            }],
+            arena.stable_id_index(),
+            arena,
+            &arena.roots().to_vec(),
+            &old_roots.iter().collect::<Vec<_>>(),
+            &new_roots.iter().collect::<Vec<_>>(),
+            Some(&DescriptorContext {
+                new_rsx_root: new,
+                old_rsx_root: Some(old),
+                inherited_style: &style,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+            }),
+        )
+        .expect("a root swap with an empty Fragment must stay incremental");
+        assert!(works.iter().all(|work| work.is_committable(arena)));
+        apply_fiber_works(arena, test_apply_ctx(), works).expect("root swap commits");
+    };
+
+    replace(&mut arena, &without, &with);
+    let shown = arena.roots().to_vec();
+    assert_eq!(shown.len(), 3);
+    assert_eq!((shown[0], shown[2]), (root_keys[0], root_keys[1]));
+    assert_eq!(arena.children_of(shown[1]).len(), 1);
+
+    replace(&mut arena, &with, &without);
+    assert_eq!(arena.roots(), root_keys.as_slice());
+    assert!(arena.get(shown[1]).is_none(), "the removed root is dropped");
+}
+
 #[test]
 fn stable_id_index_populated_on_insert() {
     let mut arena = NodeArena::new();
