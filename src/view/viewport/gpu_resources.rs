@@ -342,6 +342,7 @@ impl Viewport {
 
     pub(crate) fn reclaim_idle_frame_gpu_pools(&mut self) {
         self.reclaim_idle_rect_instance_buffers();
+        self.reclaim_idle_text_globals_buffers();
     }
 
     pub(crate) fn touch_persistent_render_targets(
@@ -749,6 +750,7 @@ impl Viewport {
         }
         self.frame.frame_buffer_pool.clear();
         self.release_rect_instance_buffers();
+        self.release_text_globals_buffers();
         self.gpu.upload_staging_belt = None;
         #[cfg(not(target_arch = "wasm32"))]
         self.gpu.in_flight_submissions.clear();

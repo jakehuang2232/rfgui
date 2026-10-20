@@ -1,6 +1,8 @@
-struct ScreenUniform {
+// One per text pass, at a dynamic offset: every pass of a frame shares the
+// fragment storage below and starts at its own fragment_base.
+struct DrawUniform {
     screen_size: vec2<f32>,
-    _pad: vec2<f32>,
+    fragment_base: u32,
 }
 
 struct FragmentUniform {
@@ -17,7 +19,7 @@ struct FragmentUniform {
 const TEXT_SNAP_TOLERANCE: f32 = 1.0 / 64.0;
 
 @group(0) @binding(0)
-var<uniform> screen: ScreenUniform;
+var<uniform> draw: DrawUniform;
 
 @group(0) @binding(1)
 var<storage, read> fragments: array<FragmentUniform>;
@@ -60,14 +62,14 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, glyph: GlyphInstance) -> Vs
     );
 
     let corner = corners[vertex_index];
-    let fragment = fragments[glyph.fragment_index];
+    let fragment = fragments[draw.fragment_base + glyph.fragment_index];
     // Snap the glyph base down to the pixel grid (matching the CPU-side
     // text_render_snap) so glyphs stay crisp while instance data remains
     // independent of the fragment origin.
     let base = floor(fragment.origin + glyph.local_pos + TEXT_SNAP_TOLERANCE);
     let pixel = base + corner * glyph.size;
-    let ndc_x = (pixel.x / screen.screen_size.x) * 2.0 - 1.0;
-    let ndc_y = 1.0 - (pixel.y / screen.screen_size.y) * 2.0;
+    let ndc_x = (pixel.x / draw.screen_size.x) * 2.0 - 1.0;
+    let ndc_y = 1.0 - (pixel.y / draw.screen_size.y) * 2.0;
 
     var out: VsOut;
     out.position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);

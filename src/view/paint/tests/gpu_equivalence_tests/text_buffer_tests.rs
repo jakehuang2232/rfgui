@@ -75,7 +75,7 @@ fn native_text_globals_reuse_buffers_without_overwriting_other_passes() -> Resul
     for dpr in [1_u32, 2] {
         let mut viewport = Viewport::new();
         let mut baseline: Option<Vec<u8>> = None;
-        // Each state repeats on one Viewport. Include movement, fragment buffer
+        // Each state repeats on one Viewport. Include movement, fragment count
         // growth/shrink, and render-target resizing; then prove the next frame
         // reuses real buffer handles while receiving that state's fresh bytes.
         for (stage, (shift, doubled, width)) in [
@@ -90,12 +90,12 @@ fn native_text_globals_reuse_buffers_without_overwriting_other_passes() -> Resul
         .enumerate()
         {
             let released = if stage == 5 {
-                let previous = viewport.frame_buffers_for_test();
+                let previous = viewport.text_globals_buffers_for_test();
                 viewport.release_render_resource_caches();
-                assert!(viewport.frame_buffers_for_test().is_empty());
+                assert_eq!(viewport.text_globals_buffers_for_test(), None);
                 previous
             } else {
-                Vec::new()
+                None
             };
             let size = [width * dpr, 64 * dpr];
             let mut cold_buffers = None;
@@ -173,32 +173,18 @@ fn native_text_globals_reuse_buffers_without_overwriting_other_passes() -> Resul
                 } else {
                     baseline = Some(pixels);
                 }
-                // Four distinct Text allocations; Present binds a cached
-                // uniform outside the pool. Graph/pass destruction must not
-                // destroy these pooled buffers.
-                let buffers = viewport.frame_buffers_for_test();
-                assert_eq!(buffers.len(), 4);
-                assert!(
-                    buffers.iter().all(|(_, buffer)| {
-                        released.iter().all(|(_, previous)| buffer != previous)
-                    }),
-                    "explicit release must allocate new physical buffers"
-                );
-                for (index, (_, buffer)) in buffers.iter().enumerate() {
-                    assert!(buffers[..index].iter().all(|(_, other)| other != buffer));
+                // Both Text passes share one draw uniform buffer and one
+                // fragment buffer, outside the graph's buffer pool.
+                assert!(viewport.frame_buffers_for_test().is_empty());
+                let buffers = viewport
+                    .text_globals_buffers_for_test()
+                    .expect("Text globals were uploaded");
+                if let Some(previous) = &released {
+                    assert!(
+                        buffers.iter().all(|buffer| !previous.contains(buffer)),
+                        "explicit release must allocate new physical buffers"
+                    );
                 }
-                let storage_sizes = buffers
-                    .iter()
-                    .filter(|(_, buffer)| buffer.usage().contains(wgpu::BufferUsages::STORAGE))
-                    .map(|(_, buffer)| buffer.size())
-                    .collect::<Vec<_>>();
-                // A smaller state keeps the buffer the larger one grew; an
-                // explicit release starts over at the exact size.
-                let grown = stage >= 2 && stage < 5;
-                assert_eq!(
-                    storage_sizes,
-                    vec![if doubled || grown { 64 } else { 32 }; 2]
-                );
                 if let Some(cold) = &cold_buffers {
                     assert_eq!(&buffers, cold, "warm frame must reuse real allocations");
                 } else {
@@ -208,7 +194,7 @@ fn native_text_globals_reuse_buffers_without_overwriting_other_passes() -> Resul
         }
     }
     eprintln!(
-        "Text globals: 2 passes, 6 state pairs, DPR 1/2; each warm frame reuses all 4 Text buffers; pixels verified"
+        "Text globals: 2 passes, 6 state pairs, DPR 1/2; each warm frame reuses both Text globals buffers; pixels verified"
     );
     Ok(())
 }

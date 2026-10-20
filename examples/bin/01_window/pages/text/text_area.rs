@@ -81,14 +81,12 @@ pub fn TextAreaDemo() -> RsxNode {
         ) as ToggleGroupChangeHandler
     };
 
-    let badge_background = Color::hex("#233241");
     let badge_border = Color::hex("#42566f");
     let badge_text = Color::hex("#9fbdd9");
     let textarea_width = Length::px(360.0);
     let textarea_height = Length::px(176.0);
 
     let projection_renderer = projection_value.then(|| {
-        let bg = badge_background.clone();
         let bd = badge_border.clone();
         let tx = badge_text.clone();
         let badge_font_size = theme.typography.size.xl;
@@ -96,7 +94,6 @@ pub fn TextAreaDemo() -> RsxNode {
             move |render: &mut rfgui::view::base_component::TextAreaRenderString| {
                 let content_chars: Vec<char> = render.content().chars().collect();
                 for (start, end) in projection_token_ranges(render.content()) {
-                    let badge_background = bg.clone();
                     let badge_border = bd.clone();
                     let badge_text = tx.clone();
                     let slice: String = content_chars[start..end].iter().collect();

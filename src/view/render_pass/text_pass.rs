@@ -1,7 +1,6 @@
-use crate::view::frame_graph::slot::OutSlot;
 use crate::view::frame_graph::{
-    BufferDesc, BufferReadUsage, BufferResource, FrameResourceContext, GraphicsColorAttachmentOps,
-    GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
+    FrameResourceContext, GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy,
+    PrepareContext,
 };
 use crate::view::render_pass::draw_rect_pass::RenderTargetOut;
 use crate::view::render_pass::render_target::{
@@ -25,7 +24,6 @@ pub(crate) struct TextPreparedInputPass {
     params: std::sync::Arc<TextPassPreparedParams>,
     prepared: Option<TextPreparedState>,
     prepared_empty: bool,
-    globals_buffers: TextGlobalsBuffers,
     input: TextInput,
     output: TextOutput,
 }
@@ -64,7 +62,6 @@ impl TextPreparedInputPass {
             params: params.into(),
             prepared: None,
             prepared_empty: false,
-            globals_buffers: TextGlobalsBuffers::default(),
             input,
             output,
         }
@@ -151,24 +148,13 @@ pub(crate) struct TextPreparedPassTestSnapshot {
 
 struct TextPreparedState {
     renderer_key: TextRendererKey,
-    globals_bind_group: wgpu::BindGroup,
+    /// Dynamic offset of this pass's draw uniform in the frame's text
+    /// globals.
+    draw_offset: u32,
     mask_draw: Option<std::rc::Rc<PreparedTextDraw>>,
     color_draw: Option<std::rc::Rc<PreparedTextDraw>>,
     scissor_rect: [u32; 4],
     stencil_clip_id: Option<u8>,
-}
-
-// Each logical pass declares distinct resources: all preparation uploads precede
-// drawing, so sharing a writable range between Text passes would overwrite the
-// earlier text. FrameGraph's buffer allocations do not alias within a frame;
-// Viewport owns/reuses them across frames and uploads via its shared staging belt.
-#[derive(Clone, Copy)]
-struct TextGlobalsBufferTag;
-
-#[derive(Default)]
-struct TextGlobalsBuffers {
-    screen: OutSlot<BufferResource, TextGlobalsBufferTag>,
-    fragments: OutSlot<BufferResource, TextGlobalsBufferTag>,
 }
 
 struct PreparedTextDraw {
@@ -385,16 +371,38 @@ enum AtlasKind {
     Color,
 }
 
+/// One text pass's draw uniform. Each fills a 256-byte slot, the largest
+/// dynamic offset alignment a device may require, so every pass of a frame
+/// shares one uniform buffer and one bind group.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct ScreenUniform {
+pub(crate) struct TextDrawUniform {
     screen_size: [f32; 2],
-    _pad: [f32; 2],
+    /// Index of this pass's first fragment in the frame's fragment storage.
+    fragment_base: u32,
+    _pad: [u32; 61],
 }
+
+impl TextDrawUniform {
+    pub(crate) fn new(screen_size: [f32; 2], fragment_base: u32) -> Self {
+        Self {
+            screen_size,
+            fragment_base,
+            _pad: [0; 61],
+        }
+    }
+}
+
+/// Bytes of [`TextDrawUniform`] the shader reads.
+pub(crate) const TEXT_DRAW_UNIFORM_BINDING_SIZE: u64 = 16;
+pub(crate) const TEXT_DRAW_BUFFER_INITIAL_CAPACITY: u64 =
+    64 * std::mem::size_of::<TextDrawUniform>() as u64;
+pub(crate) const TEXT_FRAGMENT_BUFFER_INITIAL_CAPACITY: u64 =
+    256 * std::mem::size_of::<FragmentUniform>() as u64;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct FragmentUniform {
+pub(crate) struct FragmentUniform {
     origin: [f32; 2],
     clip_min: [f32; 2],
     clip_max: [f32; 2],
@@ -498,7 +506,7 @@ pub(crate) struct CachedRasterImage {
 
 #[derive(Default)]
 struct TextResources {
-    screen_layout: Option<wgpu::BindGroupLayout>,
+    globals_layout: Option<wgpu::BindGroupLayout>,
     atlas_layout: Option<wgpu::BindGroupLayout>,
     sampler: Option<wgpu::Sampler>,
     pipelines: FxHashMap<(TextRendererKey, TextPipelineKind), wgpu::RenderPipeline>,
@@ -512,9 +520,6 @@ struct TextResources {
     /// Weak ownership ties validation/hash to immutable prepared input. The
     /// allocation cannot be edited or reused while its weak identity survives.
     input_cache: FxHashMap<usize, CachedTextInput>,
-    // Buffer handles compare by GPU resource identity, not frame-graph IDs.
-    // The layout stays fixed until destroy(), which also clears these entries.
-    globals_cache: FxHashMap<(wgpu::Buffer, wgpu::Buffer), CachedTextGlobals>,
     frame_epoch: u64,
     scale_context: SwashScaleContext,
 }
@@ -534,14 +539,6 @@ struct CachedTextInput {
     last_used_frame: u64,
 }
 
-const MAX_TEXT_GLOBALS_CACHE_ENTRIES: usize = 1024;
-const MAX_TEXT_GLOBALS_UNUSED_FRAMES: u64 = 2;
-
-struct CachedTextGlobals {
-    bind_group: wgpu::BindGroup,
-    last_used_frame: u64,
-}
-
 thread_local! {
     static TEXT_RESOURCES: RefCell<FxHashMap<u64, TextResources>> = RefCell::new(FxHashMap::default());
 }
@@ -553,19 +550,6 @@ fn with_text_resources<R>(scope: u64, f: impl FnOnce(&mut TextResources) -> R) -
 impl GraphicsPass for TextPreparedInputPass {
     fn setup(&mut self, builder: &mut GraphicsPassBuilder<'_, '_>) {
         builder.set_graphics_merge_policy(GraphicsPassMergePolicy::Mergeable);
-        self.globals_buffers.screen = builder.create_buffer(BufferDesc {
-            size: std::mem::size_of::<ScreenUniform>() as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
-            label: Some("Text Screen Uniform Buffer"),
-        });
-        self.globals_buffers.fragments = builder.create_buffer(BufferDesc {
-            size: std::mem::size_of::<FragmentUniform>() as u64
-                * self.params.fragments.len().max(1) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
-            label: Some("Text Fragment Storage Buffer"),
-        });
-        builder.read_buffer(&self.globals_buffers.screen, BufferReadUsage::Uniform);
-        builder.read_storage(&self.globals_buffers.fragments);
         if builder.texture_target(&self.output.render_target).is_some() {
             builder.write_color(
                 &self.output.render_target,
@@ -587,7 +571,6 @@ impl GraphicsPass for TextPreparedInputPass {
             &self.params,
             &self.input,
             &self.output,
-            &self.globals_buffers,
             ctx,
             &mut self.prepared_empty,
         );
@@ -631,7 +614,6 @@ fn prepare_text_prepared_input_pass(
     params: &std::sync::Arc<TextPassPreparedParams>,
     input: &TextInput,
     output: &TextOutput,
-    globals_buffers: &TextGlobalsBuffers,
     ctx: &mut PrepareContext<'_, '_>,
     prepared_empty: &mut bool,
 ) -> Option<TextPreparedState> {
@@ -759,78 +741,64 @@ fn prepare_text_prepared_input_pass(
         }
     }
 
-    let screen_uniform = ScreenUniform {
-        screen_size: [
-            target.physical_size.0.max(1) as f32,
-            target.physical_size.1.max(1) as f32,
-        ],
-        _pad: [0.0, 0.0],
-    };
-    let screen_handle = globals_buffers.screen.handle()?;
-    let fragment_handle = globals_buffers.fragments.handle()?;
-    if !ctx.upload_buffer(screen_handle, 0, bytemuck::bytes_of(&screen_uniform))
-        || !ctx.upload_buffer(fragment_handle, 0, bytemuck::cast_slice(&fragments))
-    {
-        return None;
-    }
-    let screen_buffer = ctx.acquire_buffer(screen_handle)?;
-    let fragment_buffer = ctx.acquire_buffer(fragment_handle)?;
+    let screen_size = [
+        target.physical_size.0.max(1) as f32,
+        target.physical_size.1.max(1) as f32,
+    ];
+    let draw_offset = ctx.viewport().push_text_draw(screen_size, &fragments)?;
 
-    let (globals_bind_group, mask_draw, color_draw) =
-        with_text_resources(resource_scope, |resources| {
-            resources.ensure_common(&device);
-            let globals_bind_group =
-                resources.globals_bind_group(&device, &screen_buffer, &fragment_buffer);
-            let (mask_draw, color_draw) = match cached_draws {
-                Some(draws) => draws,
-                None => {
-                    let mask_draw = build_prepared_draw(
-                        &device,
-                        &queue,
-                        resources,
-                        AtlasKind::Mask,
-                        pending.iter().filter(|glyph| glyph.kind == AtlasKind::Mask),
-                    )
-                    .map(std::rc::Rc::new);
-                    let color_draw = build_prepared_draw(
-                        &device,
-                        &queue,
-                        resources,
-                        AtlasKind::Color,
-                        pending
-                            .iter()
-                            .filter(|glyph| glyph.kind == AtlasKind::Color),
-                    )
-                    .map(std::rc::Rc::new);
-                    // Only persistent-atlas draws survive across frames: a
-                    // transient atlas is destroyed with the draw and the
-                    // persistent one resets at the next frame boundary.
-                    let cacheable = |draw: &Option<std::rc::Rc<PreparedTextDraw>>| {
-                        draw.as_ref().is_none_or(|draw| {
-                            matches!(draw.atlas, PreparedAtlasBinding::Persistent(_))
-                        })
-                    };
-                    if (mask_draw.is_some() || color_draw.is_some())
-                        && cacheable(&mask_draw)
-                        && cacheable(&color_draw)
-                    {
-                        let frame_epoch = resources.frame_epoch;
-                        resources.draw_cache.insert(
-                            draw_cache_key,
-                            CachedTextDrawEntry {
-                                mask_draw: mask_draw.clone(),
-                                color_draw: color_draw.clone(),
-                                last_used_frame: frame_epoch,
-                            },
-                        );
-                    }
-                    (mask_draw, color_draw)
+    let (mask_draw, color_draw) = with_text_resources(resource_scope, |resources| {
+        resources.ensure_common(&device);
+        let (mask_draw, color_draw) = match cached_draws {
+            Some(draws) => draws,
+            None => {
+                let mask_draw = build_prepared_draw(
+                    &device,
+                    &queue,
+                    resources,
+                    AtlasKind::Mask,
+                    pending.iter().filter(|glyph| glyph.kind == AtlasKind::Mask),
+                )
+                .map(std::rc::Rc::new);
+                let color_draw = build_prepared_draw(
+                    &device,
+                    &queue,
+                    resources,
+                    AtlasKind::Color,
+                    pending
+                        .iter()
+                        .filter(|glyph| glyph.kind == AtlasKind::Color),
+                )
+                .map(std::rc::Rc::new);
+                // Only persistent-atlas draws survive across frames: a
+                // transient atlas is destroyed with the draw and the
+                // persistent one resets at the next frame boundary.
+                let cacheable = |draw: &Option<std::rc::Rc<PreparedTextDraw>>| {
+                    draw.as_ref().is_none_or(|draw| {
+                        matches!(draw.atlas, PreparedAtlasBinding::Persistent(_))
+                    })
+                };
+                if (mask_draw.is_some() || color_draw.is_some())
+                    && cacheable(&mask_draw)
+                    && cacheable(&color_draw)
+                {
+                    let frame_epoch = resources.frame_epoch;
+                    resources.draw_cache.insert(
+                        draw_cache_key,
+                        CachedTextDrawEntry {
+                            mask_draw: mask_draw.clone(),
+                            color_draw: color_draw.clone(),
+                            last_used_frame: frame_epoch,
+                        },
+                    );
                 }
-            };
-            resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Mask);
-            resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Color);
-            (globals_bind_group, mask_draw, color_draw)
-        });
+                (mask_draw, color_draw)
+            }
+        };
+        resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Mask);
+        resources.ensure_pipeline(&device, renderer_key, TextPipelineKind::Color);
+        (mask_draw, color_draw)
+    });
 
     if mask_draw.is_none() && color_draw.is_none() {
         return None;
@@ -838,7 +806,7 @@ fn prepare_text_prepared_input_pass(
 
     Some(TextPreparedState {
         renderer_key,
-        globals_bind_group,
+        draw_offset,
         mask_draw,
         color_draw,
         scissor_rect,
@@ -1454,8 +1422,18 @@ fn draw_prepared_text(
             }
             PreparedAtlasBinding::Transient { bind_group, .. } => bind_group,
         };
+        // Resolved at record time: a later flush in the same frame may have
+        // replaced the draw or fragment buffer since this pass prepared.
+        let Some(globals) = resources
+            .globals_layout
+            .as_ref()
+            .and_then(|layout| ctx.viewport().text_globals_bind_group(layout))
+        else {
+            ctx.mark_execution_failed();
+            return;
+        };
         ctx.set_pipeline(pipeline);
-        ctx.set_bind_group(0, &prepared.globals_bind_group, &[]);
+        ctx.set_bind_group(0, &globals, &[prepared.draw_offset]);
         ctx.set_bind_group(1, atlas_bind_group, &[]);
         ctx.set_vertex_buffer(0, draw.vertex_buffer.slice(..));
         ctx.draw(0..6, 0..draw.instance_count);
@@ -1494,9 +1472,6 @@ impl TextResources {
                 && self.frame_epoch.wrapping_sub(entry.last_used_frame)
                     <= MAX_TEXT_INPUT_UNUSED_FRAMES
         });
-        self.globals_cache.retain(|_, entry| {
-            self.frame_epoch.wrapping_sub(entry.last_used_frame) <= MAX_TEXT_GLOBALS_UNUSED_FRAMES
-        });
         self.evict_raster_cache();
         let mut atlas_reset = false;
         for atlas in self.persistent_atlases.values_mut() {
@@ -1511,48 +1486,6 @@ impl TextResources {
             self.draw_cache.clear();
         }
         self.evict_draw_cache();
-    }
-
-    fn globals_bind_group(
-        &mut self,
-        device: &wgpu::Device,
-        screen: &wgpu::Buffer,
-        fragments: &wgpu::Buffer,
-    ) -> wgpu::BindGroup {
-        let key = (screen.clone(), fragments.clone());
-        if let Some(entry) = self.globals_cache.get_mut(&key) {
-            entry.last_used_frame = self.frame_epoch;
-            return entry.bind_group.clone();
-        }
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Text Globals Bind Group"),
-            layout: self
-                .screen_layout
-                .as_ref()
-                .expect("screen layout initialized"),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: screen.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: fragments.as_entire_binding(),
-                },
-            ],
-        });
-        // A larger scene may still prepare normally without retaining more
-        // resources. Old entries expire even when graph allocations change.
-        if self.globals_cache.len() < MAX_TEXT_GLOBALS_CACHE_ENTRIES {
-            self.globals_cache.insert(
-                key,
-                CachedTextGlobals {
-                    bind_group: bind_group.clone(),
-                    last_used_frame: self.frame_epoch,
-                },
-            );
-        }
-        bind_group
     }
 
     fn evict_draw_cache(&mut self) {
@@ -1626,8 +1559,8 @@ impl TextResources {
     }
 
     fn ensure_common(&mut self, device: &wgpu::Device) {
-        if self.screen_layout.is_none() {
-            self.screen_layout = Some(device.create_bind_group_layout(
+        if self.globals_layout.is_none() {
+            self.globals_layout = Some(device.create_bind_group_layout(
                 &wgpu::BindGroupLayoutDescriptor {
                     label: Some("Text Globals Bind Group Layout"),
                     entries: &[
@@ -1636,8 +1569,10 @@ impl TextResources {
                             visibility: wgpu::ShaderStages::VERTEX,
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
+                                has_dynamic_offset: true,
+                                min_binding_size: wgpu::BufferSize::new(
+                                    TEXT_DRAW_UNIFORM_BINDING_SIZE,
+                                ),
                             },
                             count: None,
                         },
@@ -1704,11 +1639,11 @@ impl TextResources {
         if self.pipelines.contains_key(&(key, kind)) {
             return;
         }
-        let screen_layout = self.screen_layout.as_ref().expect("screen layout");
+        let globals_layout = self.globals_layout.as_ref().expect("globals layout");
         let atlas_layout = self.atlas_layout.as_ref().expect("atlas layout");
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Text Pipeline Layout"),
-            bind_group_layouts: &[Some(screen_layout), Some(atlas_layout)],
+            bind_group_layouts: &[Some(globals_layout), Some(atlas_layout)],
             immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1771,7 +1706,6 @@ impl TextResources {
     }
 
     fn destroy(&mut self) {
-        self.globals_cache.clear();
         self.pipelines.clear();
         self.raster_cache.clear();
         self.draw_cache.clear();
@@ -1779,7 +1713,7 @@ impl TextResources {
         for (_, atlas) in self.persistent_atlases.drain() {
             atlas.texture.destroy();
         }
-        self.screen_layout = None;
+        self.globals_layout = None;
         self.atlas_layout = None;
         self.sampler = None;
         self.scale_context = SwashScaleContext::new();
@@ -1909,6 +1843,3 @@ mod tests;
 
 #[cfg(test)]
 mod shader_validation_tests;
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod globals_cache_tests;

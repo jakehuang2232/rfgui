@@ -16,7 +16,9 @@ mod gpu_resources;
 mod incremental_tests;
 mod input;
 mod lifecycle;
+mod frame_streams;
 mod rect_instances;
+mod text_globals;
 mod render;
 #[cfg(test)]
 pub(crate) use render::{
@@ -318,6 +320,7 @@ struct FrameRuntime {
     /// one frame and a storage buffer in the next.
     frame_buffer_pool: FxHashMap<(u32, wgpu::BufferUsages), FrameBufferEntry>,
     rect_instances: rect_instances::RectInstanceFrame,
+    text_globals: text_globals::TextGlobalsFrame,
     frame_stats: FrameStats,
     frame_presented: bool,
     /// Layout moved content under the pointer after this frame's style
@@ -373,6 +376,7 @@ impl FrameRuntime {
             retained_auto_report_pending: false,
             frame_buffer_pool: FxHashMap::default(),
             rect_instances: rect_instances::RectInstanceFrame::default(),
+            text_globals: text_globals::TextGlobalsFrame::default(),
             frame_stats: FrameStats::new(trace_fps),
             frame_presented: false,
             pointer_hover_resync_pending: false,
