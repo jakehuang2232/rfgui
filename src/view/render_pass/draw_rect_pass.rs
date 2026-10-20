@@ -5,6 +5,7 @@ use crate::view::frame_graph::texture_resource::TextureResource;
 use crate::view::frame_graph::{
     GraphicsColorAttachmentOps, GraphicsPassBuilder, GraphicsPassMergePolicy, PrepareContext,
 };
+use crate::view::render_pass::rect_pipeline::RectPipeline;
 use crate::view::render_pass::render_target::{
     GraphicsPassContext as RenderPassContext, render_target_origin, render_target_raster_scale,
     render_target_sample_count, resolve_graphics_pass_scissor_to_target_physical,
@@ -126,7 +127,8 @@ enum PreparedRect {
 /// the layout used to bind this frame's instance storage, the dynamic state,
 /// and this rectangle's index into the frame's instance array.
 pub(crate) struct PreparedRectDraw {
-    pub(crate) pipeline: wgpu::RenderPipeline,
+    /// May still be building; execute waits for it on first use.
+    pub(crate) pipeline: RectPipeline,
     pub(crate) bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) layout_key: u64,
     pub(crate) uses_gradient_stops: bool,
@@ -1042,7 +1044,7 @@ pub(crate) struct RectInstance {
 }
 
 pub(crate) struct DrawRectResources {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: RectPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline_format: wgpu::TextureFormat,
     pipeline_sample_count: u32,
@@ -1063,20 +1065,6 @@ fn create_draw_rect_resources(
     render_mode: RectRenderMode,
     shape: RectShaderShape,
 ) -> DrawRectResources {
-    use super::rect_shader::{RectShaderKey, build_rect_shader};
-    let shader = build_rect_shader(
-        device,
-        RectShaderKey {
-            has_fill: shape.has_fill,
-            border: shape.border,
-            rounded: shape.rounded,
-            opaque: matches!(variant, RectShaderVariant::Opaque),
-            pass: render_mode,
-            has_gradient: shape.has_gradient,
-            has_border_gradient: shape.has_border_gradient,
-        },
-    );
-
     // Binding 0 is the frame's instance array, indexed by `instance_index`.
     // A solid shader never reads gradient stops, so it omits binding 1 rather
     // than binding an unused dummy. The shape is also part of the
@@ -1114,9 +1102,64 @@ fn create_draw_rect_resources(
         immediate_size: 0,
     });
 
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    // Composing the shader and compiling the pipeline dominate a variant's
+    // first use; the layouts above are cheap and prepare needs them now.
+    let pipeline = RectPipeline::request(device, move |device| {
+        create_rect_pipeline(
+            device,
+            &pipeline_layout,
+            format,
+            sample_count,
+            variant,
+            stencil_class,
+            color_write_enabled,
+            render_mode,
+            shape,
+        )
+    });
+
+    DrawRectResources {
+        pipeline,
+        bind_group_layout,
+        pipeline_format: format,
+        pipeline_sample_count: sample_count,
+        variant,
+        stencil_class,
+        color_write_enabled,
+        render_mode,
+        shape,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_rect_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    variant: RectShaderVariant,
+    stencil_class: RectStencilClass,
+    color_write_enabled: bool,
+    render_mode: RectRenderMode,
+    shape: RectShaderShape,
+) -> wgpu::RenderPipeline {
+    use super::rect_shader::{RectShaderKey, build_rect_shader};
+    let shader = build_rect_shader(
+        device,
+        RectShaderKey {
+            has_fill: shape.has_fill,
+            border: shape.border,
+            rounded: shape.rounded,
+            opaque: matches!(variant, RectShaderVariant::Opaque),
+            pass: render_mode,
+            has_gradient: shape.has_gradient,
+            has_border_gradient: shape.has_border_gradient,
+        },
+    );
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("DrawRect Pipeline"),
-        layout: Some(&pipeline_layout),
+        layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
@@ -1259,19 +1302,7 @@ fn create_draw_rect_resources(
         },
         multiview_mask: None,
         cache: None,
-    });
-
-    DrawRectResources {
-        pipeline,
-        bind_group_layout,
-        pipeline_format: format,
-        pipeline_sample_count: sample_count,
-        variant,
-        stencil_class,
-        color_write_enabled,
-        render_mode,
-        shape,
-    }
+    })
 }
 
 fn build_rect_debug_overlay_geometry(

@@ -13,6 +13,7 @@ pub mod debug_overlay_pass;
 pub mod draw_rect_pass;
 pub mod present_surface_pass;
 pub(crate) mod rect_batch;
+mod rect_pipeline;
 mod rect_shader;
 pub mod render_target;
 pub mod shadow_module;
@@ -73,8 +74,10 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
     /// new run when it cannot extend the current one. Returns false when the
     /// frame's instance storage cannot be bound.
     pub(crate) fn draw_rect_instance(&mut self, draw: &draw_rect_pass::PreparedRectDraw) -> bool {
+        // Waits here, on first use, for a pipeline still building.
+        let pipeline = draw.pipeline.get();
         if self.rect_batch.try_extend(
-            &draw.pipeline,
+            pipeline,
             draw.scissor,
             draw.stencil_reference,
             draw.instance,
@@ -92,7 +95,7 @@ impl<'a, 'ctx, 'res, 'pass> GraphicsCtx<'a, 'ctx, 'res, 'pass> {
             return false;
         };
         self.rect_batch.start(
-            draw.pipeline.clone(),
+            pipeline.clone(),
             bind_group,
             draw.scissor,
             draw.stencil_reference,

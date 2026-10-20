@@ -6,9 +6,10 @@ use super::draw_rect_pass::RectRenderMode;
 const RECT_WGSL: &str = include_str!("../../shader/rect.wgsl");
 
 thread_local! {
-    /// Building a `Composer` costs about as much as composing a variant, and
-    /// a variant is composed on its first use, mid-frame. Without imports or
-    /// `@binding(auto)`, composing leaves no state behind to carry over.
+    /// Building a `Composer` costs about as much as composing a variant, so
+    /// each thread that composes keeps one: the rect pipeline workers, or the
+    /// render thread without them. Without imports or `@binding(auto)`,
+    /// composing leaves no state behind to carry over.
     static COMPOSER: std::cell::RefCell<Composer> = std::cell::RefCell::new(Composer::default());
 }
 
