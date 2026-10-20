@@ -32,17 +32,11 @@ fn native_gpu_source_vertex_growth_and_empty_draw_preserve_current_pixels() -> R
             let pixels = read_submitted_texture(&observed.texture, gpu, [80 * dpr, 64 * dpr])?;
             if triangles > 0 {
                 let capacity = (triangles as u64 * 3 * 8).next_power_of_two();
-                let buffers = viewport
-                    .frame_buffers_for_test()
-                    .into_iter()
-                    .map(|(_, buffer)| buffer)
-                    .filter(|buffer| {
-                        buffer.usage().contains(wgpu::BufferUsages::VERTEX)
-                            && buffer.size() == capacity
-                    })
-                    .collect::<Vec<_>>();
+                let buffers = viewport.labeled_frame_buffers_for_test("GPU Paint Vertices");
                 assert_eq!(buffers.len(), 1, "fixture has one source vertex allocation");
                 let vertices = buffers.into_iter().next().unwrap();
+                // The pool keeps a larger buffer for a smaller payload.
+                assert!(vertices.size() >= capacity);
                 if let Some(previous) = previous_vertices.as_ref() {
                     if (2..=4).contains(&frame) {
                         assert_eq!(

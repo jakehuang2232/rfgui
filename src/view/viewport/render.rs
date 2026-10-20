@@ -2309,6 +2309,7 @@ impl Viewport {
         profile.present_ms = clock.checkpoint_ms();
         self.finish_gpu_paint_frame(true);
         self.finish_shadow_template_frame(true);
+        self.retire_stale_frame_buffers();
         profile.resource_cleanup_ms += clock.checkpoint_ms();
         #[cfg(not(target_arch = "wasm32"))]
         {

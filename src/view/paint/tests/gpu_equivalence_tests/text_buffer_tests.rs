@@ -192,7 +192,13 @@ fn native_text_globals_reuse_buffers_without_overwriting_other_passes() -> Resul
                     .filter(|(_, buffer)| buffer.usage().contains(wgpu::BufferUsages::STORAGE))
                     .map(|(_, buffer)| buffer.size())
                     .collect::<Vec<_>>();
-                assert_eq!(storage_sizes, vec![if doubled { 64 } else { 32 }; 2]);
+                // A smaller state keeps the buffer the larger one grew; an
+                // explicit release starts over at the exact size.
+                let grown = stage >= 2 && stage < 5;
+                assert_eq!(
+                    storage_sizes,
+                    vec![if doubled || grown { 64 } else { 32 }; 2]
+                );
                 if let Some(cold) = &cold_buffers {
                     assert_eq!(&buffers, cold, "warm frame must reuse real allocations");
                 } else {

@@ -580,12 +580,24 @@ impl Viewport {
     }
 
     #[cfg(test)]
+    pub(crate) fn labeled_frame_buffers_for_test(&self, label: &str) -> Vec<wgpu::Buffer> {
+        self.frame
+            .frame_buffer_pool
+            .values()
+            .filter(|entry| {
+                entry.label == Some(label) && entry.last_used_frame == self.frame.frame_number
+            })
+            .map(|entry| entry.buffer.clone())
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn frame_buffers_for_test(&self) -> Vec<(u32, wgpu::Buffer)> {
         let mut buffers = self
             .frame
             .frame_buffer_pool
             .iter()
-            .map(|(&allocation, entry)| (allocation, entry.buffer.clone()))
+            .map(|(&(allocation, _), entry)| (allocation, entry.buffer.clone()))
             .collect::<Vec<_>>();
         buffers.sort_by_key(|(allocation, _)| *allocation);
         buffers
@@ -597,17 +609,28 @@ impl Viewport {
         desc: BufferDesc,
     ) -> Option<wgpu::Buffer> {
         let device = self.gpu.device.as_ref()?;
-        let key = allocation_id.0;
-        let recreate = self
-            .frame
-            .frame_buffer_pool
-            .get(&key)
-            .is_none_or(|entry| entry.size != desc.size || entry.usage != desc.usage);
-        if recreate {
+        // Allocation ids move between passes, and between uniform, storage
+        // and vertex use, when the scene changes, so a pool keyed by id with
+        // an exact size recreated most buffers whenever a page mounted. Key
+        // by id and usage, keep a buffer while it is large enough, but not
+        // one far larger, so a spike does not pin its memory. Users bind
+        // whole buffers and draw explicit counts; uploads are still bounded
+        // by `desc.size`.
+        let key = (allocation_id.0, desc.usage);
+        let capacity = desc.size.max(1).next_power_of_two();
+        let frame_number = self.frame.frame_number;
+        let reuse = match self.frame.frame_buffer_pool.get_mut(&key) {
+            Some(entry) if entry.size >= desc.size.max(1) && entry.size <= capacity * 4 => {
+                entry.last_used_frame = frame_number;
+                true
+            }
+            _ => false,
+        };
+        if !reuse {
             let usage = desc.usage | wgpu::BufferUsages::COPY_DST;
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: desc.label,
-                size: desc.size.max(1),
+                size: capacity,
                 usage,
                 mapped_at_creation: false,
             });
@@ -615,8 +638,10 @@ impl Viewport {
                 key,
                 FrameBufferEntry {
                     buffer: buffer.clone(),
-                    size: desc.size.max(1),
-                    usage: desc.usage,
+                    size: capacity,
+                    last_used_frame: frame_number,
+                    #[cfg(test)]
+                    label: desc.label,
                 },
             ) {
                 old.buffer.destroy();
@@ -626,6 +651,19 @@ impl Viewport {
             .frame_buffer_pool
             .get(&key)
             .map(|entry| entry.buffer.clone())
+    }
+
+    /// Releases pooled frame buffers no frame has used for a while.
+    pub(super) fn retire_stale_frame_buffers(&mut self) {
+        let frame_number = self.frame.frame_number;
+        self.frame.frame_buffer_pool.retain(|_, entry| {
+            let fresh = frame_number.saturating_sub(entry.last_used_frame)
+                <= Self::FRAME_BUFFER_STALE_FRAMES;
+            if !fresh {
+                entry.buffer.destroy();
+            }
+            fresh
+        });
     }
 
     pub(crate) fn upload_frame_buffer(

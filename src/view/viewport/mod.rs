@@ -314,7 +314,9 @@ struct FrameRuntime {
     sampled_texture_cache:
         FxHashMap<crate::view::sampled_texture::SampledTextureId, SampledTextureEntry>,
     sampled_texture_upload_count: u64,
-    frame_buffer_pool: FxHashMap<u32, FrameBufferEntry>,
+    /// Keyed by allocation id and usage: the same id can hold a uniform in
+    /// one frame and a storage buffer in the next.
+    frame_buffer_pool: FxHashMap<(u32, wgpu::BufferUsages), FrameBufferEntry>,
     rect_instances: rect_instances::RectInstanceFrame,
     frame_stats: FrameStats,
     frame_presented: bool,
@@ -610,7 +612,10 @@ struct CachedCompiledGraph {
 pub(super) struct FrameBufferEntry {
     pub(super) buffer: wgpu::Buffer,
     pub(super) size: u64,
-    pub(super) usage: wgpu::BufferUsages,
+    pub(super) last_used_frame: u64,
+    /// Lets tests find one user's buffer now that sizes no longer tell.
+    #[cfg(test)]
+    pub(super) label: Option<&'static str>,
 }
 
 pub(super) struct SampledTextureEntry {
@@ -632,6 +637,9 @@ impl Viewport {
     const SAMPLED_TEXTURE_EVICT_TO_BYTES: u64 = 72 * 1024 * 1024;
     /// Evict textures that have not actually been sampled for this many frames.
     const SAMPLED_TEXTURE_STALE_FRAMES: u64 = 300;
+    /// A pooled frame buffer unused this long is released: its allocation id
+    /// and usage pair no longer comes up, for example after a page closed.
+    const FRAME_BUFFER_STALE_FRAMES: u64 = 300;
 
     fn normalize_msaa_sample_count(sample_count: u32) -> u32 {
         match sample_count {
