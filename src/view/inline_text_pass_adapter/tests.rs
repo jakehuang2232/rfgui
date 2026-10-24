@@ -10,7 +10,7 @@ use crate::view::render_pass::text_pass::{
 use rustc_hash::FxHashMap;
 use swash::scale::ScaleContext as SwashScaleContext;
 
-fn first_ifc_glyph() -> InlineIfcTextPassGlyphInput {
+fn first_ifc_glyph() -> (InlineIfcTextPassPaintInput, InlineIfcTextPassGlyphInput) {
     let input = InlineIfcInput::new(vec![InlineIfcItem::TextSpan {
         source: InlineIfcSourceId(7),
         text: "Bridge".to_string(),
@@ -23,12 +23,14 @@ fn first_ifc_glyph() -> InlineIfcTextPassGlyphInput {
             vertical_align: crate::style::VerticalAlign::Baseline,
         }),
     }]);
-    InlineFormattingContext::build(input)
-        .text_pass_paint_input()
+    let paint_input = InlineFormattingContext::build(input).text_pass_paint_input();
+    let glyph = paint_input
         .glyphs
-        .into_iter()
-        .find(|glyph| glyph.font_data.is_some())
-        .expect("test IFC should produce a renderable glyph")
+        .iter()
+        .find(|glyph| paint_input.batch_of(glyph).font_data.is_some())
+        .cloned()
+        .expect("test IFC should produce a renderable glyph");
+    (paint_input, glyph)
 }
 
 fn measured_box(width: f32, height: f32) -> InlineIfcMeasuredAtomicBox {
@@ -72,20 +74,24 @@ fn paint_input_for_items(items: Vec<InlineIfcItem>) -> InlineIfcTextPassPaintInp
 
 #[test]
 fn bridge_preserves_raster_key_fields_from_ifc_glyph() {
-    let glyph = first_ifc_glyph();
-    let raster = inline_ifc_glyph_to_text_pass_raster_input(&glyph);
+    let (paint_input, glyph) = first_ifc_glyph();
+    let raster = inline_ifc_glyph_to_text_pass_raster_input(&paint_input, &glyph);
+    let batch = paint_input.batch_of(&glyph);
 
     assert_eq!(raster.glyph_id, glyph.glyph_id);
-    assert_eq!(raster.font_size, glyph.font_size);
-    assert_eq!(raster.font_data_id, glyph.font_data_id);
-    assert_eq!(raster.font_index, glyph.font_index);
-    assert_eq!(raster.normalized_coords_hash, glyph.normalized_coords_hash);
+    assert_eq!(raster.font_size, batch.font_size());
+    assert_eq!(raster.font_data_id, batch.batch_key.font_data_id);
+    assert_eq!(raster.font_index, batch.batch_key.font_index);
+    assert_eq!(
+        raster.normalized_coords_hash,
+        batch.batch_key.normalized_coords_hash
+    );
     assert_eq!(
         raster
             .font_data
             .as_ref()
             .map(|font| (font.data.id(), font.index)),
-        glyph
+        batch
             .font_data
             .as_ref()
             .map(|font| (font.data.id(), font.index))
@@ -94,13 +100,13 @@ fn bridge_preserves_raster_key_fields_from_ifc_glyph() {
 
 #[test]
 fn bridge_keeps_paint_fields_out_of_raster_input() {
-    let glyph = first_ifc_glyph();
-    let raster_before = inline_ifc_glyph_to_text_pass_raster_input(&glyph);
-    let paint = inline_ifc_glyph_to_text_pass_paint_input(&glyph, 0.625, 11);
-    let raster_after = inline_ifc_glyph_to_text_pass_raster_input(&glyph);
+    let (paint_input, glyph) = first_ifc_glyph();
+    let raster_before = inline_ifc_glyph_to_text_pass_raster_input(&paint_input, &glyph);
+    let paint = inline_ifc_glyph_to_text_pass_paint_input(&paint_input, &glyph, 0.625, 11);
+    let raster_after = inline_ifc_glyph_to_text_pass_raster_input(&paint_input, &glyph);
 
     assert_eq!(paint.local_pos, [glyph.x, glyph.baseline_y + glyph.glyph_y]);
-    assert_eq!(paint.color, glyph.color);
+    assert_eq!(paint.color, paint_input.batch_of(&glyph).color());
     assert_eq!(paint.opacity, 0.625);
     assert_eq!(paint.fragment_index, 11);
     assert_eq!(raster_before, raster_after);
@@ -119,8 +125,9 @@ fn bridge_payload_converts_all_ifc_glyphs() {
     assert_eq!(bridge.glyphs.len(), adapter.glyphs.len());
     for (bridged, glyph) in bridge.glyphs.iter().zip(adapter.glyphs.iter()) {
         assert_eq!(bridged.raster.glyph_id, glyph.glyph_id);
-        assert_eq!(bridged.raster.font_data_id, glyph.font_data_id);
-        assert_eq!(bridged.paint.color, glyph.color);
+        let batch = adapter.batch_of(glyph);
+        assert_eq!(bridged.raster.font_data_id, batch.batch_key.font_data_id);
+        assert_eq!(bridged.paint.color, batch.color());
         assert_eq!(bridged.paint.opacity, 0.5);
         assert_eq!(bridged.paint.fragment_index, 3);
     }
@@ -128,8 +135,8 @@ fn bridge_payload_converts_all_ifc_glyphs() {
 
 #[test]
 fn bridged_raster_input_uses_existing_text_pass_raster_helper() {
-    let glyph = first_ifc_glyph();
-    let raster = inline_ifc_glyph_to_text_pass_raster_input(&glyph);
+    let (paint_input, glyph) = first_ifc_glyph();
+    let raster = inline_ifc_glyph_to_text_pass_raster_input(&paint_input, &glyph);
     let mut scale_context = SwashScaleContext::new();
     let mut raster_cache = FxHashMap::<TextRasterKey, CachedRasterImage>::default();
 
@@ -235,8 +242,9 @@ fn ifc_snapshot_bridge_smoke_rasterizes_first_glyph_without_inline_boxes() {
     let first_ifc_glyph = paint_input
         .glyphs
         .iter()
-        .find(|glyph| glyph.font_data.is_some())
+        .find(|glyph| paint_input.batch_of(glyph).font_data.is_some())
         .expect("fixture should produce a renderable IFC glyph");
+    let first_ifc_batch = paint_input.batch_of(first_ifc_glyph);
     let first_bridged = bridge
         .glyphs
         .iter()
@@ -244,17 +252,20 @@ fn ifc_snapshot_bridge_smoke_rasterizes_first_glyph_without_inline_boxes() {
         .expect("bridge should keep the renderable IFC glyph");
 
     assert_eq!(first_bridged.raster.glyph_id, first_ifc_glyph.glyph_id);
-    assert_eq!(first_bridged.raster.font_size, first_ifc_glyph.font_size);
+    assert_eq!(first_bridged.raster.font_size, first_ifc_batch.font_size());
     assert_eq!(
         first_bridged.raster.font_data_id,
-        first_ifc_glyph.font_data_id
+        first_ifc_batch.batch_key.font_data_id
     );
-    assert_eq!(first_bridged.raster.font_index, first_ifc_glyph.font_index);
+    assert_eq!(
+        first_bridged.raster.font_index,
+        first_ifc_batch.batch_key.font_index
+    );
     assert_eq!(
         first_bridged.raster.normalized_coords_hash,
-        first_ifc_glyph.normalized_coords_hash
+        first_ifc_batch.batch_key.normalized_coords_hash
     );
-    assert_eq!(first_bridged.paint.color, first_ifc_glyph.color);
+    assert_eq!(first_bridged.paint.color, first_ifc_batch.color());
     assert_eq!(
         first_bridged.paint.local_pos,
         [

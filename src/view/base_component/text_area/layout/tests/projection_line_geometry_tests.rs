@@ -190,7 +190,8 @@ fn projected_preedit_underline_tracks_the_aligned_glyph_baseline() {
                     )
                     .any(|g| {
                         let baseline = g.baseline_y + g.glyph_y - top;
-                        underline.y >= baseline - 0.5 && underline.y <= baseline + g.font_size * 0.5
+                        underline.y >= baseline - 0.5
+                            && underline.y <= baseline + paint.batch_of(g).font_size() * 0.5
                     }),
                 "{align:?}: preedit underline must stay below its aligned glyphs: {underline:?}"
             );

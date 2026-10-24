@@ -1464,9 +1464,25 @@ impl InlineIfcTextLayoutSnapshot {
                 .map(|line| line.glyphs.iter().filter(|glyph| keep(glyph)).count())
                 .sum(),
         );
+        let mut batches = Vec::<InlineIfcTextPassBatchInput>::new();
         for line in &self.lines {
             let baseline_y = line.y + line.baseline;
             for glyph in line.glyphs.iter().filter(|glyph| keep(glyph)) {
+                // A run of glyphs shares its batch; look back before
+                // scanning the few batches a payload holds.
+                let batch = match batches.last() {
+                    Some(last) if last.batch_key == glyph.batch_key => batches.len() - 1,
+                    _ => batches
+                        .iter()
+                        .position(|batch| batch.batch_key == glyph.batch_key)
+                        .unwrap_or_else(|| {
+                            batches.push(InlineIfcTextPassBatchInput {
+                                batch_key: glyph.batch_key,
+                                font_data: glyph.font_data.clone(),
+                            });
+                            batches.len() - 1
+                        }),
+                };
                 glyphs.push(InlineIfcTextPassGlyphInput {
                     line_index: line.line_index,
                     source: glyph.source,
@@ -1480,18 +1496,11 @@ impl InlineIfcTextLayoutSnapshot {
                     glyph_x: glyph.x - line.x,
                     glyph_y: glyph.y - baseline_y,
                     advance: glyph.advance,
-                    font_size: glyph.font_size,
-                    font_data: glyph.font_data.clone(),
-                    font_data_id: glyph.font_data_id,
-                    font_index: glyph.font_index,
-                    normalized_coords_hash: glyph.normalized_coords_hash,
-                    batch_key: glyph.batch_key,
-                    color: brush_to_text_color(glyph.batch_key.brush),
+                    batch: batch as u32,
                 });
             }
         }
 
-        let batches = text_pass_batches_from_glyphs(&glyphs);
         InlineIfcTextPassPaintInput {
             lines,
             glyphs,
@@ -1509,8 +1518,20 @@ impl InlineIfcTextLayoutSnapshot {
 pub(crate) struct InlineIfcTextPassPaintInput {
     pub(crate) lines: Vec<InlineIfcTextPassLineInput>,
     pub(crate) glyphs: Vec<InlineIfcTextPassGlyphInput>,
+    /// Font, size and brush shared by runs of glyphs. A text node keeps its
+    /// payload for its lifetime, so glyphs refer to these by index instead
+    /// of each carrying a copy.
     pub(crate) batches: Vec<InlineIfcTextPassBatchInput>,
     pub(crate) decorations: Vec<InlineIfcDecorationPaintFragment>,
+}
+
+impl InlineIfcTextPassPaintInput {
+    pub(crate) fn batch_of(
+        &self,
+        glyph: &InlineIfcTextPassGlyphInput,
+    ) -> &InlineIfcTextPassBatchInput {
+        &self.batches[glyph.batch as usize]
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1535,25 +1556,24 @@ pub(crate) struct InlineIfcTextPassGlyphInput {
     pub(crate) glyph_x: f32,
     pub(crate) glyph_y: f32,
     pub(crate) advance: f32,
-    pub(crate) font_size: f32,
-    pub(crate) font_data: Option<FontData>,
-    pub(crate) font_data_id: u64,
-    pub(crate) font_index: u32,
-    pub(crate) normalized_coords_hash: u64,
-    pub(crate) batch_key: InlineIfcTextPaintBatchKey,
-    pub(crate) color: [f32; 4],
+    /// Index of the glyph's batch in its payload.
+    pub(crate) batch: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineIfcTextPassBatchInput {
     pub(crate) batch_key: InlineIfcTextPaintBatchKey,
-    pub(crate) color: [f32; 4],
-    pub(crate) font_data_id: u64,
-    pub(crate) font_index: u32,
-    pub(crate) normalized_coords_hash: u64,
-    pub(crate) font_size: f32,
-    pub(crate) font_weight: u16,
-    pub(crate) glyph_indices: Vec<usize>,
+    pub(crate) font_data: Option<FontData>,
+}
+
+impl InlineIfcTextPassBatchInput {
+    pub(crate) fn color(&self) -> [f32; 4] {
+        brush_to_text_color(self.batch_key.brush)
+    }
+
+    pub(crate) fn font_size(&self) -> f32 {
+        f32::from_bits(self.batch_key.font_size_bits)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3422,33 +3442,6 @@ fn text_paint_runs_from_glyphs(glyphs: Vec<InlineIfcPaintGlyph>) -> Vec<InlineIf
         });
     }
     runs
-}
-
-fn text_pass_batches_from_glyphs(
-    glyphs: &[InlineIfcTextPassGlyphInput],
-) -> Vec<InlineIfcTextPassBatchInput> {
-    let mut batches = Vec::<InlineIfcTextPassBatchInput>::new();
-    for (glyph_index, glyph) in glyphs.iter().enumerate() {
-        if let Some(batch) = batches
-            .iter_mut()
-            .find(|batch| batch.batch_key == glyph.batch_key)
-        {
-            batch.glyph_indices.push(glyph_index);
-            continue;
-        }
-
-        batches.push(InlineIfcTextPassBatchInput {
-            batch_key: glyph.batch_key,
-            color: glyph.color,
-            font_data_id: glyph.font_data_id,
-            font_index: glyph.font_index,
-            normalized_coords_hash: glyph.normalized_coords_hash,
-            font_size: glyph.font_size,
-            font_weight: glyph.batch_key.font_weight,
-            glyph_indices: vec![glyph_index],
-        });
-    }
-    batches
 }
 
 fn brush_to_text_color(brush: [u8; 4]) -> [f32; 4] {

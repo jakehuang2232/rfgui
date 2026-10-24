@@ -33,7 +33,7 @@ impl InlineTextPassBridgeInput {
                 .glyphs
                 .iter()
                 .map(|glyph| {
-                    InlineTextPassBridgeGlyph::from_ifc_glyph(glyph, opacity, fragment_index)
+                    InlineTextPassBridgeGlyph::from_ifc_glyph(input, glyph, opacity, fragment_index)
                 })
                 .collect(),
         }
@@ -50,13 +50,14 @@ pub(crate) struct InlineTextPassBridgeGlyph {
 #[cfg(test)]
 impl InlineTextPassBridgeGlyph {
     pub(crate) fn from_ifc_glyph(
+        input: &InlineIfcTextPassPaintInput,
         glyph: &InlineIfcTextPassGlyphInput,
         opacity: f32,
         fragment_index: u32,
     ) -> Self {
         Self {
-            raster: inline_ifc_glyph_to_text_pass_raster_input(glyph),
-            paint: inline_ifc_glyph_to_text_pass_paint_input(glyph, opacity, fragment_index),
+            raster: inline_ifc_glyph_to_text_pass_raster_input(input, glyph),
+            paint: inline_ifc_glyph_to_text_pass_paint_input(input, glyph, opacity, fragment_index),
         }
     }
 }
@@ -174,9 +175,13 @@ pub(crate) fn inline_ifc_paint_input_to_text_pass_staging_input_with_color(
             .glyphs
             .iter()
             .map(|glyph| {
-                let raster = inline_ifc_glyph_to_text_pass_raster_input(glyph);
-                let mut paint =
-                    inline_ifc_glyph_to_text_pass_paint_input(glyph, opacity, fragment_index);
+                let raster = inline_ifc_glyph_to_text_pass_raster_input(input, glyph);
+                let mut paint = inline_ifc_glyph_to_text_pass_paint_input(
+                    input,
+                    glyph,
+                    opacity,
+                    fragment_index,
+                );
                 if let Some(color) = color_override {
                     paint.color = color;
                 }
@@ -269,26 +274,29 @@ pub(crate) fn inline_text_pass_prepare_comparable_package_for_test(
 }
 
 pub(crate) fn inline_ifc_glyph_to_text_pass_raster_input(
+    input: &InlineIfcTextPassPaintInput,
     glyph: &InlineIfcTextPassGlyphInput,
 ) -> TextPassRasterGlyphInput {
+    let batch = input.batch_of(glyph);
     TextPassRasterGlyphInput {
         glyph_id: glyph.glyph_id,
-        font_size: glyph.font_size,
-        font_data: glyph.font_data.clone(),
-        font_data_id: glyph.font_data_id,
-        font_index: glyph.font_index,
-        normalized_coords_hash: glyph.normalized_coords_hash,
+        font_size: batch.font_size(),
+        font_data: batch.font_data.clone(),
+        font_data_id: batch.batch_key.font_data_id,
+        font_index: batch.batch_key.font_index,
+        normalized_coords_hash: batch.batch_key.normalized_coords_hash,
     }
 }
 
 pub(crate) fn inline_ifc_glyph_to_text_pass_paint_input(
+    input: &InlineIfcTextPassPaintInput,
     glyph: &InlineIfcTextPassGlyphInput,
     opacity: f32,
     fragment_index: u32,
 ) -> TextPassGlyphPaintInput {
     TextPassGlyphPaintInput {
         local_pos: [glyph.x, glyph.baseline_y + glyph.glyph_y],
-        color: glyph.color,
+        color: input.batch_of(glyph).color(),
         opacity,
         fragment_index,
     }

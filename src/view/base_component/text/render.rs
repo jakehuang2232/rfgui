@@ -189,11 +189,11 @@ impl ShadowTextPaintSource<'_> {
         input.glyphs.iter().map(move |glyph| {
             let raster =
                 crate::view::inline_text_pass_adapter::inline_ifc_glyph_to_text_pass_raster_input(
-                    glyph,
+                    input, glyph,
                 );
             let mut paint =
                 crate::view::inline_text_pass_adapter::inline_ifc_glyph_to_text_pass_paint_input(
-                    glyph, opacity, 0,
+                    input, glyph, opacity, 0,
                 );
             if let Some(color) = color_override {
                 paint.color = color;

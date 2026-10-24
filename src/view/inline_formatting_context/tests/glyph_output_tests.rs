@@ -148,19 +148,16 @@ fn glyph_snapshot_and_text_pass_payloads_carry_font_render_handle() {
                 && glyph.cluster_range == snapshot_glyph.cluster_range
         })
         .expect("text-pass adapter should preserve the snapshot glyph");
+    let batch = adapter.batch_of(adapter_glyph);
     assert_font_render_handle(
-        &adapter_glyph.font_data,
-        adapter_glyph.font_data_id,
-        adapter_glyph.font_index,
+        &batch.font_data,
+        batch.batch_key.font_data_id,
+        batch.batch_key.font_index,
     );
-    assert_eq!(adapter_glyph.font_data_id, snapshot_glyph.font_data_id);
-    assert_eq!(adapter_glyph.font_index, snapshot_glyph.font_index);
+    assert_eq!(batch.batch_key.font_data_id, snapshot_glyph.font_data_id);
+    assert_eq!(batch.batch_key.font_index, snapshot_glyph.font_index);
     assert_eq!(
-        adapter_glyph.normalized_coords_hash,
+        batch.batch_key.normalized_coords_hash,
         snapshot_glyph.normalized_coords_hash
-    );
-    assert_eq!(
-        adapter_glyph.batch_key.normalized_coords_hash,
-        adapter_glyph.normalized_coords_hash
     );
 }

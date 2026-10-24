@@ -32,24 +32,28 @@ fn text_pass_adapter_preserves_snapshot_glyph_payload() {
     assert_eq!(adapted_line.height, line.height);
     assert_eq!(adapted_line.baseline, line.baseline);
     assert_eq!(adapted_line.range, line.range);
+    let batch = adapter.batch_of(adapted);
     assert_eq!(adapted.source, glyph.source);
-    assert_eq!(adapted.batch_key, glyph.batch_key);
-    assert_font_render_handle(&adapted.font_data, adapted.font_data_id, adapted.font_index);
+    assert_eq!(batch.batch_key, glyph.batch_key);
+    assert_font_render_handle(
+        &batch.font_data,
+        batch.batch_key.font_data_id,
+        batch.batch_key.font_index,
+    );
     assert_font_render_handle(&glyph.font_data, glyph.font_data_id, glyph.font_index);
-    assert_eq!(adapted.font_data_id, glyph.font_data_id);
-    assert_eq!(adapted.font_index, glyph.font_index);
-    assert_eq!(adapted.normalized_coords_hash, glyph.normalized_coords_hash);
+    assert_eq!(batch.batch_key.font_data_id, glyph.font_data_id);
+    assert_eq!(batch.batch_key.font_index, glyph.font_index);
     assert_eq!(
-        adapted.batch_key.normalized_coords_hash,
+        batch.batch_key.normalized_coords_hash,
         glyph.normalized_coords_hash
     );
-    assert_eq!(adapted.font_size, glyph.font_size);
+    assert_eq!(batch.font_size(), glyph.font_size);
     assert_eq!(adapted.x, glyph.x);
     assert_eq!(adapted.baseline_y, line.y + line.baseline);
     assert_eq!(adapted.glyph_x, glyph.x - line.x);
     assert_eq!(adapted.glyph_y, glyph.y - (line.y + line.baseline));
     assert_eq!(adapted.advance, glyph.advance);
-    assert_eq!(adapted.color, brush_to_text_color(glyph.batch_key.brush));
+    assert_eq!(batch.color(), brush_to_text_color(glyph.batch_key.brush));
 }
 
 #[test]
@@ -78,27 +82,32 @@ fn text_pass_adapter_batches_by_color_and_font_identity() {
         adapter.batches.len() >= 3,
         "brush, font size, and font weight changes should split adapter batches: {adapter:?}",
     );
-    for batch in &adapter.batches {
-        assert!(!batch.glyph_indices.is_empty());
-        assert_eq!(batch.color, brush_to_text_color(batch.batch_key.brush));
-        assert_eq!(batch.font_data_id, batch.batch_key.font_data_id);
-        assert_eq!(batch.font_index, batch.batch_key.font_index);
-        assert_eq!(
-            batch.normalized_coords_hash,
-            batch.batch_key.normalized_coords_hash
+    for (index, batch) in adapter.batches.iter().enumerate() {
+        assert!(
+            adapter
+                .glyphs
+                .iter()
+                .any(|glyph| glyph.batch as usize == index),
+            "every batch holds a glyph",
         );
-        assert!((batch.font_size - batch.batch_key.font_size()).abs() < 0.01);
-        assert_eq!(batch.font_weight, batch.batch_key.font_weight);
-        for glyph_index in &batch.glyph_indices {
-            let glyph = &adapter.glyphs[*glyph_index];
-            assert_eq!(glyph.batch_key, batch.batch_key);
-            assert_eq!(glyph.color, batch.color);
-            assert_eq!(glyph.font_data_id, batch.font_data_id);
-            assert_eq!(glyph.font_index, batch.font_index);
-            assert_eq!(glyph.normalized_coords_hash, batch.normalized_coords_hash);
-            assert_font_render_handle(&glyph.font_data, glyph.font_data_id, glyph.font_index);
-        }
+        assert_eq!(batch.color(), brush_to_text_color(batch.batch_key.brush));
+        assert!((batch.font_size() - batch.batch_key.font_size()).abs() < 0.01);
+        assert_font_render_handle(
+            &batch.font_data,
+            batch.batch_key.font_data_id,
+            batch.batch_key.font_index,
+        );
     }
+    let distinct = adapter
+        .batches
+        .iter()
+        .map(|batch| batch.batch_key)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        distinct.len(),
+        adapter.batches.len(),
+        "batches are distinct"
+    );
 }
 
 #[test]
@@ -110,12 +119,6 @@ fn text_pass_adapter_keeps_atomic_inline_boxes_out_of_glyphs() {
     assert_eq!(snapshot.inline_boxes.len(), 1);
     assert_eq!(snapshot.inline_boxes[0].source, BOX_NODE);
     assert!(adapter.glyphs.iter().all(|glyph| glyph.source != BOX_NODE));
-    assert!(adapter.batches.iter().all(|batch| {
-        batch
-            .glyph_indices
-            .iter()
-            .all(|glyph_index| adapter.glyphs[*glyph_index].source != BOX_NODE)
-    }));
 }
 
 #[test]

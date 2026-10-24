@@ -60,13 +60,13 @@ fn first_renderable_raster_input() -> TextPassRasterGlyphInput {
         }]),
         InlineIfcLayoutOptions::new(Some(200.0), true),
     );
-    let glyph = ifc
-        .text_pass_paint_input()
+    let paint_input = ifc.text_pass_paint_input();
+    let glyph = paint_input
         .glyphs
-        .into_iter()
-        .find(|glyph| glyph.font_data.is_some())
+        .iter()
+        .find(|glyph| paint_input.batch_of(glyph).font_data.is_some())
         .expect("test layout should produce a glyph with font data");
-    inline_ifc_glyph_to_text_pass_raster_input(&glyph)
+    inline_ifc_glyph_to_text_pass_raster_input(&paint_input, glyph)
 }
 
 #[test]
