@@ -328,6 +328,9 @@ struct FrameRuntime {
     pointer_hover_resync_pending: bool,
     /// A viewport change or failed frame still needs a successful submission.
     render_required: bool,
+    /// Frames aborted since the last submission. Retries back off while it
+    /// is non-zero, so an unavailable surface does not spin the host.
+    consecutive_aborts: u32,
     #[cfg(any(test, feature = "renderer-test-support"))]
     completion_counts: FrameCompletionCounts,
     #[cfg(any(test, feature = "renderer-test-support"))]
@@ -381,6 +384,7 @@ impl FrameRuntime {
             frame_presented: false,
             pointer_hover_resync_pending: false,
             render_required: true,
+            consecutive_aborts: 0,
             #[cfg(any(test, feature = "renderer-test-support"))]
             completion_counts: FrameCompletionCounts::default(),
             #[cfg(any(test, feature = "renderer-test-support"))]

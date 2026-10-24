@@ -65,18 +65,34 @@ fn late_surface_acquisition_aborts_without_submit_and_retries_the_same_renderer(
             0,
             "aborted encoder never submits"
         );
+        // The surface may stay unavailable (locked screen, sleeping
+        // display): the retry waits a frame instead of redrawing at once,
+        // and each further failure doubles the wait.
+        assert!(!viewport.drain_platform_requests().request_redraw);
+        assert_eq!(
+            rfgui::ui::next_timer_deadline(),
+            Some(now + Duration::from_millis(16))
+        );
+        viewport.fail_next_surface_acquisition_for_test();
+        assert!(redraw(&gpu, &mut viewport, &root, size, dpr as f32, now)?.is_none());
+        assert!(!viewport.drain_platform_requests().request_redraw);
+        assert_eq!(
+            rfgui::ui::next_timer_deadline(),
+            Some(now + Duration::from_millis(32))
+        );
 
         // Admission retains the obligation, so the next redraw retries.
         let recovered = redraw(&gpu, &mut viewport, &root, size, dpr as f32, now)?.unwrap();
-        assert_eq!(viewport.frame_acquisition_count_for_test(), 2);
+        assert_eq!(viewport.frame_acquisition_count_for_test(), 3);
         assert_eq!(viewport.renderer_performance_sample().2.0, 1);
+        assert_eq!(rfgui::ui::next_timer_deadline(), None);
         assert_eq!(
             pixel_at(&recovered, size, dpr, [20, 20]),
             RED,
             "recovered frame DPR {dpr}"
         );
         assert!(redraw(&gpu, &mut viewport, &root, size, dpr as f32, now)?.is_none());
-        assert_eq!(viewport.frame_acquisition_count_for_test(), 2);
+        assert_eq!(viewport.frame_acquisition_count_for_test(), 3);
     }
     Ok(())
 }

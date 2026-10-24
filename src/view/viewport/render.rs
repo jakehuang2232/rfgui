@@ -1473,22 +1473,43 @@ impl Viewport {
         if let Some(timer) = &self.animation_timer {
             timer.cancel();
         }
+        // The retry also carries any animation that is due before it.
+        if let Some(delay) = self.abort_retry_delay() {
+            self.schedule_animation_wake(now + delay);
+            return;
+        }
         match request {
             AnimationFrameRequest::None => {}
-            AnimationFrameRequest::At(at) if at > now => {
-                let pending = self.animation_redraw_pending.clone();
-                let timer = self.animation_timer.get_or_insert_with(|| {
-                    crate::time::timers::Timer::new(move || {
-                        pending.set(true);
-                        crate::ui::request_timer_redraw();
-                    })
-                });
-                timer.schedule(at, None);
-            }
+            AnimationFrameRequest::At(at) if at > now => self.schedule_animation_wake(at),
             AnimationFrameRequest::NextFrame | AnimationFrameRequest::At(_) => {
                 self.request_redraw();
             }
         }
+    }
+
+    fn schedule_animation_wake(&mut self, at: Instant) {
+        let pending = self.animation_redraw_pending.clone();
+        let timer = self.animation_timer.get_or_insert_with(|| {
+            crate::time::timers::Timer::new(move || {
+                pending.set(true);
+                crate::ui::request_timer_redraw();
+            })
+        });
+        timer.schedule(at, None);
+    }
+
+    /// How long to wait before retrying a frame that could not be
+    /// submitted. A surface can stay unavailable for as long as the screen
+    /// is locked or the display sleeps, and every attempt redoes the frame's
+    /// work, so the delay doubles from about one frame up to half a second.
+    fn abort_retry_delay(&self) -> Option<crate::time::Duration> {
+        if !self.frame.render_required || self.frame.consecutive_aborts == 0 {
+            return None;
+        }
+        let doublings = (self.frame.consecutive_aborts - 1).min(5);
+        Some(crate::time::Duration::from_millis(
+            (16u64 << doublings).min(500),
+        ))
     }
 
     /// Commits and renders a resolved tree. Trees holding user components
@@ -1819,12 +1840,14 @@ impl Viewport {
         let hover_resynced = std::mem::take(&mut self.frame.pointer_hover_resync_pending)
             && self.resync_pointer_hover();
         let hover_changed = self.frame.frame_presented && self.sync_pointer_hover_visual(false);
-        if self.frame.render_required
-            || hover_resynced
-            || hover_changed
-            || (animation_changed && !self.frame.frame_presented)
-            || transition_changed_before_render
-            || transition_changed_after_layout
+        // After an aborted frame the retry is scheduled below instead.
+        if self.abort_retry_delay().is_none()
+            && (self.frame.render_required
+                || hover_resynced
+                || hover_changed
+                || (animation_changed && !self.frame.frame_presented)
+                || transition_changed_before_render
+                || transition_changed_after_layout)
         {
             self.request_redraw();
         }
@@ -2240,6 +2263,7 @@ impl Viewport {
         };
 
         frame.discard_unsubmitted();
+        self.frame.consecutive_aborts = self.frame.consecutive_aborts.saturating_add(1);
         self.finish_gpu_paint_frame(false);
         self.finish_shadow_template_frame(false);
         self.frame.offscreen_render_target_pool.finish_frame();
@@ -2341,6 +2365,7 @@ impl Viewport {
         }
         self.frame.frame_presented = true;
         self.frame.render_required = false;
+        self.frame.consecutive_aborts = 0;
         profile
     }
 
