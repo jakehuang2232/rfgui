@@ -5626,6 +5626,11 @@ impl Element {
         //    measure): shape from scratch.
         let (cache_key, children_snapshot, top_offset, content_size, plan_inner_width, plan) =
             if let Some(pending) = self.inline_ifc_layout_call_site.pending.take() {
+                // Measure may run several times before place; only the plan
+                // place installs is final.
+                self.inline_ifc_layout_call_site
+                    .cache
+                    .release_derived_caches(&pending.cache_key);
                 (
                     pending.cache_key,
                     pending.children_snapshot,
@@ -5867,6 +5872,9 @@ impl Element {
         let top_offset = geometry.content_top_offset;
         let content_size = geometry.content_size;
         let plan = build_inline_ifc_install_plan(geometry, &collected, &candidate);
+        self.inline_ifc_layout_call_site
+            .cache
+            .release_derived_caches(&candidate.cache_key);
         Some((
             candidate.cache_key,
             self.children.clone(),
@@ -6259,6 +6267,16 @@ impl Element {
             .current
             .as_ref()
             .map(|install| install.applied_inner_width)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_ifc_context_holds_derived_caches(&self) -> Option<bool> {
+        let install = self.inline_ifc_layout_call_site.current.as_ref()?;
+        let context = self
+            .inline_ifc_layout_call_site
+            .cache
+            .context_for(&install.cache_key)?;
+        Some(context.holds_derived_caches_for_test())
     }
 
     /// Test diagnostic for the full root-shaped payload before it is split

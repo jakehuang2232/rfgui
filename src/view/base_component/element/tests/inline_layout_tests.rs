@@ -113,6 +113,9 @@ fn inline_ifc_root_staging_input_keeps_paint_local_pos_in_sync() {
     );
 
     let element = crate::view::test_support::get_element::<Element>(&arena, parent_key);
+    // The installed text keeps its own payload and lines; the root's shaped
+    // context must not also keep its glyph, snapshot and caret derivations.
+    assert_eq!(element.inline_ifc_context_holds_derived_caches(), Some(false));
     let (paint_input, top_offset) = element
         .inline_ifc_root_render_input()
         .expect("inline IFC root should expose a render input");

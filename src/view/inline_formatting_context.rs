@@ -585,6 +585,17 @@ impl InlineIfcCache {
         }
     }
 
+    /// Drops the memoized derivations of the context `cache_key` names.
+    /// The context rebuilds them if it is asked again.
+    pub(crate) fn release_derived_caches(&mut self, cache_key: &InlineIfcCacheKey) {
+        if let Some(entry) = self.entries.iter_mut().find_map(|(shape, entry)| {
+            (shape.layout == cache_key.layout && shape.content == cache_key.content)
+                .then_some(entry)
+        }) {
+            entry.context.clear_derived_caches();
+        }
+    }
+
     fn slim_cold_entries(&mut self, keep: &InlineIfcShapeCacheKey) {
         for (key, entry) in &mut self.entries {
             if key != keep {
@@ -1264,6 +1275,13 @@ impl InlineIfcElementRootCandidateCache {
         self.cache.len()
     }
 
+    /// Called once an install plan holds what paint and hit testing read
+    /// from the context: its glyph, snapshot and caret derivations would
+    /// otherwise stay resident for every inline root.
+    pub(crate) fn release_derived_caches(&mut self, cache_key: &InlineIfcCacheKey) {
+        self.cache.release_derived_caches(cache_key);
+    }
+
     /// Borrow the shaped context for a candidate produced by [`Self::update`].
     /// Returns `None` if the entry was evicted or never built.
     pub(crate) fn context_for(
@@ -1415,9 +1433,20 @@ pub(crate) struct InlineIfcTextLayoutSnapshot {
 
 impl InlineIfcTextLayoutSnapshot {
     pub(crate) fn text_pass_paint_input(&self) -> InlineIfcTextPassPaintInput {
+        self.text_pass_paint_input_for(None)
+    }
+
+    /// The paint payload of `source`, or of the whole layout. A source keeps
+    /// only the lines holding its glyphs and no decorations.
+    fn text_pass_paint_input_for(
+        &self,
+        source: Option<InlineIfcSourceId>,
+    ) -> InlineIfcTextPassPaintInput {
+        let keep = |glyph: &InlineIfcTextGlyph| source.is_none_or(|source| glyph.source == source);
         let lines = self
             .lines
             .iter()
+            .filter(|line| source.is_none() || line.glyphs.iter().any(keep))
             .map(|line| InlineIfcTextPassLineInput {
                 line_index: line.line_index,
                 x: line.x,
@@ -1429,10 +1458,15 @@ impl InlineIfcTextLayoutSnapshot {
             })
             .collect::<Vec<_>>();
 
-        let mut glyphs = Vec::new();
+        let mut glyphs = Vec::with_capacity(
+            self.lines
+                .iter()
+                .map(|line| line.glyphs.iter().filter(|glyph| keep(glyph)).count())
+                .sum(),
+        );
         for line in &self.lines {
             let baseline_y = line.y + line.baseline;
-            for glyph in &line.glyphs {
+            for glyph in line.glyphs.iter().filter(|glyph| keep(glyph)) {
                 glyphs.push(InlineIfcTextPassGlyphInput {
                     line_index: line.line_index,
                     source: glyph.source,
@@ -1462,7 +1496,11 @@ impl InlineIfcTextLayoutSnapshot {
             lines,
             glyphs,
             batches,
-            decorations: self.decorations.clone(),
+            decorations: if source.is_none() {
+                self.decorations.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -1635,6 +1673,18 @@ pub(crate) struct InlineIfcSelectionRect {
     pub(crate) style: Option<InlineIfcStyle>,
 }
 
+/// Moves a list the context memoizes for its lifetime into an allocation of
+/// its exact length. `shrink_to_fit` may shrink a block in place and keep
+/// its whole size, which leaves growth slack resident for every text node.
+pub(super) fn into_exact_vec<T>(items: Vec<T>) -> Vec<T> {
+    if items.len() == items.capacity() {
+        return items;
+    }
+    let mut exact = Vec::with_capacity(items.len());
+    exact.extend(items);
+    exact
+}
+
 pub(crate) struct InlineFormattingContext {
     backing_text: String,
     layout: ParleyLayout<[u8; 4]>,
@@ -1713,6 +1763,15 @@ impl InlineFormattingContext {
             source_text_line_rects_cache: std::cell::OnceCell::new(),
             atomic_placements_cache: std::cell::OnceCell::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn holds_derived_caches_for_test(&self) -> bool {
+        self.glyph_items_cache.get().is_some()
+            || self.snapshot_cache.get().is_some()
+            || self.caret_stops_cache.get().is_some()
+            || self.caret_index_cache.get().is_some()
+            || self.paint_input_cache.get().is_some()
     }
 
     fn clear_derived_caches(&mut self) {
@@ -2032,7 +2091,7 @@ impl InlineFormattingContext {
                 }
             }
         }
-        output
+        into_exact_vec(output)
     }
 
     pub(crate) fn glyph_groups(&self) -> Vec<InlineIfcGlyphGroup> {
@@ -2096,9 +2155,9 @@ impl InlineFormattingContext {
             let metrics = line.metrics();
             let range = line.text_range();
             let first_glyph = glyph_items.partition_point(|glyph| glyph.line_index < line_index);
-            let glyphs = glyph_items[first_glyph..]
+            let end_glyph = glyph_items.partition_point(|glyph| glyph.line_index <= line_index);
+            let glyphs = glyph_items[first_glyph..end_glyph]
                 .iter()
-                .take_while(|glyph| glyph.line_index == line_index)
                 .map(|glyph| InlineIfcTextGlyph {
                     source: glyph.source,
                     cluster_range: glyph.cluster_range.clone(),
@@ -2138,32 +2197,17 @@ impl InlineFormattingContext {
         self.text_pass_paint_input_ref().clone()
     }
 
+    /// The payload of one source, built from the snapshot. Inline roots
+    /// keep these per-source payloads; memoizing the whole-root payload too
+    /// would keep a second copy of every glyph for the context's lifetime.
     pub(crate) fn text_pass_paint_input_for_source(
         &self,
         source: InlineIfcSourceId,
     ) -> Arc<InlineIfcTextPassPaintInput> {
-        let input = self.text_pass_paint_input_ref();
-        let glyphs = input
-            .glyphs
-            .iter()
-            .filter(|glyph| glyph.source == source)
-            .cloned()
-            .collect::<Vec<_>>();
-        let line_indices = glyphs
-            .iter()
-            .map(|glyph| glyph.line_index)
-            .collect::<std::collections::HashSet<_>>();
-        Arc::new(InlineIfcTextPassPaintInput {
-            lines: input
-                .lines
-                .iter()
-                .filter(|line| line_indices.contains(&line.line_index))
-                .cloned()
-                .collect(),
-            batches: text_pass_batches_from_glyphs(&glyphs),
-            glyphs,
-            decorations: Vec::new(),
-        })
+        Arc::new(
+            self.text_layout_snapshot_ref()
+                .text_pass_paint_input_for(Some(source)),
+        )
     }
 
     /// Memoized paint payload. Built once per shaped context; every paint
@@ -2813,7 +2857,7 @@ impl InlineFormattingContext {
                 );
             }
         }
-        stops.values
+        into_exact_vec(stops.values)
     }
 
     /// Returns the byte position before whitespace that Parley consumed at

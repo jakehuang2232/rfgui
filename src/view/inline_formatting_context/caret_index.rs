@@ -89,6 +89,8 @@ impl CaretIndex {
         // Queries ask for both affinities at nearly every cluster boundary.
         // Resolve the byte authority once, rather than repeating two binary
         // searches for each of the cursor's neighboring cluster lookups.
+        // The index lives as long as its shaped context.
+        let visual = into_exact_vec(visual);
         let byte_to_visual = (0..text_len)
             .map(|byte| Self::find_cluster(&visual, &logical, &lines, byte).unwrap_or(usize::MAX))
             .collect();
