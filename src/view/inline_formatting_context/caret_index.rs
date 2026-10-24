@@ -27,7 +27,7 @@ struct ClusterGeometry {
 }
 
 impl CaretIndex {
-    pub(super) fn new(layout: &ParleyLayout<[u8; 4]>, text_len: usize) -> Self {
+    pub(super) fn new(layout: &ParleyLayout<()>, text_len: usize) -> Self {
         let mut visual = Vec::new();
         let mut logical = Vec::new();
         let mut lines = Vec::new();

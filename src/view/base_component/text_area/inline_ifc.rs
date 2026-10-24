@@ -491,14 +491,14 @@ impl TextAreaUnifiedIfcRootPackage {
                     end - segment.char_range.start,
                 );
 
-            for line in &paint_input.lines {
+            for (line_position, line) in paint_input.lines.iter().enumerate() {
                 let mut left: Option<f32> = None;
                 let mut right: Option<f32> = None;
                 for glyph in paint_input.glyphs.iter().filter(|glyph| {
-                    glyph.line_index == line.line_index
-                        && glyph.source == segment.source
-                        && glyph.cluster_range.start < backing_end
-                        && glyph.cluster_range.end > backing_start
+                    glyph.line as usize == line_position
+                        && paint_input.source_of(glyph) == segment.source
+                        && (glyph.cluster_start as usize) < backing_end
+                        && glyph.cluster_end as usize > backing_start
                 }) {
                     let x = glyph.x;
                     left = Some(left.map_or(x, |current| current.min(x)));
@@ -988,20 +988,20 @@ impl TextAreaUnifiedIfcRootPackage {
         let text_baseline = self.inline_baseline_for_line_height(text_height);
         let top_offset = self.content_top_offset();
         let mut out = Vec::new();
-        for line in &paint_input.lines {
+        for (line_position, line) in paint_input.lines.iter().enumerate() {
             let mut left: Option<f32> = None;
             let mut right: Option<f32> = None;
             let mut baseline_y: Option<f32> = None;
             for glyph in paint_input.glyphs.iter().filter(|glyph| {
-                glyph.line_index == line.line_index
-                    && glyph.cluster_range.start < range.end
-                    && glyph.cluster_range.end > range.start
+                glyph.line as usize == line_position
+                    && (glyph.cluster_start as usize) < range.end
+                    && glyph.cluster_end as usize > range.start
             }) {
                 let x = glyph.x;
                 left = Some(left.map_or(x, |current| current.min(x)));
                 right =
                     Some(right.map_or(x + glyph.advance, |current| current.max(x + glyph.advance)));
-                baseline_y.get_or_insert(glyph.baseline_y + glyph.glyph_y);
+                baseline_y.get_or_insert(glyph.y);
             }
             let (Some(left), Some(right)) = (left, right) else {
                 continue;

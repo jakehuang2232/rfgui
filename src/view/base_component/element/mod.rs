@@ -4869,7 +4869,7 @@ fn build_inline_ifc_install_plan(
                 }
                 for glyph in &mut local_input.glyphs {
                     glyph.x -= paint_bounds.x;
-                    glyph.baseline_y -= paint_bounds.y;
+                    glyph.y -= paint_bounds.y;
                 }
                 plan.push(InlineIfcNodeInstallOp::Text {
                     node_key,

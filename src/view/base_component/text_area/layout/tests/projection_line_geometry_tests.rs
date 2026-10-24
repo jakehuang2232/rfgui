@@ -133,8 +133,7 @@ fn projected_text_aligns_once_within_each_visual_line() {
                 let painted = package.ifc.text_pass_paint_input_ref();
                 for (glyph, input) in staged.glyphs.iter().zip(&painted.glyphs) {
                     assert!(
-                        (glyph.paint.local_pos[1] - (input.baseline_y + input.glyph_y - top)).abs()
-                            < 0.05,
+                        (glyph.paint.local_pos[1] - (input.y - top)).abs() < 0.05,
                         "{context}: already-aligned glyph was displaced again"
                     );
                 }
@@ -185,11 +184,10 @@ fn projected_preedit_underline_tracks_the_aligned_glyph_baseline() {
                 paint
                     .glyphs
                     .iter()
-                    .filter(
-                        |g| g.cluster_range.start < range.end && range.start < g.cluster_range.end
-                    )
+                    .filter(|g| (g.cluster_start as usize) < range.end
+                        && range.start < g.cluster_end as usize)
                     .any(|g| {
-                        let baseline = g.baseline_y + g.glyph_y - top;
+                        let baseline = g.y - top;
                         underline.y >= baseline - 0.5
                             && underline.y <= baseline + paint.batch_of(g).font_size() * 0.5
                     }),

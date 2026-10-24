@@ -145,7 +145,7 @@ fn glyph_snapshot_and_text_pass_payloads_carry_font_render_handle() {
         .iter()
         .find(|glyph| {
             glyph.glyph_id == snapshot_glyph.glyph_id
-                && glyph.cluster_range == snapshot_glyph.cluster_range
+                && glyph.cluster_range() == snapshot_glyph.cluster_range
         })
         .expect("text-pass adapter should preserve the snapshot glyph");
     let batch = adapter.batch_of(adapter_glyph);

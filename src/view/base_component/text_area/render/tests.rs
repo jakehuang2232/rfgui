@@ -529,7 +529,7 @@ fn run_text_pass_fragments(arena: &NodeArena, root: NodeKey) -> Vec<(String, Rec
                 .collect::<Vec<_>>();
 
             let mut out = Vec::new();
-            for line in &paint_input.lines {
+            for (line_position, line) in paint_input.lines.iter().enumerate() {
                 for source in &text_sources {
                     let mut left: Option<f32> = None;
                     let mut right: Option<f32> = None;
@@ -538,7 +538,9 @@ fn run_text_pass_fragments(arena: &NodeArena, root: NodeKey) -> Vec<(String, Rec
                     for (glyph, staged) in
                         paint_input.glyphs.iter().zip(staging_input.glyphs.iter())
                     {
-                        if glyph.line_index != line.line_index || glyph.source != *source {
+                        if glyph.line as usize != line_position
+                            || paint_input.source_of(glyph) != *source
+                        {
                             continue;
                         }
                         let x = staged.final_paint_pos[0];
@@ -546,11 +548,11 @@ fn run_text_pass_fragments(arena: &NodeArena, root: NodeKey) -> Vec<(String, Rec
                         right = Some(right.map_or(x + glyph.advance, |current| {
                             current.max(x + glyph.advance)
                         }));
-                        start = Some(start.map_or(glyph.cluster_range.start, |current| {
-                            current.min(glyph.cluster_range.start)
+                        start = Some(start.map_or(glyph.cluster_start as usize, |current| {
+                            current.min(glyph.cluster_start as usize)
                         }));
-                        end = Some(end.map_or(glyph.cluster_range.end, |current| {
-                            current.max(glyph.cluster_range.end)
+                        end = Some(end.map_or(glyph.cluster_end as usize, |current| {
+                            current.max(glyph.cluster_end as usize)
                         }));
                     }
                     let (Some(left), Some(right), Some(start), Some(end)) =

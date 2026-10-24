@@ -126,8 +126,7 @@ fn inline_ifc_root_staging_input_keeps_paint_local_pos_in_sync() {
     assert!(!staging.glyphs.is_empty(), "fixture should stage glyphs");
     for (staged, raw) in staging.glyphs.iter().zip(paint_input.glyphs.iter()) {
         assert!(
-            ((raw.baseline_y + raw.glyph_y - top_offset) - staged.paint.local_pos[1]).abs()
-                < 1e-3,
+            ((raw.y - top_offset) - staged.paint.local_pos[1]).abs() < 1e-3,
             "content-top offset must land in paint.local_pos",
         );
         assert!(
@@ -274,18 +273,18 @@ fn nested_multiline_inline_text_keeps_its_first_glyph_line_at_tall_line_height()
     let first_line_index = paint_input
         .glyphs
         .iter()
-        .map(|glyph| glyph.line_index)
+        .map(|glyph| glyph.line)
         .min()
         .expect("nested Text must retain glyphs");
     let first_line_glyphs = paint_input
         .glyphs
         .iter()
-        .filter(|glyph| glyph.line_index == first_line_index)
+        .filter(|glyph| glyph.line == first_line_index)
         .collect::<Vec<_>>();
     assert!(!first_line_glyphs.is_empty());
     assert!(
         first_line_glyphs.iter().all(|glyph| {
-            let paint_y = glyph.baseline_y + glyph.glyph_y;
+            let paint_y = glyph.y;
             glyph.x >= -0.01
                 && glyph.x <= paint_bounds.width + 0.01
                 && paint_y >= -0.01

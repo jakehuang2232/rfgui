@@ -20,7 +20,8 @@ thread_local! {
 
 pub(crate) struct ParleyTextContext {
     pub(crate) font: ParleyFontContext,
-    pub(crate) layout: ParleyLayoutContext,
+    /// Layouts carry no brush: text color is paint, resolved after shaping.
+    pub(crate) layout: ParleyLayoutContext<()>,
 }
 
 fn create_parley_text_context() -> ParleyTextContext {

@@ -183,10 +183,8 @@ fn fragmentable_span_vertical_align_moves_glyph_and_caret_together() {
     };
     let baseline = build(crate::style::VerticalAlign::Baseline);
     let top = build(crate::style::VerticalAlign::Top);
-    let baseline_glyph_y = baseline.text_pass_paint_input_for_source(TEXT).glyphs[0].baseline_y
-        + baseline.text_pass_paint_input_for_source(TEXT).glyphs[0].glyph_y;
-    let top_glyph_y = top.text_pass_paint_input_for_source(TEXT).glyphs[0].baseline_y
-        + top.text_pass_paint_input_for_source(TEXT).glyphs[0].glyph_y;
+    let baseline_glyph_y = baseline.text_pass_paint_input_for_source(TEXT).glyphs[0].y;
+    let top_glyph_y = top.text_pass_paint_input_for_source(TEXT).glyphs[0].y;
     assert!(top_glyph_y < baseline_glyph_y - 1.0);
 
     let baseline_caret = baseline

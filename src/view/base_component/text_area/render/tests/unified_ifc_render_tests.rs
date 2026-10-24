@@ -75,7 +75,7 @@ fn unified_ifc_staging_applies_vertical_align_to_paint_local_pos() {
             assert!(!staging.glyphs.is_empty(), "fixture should stage glyphs");
             let mut saw_vertical_shift = false;
             for (staged, raw) in staging.glyphs.iter().zip(paint_input.glyphs.iter()) {
-                let raw_local_y = raw.baseline_y + raw.glyph_y;
+                let raw_local_y = raw.y;
                 if (staged.paint.local_pos[1] - raw_local_y).abs() > 0.5 {
                     saw_vertical_shift = true;
                 }

@@ -295,7 +295,7 @@ pub(crate) fn inline_ifc_glyph_to_text_pass_paint_input(
     fragment_index: u32,
 ) -> TextPassGlyphPaintInput {
     TextPassGlyphPaintInput {
-        local_pos: [glyph.x, glyph.baseline_y + glyph.glyph_y],
+        local_pos: [glyph.x, glyph.y],
         color: input.batch_of(glyph).color(),
         opacity,
         fragment_index,

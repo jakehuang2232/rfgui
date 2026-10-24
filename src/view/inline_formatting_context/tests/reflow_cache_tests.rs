@@ -51,7 +51,7 @@ fn resized_cached_runs_match_fresh_shaping_after_eviction() {
 }
 
 #[test]
-fn reflow_requires_unchanged_text_style_paint_and_inline_box_measurement() {
+fn reflow_requires_unchanged_text_style_and_inline_box_measurement_but_not_paint() {
     let input = cache_fixture_input();
     let context = InlineFormattingContext::build(input.clone());
     let width_key =
@@ -82,17 +82,23 @@ fn reflow_requires_unchanged_text_style_paint_and_inline_box_measurement() {
                 _ => unreachable!(),
             }
         }
-        assert!(
-            !context.can_reflow(&changed.cache_key()),
+        assert_eq!(
+            context.can_reflow(&changed.cache_key()),
+            mutation == 2,
             "mutation={mutation}"
         );
+        // A new paint is applied both while breaking the shaped lines again
+        // and while keeping them.
         let mut cache = InlineIfcCache::new();
         cache.update(input.clone());
-        let actual = cache.update(changed.clone());
-        let expected = InlineFormattingContext::build(changed);
-        assert_eq!(
-            actual.entry.context().text_pass_paint_input_ref(),
-            expected.text_pass_paint_input_ref()
-        );
+        for next in [changed.clone().with_max_width(40.0), changed] {
+            let actual = cache.update(next.clone());
+            let expected = InlineFormattingContext::build(next);
+            assert_eq!(
+                actual.entry.context().text_pass_paint_input_ref(),
+                expected.text_pass_paint_input_ref(),
+                "mutation={mutation}"
+            );
+        }
     }
 }

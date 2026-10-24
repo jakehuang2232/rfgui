@@ -15,9 +15,9 @@ fn text_pass_adapter_preserves_snapshot_glyph_payload() {
         .glyphs
         .iter()
         .find(|adapted| {
-            adapted.line_index == line.line_index
+            adapter.line_of(adapted).line_index == line.line_index
                 && adapted.glyph_id == glyph.glyph_id
-                && adapted.cluster_range == glyph.cluster_range
+                && adapted.cluster_range() == glyph.cluster_range
         })
         .expect("adapter should expose the snapshot glyph");
     let adapted_line = adapter
@@ -33,7 +33,7 @@ fn text_pass_adapter_preserves_snapshot_glyph_payload() {
     assert_eq!(adapted_line.baseline, line.baseline);
     assert_eq!(adapted_line.range, line.range);
     let batch = adapter.batch_of(adapted);
-    assert_eq!(adapted.source, glyph.source);
+    assert_eq!(batch.source, glyph.source);
     assert_eq!(batch.batch_key, glyph.batch_key);
     assert_font_render_handle(
         &batch.font_data,
@@ -49,9 +49,7 @@ fn text_pass_adapter_preserves_snapshot_glyph_payload() {
     );
     assert_eq!(batch.font_size(), glyph.font_size);
     assert_eq!(adapted.x, glyph.x);
-    assert_eq!(adapted.baseline_y, line.y + line.baseline);
-    assert_eq!(adapted.glyph_x, glyph.x - line.x);
-    assert_eq!(adapted.glyph_y, glyph.y - (line.y + line.baseline));
+    assert_eq!(adapted.y, glyph.y);
     assert_eq!(adapted.advance, glyph.advance);
     assert_eq!(batch.color(), brush_to_text_color(glyph.batch_key.brush));
 }
@@ -118,7 +116,12 @@ fn text_pass_adapter_keeps_atomic_inline_boxes_out_of_glyphs() {
 
     assert_eq!(snapshot.inline_boxes.len(), 1);
     assert_eq!(snapshot.inline_boxes[0].source, BOX_NODE);
-    assert!(adapter.glyphs.iter().all(|glyph| glyph.source != BOX_NODE));
+    assert!(
+        adapter
+            .glyphs
+            .iter()
+            .all(|glyph| adapter.source_of(glyph) != BOX_NODE)
+    );
 }
 
 #[test]

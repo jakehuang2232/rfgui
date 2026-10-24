@@ -684,14 +684,17 @@ impl InlineIfcCache {
             };
         }
 
-        // Width/alignment changes need new line geometry, but not new font
-        // matching and shaping. Keep the existing bounded cache ownership;
-        // only reuse runs when every shaping and paint input is identical.
+        // Width, alignment and paint changes need no new font matching and
+        // shaping. A paint-only change reuses its own entry's line breaks.
         let context = self
             .entries
-            .values()
-            .find(|entry| entry.context.can_reflow(&cache_key))
-            .map(|entry| entry.context.reflow(cache_key, layout_options))
+            .get(&shape_key)
+            .or_else(|| {
+                self.entries
+                    .values()
+                    .find(|entry| entry.context.can_reflow(&cache_key))
+            })
+            .map(|entry| entry.context.reflow(&input, cache_key, layout_options))
             .unwrap_or_else(|| InlineFormattingContext::build_with_options(input, layout_options));
         let shape_key = InlineIfcShapeCacheKey::from_cache_key(context.cache_key());
         self.entries.insert(
@@ -709,8 +712,8 @@ impl InlineIfcCache {
             .get(&shape_key)
             .expect("updated IFC cache entry should be available");
 
-        // RepaintOnly keeps the shape cache boundary stable, but this transition
-        // API still rebuilds the full context until paint-only storage is split.
+        // RepaintOnly keeps the shaping but still yields a new context: its
+        // derived glyph and paint data carry colors.
         InlineIfcCacheUpdate {
             invalidation,
             entry,
@@ -1445,11 +1448,22 @@ impl InlineIfcTextLayoutSnapshot {
         source: Option<InlineIfcSourceId>,
     ) -> InlineIfcTextPassPaintInput {
         let keep = |glyph: &InlineIfcTextGlyph| source.is_none_or(|source| glyph.source == source);
-        let lines = self
-            .lines
-            .iter()
-            .filter(|line| source.is_none() || line.glyphs.iter().any(keep))
-            .map(|line| InlineIfcTextPassLineInput {
+        let kept =
+            |line: &InlineIfcTextLine| line.glyphs.iter().filter(|glyph| keep(glyph)).count();
+        let mut lines = Vec::with_capacity(
+            self.lines
+                .iter()
+                .filter(|line| source.is_none() || kept(line) > 0)
+                .count(),
+        );
+        let mut glyphs = Vec::with_capacity(self.lines.iter().map(kept).sum());
+        let mut batches = Vec::<InlineIfcTextPassBatchInput>::new();
+        for line in &self.lines {
+            if source.is_some() && kept(line) == 0 {
+                continue;
+            }
+            let line_position = lines.len() as u32;
+            lines.push(InlineIfcTextPassLineInput {
                 line_index: line.line_index,
                 x: line.x,
                 y: line.y,
@@ -1457,47 +1471,35 @@ impl InlineIfcTextLayoutSnapshot {
                 height: line.height,
                 baseline: line.baseline,
                 range: line.range.clone(),
-            })
-            .collect::<Vec<_>>();
-
-        let mut glyphs = Vec::with_capacity(
-            self.lines
-                .iter()
-                .map(|line| line.glyphs.iter().filter(|glyph| keep(glyph)).count())
-                .sum(),
-        );
-        let mut batches = Vec::<InlineIfcTextPassBatchInput>::new();
-        for line in &self.lines {
-            let baseline_y = line.y + line.baseline;
+            });
             for glyph in line.glyphs.iter().filter(|glyph| keep(glyph)) {
+                let shares = |batch: &InlineIfcTextPassBatchInput| {
+                    batch.source == glyph.source && batch.batch_key == glyph.batch_key
+                };
                 // A run of glyphs shares its batch; look back before
                 // scanning the few batches a payload holds.
                 let batch = match batches.last() {
-                    Some(last) if last.batch_key == glyph.batch_key => batches.len() - 1,
-                    _ => batches
-                        .iter()
-                        .position(|batch| batch.batch_key == glyph.batch_key)
-                        .unwrap_or_else(|| {
-                            batches.push(InlineIfcTextPassBatchInput {
-                                batch_key: glyph.batch_key,
-                                font_data: glyph.font_data.clone(),
-                            });
-                            batches.len() - 1
-                        }),
+                    Some(last) if shares(last) => batches.len() - 1,
+                    _ => batches.iter().position(shares).unwrap_or_else(|| {
+                        batches.push(InlineIfcTextPassBatchInput {
+                            source: glyph.source,
+                            batch_key: glyph.batch_key,
+                            font_data: glyph.font_data.clone(),
+                        });
+                        batches.len() - 1
+                    }),
                 };
                 glyphs.push(InlineIfcTextPassGlyphInput {
-                    line_index: line.line_index,
-                    source: glyph.source,
-                    cluster_range: glyph.cluster_range.clone(),
                     glyph_id: glyph.glyph_id,
                     // Parley positioned glyphs are absolute in layout space
                     // (alignment shift included); line.x must not be added
                     // again or aligned lines paint double-shifted.
                     x: glyph.x,
-                    baseline_y,
-                    glyph_x: glyph.x - line.x,
-                    glyph_y: glyph.y - baseline_y,
+                    y: glyph.y,
                     advance: glyph.advance,
+                    cluster_start: glyph.cluster_range.start as u32,
+                    cluster_end: glyph.cluster_range.end as u32,
+                    line: line_position,
                     batch: batch as u32,
                 });
             }
@@ -1506,7 +1508,7 @@ impl InlineIfcTextLayoutSnapshot {
         InlineIfcTextPassPaintInput {
             lines,
             glyphs,
-            batches,
+            batches: into_exact_vec(batches),
             decorations: if source.is_none() {
                 self.decorations.clone()
             } else {
@@ -1520,9 +1522,7 @@ impl InlineIfcTextLayoutSnapshot {
 pub(crate) struct InlineIfcTextPassPaintInput {
     pub(crate) lines: Vec<InlineIfcTextPassLineInput>,
     pub(crate) glyphs: Vec<InlineIfcTextPassGlyphInput>,
-    /// Font, size and brush shared by runs of glyphs. A text node keeps its
-    /// payload for its lifetime, so glyphs refer to these by index instead
-    /// of each carrying a copy.
+    /// Source, font, size and brush shared by runs of glyphs.
     pub(crate) batches: Vec<InlineIfcTextPassBatchInput>,
     pub(crate) decorations: Vec<InlineIfcDecorationPaintFragment>,
 }
@@ -1533,6 +1533,17 @@ impl InlineIfcTextPassPaintInput {
         glyph: &InlineIfcTextPassGlyphInput,
     ) -> &InlineIfcTextPassBatchInput {
         &self.batches[glyph.batch as usize]
+    }
+
+    pub(crate) fn line_of(
+        &self,
+        glyph: &InlineIfcTextPassGlyphInput,
+    ) -> &InlineIfcTextPassLineInput {
+        &self.lines[glyph.line as usize]
+    }
+
+    pub(crate) fn source_of(&self, glyph: &InlineIfcTextPassGlyphInput) -> InlineIfcSourceId {
+        self.batch_of(glyph).source
     }
 }
 
@@ -1547,23 +1558,33 @@ pub(crate) struct InlineIfcTextPassLineInput {
     pub(crate) range: Range<usize>,
 }
 
+/// One glyph of a payload. Text nodes keep their payload for their
+/// lifetime, so what lines and batches share is stored there once.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineIfcTextPassGlyphInput {
-    pub(crate) line_index: usize,
-    pub(crate) source: InlineIfcSourceId,
-    pub(crate) cluster_range: Range<usize>,
     pub(crate) glyph_id: u32,
+    /// Glyph origin in layout space; parley's x already includes alignment.
     pub(crate) x: f32,
-    pub(crate) baseline_y: f32,
-    pub(crate) glyph_x: f32,
-    pub(crate) glyph_y: f32,
+    pub(crate) y: f32,
     pub(crate) advance: f32,
+    /// Byte range of the glyph's cluster in the backing text.
+    pub(crate) cluster_start: u32,
+    pub(crate) cluster_end: u32,
+    /// Index of the glyph's line in its payload.
+    pub(crate) line: u32,
     /// Index of the glyph's batch in its payload.
     pub(crate) batch: u32,
 }
 
+impl InlineIfcTextPassGlyphInput {
+    pub(crate) fn cluster_range(&self) -> Range<usize> {
+        self.cluster_start as usize..self.cluster_end as usize
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineIfcTextPassBatchInput {
+    pub(crate) source: InlineIfcSourceId,
     pub(crate) batch_key: InlineIfcTextPaintBatchKey,
     pub(crate) font_data: Option<FontData>,
 }
@@ -1709,7 +1730,9 @@ pub(super) fn into_exact_vec<T>(items: Vec<T>) -> Vec<T> {
 
 pub(crate) struct InlineFormattingContext {
     backing_text: String,
-    layout: ParleyLayout<[u8; 4]>,
+    /// Shaped, line-broken text. It holds no paint: colors live in the
+    /// style ranges, so a paint-only change keeps this shaping.
+    layout: ParleyLayout<()>,
     source_ranges: Vec<InlineIfcSourceRange>,
     style_ranges: Vec<InlineIfcStyleRange>,
     inline_boxes: Vec<InlineIfcBoxMapping>,
@@ -1747,35 +1770,55 @@ pub(crate) struct InlineFormattingContext {
 }
 
 impl InlineFormattingContext {
+    /// Whether this context's shaping serves `key`: only line breaking or
+    /// paint may differ.
     fn can_reflow(&self, key: &InlineIfcCacheKey) -> bool {
         self.cache_key.content == key.content
-            && self.cache_key.paint == key.paint
             // Parley encodes wrapping policy in the shaped styles.
             && self.cache_key.layout.allow_wrap == key.layout.allow_wrap
     }
 
-    fn reflow(&self, cache_key: InlineIfcCacheKey, options: InlineIfcLayoutOptions) -> Self {
+    /// Lays `input` out with this context's shaping, which `can_reflow`
+    /// accepted for `cache_key`. Lines are broken again only for a new
+    /// width or alignment; paint comes from `input`.
+    fn reflow(
+        &self,
+        input: &InlineIfcInput,
+        cache_key: InlineIfcCacheKey,
+        options: InlineIfcLayoutOptions,
+    ) -> Self {
+        let mut builder = InlineIfcBuilder::new();
+        builder.push_items(&input.items, &input.default_style, 0);
         let mut layout = self.layout.clone();
-        break_lines_keeping_span_edges(
-            &mut layout,
-            options
-                .max_width
-                .map(|width| width + INLINE_IFC_WRAP_EPSILON),
-            &self.inline_boxes,
-        );
-        layout.align(
-            to_parley_alignment(options.align),
-            AlignmentOptions::default(),
-        );
+        if cache_key.layout != self.cache_key.layout {
+            break_lines_keeping_span_edges(
+                &mut layout,
+                options
+                    .max_width
+                    .map(|width| width + INLINE_IFC_WRAP_EPSILON),
+                &builder.inline_boxes,
+            );
+            layout.align(
+                to_parley_alignment(options.align),
+                AlignmentOptions::default(),
+            );
+        }
+        Self::from_parts(builder, layout, cache_key)
+    }
+
+    fn from_parts(
+        builder: InlineIfcBuilder,
+        layout: ParleyLayout<()>,
+        cache_key: InlineIfcCacheKey,
+    ) -> Self {
         Self {
-            backing_text: self.backing_text.clone(),
+            backing_text: builder.backing_text,
             layout,
-            source_ranges: self.source_ranges.clone(),
-            style_ranges: self.style_ranges.clone(),
-            inline_boxes: self.inline_boxes.clone(),
-            span_inline_box_ids: self.span_inline_box_ids.clone(),
+            source_ranges: builder.source_ranges,
+            style_ranges: builder.style_ranges,
+            inline_boxes: builder.inline_boxes,
+            span_inline_box_ids: builder.span_inline_box_ids,
             cache_key,
-            // Every derived value contains line positions and must be rebuilt.
             glyph_items_cache: std::cell::OnceCell::new(),
             snapshot_cache: std::cell::OnceCell::new(),
             caret_stops_cache: std::cell::OnceCell::new(),
@@ -1827,24 +1870,7 @@ impl InlineFormattingContext {
             &builder.inline_boxes,
             layout_options,
         );
-
-        Self {
-            backing_text: builder.backing_text,
-            layout,
-            source_ranges: builder.source_ranges,
-            style_ranges: builder.style_ranges,
-            inline_boxes: builder.inline_boxes,
-            span_inline_box_ids: builder.span_inline_box_ids,
-            cache_key,
-            glyph_items_cache: std::cell::OnceCell::new(),
-            snapshot_cache: std::cell::OnceCell::new(),
-            caret_stops_cache: std::cell::OnceCell::new(),
-            caret_index_cache: std::cell::OnceCell::new(),
-            paint_input_cache: std::cell::OnceCell::new(),
-            source_line_rects_cache: std::cell::OnceCell::new(),
-            source_text_line_rects_cache: std::cell::OnceCell::new(),
-            atomic_placements_cache: std::cell::OnceCell::new(),
-        }
+        Self::from_parts(builder, layout, cache_key)
     }
 
     pub(crate) fn backing_text(&self) -> &str {
@@ -3643,7 +3669,7 @@ fn build_parley_layout(
     style_ranges: &[InlineIfcStyleRange],
     inline_boxes: &[InlineIfcBoxMapping],
     layout_options: InlineIfcLayoutOptions,
-) -> ParleyLayout<[u8; 4]> {
+) -> ParleyLayout<()> {
     with_shared_parley_context(|ctx| {
         let mut builder = ctx
             .layout
@@ -3666,7 +3692,6 @@ fn build_parley_layout(
         builder.push_default(StyleProperty::FontFamily(parley_font_family(
             &default_style.font_families,
         )));
-        builder.push_default(StyleProperty::Brush(default_style.brush));
 
         for style_range in style_ranges {
             let range = style_range.range.clone();
@@ -3689,9 +3714,8 @@ fn build_parley_layout(
             );
             builder.push(
                 StyleProperty::FontFamily(parley_font_family(&style_range.style.font_families)),
-                range.clone(),
+                range,
             );
-            builder.push(StyleProperty::Brush(style_range.style.brush), range);
         }
 
         for inline_box in inline_boxes {
@@ -3732,7 +3756,7 @@ const INLINE_IFC_WRAP_EPSILON: f32 = 2.0;
 /// to the next line, or, when they already start the line, one that keeps
 /// them on it and lets them overflow. Alignment still uses the full width.
 fn break_lines_keeping_span_edges(
-    layout: &mut ParleyLayout<[u8; 4]>,
+    layout: &mut ParleyLayout<()>,
     max_width: Option<f32>,
     inline_boxes: &[InlineIfcBoxMapping],
 ) {
@@ -3770,7 +3794,7 @@ fn break_lines_keeping_span_edges(
 }
 
 fn break_lines_with_limits(
-    layout: &mut ParleyLayout<[u8; 4]>,
+    layout: &mut ParleyLayout<()>,
     max_width: f32,
     line_limits: &[(usize, f32)],
 ) {
@@ -3835,7 +3859,7 @@ impl LineUnit {
     }
 }
 
-fn line_units(line: &parley::Line<'_, [u8; 4]>, edges: &HashMap<u64, bool>) -> Vec<LineUnit> {
+fn line_units(line: &parley::Line<'_, ()>, edges: &HashMap<u64, bool>) -> Vec<LineUnit> {
     let mut units = Vec::new();
     let mut last_run = None;
     for item in line.items() {
@@ -3899,13 +3923,13 @@ fn line_units(line: &parley::Line<'_, [u8; 4]>, edges: &HashMap<u64, bool>) -> V
 /// start edge or is followed by a line starting with an end edge, with the
 /// limit that keeps the edge with its content.
 fn first_split_span_edge(
-    layout: &ParleyLayout<[u8; 4]>,
+    layout: &ParleyLayout<()>,
     edges: &HashMap<u64, bool>,
     max_width: f32,
     from_line: usize,
 ) -> Option<(usize, f32)> {
     // Whether a line's first and last items are start (true) or end edges.
-    let boundary_edges = |line: &parley::Line<'_, [u8; 4]>| {
+    let boundary_edges = |line: &parley::Line<'_, ()>| {
         let mut items = line.items().map(|item| match item {
             PositionedLayoutItem::InlineBox(inline_box) => edges.get(&inline_box.id).copied(),
             PositionedLayoutItem::GlyphRun(_) => None,

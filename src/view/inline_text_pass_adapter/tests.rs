@@ -105,7 +105,7 @@ fn bridge_keeps_paint_fields_out_of_raster_input() {
     let paint = inline_ifc_glyph_to_text_pass_paint_input(&paint_input, &glyph, 0.625, 11);
     let raster_after = inline_ifc_glyph_to_text_pass_raster_input(&paint_input, &glyph);
 
-    assert_eq!(paint.local_pos, [glyph.x, glyph.baseline_y + glyph.glyph_y]);
+    assert_eq!(paint.local_pos, [glyph.x, glyph.y]);
     assert_eq!(paint.color, paint_input.batch_of(&glyph).color());
     assert_eq!(paint.opacity, 0.625);
     assert_eq!(paint.fragment_index, 11);
@@ -230,7 +230,7 @@ fn ifc_snapshot_bridge_smoke_rasterizes_first_glyph_without_inline_boxes() {
         paint_input
             .glyphs
             .iter()
-            .all(|glyph| glyph.source != BOX_SOURCE)
+            .all(|glyph| paint_input.source_of(glyph) != BOX_SOURCE)
     );
     assert!(bridge.glyphs.iter().all(|glyph| {
         glyph.raster.font_data.is_some()
@@ -268,10 +268,7 @@ fn ifc_snapshot_bridge_smoke_rasterizes_first_glyph_without_inline_boxes() {
     assert_eq!(first_bridged.paint.color, first_ifc_batch.color());
     assert_eq!(
         first_bridged.paint.local_pos,
-        [
-            first_ifc_glyph.x,
-            first_ifc_glyph.baseline_y + first_ifc_glyph.glyph_y
-        ]
+        [first_ifc_glyph.x, first_ifc_glyph.y]
     );
     assert_eq!(first_bridged.paint.opacity, 0.75);
     assert_eq!(first_bridged.paint.fragment_index, 9);
@@ -418,7 +415,7 @@ fn bridge_package_does_not_include_atomic_inline_box_glyphs() {
         paint_input
             .glyphs
             .iter()
-            .all(|glyph| glyph.source != BOX_SOURCE)
+            .all(|glyph| paint_input.source_of(glyph) != BOX_SOURCE)
     );
     assert_eq!(package.glyphs.len(), paint_input.glyphs.len());
     assert_eq!(
@@ -557,7 +554,7 @@ fn bridge_package_prepare_comparable_excludes_atomic_inline_box_glyphs() {
         paint_input
             .glyphs
             .iter()
-            .all(|glyph| glyph.source != BOX_SOURCE)
+            .all(|glyph| paint_input.source_of(glyph) != BOX_SOURCE)
     );
     assert_eq!(comparable.glyphs.len(), paint_input.glyphs.len());
     assert_eq!(
