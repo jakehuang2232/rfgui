@@ -184,7 +184,7 @@ impl Element {
             shadows.iter(),
             decoration.fill.iter().chain(&decoration.border),
         )?;
-        *self.paint_recording_inputs.borrow_mut() = Some(NativeSelfPaintInputs {
+        *self.paint_recording_inputs.borrow_mut() = Some(Box::new(NativeSelfPaintInputs {
             decoration: decoration.clone(),
             shadow_rects: if enabled {
                 shadow_rects(self).collect()
@@ -201,7 +201,7 @@ impl Element {
             opacity: opacity.to_bits(),
             shadows: shadows.clone(),
             payload: payload.clone(),
-        });
+        }));
         Some(PreparedSelfPaintRecord {
             geometry,
             shadows,

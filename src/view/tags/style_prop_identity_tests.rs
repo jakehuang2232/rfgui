@@ -43,7 +43,7 @@ fn host_style_props_compare_by_lowered_value_across_allocations() {
 }
 
 #[test]
-fn host_style_props_decode_schema_and_cached_lowering() {
+fn host_style_props_decode_to_their_lowered_style() {
     let value = element_style(120.0, "#123456").into_prop_value();
     assert_eq!(
         crate::view::tags::lowered_host_style::<ElementStylePropSchema>(&value),
@@ -53,10 +53,9 @@ fn host_style_props_decode_schema_and_cached_lowering() {
         crate::view::tags::lowered_host_style::<TextStylePropSchema>(&value),
         None
     );
-    let schema = ElementStylePropSchema::from_prop_value(value).expect("schema round trip");
     assert_eq!(
-        schema.to_style(),
-        element_style(120.0, "#123456").to_style()
+        Style::from_prop_value(value),
+        Ok(element_style(120.0, "#123456").to_style())
     );
 }
 

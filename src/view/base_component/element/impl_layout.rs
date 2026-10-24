@@ -1907,24 +1907,26 @@ impl Element {
             let is_real_flex = matches!(self.computed_style.layout, Layout::Flex { .. });
             let solver_wrap =
                 !is_real_flex && matches!(self.computed_style.layout_flow_wrap(), FlowWrap::Wrap);
-            self.flex_info = Some(crate::view::layout::flex_solver::compute_flex_info(
-                crate::view::layout::flex_solver::FlexSolverInputs {
-                    layout_kind: self.computed_style.layout,
-                    children: &self.children,
-                    absolute_mask: &absolute_mask,
-                    is_row,
-                    is_real_flex,
-                    wrap: solver_wrap,
-                    gap,
-                    main_limit,
-                    child_available_width,
-                    child_available_height,
-                    viewport_width,
-                    viewport_height,
-                    child_percent_base_width,
-                    child_percent_base_height,
-                },
-                arena,
+            self.flex_info = Some(Box::new(
+                crate::view::layout::flex_solver::compute_flex_info(
+                    crate::view::layout::flex_solver::FlexSolverInputs {
+                        layout_kind: self.computed_style.layout,
+                        children: &self.children,
+                        absolute_mask: &absolute_mask,
+                        is_row,
+                        is_real_flex,
+                        wrap: solver_wrap,
+                        gap,
+                        main_limit,
+                        child_available_width,
+                        child_available_height,
+                        viewport_width,
+                        viewport_height,
+                        child_percent_base_width,
+                        child_percent_base_height,
+                    },
+                    arena,
+                ),
             ));
         }
         let info = self

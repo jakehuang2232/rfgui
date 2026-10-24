@@ -663,7 +663,7 @@ impl Element {
             scroll_offset: Position { x: 0.0, y: 0.0 },
             inline_paint_fragments: Vec::new(),
             inline_ifc_owned_by_root: false,
-            inline_ifc_rollout_packages: ElementInlineIfcRolloutPackages::default(),
+            inline_ifc_rollout_packages: None,
             inline_ifc_layout_call_site: ElementInlineIfcLayoutCallSiteState::default(),
             scrollbar_drag: None,
             last_scrollbar_interaction: None,
@@ -1410,7 +1410,7 @@ impl Element {
 
     fn sync_animator_requests(&mut self) {
         let next_animator = self.computed_style.animator.clone();
-        if self.last_started_animator == next_animator {
+        if self.last_started_animator.as_deref() == next_animator.as_ref() {
             return;
         }
         let animator = next_animator
@@ -1422,7 +1422,7 @@ impl Element {
                 target: self.core.id,
                 animator,
             });
-        self.last_started_animator = next_animator;
+        self.last_started_animator = next_animator.map(Box::new);
     }
 
     /// Keeps the drawn values a queued transition starts from until its

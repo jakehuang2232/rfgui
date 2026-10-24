@@ -54,14 +54,12 @@ fn is_host_tag<T: 'static>(node: &RsxElementNode) -> bool {
     node.tag_descriptor == Some(RsxTagDescriptor::of::<T>())
 }
 
-fn shared_element_style(node: &RsxElementNode) -> Option<rfgui::view::ElementStylePropSchema> {
+fn host_style(node: &RsxElementNode) -> Option<rfgui::style::Style> {
     node.props.iter().find_map(|(key, value)| {
         (*key == "style")
             .then(|| {
-                <rfgui::view::ElementStylePropSchema as rfgui::ui::FromPropValue>::from_prop_value(
-                    value.clone(),
-                )
-                .ok()
+                <rfgui::style::Style as rfgui::ui::FromPropValue>::from_prop_value(value.clone())
+                    .ok()
             })
             .flatten()
     })

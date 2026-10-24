@@ -179,9 +179,9 @@ impl Viewport {
     pub(super) fn extract_style_from_value_owned(
         value: PropValue,
     ) -> Result<Option<Style>, String> {
-        let schema = ElementStylePropSchema::from_prop_value(value)
-            .map_err(|_| "prop `style` expects ElementStylePropSchema value".to_string())?;
-        Ok(Some(schema.to_style()))
+        crate::view::tags::lowered_host_style::<ElementStylePropSchema>(&value)
+            .map(Some)
+            .ok_or_else(|| "prop `style` expects ElementStylePropSchema value".to_string())
     }
 
     /// Placement-safe property IDs: changes to these never require a tree rebuild

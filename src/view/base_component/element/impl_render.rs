@@ -82,6 +82,7 @@ impl Element {
         &mut crate::view::inline_formatting_context::InlineIfcElementDecorationDrawRectPackage,
     > {
         self.inline_ifc_rollout_packages
+            .as_deref_mut()?
             .decoration_draw_rect
             .as_mut()
     }
@@ -180,7 +181,7 @@ impl Element {
             )
         {
             crate::view::paint::work_profile::count("child_mask_input_replays", 1);
-            return Some(previous.clone());
+            return Some((**previous).clone());
         }
         let mut in_scope_children = Vec::new();
         let mut overflow_children = Vec::new();
@@ -199,7 +200,7 @@ impl Element {
             in_scope_children,
             overflow_children,
         )?;
-        *self.child_mask_recording_inputs.borrow_mut() = Some(plan.clone());
+        *self.child_mask_recording_inputs.borrow_mut() = Some(Box::new(plan.clone()));
         Some(plan)
     }
 
@@ -304,7 +305,7 @@ impl Element {
         }
 
         self.layout_state.content_size = outputs.content_size;
-        self.flex_info = Some(outputs.flex_info);
+        self.flex_info = Some(Box::new(outputs.flex_info));
     }
 
     pub(super) fn self_decoration_paint_ops(
@@ -578,9 +579,9 @@ impl Element {
         &mut self,
         packages: Option<&InlineIfcDistributedElementPackages>,
     ) {
-        self.inline_ifc_rollout_packages = packages
-            .map(ElementInlineIfcRolloutPackages::from_inline_ifc_distributed)
-            .unwrap_or_default();
+        self.inline_ifc_rollout_packages = packages.map(|packages| {
+            Box::new(ElementInlineIfcRolloutPackages::from_inline_ifc_distributed(packages))
+        });
     }
 
     fn inline_ifc_fragment_draw_rect_pass_metadata(
@@ -666,7 +667,10 @@ impl Element {
         &self,
     ) -> Option<PreparedElementInlineIfcDecorationPayload> {
         if !self.inline_ifc_owned_by_root
-            || self.inline_ifc_rollout_packages.atomic_placement.is_some()
+            || self
+                .inline_ifc_rollout_packages
+                .as_ref()
+                .is_some_and(|packages| packages.atomic_placement.is_some())
         {
             return None;
         }
@@ -685,6 +689,7 @@ impl Element {
         let shadows = self.prepared_outer_shadow_ops()?;
         let package = self
             .inline_ifc_rollout_packages
+            .as_deref()?
             .decoration_draw_rect
             .as_ref()?;
         let mut ops = Vec::with_capacity(package.fragments.len());
@@ -840,17 +845,18 @@ impl Element {
     }
 
     fn update_resolved_transform(&mut self) {
-        self.resolved_transform = self.compute_transform_matrix();
-        self.resolved_inverse_transform = self.resolved_transform.and_then(|matrix| {
+        let matrix = self.compute_transform_matrix();
+        self.resolved_inverse_transform = matrix.and_then(|matrix| {
             let det = matrix.determinant();
             if det.abs() <= 0.000_001 {
                 None
             } else {
-                Some(matrix.inverse())
+                Some(Box::new(matrix.inverse()))
             }
         });
+        self.resolved_transform = matrix.map(Box::new);
         let culled = self.computed_style.backface_visibility == BackfaceVisibility::Hidden
-            && self.resolved_transform.is_some_and(is_back_facing);
+            && matrix.is_some_and(is_back_facing);
         if culled != self.backface_culled {
             // An animated transform turning past edge-on changes what is
             // recorded, not just where it is composited.

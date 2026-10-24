@@ -4189,15 +4189,17 @@ impl ElementInlineIfcMetadataCollectorOutput {
     }
 }
 
+/// Every element keeps one; the install and pending plan are boxed so an
+/// element that is not an inline root pays only for pointers.
 #[derive(Default)]
 struct ElementInlineIfcLayoutCallSiteState {
     cache: InlineIfcElementRootCandidateCache,
-    current: Option<ElementInlineIfcRootInstall>,
+    current: Option<Box<ElementInlineIfcRootInstall>>,
     /// Plan computed during measure (origin-independent). When measure
     /// runs it reshapes the IFC and stashes the fresh plan here; place
     /// consumes it. When measure is skipped (a pure move), this stays
     /// `None` and place reuses `current` with new origins.
-    pending: Option<ElementInlineIfcPendingPlan>,
+    pending: Option<Box<ElementInlineIfcPendingPlan>>,
 }
 
 struct ElementInlineIfcPendingPlan {
@@ -5394,8 +5396,11 @@ pub struct Element {
     box_lengths: BoxLengths,
     padding: EdgeInsets,
     background_color: Box<dyn ColorLike>,
-    paint_recording_inputs: RefCell<Option<paint_recording_inputs::NativeSelfPaintInputs>>,
-    child_mask_recording_inputs: RefCell<Option<crate::view::paint::RetainedChildMaskPlan>>,
+    // State that few elements hold at once is boxed throughout this struct
+    // (paint memos, resolved transforms, flex results, a started animator,
+    // inline packages): an element without it keeps only a pointer.
+    paint_recording_inputs: RefCell<Option<Box<paint_recording_inputs::NativeSelfPaintInputs>>>,
+    child_mask_recording_inputs: RefCell<Option<Box<crate::view::paint::RetainedChildMaskPlan>>>,
     /// `child_clip_classification` for one coverage walk and arena clock.
     child_clip_memo: RefCell<Option<((u64, u64), ChildClipClassification)>>,
     border_colors: EdgeColors,
@@ -5405,12 +5410,12 @@ pub struct Element {
     box_shadows: Vec<BoxShadow>,
     transform: Transform,
     transform_origin: TransformOrigin,
-    resolved_transform: Option<Mat4>,
+    resolved_transform: Option<Box<Mat4>>,
     /// Test fixtures that inject a resolved matrix bypass authored style and
     /// placement. This explicit test source keeps them on the B2-derived path.
     #[cfg(test)]
     resolved_local_transform_for_test: Option<Mat4>,
-    resolved_inverse_transform: Option<Mat4>,
+    resolved_inverse_transform: Option<Box<Mat4>>,
     /// `backface-visibility: hidden` and the resolved transform shows the
     /// element's back: it and its subtree neither paint nor hit-test.
     backface_culled: bool,
@@ -5423,7 +5428,8 @@ pub struct Element {
     /// inline element's geometry: its measure/place become shells and its
     /// fragments/packages are installed by the owning root.
     inline_ifc_owned_by_root: bool,
-    inline_ifc_rollout_packages: ElementInlineIfcRolloutPackages,
+    /// Packages from the owning inline root, for fragmented inline elements.
+    inline_ifc_rollout_packages: Option<Box<ElementInlineIfcRolloutPackages>>,
     inline_ifc_layout_call_site: ElementInlineIfcLayoutCallSiteState,
     scrollbar_drag: Option<ScrollbarDragState>,
     last_scrollbar_interaction: Option<Instant>,
@@ -5431,7 +5437,7 @@ pub struct Element {
     sampled_scrollbar_alpha: f32,
     scrollbar_shadow_blur_radius: f32,
     transition_requests: Option<Box<ElementTransitionRequests>>,
-    last_started_animator: Option<crate::style::Animator>,
+    last_started_animator: Option<Box<crate::style::Animator>>,
     has_style_snapshot: bool,
     has_layout_snapshot: bool,
     layout_transition_visual_offset_x: f32,
@@ -5458,7 +5464,7 @@ pub struct Element {
     dirty_flags: DirtyFlags,
     last_layout_placement: Option<LayoutPlacement>,
     last_layout_proposal: Option<LayoutProposal>,
-    flex_info: Option<crate::view::layout::FlexLayoutInfo>,
+    flex_info: Option<Box<crate::view::layout::FlexLayoutInfo>>,
     has_absolute_descendant_for_hit_test: bool,
     absolute_clip_rect: Option<Rect>,
     anchor_parent_clip_rect: Option<Rect>,
@@ -5481,7 +5487,7 @@ impl Element {
     }
     #[cfg(test)]
     pub(crate) fn set_resolved_transform_for_test(&mut self, transform: Option<Mat4>) {
-        self.resolved_transform = transform;
+        self.resolved_transform = transform.map(Box::new);
         self.resolved_local_transform_for_test = transform;
     }
 
@@ -5736,7 +5742,7 @@ impl Element {
             clear_inline_ifc_node_install(arena, stale_key);
         }
 
-        self.inline_ifc_layout_call_site.current = Some(ElementInlineIfcRootInstall {
+        self.inline_ifc_layout_call_site.current = Some(Box::new(ElementInlineIfcRootInstall {
             cache_key,
             children_snapshot,
             content_top_offset: top_offset,
@@ -5748,7 +5754,7 @@ impl Element {
             plan,
             installed_nodes,
             applied_origins: self.inline_ifc_apply_origins(),
-        });
+        }));
 
         // Children just moved; the scroll-content extent computed during
         // place_children is stale.
@@ -5765,7 +5771,7 @@ impl Element {
     fn reapply_inline_ifc_install(
         &mut self,
         arena: &mut NodeArena,
-        mut install: ElementInlineIfcRootInstall,
+        mut install: Box<ElementInlineIfcRootInstall>,
         placement: LayoutPlacement,
     ) {
         let origins = self.inline_ifc_apply_origins();
@@ -6241,14 +6247,14 @@ impl Element {
         let content_size = geometry.content_size;
         let top_offset = geometry.content_top_offset;
         let plan = build_inline_ifc_install_plan(geometry, &collected, &candidate);
-        self.inline_ifc_layout_call_site.pending = Some(ElementInlineIfcPendingPlan {
+        self.inline_ifc_layout_call_site.pending = Some(Box::new(ElementInlineIfcPendingPlan {
             cache_key: candidate.cache_key,
             children_snapshot: self.children.clone(),
             content_top_offset: top_offset,
             content_size,
             inner_width,
             plan,
-        });
+        }));
         Some(content_size)
     }
 
@@ -6415,7 +6421,7 @@ impl Element {
         viewport_x: f32,
         viewport_y: f32,
     ) -> Option<(f32, f32)> {
-        let inverse = self.resolved_inverse_transform?;
+        let inverse = *self.resolved_inverse_transform.as_deref()?;
         let mapped = inverse * Vec4::new(viewport_x, viewport_y, 0.0, 1.0);
         let w = if mapped.w.abs() <= 0.000_001 {
             1.0
@@ -6426,7 +6432,7 @@ impl Element {
     }
 
     fn transformed_bounding_rect_for_rect(&self, rect: Rect) -> Rect {
-        let Some(matrix) = self.resolved_transform else {
+        let Some(&matrix) = self.resolved_transform.as_deref() else {
             return rect;
         };
         let corners = [
@@ -7033,7 +7039,7 @@ impl ElementTrait for Element {
             .map(f32::to_bits)
             .hash(&mut hasher);
         self.resolved_transform.is_some().hash(&mut hasher);
-        if let Some(matrix) = self.resolved_transform {
+        if let Some(matrix) = self.resolved_transform.as_deref() {
             for value in matrix.to_cols_array() {
                 hash_f32(&mut hasher, value);
             }

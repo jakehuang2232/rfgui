@@ -1182,17 +1182,12 @@ fn into_shared_prop_value<T: 'static>(value: T) -> crate::ui::PropValue {
     crate::ui::PropValue::Shared(SharedPropValue::new(Rc::new(value)))
 }
 
-/// Host `style` payload. Hosts consume only the lowered [`Style`], which is
-/// computed once and shared by reconcile comparison and host application.
-struct LoweredStyleProp<T> {
-    schema: T,
-    lowered: std::cell::OnceCell<Style>,
-}
-
-impl<T: StylePropTrait> LoweredStyleProp<T> {
-    fn lowered(&self) -> &Style {
-        self.lowered.get_or_init(|| self.schema.to_style())
-    }
+/// Host `style` payload: the [`Style`] the host applies, lowered when the
+/// prop is built. The schema is not kept: the RSX tree holds every host
+/// prop, and a schema has a slot for every style field.
+struct LoweredStyleProp {
+    schema: std::any::TypeId,
+    lowered: Style,
 }
 
 /// Host `style` props are rebuilt on every render; equal lowerings reconcile
@@ -1200,53 +1195,46 @@ impl<T: StylePropTrait> LoweredStyleProp<T> {
 fn into_lowered_style_prop_value<T: StylePropTrait + 'static>(value: T) -> crate::ui::PropValue {
     crate::ui::PropValue::Shared(SharedPropValue::with_value_eq(
         Rc::new(LoweredStyleProp {
-            schema: value,
-            lowered: std::cell::OnceCell::new(),
+            schema: std::any::TypeId::of::<T>(),
+            lowered: value.to_style(),
         }),
-        lowered_style_eq::<T>,
+        lowered_style_eq,
     ))
 }
 
-fn lowered_style_eq<T: StylePropTrait + 'static>(
-    a: &dyn std::any::Any,
-    b: &dyn std::any::Any,
-) -> bool {
+fn lowered_style_eq(a: &dyn std::any::Any, b: &dyn std::any::Any) -> bool {
     match (
-        a.downcast_ref::<LoweredStyleProp<T>>(),
-        b.downcast_ref::<LoweredStyleProp<T>>(),
+        a.downcast_ref::<LoweredStyleProp>(),
+        b.downcast_ref::<LoweredStyleProp>(),
     ) {
-        (Some(a), Some(b)) => a.lowered() == b.lowered(),
+        (Some(a), Some(b)) => a.schema == b.schema && a.lowered == b.lowered,
         _ => false,
     }
 }
 
-fn from_lowered_style_prop_value<T: Clone + 'static>(
-    value: crate::ui::PropValue,
-    expected: &str,
-) -> Result<T, String> {
-    match value {
-        crate::ui::PropValue::Shared(shared) => shared
-            .into_inner()
-            .downcast::<LoweredStyleProp<T>>()
-            .map(|rc| match Rc::try_unwrap(rc) {
-                Ok(prop) => prop.schema,
-                Err(rc) => rc.schema.clone(),
-            })
-            .map_err(|_| format!("expected {expected} value")),
-        _ => Err(format!("expected {expected} value")),
-    }
+/// The lowered style of a host `style` prop, built from `schema` if given.
+fn lowered_style(value: &crate::ui::PropValue, schema: Option<std::any::TypeId>) -> Option<Style> {
+    let crate::ui::PropValue::Shared(shared) = value else {
+        return None;
+    };
+    shared
+        .value()
+        .downcast_ref::<LoweredStyleProp>()
+        .filter(|prop| schema.is_none_or(|schema| prop.schema == schema))
+        .map(|prop| prop.lowered.clone())
 }
 
 /// The lowered style of a host `style` prop built from schema `T`.
 pub(crate) fn lowered_host_style<T: StylePropTrait + 'static>(
     value: &crate::ui::PropValue,
 ) -> Option<Style> {
-    match value {
-        crate::ui::PropValue::Shared(shared) => shared
-            .value()
-            .downcast_ref::<LoweredStyleProp<T>>()
-            .map(|prop| prop.lowered().clone()),
-        _ => None,
+    lowered_style(value, Some(std::any::TypeId::of::<T>()))
+}
+
+/// Decodes a host `style` prop to the style its host applies.
+impl FromPropValue for Style {
+    fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
+        lowered_style(&value, None).ok_or_else(|| "expected host style value".to_string())
     }
 }
 
@@ -1265,51 +1253,48 @@ fn from_shared_prop_value<T: Clone + 'static>(
 }
 
 macro_rules! impl_shared_style_prop_value {
-    ($ty:ty, $label:literal, $into:ident, $from:ident) => {
+    ($ty:ty, $label:literal) => {
         impl IntoPropValue for $ty {
             fn into_prop_value(self) -> crate::ui::PropValue {
-                $into(self)
+                into_shared_prop_value(self)
             }
         }
 
         impl From<$ty> for crate::ui::PropValue {
             fn from(value: $ty) -> Self {
-                $into(value)
+                into_shared_prop_value(value)
             }
         }
 
         impl FromPropValue for $ty {
             fn from_prop_value(value: crate::ui::PropValue) -> Result<Self, String> {
-                $from(value, $label)
+                from_shared_prop_value(value, $label)
             }
         }
     };
 }
 
-impl_shared_style_prop_value!(
-    ElementStylePropSchema,
-    "ElementStylePropSchema",
-    into_lowered_style_prop_value,
-    from_lowered_style_prop_value
-);
-impl_shared_style_prop_value!(
-    HoverElementStylePropSchema,
-    "HoverElementStylePropSchema",
-    into_shared_prop_value,
-    from_shared_prop_value
-);
-impl_shared_style_prop_value!(
-    TextStylePropSchema,
-    "TextStylePropSchema",
-    into_lowered_style_prop_value,
-    from_lowered_style_prop_value
-);
-impl_shared_style_prop_value!(
-    SelectionStylePropSchema,
-    "SelectionStylePropSchema",
-    into_shared_prop_value,
-    from_shared_prop_value
-);
+/// A host `style` schema: its prop value is the lowered style.
+macro_rules! impl_lowered_style_prop_value {
+    ($ty:ty) => {
+        impl IntoPropValue for $ty {
+            fn into_prop_value(self) -> crate::ui::PropValue {
+                into_lowered_style_prop_value(self)
+            }
+        }
+
+        impl From<$ty> for crate::ui::PropValue {
+            fn from(value: $ty) -> Self {
+                into_lowered_style_prop_value(value)
+            }
+        }
+    };
+}
+
+impl_lowered_style_prop_value!(ElementStylePropSchema);
+impl_shared_style_prop_value!(HoverElementStylePropSchema, "HoverElementStylePropSchema");
+impl_lowered_style_prop_value!(TextStylePropSchema);
+impl_shared_style_prop_value!(SelectionStylePropSchema, "SelectionStylePropSchema");
 
 fn apply_box_color(
     style: &mut Style,

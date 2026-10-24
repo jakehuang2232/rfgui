@@ -9,14 +9,17 @@ fn material_symbol_icon_renders_as_typed_element_with_symbol_font() {
     };
     assert_eq!(root.tag, "Element");
 
-    let style = shared_element_style(&root).expect("missing icon root style");
+    // Only the symbol font and no-wrap: font_size is inherited from the parent.
     assert_eq!(
-        style.font.as_ref().expect("missing icon font").as_slice(),
-        &[String::from("Material Symbols Outlined E5CD")]
-    );
-    assert_eq!(
-        style.font_size, None,
-        "icon should inherit font_size from parent"
+        host_style(&root).expect("missing icon root style"),
+        rfgui::view::ElementStylePropSchema {
+            font: Some(rfgui::style::FontFamily::new([
+                "Material Symbols Outlined E5CD"
+            ])),
+            text_wrap: Some(rfgui::style::TextWrap::NoWrap),
+            ..Default::default()
+        }
+        .to_style()
     );
 
     let text_child = root.children.first().expect("missing text child");
