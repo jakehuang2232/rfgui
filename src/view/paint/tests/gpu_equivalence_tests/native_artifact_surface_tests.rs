@@ -32,7 +32,7 @@ pub(super) fn nested_effect_fixture() -> (NodeArena, NodeKey) {
     overlap_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
     overlap_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(8.0))
                 .top(Length::px(6.0)),

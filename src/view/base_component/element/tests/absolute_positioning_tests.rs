@@ -7,7 +7,7 @@ fn absolute_defaults_to_parent_anchor_and_zero_insets() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(Position::absolute()),
+        ParsedValue::position(Position::absolute()),
     );
     child.apply_style(child_style);
 
@@ -52,7 +52,7 @@ fn absolute_stretch_with_left_right_top_bottom() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(10.0))
                 .right(Length::px(20.0))
@@ -105,7 +105,7 @@ fn absolute_negative_insets_are_preserved() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(-10.0))
                 .right(Length::px(20.0))
@@ -158,7 +158,7 @@ fn absolute_self_origin_center_centers_on_inset_point() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(100.0))
                 .top(Length::px(100.0))
@@ -210,7 +210,7 @@ fn absolute_self_origin_bottom_right_aligns_to_anchor_corner() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(0.0))
                 .top(Length::px(0.0))
@@ -260,7 +260,7 @@ fn absolute_self_origin_px_offset() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(100.0))
                 .top(Length::px(100.0))
@@ -312,7 +312,7 @@ fn absolute_self_origin_top_center_for_popover_pattern() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::percent(50.0))
                 .top(Length::percent(100.0))
@@ -371,7 +371,7 @@ fn absolute_self_origin_with_auto_size_via_child() {
     );
     tooltip_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::calc(
                     Length::percent(100.0),
@@ -441,7 +441,7 @@ fn absolute_self_origin_left_placement_with_right_inset() {
     );
     tooltip_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .right(Length::calc(
                     Length::percent(100.0),
@@ -503,7 +503,7 @@ fn absolute_collision_fit_viewport_clamps_into_view() {
     let mut style = Style::new();
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(390.0))
                 .top(Length::px(295.0))

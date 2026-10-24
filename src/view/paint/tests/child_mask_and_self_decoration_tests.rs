@@ -20,7 +20,7 @@ fn retained_child_mask_keeps_window_like_overflow_handles_outside_mask_scope() {
         let mut style = Style::new();
         style.insert(
             PropertyId::Position,
-            ParsedValue::Position(
+            ParsedValue::position(
                 Position::absolute()
                     .left(Length::px(index as f32 * 5.0))
                     .top(Length::px(index as f32 * 3.0))

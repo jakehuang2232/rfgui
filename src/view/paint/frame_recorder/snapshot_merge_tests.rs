@@ -209,7 +209,7 @@ fn artifact_snapshot_closure_includes_named_anchor_visual_chain() {
     let mut anchor_style = Style::new();
     anchor_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(120.0))
                 .top(Length::px(30.0)),
@@ -223,7 +223,7 @@ fn artifact_snapshot_closure_includes_named_anchor_visual_chain() {
     child_style.set_transform(Transform::new([Scale::uniform(1.1)]));
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor("artifact-anchor")
                 .left(Length::px(7.0))

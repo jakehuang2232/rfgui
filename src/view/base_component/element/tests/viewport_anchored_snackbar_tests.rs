@@ -14,7 +14,7 @@ fn viewport_anchored_descendant_collected_when_ancestor_inner_below_viewport() {
     let mut window_style = Style::new();
     window_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(100.0))
                 .top(Length::px(700.0))
@@ -36,7 +36,7 @@ fn viewport_anchored_descendant_collected_when_ancestor_inner_below_viewport() {
     );
     snackbar_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor(crate::style::Anchor::Viewport)
                 .left(Length::px(16.0))
@@ -106,7 +106,7 @@ fn viewport_anchored_snackbar_through_flow_column_below_viewport() {
     let mut window_style = Style::new();
     window_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(100.0))
                 .top(Length::px(700.0))
@@ -134,7 +134,7 @@ fn viewport_anchored_snackbar_through_flow_column_below_viewport() {
     );
     snackbar_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor(crate::style::Anchor::Viewport)
                 .left(Length::px(16.0))
@@ -218,7 +218,7 @@ fn viewport_anchored_snackbar_deeply_nested_under_offscreen_section() {
     let mut window_style = Style::new();
     window_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(100.0))
                 .top(Length::px(700.0))
@@ -249,7 +249,7 @@ fn viewport_anchored_snackbar_deeply_nested_under_offscreen_section() {
     );
     snackbar_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor(crate::style::Anchor::Viewport)
                 .left(Length::px(16.0))

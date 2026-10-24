@@ -11,7 +11,7 @@ fn absolute_clip_viewport_allows_render_outside_parent_bounds() {
     );
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(130.0))
                 .top(Length::px(10.0))
@@ -62,7 +62,7 @@ fn viewport_clipped_absolute_descendant_paints_even_if_parent_is_not_rendered() 
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(10.0))
                 .top(Length::px(10.0))
@@ -95,7 +95,7 @@ fn absolute_clip_anchor_parent_falls_back_to_grandparent_without_anchor() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(130.0))
                 .top(Length::px(10.0))
@@ -156,7 +156,7 @@ fn absolute_clip_anchor_parent_uses_anchor_parent_bounds() {
     );
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor("menu_button")
                 .left(Length::px(50.0))
@@ -212,7 +212,7 @@ fn absolute_clip_anchor_parent_scissor_uses_anchor_parent_bounds() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor("menu_button")
                 .left(Length::px(38.0))
@@ -266,7 +266,7 @@ fn absolute_clip_anchor_parent_scissor_falls_back_to_grandparent_without_anchor(
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(130.0))
                 .top(Length::px(10.0))

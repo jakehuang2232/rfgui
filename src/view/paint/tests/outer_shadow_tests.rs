@@ -221,7 +221,7 @@ fn outer_shadow_owner_native_child_boundaries_record_retained_artifact() {
                 let mut style = Style::new();
                 style.insert(
                     PropertyId::Position,
-                    ParsedValue::Position(Position::absolute().clip(ClipMode::Viewport)),
+                    ParsedValue::position(Position::absolute().clip(ClipMode::Viewport)),
                 );
                 child.apply_style(style);
                 commit_child(&mut arena, root, Box::new(child))

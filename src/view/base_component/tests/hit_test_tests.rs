@@ -13,7 +13,7 @@ fn hit_test_allows_absolute_viewport_clip_outside_parent() {
     );
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(130.0))
                 .top(Length::px(10.0))
@@ -100,7 +100,7 @@ fn hit_test_allows_absolute_viewport_clip_when_parent_not_rendered() {
     let mut parent_style = Style::new();
     parent_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(500.0))
                 .top(Length::px(0.0))
@@ -116,7 +116,7 @@ fn hit_test_allows_absolute_viewport_clip_when_parent_not_rendered() {
     );
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(130.0))
                 .top(Length::px(10.0))
@@ -149,7 +149,7 @@ fn hit_test_blocks_absolute_parent_clip_outside_parent() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(130.0))
                 .top(Length::px(10.0))
@@ -223,7 +223,7 @@ fn overflow_child_hit_bubbles_but_parent_is_not_targetable_outside_clip() {
     let mut parent_style = Style::new();
     parent_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(50.0))
                 .top(Length::px(0.0))
@@ -245,7 +245,7 @@ fn overflow_child_hit_bubbles_but_parent_is_not_targetable_outside_clip() {
     );
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(60.0))
                 .top(Length::px(10.0))
@@ -336,7 +336,7 @@ fn hit_test_roots_respects_later_root_over_anchor_parent_overflow_handle() {
     );
     handle_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .right(Length::px(-2.0))
                 .top(Length::px(0.0))
@@ -381,7 +381,7 @@ fn hit_test_window_like_anchor_parent_resize_handles_all_edges() {
     );
     root_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(20.0))
                 .top(Length::px(30.0)),
@@ -395,7 +395,7 @@ fn hit_test_window_like_anchor_parent_resize_handles_all_edges() {
     fn resize_handle(position: Position, cursor: crate::style::Cursor) -> Element {
         let mut handle = Element::new(0.0, 0.0, 0.0, 0.0);
         let mut style = Style::new();
-        style.insert(PropertyId::Position, ParsedValue::Position(position));
+        style.insert(PropertyId::Position, ParsedValue::position(position));
         style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));
         match cursor {
             crate::style::Cursor::EwResize => {

@@ -43,7 +43,7 @@ fn scene() -> (NodeArena, NodeKey, NodeKey, NodeKey) {
     let mut deferred_style = style([12.0, 12.0], None, Some(GREEN));
     deferred_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(52.0))
                 .top(Length::px(20.0))
@@ -238,7 +238,7 @@ fn native_nested_deferred_zero_size_reentry_preserves_late_order() -> Result<(),
             let mut s = style(size, None, Some(RED));
             s.insert(
                 PropertyId::Position,
-                ParsedValue::Position(
+                ParsedValue::position(
                     Position::absolute()
                         .left(Length::px(0.))
                         .top(Length::px(0.))

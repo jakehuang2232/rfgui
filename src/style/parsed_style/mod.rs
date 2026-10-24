@@ -6,7 +6,6 @@ use crate::style::background::Background;
 use crate::style::color::{Color, ColorLike, IntoColor, OklchColor, StyleColor};
 use crate::style::gradient::Gradient;
 
-use rustc_hash::FxHashMap;
 use std::ops::Add;
 
 // Catalog of CSS-style property keys. Several variants are matched in the
@@ -2515,7 +2514,9 @@ pub(crate) enum ParsedValue {
     Flex(Flex),
     ScrollDirection(ScrollDirection),
     Cursor(Cursor),
-    Position(Position),
+    // Rare values far larger than the rest are boxed, so a declaration
+    // stays small: elements keep several copies of their style.
+    Position(Box<Position>),
     Auto,
     Length(Length),
     FontSize(FontSize),
@@ -2529,15 +2530,19 @@ pub(crate) enum ParsedValue {
     TransformOrigin(TransformOrigin),
     BackfaceVisibility(BackfaceVisibility),
     Transition(Transitions),
-    Animator(Animator),
+    Animator(Box<Animator>),
     Color(StyleColor),
-    Gradient(Gradient),
+    Gradient(Box<Gradient>),
     VerticalAlign(VerticalAlign),
     TextAlign(TextAlign),
 }
 
-#[cfg(test)]
 impl ParsedValue {
+    pub(crate) fn position(position: Position) -> Self {
+        Self::Position(Box::new(position))
+    }
+
+    #[cfg(test)]
     pub(crate) fn color_like<T: ColorLike>(color: T) -> Self {
         Self::Color(color.to_style_color())
     }
@@ -2581,8 +2586,9 @@ impl SelectionStyle {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Style {
+    /// At most one declaration per property. A style holds a handful, so a
+    /// scan beats an index that would cost every copy its own table.
     declarations: Vec<Declaration>,
-    index: FxHashMap<PropertyId, usize>,
     hover: Option<Box<Style>>,
     selection: Option<Box<SelectionStyle>>,
 }
@@ -2818,23 +2824,23 @@ impl Style {
         Self::default()
     }
 
+    fn position_of(&self, property: PropertyId) -> Option<usize> {
+        self.declarations
+            .iter()
+            .position(|declaration| declaration.property == property)
+    }
+
     pub(crate) fn insert(&mut self, property: PropertyId, value: ParsedValue) {
         let declaration = Declaration { property, value };
-        match self.index.get(&property).copied() {
+        match self.position_of(property) {
             Some(i) => self.declarations[i] = declaration,
-            None => {
-                self.declarations.push(declaration);
-                let idx = self.declarations.len() - 1;
-                self.index.insert(property, idx);
-            }
+            None => self.declarations.push(declaration),
         }
     }
 
     pub(crate) fn get(&self, property: PropertyId) -> Option<&ParsedValue> {
-        self.index
-            .get(&property)
-            .and_then(|i| self.declarations.get(*i))
-            .map(|decl| &decl.value)
+        self.position_of(property)
+            .map(|i| &self.declarations[i].value)
     }
 
     pub(crate) fn declarations(&self) -> &[Declaration] {
@@ -2842,13 +2848,8 @@ impl Style {
     }
 
     pub(crate) fn remove(&mut self, property: PropertyId) -> Option<ParsedValue> {
-        let idx = self.index.remove(&property)?;
-        let declaration = self.declarations.swap_remove(idx);
-        if idx < self.declarations.len() {
-            let moved_property = self.declarations[idx].property;
-            self.index.insert(moved_property, idx);
-        }
-        Some(declaration.value)
+        let idx = self.position_of(property)?;
+        Some(self.declarations.swap_remove(idx).value)
     }
 
     pub(crate) fn without_properties_recursive(mut self, properties: &[PropertyId]) -> Self {
@@ -2965,7 +2966,10 @@ impl Style {
                 let _ = self.remove(PropertyId::BackgroundImage);
             }
             Background::Gradient(gradient) => {
-                self.insert(PropertyId::BackgroundImage, ParsedValue::Gradient(gradient));
+                self.insert(
+                    PropertyId::BackgroundImage,
+                    ParsedValue::Gradient(Box::new(gradient)),
+                );
             }
         }
     }
@@ -2976,7 +2980,10 @@ impl Style {
     }
 
     pub fn set_background_image(&mut self, gradient: Gradient) {
-        self.insert(PropertyId::BackgroundImage, ParsedValue::Gradient(gradient));
+        self.insert(
+            PropertyId::BackgroundImage,
+            ParsedValue::Gradient(Box::new(gradient)),
+        );
     }
 
     pub fn with_background_image(mut self, gradient: Gradient) -> Self {
@@ -2985,7 +2992,10 @@ impl Style {
     }
 
     pub fn set_border_image(&mut self, gradient: Gradient) {
-        self.insert(PropertyId::BorderImage, ParsedValue::Gradient(gradient));
+        self.insert(
+            PropertyId::BorderImage,
+            ParsedValue::Gradient(Box::new(gradient)),
+        );
     }
 
     pub fn with_border_image(mut self, gradient: Gradient) -> Self {

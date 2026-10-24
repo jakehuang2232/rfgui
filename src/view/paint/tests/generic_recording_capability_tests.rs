@@ -32,7 +32,7 @@ fn generic_recording_deferred_phase_and_scrollbar_overlay_keep_canonical_order()
             if late {
                 style.insert(
                     PropertyId::Position,
-                    ParsedValue::Position(Position::absolute().clip(ClipMode::Viewport)),
+                    ParsedValue::position(Position::absolute().clip(ClipMode::Viewport)),
                 );
             }
             child.apply_style(style);

@@ -69,7 +69,7 @@ pub(super) fn style(size: [f32; 2], at: Option<[f32; 2]>, color: Option<[u8; 4]>
     if let Some([x, y]) = at {
         style.insert(
             PropertyId::Position,
-            ParsedValue::Position(Position::absolute().left(Length::px(x)).top(Length::px(y))),
+            ParsedValue::position(Position::absolute().left(Length::px(x)).top(Length::px(y))),
         );
     }
     if let Some([r, g, b, a]) = color {
@@ -445,7 +445,7 @@ pub(super) fn unlaid_out_fixture(scene: Scene) -> Fixture {
             let mut late = style([16.0, 16.0], None, Some(GREEN));
             late.insert(
                 PropertyId::Position,
-                ParsedValue::Position(
+                ParsedValue::position(
                     Position::absolute()
                         .left(Length::px(20.0))
                         .top(Length::px(20.0))
@@ -496,7 +496,7 @@ pub(super) fn unlaid_out_fixture(scene: Scene) -> Fixture {
             let mut s = style([12.0, 8.0], None, Some(RED));
             s.insert(
                 PropertyId::Position,
-                ParsedValue::Position(
+                ParsedValue::position(
                     Position::absolute()
                         .anchor("c2-reference")
                         .left(Length::px(4.0))
@@ -572,7 +572,7 @@ pub(super) fn unlaid_out_fixture(scene: Scene) -> Fixture {
             let mut s = style([8.0, 8.0], None, Some(BLUE));
             s.insert(
                 PropertyId::Position,
-                ParsedValue::Position(
+                ParsedValue::position(
                     Position::absolute()
                         .left(Length::px(28.0))
                         .top(Length::px(4.0))

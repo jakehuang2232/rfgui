@@ -127,7 +127,7 @@ fn placement(w: f32, h: f32) -> LayoutPlacement {
 fn absolute_diagnostic_element(position: Position, cursor: crate::style::Cursor) -> Element {
     let mut element = Element::new(0.0, 0.0, 20.0, 20.0);
     let mut style = Style::new();
-    style.insert(PropertyId::Position, ParsedValue::Position(position));
+    style.insert(PropertyId::Position, ParsedValue::position(position));
     style.insert(PropertyId::Width, ParsedValue::Length(Length::px(20.0)));
     style.insert(PropertyId::Height, ParsedValue::Length(Length::px(20.0)));
     style.insert(PropertyId::Cursor, ParsedValue::Cursor(cursor));

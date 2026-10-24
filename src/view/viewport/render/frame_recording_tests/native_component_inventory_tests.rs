@@ -161,7 +161,7 @@ fn native_inventory_element_inline_clip_and_deferred_states() {
                     let mut child_style = box_style(80.0, 60.0);
                     child_style.insert(
                         PropertyId::Position,
-                        ParsedValue::Position(Position::absolute().clip(ClipMode::Viewport)),
+                        ParsedValue::position(Position::absolute().clip(ClipMode::Viewport)),
                     );
                     child.apply_style(child_style);
                 } else {

@@ -290,7 +290,7 @@ fn lazy_owner_inputs_preserve_deferred_descendant_recording_and_reentry() {
     let mut style = Style::new();
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(0.))
                 .top(Length::px(0.))

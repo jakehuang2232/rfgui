@@ -235,7 +235,7 @@ fn deferred_image_and_svg_descendants_use_the_same_late_phase_trait_contract() {
         style.insert(PropertyId::Height, ParsedValue::Length(Length::px(10.0)));
         style.insert(
             PropertyId::Position,
-            ParsedValue::Position(
+            ParsedValue::position(
                 Position::absolute()
                     .left(Length::px(18.0))
                     .top(Length::px(16.0))
@@ -301,7 +301,7 @@ fn nested_anchor_parent_with_deferred_siblings_keeps_its_exact_clip() {
     let mut style = Style::new();
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(30.0))
                 .top(Length::px(24.0))

@@ -174,7 +174,7 @@ fn retained_scroll_content_subtree_offset_allows_absolute_descendants_and_fails_
     content_style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
     content_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(Position::absolute().left(Length::px(10.25))),
+        ParsedValue::position(Position::absolute().left(Length::px(10.25))),
     );
     content.apply_style(content_style);
     let mut arena = new_test_arena();
@@ -184,7 +184,7 @@ fn retained_scroll_content_subtree_offset_allows_absolute_descendants_and_fails_
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(Position::absolute().left(Length::px(30.0))),
+        ParsedValue::position(Position::absolute().left(Length::px(30.0))),
     );
     absolute_child.apply_style(child_style);
     commit_child(&mut arena, root, Box::new(absolute_child));

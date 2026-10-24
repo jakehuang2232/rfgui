@@ -14,7 +14,7 @@ fn viewport_anchored_child_renders_when_ancestor_partly_offscreen() {
     let mut parent_style = Style::new();
     parent_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(-200.0))
                 .top(Length::px(100.0))
@@ -29,7 +29,7 @@ fn viewport_anchored_child_renders_when_ancestor_partly_offscreen() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor(crate::style::Anchor::Viewport)
                 .left(Length::px(16.0))
@@ -127,7 +127,7 @@ fn viewport_anchored_child_through_deep_offscreen_chain() {
     let mut window_style = Style::new();
     window_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(-300.0))
                 .top(Length::px(50.0))
@@ -154,7 +154,7 @@ fn viewport_anchored_child_through_deep_offscreen_chain() {
     let mut snackbar_style = Style::new();
     snackbar_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor(crate::style::Anchor::Viewport)
                 .left(Length::px(16.0))
@@ -229,7 +229,7 @@ fn viewport_anchored_child_renders_passes_through_offscreen_ancestor() {
     );
     window_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(-300.0))
                 .top(Length::px(50.0))
@@ -246,7 +246,7 @@ fn viewport_anchored_child_renders_passes_through_offscreen_ancestor() {
     );
     snackbar_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor(crate::style::Anchor::Viewport)
                 .left(Length::px(16.0))
@@ -301,7 +301,7 @@ fn viewport_anchored_child_renders_when_ancestor_fully_offscreen() {
     let mut window_style = Style::new();
     window_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(-2000.0)) // way off the left edge
                 .top(Length::px(-2000.0))
@@ -318,7 +318,7 @@ fn viewport_anchored_child_renders_when_ancestor_fully_offscreen() {
     );
     snackbar_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor(crate::style::Anchor::Viewport)
                 .left(Length::px(16.0))

@@ -314,7 +314,7 @@ fn anchor_parent_self_clip_roots(opacity: f32, border: bool) -> (NodeArena, Vec<
     let mut position = Style::new();
     position.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(10.25))
                 .top(Length::px(12.75))
@@ -340,7 +340,7 @@ pub(super) fn anchor_parent_self_clip_shadow_root() -> (NodeArena, Vec<NodeKey>)
     let mut style = Style::new();
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(10.25))
                 .top(Length::px(12.75))
@@ -372,7 +372,7 @@ fn nested_anchor_parent_mixed_siblings(anchor_first: bool) -> (NodeArena, Vec<No
     let mut anchor_style = Style::new();
     anchor_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(30.0))
                 .top(Length::px(24.0))
@@ -387,7 +387,7 @@ fn nested_anchor_parent_mixed_siblings(anchor_first: bool) -> (NodeArena, Vec<No
     let mut normal_style = Style::new();
     normal_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(30.0))
                 .top(Length::px(24.0))
@@ -440,7 +440,7 @@ fn nested_deferred_viewport_popups() -> (NodeArena, Vec<NodeKey>, NodeKey, NodeK
         style.insert(PropertyId::BackgroundColor, ParsedValue::color_like(color));
         style.insert(
             PropertyId::Position,
-            ParsedValue::Position(
+            ParsedValue::position(
                 Position::absolute()
                     .left(Length::px(18.0))
                     .top(Length::px(16.0))
@@ -488,7 +488,7 @@ fn mixed_native_anchor_parent_siblings(
         style.insert(PropertyId::Height, ParsedValue::Length(Length::px(8.0)));
         style.insert(
             PropertyId::Position,
-            ParsedValue::Position(
+            ParsedValue::position(
                 Position::absolute()
                     .left(Length::px(12.0))
                     .top(Length::px(14.0))
@@ -574,7 +574,7 @@ fn prepared_image_fixture(
     );
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(10.25))
                 .top(Length::px(12.75)),

@@ -13,7 +13,7 @@ fn absolute_child_does_not_affect_auto_parent_size() {
     let mut absolute_style = Style::new();
     absolute_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(Position::absolute()),
+        ParsedValue::position(Position::absolute()),
     );
     absolute_child.apply_style(absolute_style);
 
@@ -73,7 +73,7 @@ fn inline_measure_skips_absolute_child_for_remaining_width() {
     );
     popover_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(Position::absolute().anchor(crate::style::Anchor::Viewport)),
+        ParsedValue::position(Position::absolute().anchor(crate::style::Anchor::Viewport)),
     );
     popover.apply_style(popover_style);
 

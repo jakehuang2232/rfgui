@@ -131,7 +131,7 @@ fn self_clip_fixture() -> (NodeArena, Vec<NodeKey>) {
     );
     clipped_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(30.0))
                 .top(Length::px(8.0))

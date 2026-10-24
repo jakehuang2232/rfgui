@@ -100,7 +100,7 @@ fn diagnostic_transformed_absolute_viewport_clip_respects_later_root_body() {
     let mut popup_style = Style::new();
     popup_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(0.0))
                 .top(Length::px(10.0))

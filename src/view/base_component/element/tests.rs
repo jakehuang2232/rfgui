@@ -296,7 +296,7 @@ fn place_grandparent_padded_parent_child(
     let mut parent_style = Style::new();
     parent_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(parent_box.0))
                 .top(Length::px(parent_box.1)),
@@ -308,7 +308,7 @@ fn place_grandparent_padded_parent_child(
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor(child_anchor)
                 .left(Length::px(child_left))

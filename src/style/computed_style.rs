@@ -319,7 +319,7 @@ pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) 
             }
             PropertyId::Position => {
                 if let ParsedValue::Position(value) = &declaration.value {
-                    computed.position = value.clone();
+                    computed.position = (**value).clone();
                 }
             }
             PropertyId::Width => {
@@ -396,12 +396,12 @@ pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) 
             }
             PropertyId::BackgroundImage => {
                 if let ParsedValue::Gradient(value) = &declaration.value {
-                    computed.background_image = Some(value.clone());
+                    computed.background_image = Some((**value).clone());
                 }
             }
             PropertyId::BorderImage => {
                 if let ParsedValue::Gradient(value) = &declaration.value {
-                    computed.border_image = Some(value.clone());
+                    computed.border_image = Some((**value).clone());
                 }
             }
             PropertyId::FontFamily => {
@@ -542,7 +542,7 @@ pub fn compute_style_with_context(parsed: &Style, ctx: StyleComputeContext<'_>) 
             }
             PropertyId::Animator => {
                 if let ParsedValue::Animator(value) = &declaration.value {
-                    computed.animator = Some(value.clone());
+                    computed.animator = Some((**value).clone());
                 }
             }
         }

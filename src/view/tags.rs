@@ -1335,7 +1335,7 @@ fn apply_background(style: &mut Style, background: Option<&crate::style::Backgro
         crate::style::Background::Gradient(gradient) => {
             style.insert(
                 crate::style::PropertyId::BackgroundImage,
-                crate::style::ParsedValue::Gradient(gradient.clone()),
+                crate::style::ParsedValue::Gradient(Box::new(gradient.clone())),
             );
         }
     }
@@ -1609,7 +1609,7 @@ where
     if let Some(position) = fields.position.clone() {
         style.insert(
             crate::style::PropertyId::Position,
-            crate::style::ParsedValue::Position(position),
+            crate::style::ParsedValue::position(position),
         );
     }
     apply_shared_size_style_fields(style, &shared);
@@ -1654,13 +1654,13 @@ where
     if let Some(gradient) = fields.background_image {
         style.insert(
             crate::style::PropertyId::BackgroundImage,
-            crate::style::ParsedValue::Gradient(gradient.clone()),
+            crate::style::ParsedValue::Gradient(Box::new(gradient.clone())),
         );
     }
     if let Some(gradient) = fields.border_image {
         style.insert(
             crate::style::PropertyId::BorderImage,
-            crate::style::ParsedValue::Gradient(gradient.clone()),
+            crate::style::ParsedValue::Gradient(Box::new(gradient.clone())),
         );
     }
     if let Some(border) = fields.border {
@@ -1702,7 +1702,7 @@ where
     if let Some(animator) = fields.animator {
         style.insert(
             crate::style::PropertyId::Animator,
-            crate::style::ParsedValue::Animator(animator.clone()),
+            crate::style::ParsedValue::Animator(Box::new(animator.clone())),
         );
     }
     if let Some(selection) = apply_selection(fields.selection) {

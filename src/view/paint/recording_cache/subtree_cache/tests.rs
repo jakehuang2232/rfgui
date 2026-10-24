@@ -53,7 +53,12 @@ fn replay_checks_transitive_property_endpoints_outside_arena_ancestry() {
                 states: vec![],
                 scopes: vec![],
                 metadata: vec![],
-                properties: OwnerMap::new(property_closure(&trees, &members, &[])),
+                properties: OwnerMap::new(property_closure(
+                    &trees,
+                    &members,
+                    &[],
+                    &mut FxHashMap::default(),
+                )),
                 generations: OwnerMap::new([]),
             }),
             false,
@@ -66,6 +71,17 @@ fn replay_checks_transitive_property_endpoints_outside_arena_ancestry() {
             .replay(&arena, owner, &key, &trees, &generations)
             .is_some()
     );
+    // Recordings share a dependency's properties only while they hold.
+    let mut shared = FxHashMap::default();
+    let external_of = |closure: Vec<(NodeKey, Arc<Properties>)>| {
+        closure
+            .into_iter()
+            .find_map(|(key, properties)| (key == external).then_some(properties))
+            .unwrap()
+    };
+    let first = external_of(property_closure(&trees, &[owner], &[], &mut shared));
+    let second = external_of(property_closure(&trees, &[owner], &[], &mut shared));
+    assert!(Arc::ptr_eq(&first, &second));
     // Neither arena access nor any revision counter announces this change.
     trees
         .effects
@@ -77,13 +93,19 @@ fn replay_checks_transitive_property_endpoints_outside_arena_ancestry() {
             .replay(&arena, owner, &key, &trees, &generations)
             .is_none()
     );
+    let changed = external_of(property_closure(&trees, &[owner], &[], &mut shared));
+    assert!(!Arc::ptr_eq(&first, &changed));
+    assert!(changed.matches_trees(&trees, external));
     // Malformed cycles terminate; missing/new endpoints remain observations.
     trees
         .effects
         .get_mut(&EffectNodeId(external))
         .unwrap()
         .parent = Some(EffectNodeId(owner));
-    assert_eq!(property_closure(&trees, &[owner], &[]).len(), 2);
+    assert_eq!(
+        property_closure(&trees, &[owner], &[], &mut FxHashMap::default()).len(),
+        2
+    );
 }
 
 #[test]

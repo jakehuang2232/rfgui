@@ -89,7 +89,7 @@ impl WindowScene {
         );
         style.insert(
             PropertyId::Position,
-            ParsedValue::Position(
+            ParsedValue::position(
                 Position::absolute()
                     .left(Length::px(at[0]))
                     .top(Length::px(at[1])),

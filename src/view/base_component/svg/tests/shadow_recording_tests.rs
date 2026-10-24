@@ -160,7 +160,7 @@ fn ready_svg_exact_self_clip_shadow_metadata_and_full_are_canonical() {
     style.insert(PropertyId::Layout, ParsedValue::Layout(Layout::Grid));
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(crate::style::Length::px(1.25))
                 .top(crate::style::Length::px(2.75))

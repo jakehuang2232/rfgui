@@ -104,7 +104,7 @@ fn run_ready_owner_scope(svg: bool, dpr: u32) -> Result<(), String> {
         if clipped {
             style.insert(
                 PropertyId::Position,
-                ParsedValue::Position(
+                ParsedValue::position(
                     Position::absolute()
                         .left(Length::px(0.0))
                         .top(Length::px(0.0))

@@ -30,6 +30,9 @@ pub(crate) struct SubtreeCache {
     // A repeatedly changing parent must not prevent its stable children from
     // retaining their own recordings. This affects cache granularity only.
     split: FxHashMap<NodeKey, Key>,
+    /// Owners outside the subtrees recorded this frame, such as a list
+    /// shared by all its rows' recordings, observed once and shared.
+    shared_properties: FxHashMap<NodeKey, Arc<Properties>>,
 }
 #[derive(Clone, PartialEq)]
 pub(crate) struct Key {
@@ -86,8 +89,9 @@ impl PartialEq for AncestorInput {
     }
 }
 
-#[derive(Clone, PartialEq)]
-struct Properties {
+/// One owner's property inputs as the trees hold them now.
+#[derive(Clone, Copy, PartialEq)]
+struct Observation {
     /// Whether the owner's layout-position and visual-offset edges are part
     /// of this observation. They are for subtree members. Paint outside the
     /// subtree is recorded relative to layout frames, so moving an ancestor
@@ -102,7 +106,7 @@ struct Properties {
     scroll: Option<ScrollNodeSnapshot>,
     clips: [Option<ClipNodeSnapshot>; 2],
 }
-impl Properties {
+impl Observation {
     fn observe(trees: &PropertyTrees, key: NodeKey, spatial: bool) -> Self {
         Self {
             spatial,
@@ -160,21 +164,70 @@ impl Properties {
     }
 }
 
+/// A recorded [`Observation`]. Transforms, effects, scrolls and clips belong
+/// to few owners, so they are boxed: an owner without them stays small.
+#[derive(PartialEq)]
+struct Properties {
+    spatial: bool,
+    state: Option<NodePropertyState>,
+    position: Option<LayoutPositionNodeSnapshot>,
+    visual: Option<VisualOffsetNodeSnapshot>,
+    transform: Option<Box<TransformNodeSnapshot>>,
+    effect: Option<Box<EffectNodeSnapshot>>,
+    scroll: Option<Box<ScrollNodeSnapshot>>,
+    clips: [Option<Box<ClipNodeSnapshot>>; 2],
+}
+impl Properties {
+    fn record(observed: &Observation) -> Self {
+        Self {
+            spatial: observed.spatial,
+            state: observed.state,
+            position: observed.position,
+            visual: observed.visual,
+            transform: observed.transform.map(Box::new),
+            effect: observed.effect.map(Box::new),
+            scroll: observed.scroll.map(Box::new),
+            clips: observed.clips.map(|clip| clip.map(Box::new)),
+        }
+    }
+
+    fn matches(&self, observed: &Observation) -> bool {
+        self.spatial == observed.spatial
+            && self.state == observed.state
+            && self.position == observed.position
+            && self.visual == observed.visual
+            && self.transform.as_deref() == observed.transform.as_ref()
+            && self.effect.as_deref() == observed.effect.as_ref()
+            && self.scroll.as_deref() == observed.scroll.as_ref()
+            && self
+                .clips
+                .iter()
+                .zip(&observed.clips)
+                .all(|(clip, observed)| clip.as_deref() == observed.as_ref())
+    }
+
+    fn matches_trees(&self, trees: &PropertyTrees, owner: NodeKey) -> bool {
+        self.matches(&Observation::observe(trees, owner, self.spatial))
+    }
+}
+
 /// Property inputs of a subtree: its members with their spatial edges, then
-/// every other owner they depend on (ancestors first) without them.
+/// every other owner they depend on (ancestors first) without them. Those
+/// others come from `shared` when it holds their current inputs.
 fn property_closure(
     trees: &PropertyTrees,
     members: &[NodeKey],
     dependencies: &[NodeKey],
-) -> Vec<(NodeKey, Properties)> {
+    shared: &mut FxHashMap<NodeKey, Arc<Properties>>,
+) -> Vec<(NodeKey, Arc<Properties>)> {
     let mut seen = rustc_hash::FxHashSet::default();
     let mut snapshots = Vec::new();
     let mut pending = Vec::new();
     for &member in members {
         if seen.insert(member) {
-            let properties = Properties::observe(trees, member, true);
-            pending.extend(properties.dependencies());
-            snapshots.push((member, properties));
+            let observed = Observation::observe(trees, member, true);
+            pending.extend(observed.dependencies());
+            snapshots.push((member, Arc::new(Properties::record(&observed))));
         }
     }
     pending.extend(dependencies.iter().rev().copied());
@@ -182,12 +235,20 @@ fn property_closure(
         if !seen.insert(owner) {
             continue;
         }
-        let properties = Properties::observe(trees, owner, false);
+        let observed = Observation::observe(trees, owner, false);
         pending.extend(
-            properties
+            observed
                 .dependencies()
                 .filter(|owner| !seen.contains(owner)),
         );
+        let properties = match shared.get(&owner) {
+            Some(properties) if properties.matches(&observed) => properties.clone(),
+            _ => {
+                let properties = Arc::new(Properties::record(&observed));
+                shared.insert(owner, properties.clone());
+                properties
+            }
+        };
         snapshots.push((owner, properties));
     }
     snapshots
@@ -208,7 +269,7 @@ pub(crate) struct Snapshot {
     pub(crate) states: Vec<(NodeKey, super::super::PaintOwnerPropertyStateSnapshot)>,
     pub(crate) scopes: Vec<(NodeKey, Arc<PaintOwnerScope>)>,
     metadata: Vec<(NodeKey, u64, Arc<PaintNodePlan<PaintChunkMetadata>>)>,
-    properties: OwnerMap<Properties>,
+    properties: OwnerMap<Arc<Properties>>,
     generations: OwnerMap<Option<crate::view::compositor::paint_generation::LocalPaintGenerations>>,
 }
 
@@ -459,12 +520,12 @@ impl SubtreeCache {
                     snapshot
                         .properties
                         .get(owner)
-                        .is_none_or(|old| *old == Properties::observe(trees, *owner, old.spatial))
+                        .is_none_or(|old| old.matches_trees(trees, *owner))
                 })
             }
             _ => snapshot.properties.iter().all(|(owner, old)| {
                 written.as_ref().is_some_and(|keys| !keys.contains(owner))
-                    || *old == Properties::observe(trees, *owner, old.spatial)
+                    || old.matches_trees(trees, *owner)
             }),
         };
         let generation_writes = generations.generation_writes_since(generation_stamp);
@@ -498,6 +559,7 @@ impl SubtreeCache {
     pub(super) fn finish(&mut self, accepted: bool) {
         self.entries
             .retain(|_, (_, _, seen, _, _)| accepted && *seen);
+        self.shared_properties.clear();
         if !accepted {
             self.local_validations.clear();
             self.local_validation_clock = None;
@@ -666,7 +728,12 @@ impl RecordingCache {
                         .map(|(stable, plan)| (*key, *stable, plan.clone()))
                 })
                 .collect(),
-            properties: OwnerMap::new(property_closure(trees, members, &ancestors)),
+            properties: OwnerMap::new(property_closure(
+                trees,
+                members,
+                &ancestors,
+                &mut self.subtrees.shared_properties,
+            )),
             generations: OwnerMap::new(
                 dependencies
                     .iter()

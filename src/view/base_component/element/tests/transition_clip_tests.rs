@@ -177,7 +177,7 @@ fn absolute_parent_clip_uses_parent_transition_inner_size() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(Position::absolute().clip(ClipMode::Parent)),
+        ParsedValue::position(Position::absolute().clip(ClipMode::Parent)),
     );
     child.apply_style(child_style);
     let _ = commit_child(&mut arena, parent_key, Box::new(child));
@@ -252,7 +252,7 @@ fn anchor_parent_clip_uses_transitioning_parent_inner_size() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor("menu_button")
                 .left(Length::px(10.0))
@@ -315,7 +315,7 @@ fn assert_anchored_absolute_child_uses_anchor_visual_position_during_transition(
     let mut anchor_style = Style::new();
     anchor_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(300.0))
                 .top(Length::px(20.0)),
@@ -336,7 +336,7 @@ fn assert_anchored_absolute_child_uses_anchor_visual_position_during_transition(
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor("menu_button")
                 .left(Length::px(10.0))
@@ -380,7 +380,7 @@ fn assert_anchored_absolute_child_uses_anchor_visual_position_during_transition(
         let mut next_anchor_style = Style::new();
         next_anchor_style.insert(
             PropertyId::Position,
-            ParsedValue::Position(
+            ParsedValue::position(
                 Position::absolute()
                     .left(Length::px(340.0))
                     .top(Length::px(20.0)),

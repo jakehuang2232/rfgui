@@ -380,7 +380,7 @@ fn anchor_parent_clip_fixture(viewport_width: f32) -> (NodeArena, NodeKey) {
     let mut style = Style::new();
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(10.25))
                 .top(Length::px(12.75))
@@ -430,7 +430,7 @@ fn nested_anchor_parent_fixture(anchor_first: bool) -> (NodeArena, NodeKey, Node
         let mut style = Style::new();
         style.insert(
             PropertyId::Position,
-            ParsedValue::Position(
+            ParsedValue::position(
                 Position::absolute()
                     .left(Length::px(8.0))
                     .top(Length::px(9.0))
@@ -491,7 +491,7 @@ fn set_clip_mode(arena: &NodeArena, key: NodeKey, mode: ClipMode) {
     let mut style = Style::new();
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(10.25))
                 .top(Length::px(12.75))

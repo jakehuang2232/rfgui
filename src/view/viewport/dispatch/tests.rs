@@ -55,7 +55,7 @@ fn drag_over_bubble_recomputes_local_pointer_for_current_target() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(20.0))
                 .top(Length::px(30.0)),

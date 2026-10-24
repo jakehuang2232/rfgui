@@ -186,7 +186,7 @@ fn deferred_viewport_child_records_beneath_a_culled_subtree() {
     let mut style = Style::new();
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(Position::absolute().clip(ClipMode::Viewport)),
+        ParsedValue::position(Position::absolute().clip(ClipMode::Viewport)),
     );
     late.apply_style(style);
     let late = commit_child(&mut arena, middle, Box::new(late));

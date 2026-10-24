@@ -48,7 +48,7 @@ fn host_style(opacity: f32) -> Style {
     let mut style = effect_style(opacity, false);
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(0.0))
                 .top(Length::px(0.0))
@@ -305,7 +305,7 @@ fn native_single_viewport_group_opacity_overlap_and_sibling_scope() -> Result<()
             let mut style = sized_grid(12.0, 12.0);
             style.insert(
                 PropertyId::Position,
-                ParsedValue::Position(
+                ParsedValue::position(
                     Position::absolute()
                         .left(Length::px(x))
                         .top(Length::px(0.0)),

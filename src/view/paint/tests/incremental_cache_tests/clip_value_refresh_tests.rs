@@ -38,7 +38,7 @@ fn window_position(left: f32) -> Style {
     let mut style = Style::new();
     style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(left))
                 .top(Length::px(10.0))

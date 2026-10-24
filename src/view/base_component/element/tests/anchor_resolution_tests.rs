@@ -90,7 +90,7 @@ fn anchor_str_still_resolves_via_named_map() {
     let mut anchor_style = Style::new();
     anchor_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(300.0))
                 .top(Length::px(20.0)),
@@ -102,7 +102,7 @@ fn anchor_str_still_resolves_via_named_map() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor("menu_button")
                 .left(Length::px(5.0))

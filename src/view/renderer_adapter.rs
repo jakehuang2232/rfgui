@@ -448,7 +448,7 @@ pub(crate) fn convert_image_slot_desc(
     let mut wrapper_style = Style::new();
     wrapper_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(0.0))
                 .right(Length::px(0.0))

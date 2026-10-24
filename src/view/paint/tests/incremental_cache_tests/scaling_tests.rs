@@ -21,7 +21,7 @@ fn incremental_recording_and_planning_cost_with_unrelated_static_nodes() {
             let mut style = Style::new();
             style.insert(
                 PropertyId::Position,
-                ParsedValue::Position(
+                ParsedValue::position(
                     Position::absolute()
                         .left(Length::px(0.))
                         .top(Length::px(0.)),

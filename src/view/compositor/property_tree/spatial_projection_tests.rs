@@ -295,7 +295,7 @@ fn local_transform_composes_after_layout_and_visual_position() {
     let mut viewport_style = Style::new();
     viewport_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor(Anchor::Viewport)
                 .left(Length::px(12.0))
@@ -681,7 +681,7 @@ fn named_anchor_projection_uses_canonical_reference_edge() {
     let mut anchor_style = Style::new();
     anchor_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(120.0))
                 .top(Length::px(30.0)),
@@ -694,7 +694,7 @@ fn named_anchor_projection_uses_canonical_reference_edge() {
     let mut child_style = Style::new();
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor("stage-c-anchor")
                 .left(Length::px(7.0))

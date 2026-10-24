@@ -35,7 +35,7 @@ fn colored_style(width: f32, height: f32, rgb: [u8; 3], absolute: bool) -> Style
     if absolute {
         style.insert(
             PropertyId::Position,
-            ParsedValue::Position(
+            ParsedValue::position(
                 crate::style::Position::absolute()
                     .left(Length::px(0.0))
                     .top(Length::px(0.0)),

@@ -1002,7 +1002,7 @@ fn stage_c_named_anchor_classification_fixture() -> (
     let mut anchor_style = Style::new();
     anchor_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .left(Length::px(120.0))
                 .top(Length::px(30.0)),
@@ -1016,7 +1016,7 @@ fn stage_c_named_anchor_classification_fixture() -> (
     child_style.set_transform(Transform::new([Scale::uniform(1.1)]));
     child_style.insert(
         PropertyId::Position,
-        ParsedValue::Position(
+        ParsedValue::position(
             Position::absolute()
                 .anchor("stage-c-classifier-anchor")
                 .left(Length::px(7.0))
