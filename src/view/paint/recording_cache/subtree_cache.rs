@@ -208,11 +208,39 @@ pub(crate) struct Snapshot {
     pub(crate) states: Vec<(NodeKey, super::super::PaintOwnerPropertyStateSnapshot)>,
     pub(crate) scopes: Vec<(NodeKey, Arc<PaintOwnerScope>)>,
     metadata: Vec<(NodeKey, u64, Arc<PaintNodePlan<PaintChunkMetadata>>)>,
-    properties: FxHashMap<NodeKey, Properties>,
-    generations: FxHashMap<
-        NodeKey,
-        Option<crate::view::compositor::paint_generation::LocalPaintGenerations>,
-    >,
+    properties: OwnerMap<Properties>,
+    generations: OwnerMap<Option<crate::view::compositor::paint_generation::LocalPaintGenerations>>,
+}
+
+/// An owner-keyed map stored as a sorted slice. A snapshot is kept for every
+/// recorded subtree and holds a handful of owners, where a hash table's empty
+/// slots cost more memory than its lookups save.
+struct OwnerMap<V>(Box<[(NodeKey, V)]>);
+
+impl<V> OwnerMap<V> {
+    fn new(entries: impl IntoIterator<Item = (NodeKey, V)>) -> Self {
+        let mut entries = entries.into_iter().collect::<Vec<_>>();
+        entries.sort_by_key(|(owner, _)| *owner);
+        entries.dedup_by_key(|(owner, _)| *owner);
+        let mut exact = Vec::with_capacity(entries.len());
+        exact.extend(entries);
+        Self(exact.into_boxed_slice())
+    }
+
+    fn get(&self, owner: &NodeKey) -> Option<&V> {
+        self.0
+            .binary_search_by_key(owner, |(key, _)| *key)
+            .ok()
+            .map(|index| &self.0[index].1)
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&NodeKey, &V)> {
+        self.0.iter().map(|(owner, value)| (owner, value))
+    }
 }
 fn tracked_local(arena: &NodeArena, key: NodeKey) -> bool {
     let Some(node) = arena.get(key) else {
@@ -638,13 +666,12 @@ impl RecordingCache {
                         .map(|(stable, plan)| (*key, *stable, plan.clone()))
                 })
                 .collect(),
-            properties: property_closure(trees, members, &ancestors)
-                .into_iter()
-                .collect(),
-            generations: dependencies
-                .iter()
-                .map(|key| (*key, generations.local_generations_for(*key)))
-                .collect(),
+            properties: OwnerMap::new(property_closure(trees, members, &ancestors)),
+            generations: OwnerMap::new(
+                dependencies
+                    .iter()
+                    .map(|key| (*key, generations.local_generations_for(*key))),
+            ),
         };
         self.subtrees.entries.insert(
             owner,

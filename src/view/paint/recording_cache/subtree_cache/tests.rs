@@ -53,10 +53,8 @@ fn replay_checks_transitive_property_endpoints_outside_arena_ancestry() {
                 states: vec![],
                 scopes: vec![],
                 metadata: vec![],
-                properties: property_closure(&trees, &members, &[])
-                    .into_iter()
-                    .collect(),
-                generations: FxHashMap::default(),
+                properties: OwnerMap::new(property_closure(&trees, &members, &[])),
+                generations: OwnerMap::new([]),
             }),
             false,
             trees.property_store_stamp(),
@@ -123,8 +121,8 @@ fn completed_commands_reject_intervening_native_ancestor_or_lookup_mutation() {
             states: vec![],
             scopes: vec![],
             metadata: vec![],
-            properties: FxHashMap::default(),
-            generations: FxHashMap::default(),
+            properties: OwnerMap::new([]),
+            generations: OwnerMap::new([]),
         };
         let commands: Arc<[PaintCoverageItem]> = Arc::from([]);
         let observed_clock = arena.mutation_clock();
@@ -225,8 +223,8 @@ fn replay_survives_translation_unless_a_chunk_stayed_in_viewport_space() {
                     states: vec![],
                     scopes: vec![],
                     metadata: vec![],
-                    properties: FxHashMap::default(),
-                    generations: FxHashMap::default(),
+                    properties: OwnerMap::new([]),
+                    generations: OwnerMap::new([]),
                 }),
                 false,
                 trees.property_store_stamp(),

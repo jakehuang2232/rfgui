@@ -524,7 +524,9 @@ impl<'a> InlineIfcCacheLookup<'a> {
 }
 
 pub(crate) struct InlineIfcCachedEntry {
-    context: InlineFormattingContext,
+    /// Boxed: a hash table keeps several empty slots per entry, and a
+    /// context is close to a kilobyte.
+    context: Box<InlineFormattingContext>,
     access_generation: u64,
 }
 
@@ -638,7 +640,7 @@ impl InlineIfcCache {
         self.entries.insert(
             shape_key.clone(),
             InlineIfcCachedEntry {
-                context,
+                context: Box::new(context),
                 access_generation: 0,
             },
         );
@@ -695,7 +697,7 @@ impl InlineIfcCache {
         self.entries.insert(
             shape_key.clone(),
             InlineIfcCachedEntry {
-                context,
+                context: Box::new(context),
                 access_generation: 0,
             },
         );
