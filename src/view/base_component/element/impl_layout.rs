@@ -753,26 +753,6 @@ impl Element {
         } else {
             None
         };
-        let inherited_hit_test_clip = self
-            .current_parent_hit_test_clip_rect()
-            .unwrap_or(parent_clip_rect);
-        self.hit_test_clip_rect = Some(if is_absolute {
-            match self.computed_style.position.clip_mode() {
-                // Viewport / AnchorParent escape the immediate ancestor's hit
-                // test clip — their resolved rect already encodes the upstream
-                // chain. Intersecting with `inherited_hit_test_clip` would clip
-                // the hit region back to the immediate parent and undo the
-                // escape (mirrors the scissor handling in apply_self_clip_scissor).
-                ClipMode::Viewport | ClipMode::AnchorParent => {
-                    absolute_clip_rect.unwrap_or(inherited_hit_test_clip)
-                }
-                ClipMode::Parent => absolute_clip_rect
-                    .map(|rect| intersect_rect(rect, inherited_hit_test_clip))
-                    .unwrap_or(inherited_hit_test_clip),
-            }
-        } else {
-            inherited_hit_test_clip
-        });
         let cull_rect = if is_absolute {
             absolute_clip_rect.unwrap_or(parent_clip_rect)
         } else {
@@ -1048,9 +1028,6 @@ impl Element {
             r.x += dx;
             r.y += dy;
         };
-        if let Some(rect) = self.hit_test_clip_rect.as_mut() {
-            shift_rect(rect);
-        }
         if let Some(rect) = self.anchor_parent_clip_rect.as_mut() {
             shift_rect(rect);
         }
@@ -1233,27 +1210,66 @@ impl Element {
         })
     }
 
-    pub(crate) fn hit_test_clip_matches_current_placement(
-        &self,
-        placement: LayoutPlacement,
-    ) -> bool {
+    /// Whether this element last inherited the clip placement now gives it.
+    pub(crate) fn parent_clip_matches_current_placement(&self, placement: LayoutPlacement) -> bool {
         if self.computed_style.position.mode() == PositionMode::Absolute {
             return true;
         }
         rect_approx_eq(
-            self.hit_test_clip_rect,
+            self.anchor_parent_clip_rect,
             Some(self.current_inherited_hit_test_clip_rect(placement)),
         )
     }
 
     pub(crate) fn current_child_hit_test_clip_rect(&self) -> Rect {
-        let inherited_hit_test_clip = self.hit_test_clip_rect.unwrap_or(Rect {
-            x: self.layout_state.layout_position.x,
-            y: self.layout_state.layout_position.y,
-            width: self.layout_state.layout_size.width.max(0.0),
-            height: self.layout_state.layout_size.height.max(0.0),
-        });
-        intersect_rect(inherited_hit_test_clip, self.inner_clip_rect())
+        self.child_hit_test_clip_rect(self.anchor_parent_clip_rect)
+    }
+
+    /// The clip a hit on this element must fall in, given the clip it
+    /// inherits.
+    pub(crate) fn own_hit_test_clip_rect(&self, inherited: Rect) -> Rect {
+        if self.computed_style.position.mode() != PositionMode::Absolute {
+            return inherited;
+        }
+        match self.computed_style.position.clip_mode() {
+            // Viewport / AnchorParent escape the immediate ancestor's hit
+            // test clip — their resolved rect already encodes the upstream
+            // chain. Intersecting with the inherited clip would clip the hit
+            // region back to the immediate parent and undo the escape
+            // (mirrors the scissor handling in apply_self_clip_scissor).
+            ClipMode::Viewport | ClipMode::AnchorParent => {
+                self.absolute_clip_rect.unwrap_or(inherited)
+            }
+            ClipMode::Parent => self
+                .absolute_clip_rect
+                .map(|rect| intersect_rect(rect, inherited))
+                .unwrap_or(inherited),
+        }
+    }
+
+    /// The clip a hit on this element's children must fall in, given the
+    /// clip this element inherits; with none, its own box clips them.
+    pub(crate) fn child_hit_test_clip_rect(&self, inherited: Option<Rect>) -> Rect {
+        let own = inherited.map_or(
+            Rect {
+                x: self.layout_state.layout_position.x,
+                y: self.layout_state.layout_position.y,
+                width: self.layout_state.layout_size.width.max(0.0),
+                height: self.layout_state.layout_size.height.max(0.0),
+            },
+            |inherited| self.own_hit_test_clip_rect(inherited),
+        );
+        intersect_rect(own, self.inner_clip_rect())
+    }
+
+    /// The clip a root inherits: the box its placement offered it.
+    pub(crate) fn root_hit_test_clip_rect(&self) -> Option<Rect> {
+        self.last_layout_placement.map(|placement| Rect {
+            x: placement.parent_x + placement.visual_offset_x,
+            y: placement.parent_y + placement.visual_offset_y,
+            width: placement.available_width.max(0.0),
+            height: placement.available_height.max(0.0),
+        })
     }
 
     fn register_anchor_snapshot(&self) {
@@ -1568,9 +1584,6 @@ impl Element {
         }
         if self.dirty_flags.intersects(DirtyPassMask::PLACEMENT) {
             return Some(PlacementSkipFailureReason::PlacementDirtySelf);
-        }
-        if !rect_approx_eq(self.hit_test_clip_rect, Some(inherited_hit_test_clip)) {
-            return Some(PlacementSkipFailureReason::HitTestClipMismatch);
         }
         if !self.paint_cull_matches_current_scope() {
             return Some(PlacementSkipFailureReason::PaintCullMismatch);

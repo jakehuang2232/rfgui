@@ -479,7 +479,7 @@ fn translation_replay_delta(
     // ancestor resized (e.g. an expanding panel), its child clip changes
     // shape rather than just translating, and the cached descendant clips
     // would go stale — fall back to a full place in that case.
-    if let Some(old_clip) = child.hit_test_clip_rect() {
+    if let Some(old_clip) = child.inherited_clip_rect() {
         let parent_clip = child_parent_hit_test_clip?;
         let shifted = Rect {
             x: old_clip.x + dx,

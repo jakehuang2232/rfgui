@@ -138,7 +138,7 @@ fn child_hit_test_clip_uses_parent_transition_inner_size() {
 
     let child_key = child_key(&arena, parent_key, 0);
     let child = crate::view::test_support::get_element::<Element>(&arena, child_key);
-    let clip = child.hit_test_clip_rect.expect("hit-test clip");
+    let clip = child.inherited_clip_rect().expect("inherited clip");
 
     assert_eq!(clip.x, 15.0);
     assert_eq!(clip.y, 17.0);

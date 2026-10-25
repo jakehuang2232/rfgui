@@ -157,7 +157,7 @@ impl Element {
                 .any(|&child| arena.subtree_dirty_intersects(child, mask))
             && !self.inline_ifc_layout_call_site_dirty_gate(arena, placement)
             && self.last_layout_placement == Some(placement)
-            && self.hit_test_clip_matches_current_placement(placement)
+            && self.parent_clip_matches_current_placement(placement)
             && self.paint_cull_matches_current_scope()
             && (self.children.is_empty()
                 || (rect_approx_eq(
@@ -375,7 +375,7 @@ impl Layoutable for Element {
             && !child_placement_dirty
             && !inline_ifc_layout_call_site_dirty
             && self.last_layout_placement == Some(placement)
-            && self.hit_test_clip_matches_current_placement(placement)
+            && self.parent_clip_matches_current_placement(placement)
             && self.paint_cull_matches_current_scope()
             && (self.children.is_empty()
                 || (rect_approx_eq(
@@ -393,7 +393,7 @@ impl Layoutable for Element {
             p.place_ifc_dirty += usize::from(inline_ifc_layout_call_site_dirty);
             p.place_input_changed += usize::from(self.last_layout_placement != Some(placement));
             p.place_clip_changed += usize::from(
-                !self.hit_test_clip_matches_current_placement(placement)
+                !self.parent_clip_matches_current_placement(placement)
                     || !self.paint_cull_matches_current_scope()
                     || (!self.children.is_empty()
                         && (!rect_approx_eq(

@@ -484,7 +484,7 @@ pub enum ScrollGeometryObservation {
 }
 
 impl Rect {
-    fn contains(self, px: f32, py: f32) -> bool {
+    pub(crate) fn contains(self, px: f32, py: f32) -> bool {
         px >= self.x && py >= self.y && px <= self.x + self.width && py <= self.y + self.height
     }
 
@@ -3276,12 +3276,12 @@ pub trait ElementTrait: Layoutable + EventTarget + ElementTypeName + std::any::A
         None
     }
 
-    /// This node's resolved hit-test clip rect, if it keeps one. The
-    /// translation fast-path uses it to confirm the inherited clip moved
-    /// rigidly with the subtree. Default `None` (leaf hosts without a clip,
-    /// e.g. `Text`, hit-test by box model alone, so they impose no clip
-    /// constraint on translation).
-    fn hit_test_clip_rect(&self) -> Option<Rect> {
+    /// The clip this node inherited from its parent at its last placement,
+    /// if it keeps one. The translation fast-path uses it to confirm the
+    /// inherited clip moved rigidly with the subtree. Default `None` (leaf
+    /// hosts without a clip, e.g. `Text`, impose no clip constraint on
+    /// translation).
+    fn inherited_clip_rect(&self) -> Option<Rect> {
         None
     }
 
@@ -5474,7 +5474,6 @@ pub struct Element {
     hit_test_children: Option<Box<[crate::view::node_arena::NodeKey]>>,
     absolute_clip_rect: Option<Rect>,
     anchor_parent_clip_rect: Option<Rect>,
-    hit_test_clip_rect: Option<Rect>,
     last_child_hit_test_clip_rect: Option<Rect>,
     /// Ancestor paint interest inherited at the last place; `None` limits
     /// children to this node's own interest.
@@ -6118,6 +6117,12 @@ impl Element {
     /// Shell placement for a node whose geometry is owned by an inline
     /// IFC root: adopt the bounding box so arena hit-testing and bbox
     /// queries see the fragment union, without running a layout pass.
+    /// Whether this element is a span its formatting context's root places,
+    /// never placed on its own.
+    pub(crate) fn is_inline_ifc_owned(&self) -> bool {
+        self.inline_ifc_owned_by_root
+    }
+
     pub(crate) fn place_as_inline_ifc_owned_box(&mut self, bounds: crate::ui::Rect) {
         self.layout_state.layout_position = Position {
             x: bounds.x,
@@ -6918,8 +6923,8 @@ impl ElementTrait for Element {
         Some(self.computed_style.vertical_align)
     }
 
-    fn hit_test_clip_rect(&self) -> Option<Rect> {
-        self.hit_test_clip_rect
+    fn inherited_clip_rect(&self) -> Option<Rect> {
+        self.anchor_parent_clip_rect
     }
 
     fn translate_in_place(&mut self, dx: f32, dy: f32) {
@@ -6966,11 +6971,6 @@ impl ElementTrait for Element {
         let local_x = viewport_x - self.layout_state.layout_position.x;
         let local_y = viewport_y - self.layout_state.layout_position.y;
         self.is_scrollbar_hit(local_x, local_y)
-    }
-
-    fn hit_test_visible_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
-        self.hit_test_clip_rect
-            .map_or(true, |rect| rect.contains(viewport_x, viewport_y))
     }
 
     fn retained_paint_properties(&self) -> RetainedPaintProperties {

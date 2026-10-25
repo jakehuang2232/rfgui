@@ -2,7 +2,7 @@ use crate::style::ClipMode;
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::popup_stack::PopupStack;
 
-use super::{BoxModelSnapshot, Element, ElementTrait};
+use super::{BoxModelSnapshot, Element, ElementTrait, Image, Rect, Svg};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HitTestSource {
@@ -52,6 +52,7 @@ pub fn hit_test(
             y: viewport_y,
         },
         ParentGate::Open,
+        inherited_hit_clip(arena, root_key),
     )
 }
 
@@ -87,7 +88,7 @@ pub fn hit_test_roots(
         .enumerate()
         .rev()
         .find_map(|(root_index, &root_key)| {
-            hit_test_subtree(arena, root_key, query, ParentGate::Open)
+            hit_test_subtree(arena, root_key, query, ParentGate::Open, None)
                 .map(|target_key| (root_index, target_key))
         })
 }
@@ -101,7 +102,13 @@ fn hit_test_popup_stack(
         let Some(popup_key) = arena.find_by_stable_id(stable_id) else {
             continue;
         };
-        let Some(target_key) = hit_test_subtree(arena, popup_key, query, ParentGate::Open) else {
+        let Some(target_key) = hit_test_subtree(
+            arena,
+            popup_key,
+            query,
+            ParentGate::Open,
+            inherited_hit_clip(arena, popup_key),
+        ) else {
             continue;
         };
         return Some(HitTestTarget {
@@ -119,10 +126,12 @@ fn hit_test_viewport_roots(
     query: HitTestQuery,
 ) -> Option<HitTestTarget> {
     root_keys.iter().rev().find_map(|&root_key| {
-        hit_test_subtree(arena, root_key, query, ParentGate::Open).map(|target_key| HitTestTarget {
-            root_key,
-            target_key,
-            source: HitTestSource::ViewportRoot,
+        hit_test_subtree(arena, root_key, query, ParentGate::Open, None).map(|target_key| {
+            HitTestTarget {
+                root_key,
+                target_key,
+                source: HitTestSource::ViewportRoot,
+            }
         })
     })
 }
@@ -133,11 +142,14 @@ enum ParentGate {
     OutsideParentSelf,
 }
 
+/// `inherited_clip` is the clip a hit inside `key` must fall in that its
+/// ancestors impose, `None` at a root.
 fn hit_test_subtree(
     arena: &NodeArena,
     key: NodeKey,
     query: HitTestQuery,
     parent_gate: ParentGate,
+    inherited_clip: Option<Rect>,
 ) -> Option<NodeKey> {
     let node = arena.get(key)?;
     let element = node.element.as_ref();
@@ -157,8 +169,10 @@ fn hit_test_subtree(
         return None;
     }
 
-    let in_self =
-        point_in_box_model(&snapshot, hit_x, hit_y) && element.hit_test_visible_at(hit_x, hit_y);
+    let clips = HitClips::of(element, inherited_clip);
+    let in_self = point_in_box_model(&snapshot, hit_x, hit_y)
+        && element.hit_test_visible_at(hit_x, hit_y)
+        && clips.own.is_none_or(|clip| clip.contains(hit_x, hit_y));
     if !in_self && !has_escape_descendant {
         return None;
     }
@@ -181,12 +195,64 @@ fn hit_test_subtree(
     drop(node);
 
     for child_key in children.iter().rev() {
-        if let Some(target_key) = hit_test_subtree(arena, *child_key, child_query, child_gate) {
+        if let Some(target_key) =
+            hit_test_subtree(arena, *child_key, child_query, child_gate, clips.children)
+        {
             return Some(target_key);
         }
     }
 
     if in_self { Some(key) } else { None }
+}
+
+/// The clips a hit test applies at one node, the ones placement gives it:
+/// to the node itself and to its children.
+struct HitClips {
+    own: Option<Rect>,
+    children: Option<Rect>,
+}
+
+impl HitClips {
+    fn of(host: &dyn ElementTrait, inherited: Option<Rect>) -> Self {
+        let any = host.as_any();
+        let element = any
+            .downcast_ref::<Element>()
+            .or_else(|| any.downcast_ref::<Image>().map(Image::element))
+            .or_else(|| any.downcast_ref::<Svg>().map(Svg::element));
+        match element {
+            // A span its formatting context's root installs is never placed
+            // on its own: it clips neither itself nor its children.
+            Some(element) if !element.is_inline_ifc_owned() => {
+                let inherited = inherited.or_else(|| element.root_hit_test_clip_rect());
+                Self {
+                    own: inherited.map(|inherited| element.own_hit_test_clip_rect(inherited)),
+                    children: Some(element.child_hit_test_clip_rect(inherited)),
+                }
+            }
+            _ => Self {
+                own: None,
+                children: inherited,
+            },
+        }
+    }
+}
+
+/// The clip `key`'s ancestors impose on a hit inside it.
+fn inherited_hit_clip(arena: &NodeArena, key: NodeKey) -> Option<Rect> {
+    let mut ancestors = Vec::new();
+    let mut cursor = arena.parent_of(key);
+    while let Some(ancestor) = cursor {
+        if ancestors.len() > arena.len() {
+            return None;
+        }
+        ancestors.push(ancestor);
+        cursor = arena.parent_of(ancestor);
+    }
+    ancestors.iter().rev().fold(None, |clip, &ancestor| {
+        arena.get(ancestor).map_or(clip, |node| {
+            HitClips::of(node.element.as_ref(), clip).children
+        })
+    })
 }
 
 fn hit_test_point_for_node(node: &dyn ElementTrait, x: f32, y: f32) -> (f32, f32) {

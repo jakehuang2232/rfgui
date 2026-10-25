@@ -160,6 +160,11 @@ pub struct Svg {
 }
 
 impl Svg {
+    /// The element this host lays out and hit-tests as.
+    pub(crate) fn element(&self) -> &Element {
+        &self.element
+    }
+
     #[cfg(test)]
     pub(crate) fn set_resource_loading_for_test(&self) {
         crate::view::svg_resource::set_svg_document_loading_for_test(self.source_key);
@@ -1075,8 +1080,8 @@ impl ElementTrait for Svg {
         self.element.inline_atomic_vertical_align()
     }
 
-    fn hit_test_clip_rect(&self) -> Option<crate::view::base_component::Rect> {
-        self.element.hit_test_clip_rect()
+    fn inherited_clip_rect(&self) -> Option<crate::view::base_component::Rect> {
+        self.element.inherited_clip_rect()
     }
 
     fn translate_in_place(&mut self, dx: f32, dy: f32) {
@@ -1252,10 +1257,6 @@ impl ElementTrait for Svg {
 
     fn intercepts_pointer_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
         self.element.intercepts_pointer_at(viewport_x, viewport_y)
-    }
-
-    fn hit_test_visible_at(&self, viewport_x: f32, viewport_y: f32) -> bool {
-        self.element.hit_test_visible_at(viewport_x, viewport_y)
     }
 
     fn has_active_animator(&self) -> bool {
