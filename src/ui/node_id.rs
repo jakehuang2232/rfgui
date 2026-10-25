@@ -410,11 +410,11 @@ fn target_from_viewport<'a>(
     vp: &'a crate::view::viewport::Viewport,
     key: NodeId,
 ) -> EventTarget<'a> {
-    let (bounds, local_bounds) = vp
-        .node_arena()
+    let arena = vp.node_arena();
+    let (bounds, local_bounds) = arena
         .get(key)
         .map(|node_ref| {
-            let snap = node_ref.element.box_model_snapshot();
+            let snap = arena.box_model_in_viewport(key, node_ref.element.box_model_snapshot());
             (
                 Rect::new(snap.x, snap.y, snap.width, snap.height),
                 Rect::new(0.0, 0.0, snap.width, snap.height),

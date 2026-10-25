@@ -17,10 +17,19 @@ pub(crate) struct HitTestTarget {
     pub source: HitTestSource,
 }
 
+/// A point in the layout space of the node a hit test is at.
 #[derive(Clone, Copy)]
 struct HitTestQuery {
     x: f32,
     y: f32,
+}
+
+impl HitTestQuery {
+    /// The viewport point in `key`'s layout space.
+    fn from_viewport(arena: &NodeArena, key: NodeKey, x: f32, y: f32) -> Self {
+        let (x, y) = arena.point_in_layout_space(key, x, y);
+        Self { x, y }
+    }
 }
 
 pub(crate) fn hit_test_pointer_target(
@@ -47,10 +56,7 @@ pub fn hit_test(
     hit_test_subtree(
         arena,
         root_key,
-        HitTestQuery {
-            x: viewport_x,
-            y: viewport_y,
-        },
+        HitTestQuery::from_viewport(arena, root_key, viewport_x, viewport_y),
         ParentGate::Open,
         inherited_hit_clip(arena, root_key),
     )
@@ -105,7 +111,7 @@ fn hit_test_popup_stack(
         let Some(target_key) = hit_test_subtree(
             arena,
             popup_key,
-            query,
+            HitTestQuery::from_viewport(arena, popup_key, query.x, query.y),
             ParentGate::Open,
             inherited_hit_clip(arena, popup_key),
         ) else {

@@ -326,8 +326,16 @@ fn set_platform_ime_cursor_rect(text_area: &TextArea, meta: &EventMeta, arena: &
     let Some((x, y, height)) = text_area.caret_screen_position(arena) else {
         return;
     };
+    let [dx, dy] = text_area
+        .self_node_key
+        .map_or([0.0, 0.0], |key| arena.viewport_offset(key));
     let mut vp = meta.viewport();
-    vp.ime_command(ImeCommand::SetCursorRect(x, y, 1.0, height.max(1.0)));
+    vp.ime_command(ImeCommand::SetCursorRect(
+        x + dx,
+        y + dy,
+        1.0,
+        height.max(1.0),
+    ));
 }
 
 impl EventTarget for TextArea {
@@ -382,8 +390,12 @@ impl EventTarget for TextArea {
         // commit-tap (matches v1).
         let had_preedit = !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some();
         let committed = had_preedit && self.commit_preedit();
-        let target =
-            self.cursor_target_at_screen(arena, event.pointer.viewport_x, event.pointer.viewport_y);
+        let target = self.cursor_target_at_screen(
+            arena,
+            self_key,
+            event.pointer.viewport_x,
+            event.pointer.viewport_y,
+        );
         if event.pointer.modifiers.shift() {
             self.extend_selection_to(target.char_index);
             self.cursor_affinity = target.affinity;
@@ -428,8 +440,12 @@ impl EventTarget for TextArea {
         if !self.pointer_selecting {
             return;
         }
-        let target =
-            self.cursor_target_at_screen(arena, event.pointer.viewport_x, event.pointer.viewport_y);
+        let target = self.cursor_target_at_screen(
+            arena,
+            self_key,
+            event.pointer.viewport_x,
+            event.pointer.viewport_y,
+        );
         self.update_pointer_selection_with_affinity(target.char_index, target.affinity);
         self.scroll_caret_into_view(arena);
         set_platform_ime_cursor_rect(self, &event.meta, arena);

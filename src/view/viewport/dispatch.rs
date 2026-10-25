@@ -1527,12 +1527,15 @@ impl Viewport {
             .get(target_key)
             .map(|n| n.element.stable_id())?;
         for &root_key in self.scene.ui_root_keys.iter().rev() {
-            if let Some(rect) = crate::view::base_component::get_ime_cursor_rect_by_id(
-                &self.scene.node_arena,
-                root_key,
-                stable_id,
-            ) {
-                return Some(rect);
+            if let Some((x, y, width, height)) =
+                crate::view::base_component::get_ime_cursor_rect_by_id(
+                    &self.scene.node_arena,
+                    root_key,
+                    stable_id,
+                )
+            {
+                let [dx, dy] = self.scene.node_arena.viewport_offset(target_key);
+                return Some((x + dx, y + dy, width, height));
             }
         }
         None
@@ -2273,15 +2276,17 @@ pub(crate) fn scroll_into_view_impl(
     if !arena.contains_key(target_key) {
         return false;
     }
-    let Some(target_rect) = arena.get(target_key).map(|n| {
-        let snapshot = n.element.box_model_snapshot();
-        crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height)
-    }) else {
+    let Some(target_rect) = arena
+        .get(target_key)
+        .map(|n| event_bounds(arena, target_key, &n.element.box_model_snapshot()))
+    else {
         return false;
     };
     scroll_rect_into_view_from(arena, target_key, target_rect, options, true, false)
 }
 
+/// Scrolls `target_key`'s scroll containers until `target_rect`, in the
+/// viewport, is in view.
 pub(crate) fn scroll_rect_into_view_from(
     arena: &crate::view::node_arena::NodeArena,
     target_key: crate::view::node_arena::NodeKey,
@@ -2305,10 +2310,10 @@ pub(crate) fn scroll_rect_into_view_from(
 
     while let Some(scroller_key) = current {
         current = arena.parent_of(scroller_key);
-        let Some(scroller_rect) = arena.get(scroller_key).map(|n| {
-            let snapshot = n.element.box_model_snapshot();
-            crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height)
-        }) else {
+        let Some(scroller_rect) = arena
+            .get(scroller_key)
+            .map(|n| event_bounds(arena, scroller_key, &n.element.box_model_snapshot()))
+        else {
             continue;
         };
 
@@ -2506,18 +2511,32 @@ pub(crate) fn dispatch_blur_bubble(
     dispatch_blur_impl(arena, target_key, event, control)
 }
 
+/// A viewport point relative to `key`'s box, `snapshot`.
 pub(super) fn local_point_for_node(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
     node: &dyn ElementTrait,
     snapshot: &BoxModelSnapshot,
     viewport_x: f32,
     viewport_y: f32,
 ) -> (f32, f32) {
+    let (x, y) = arena.point_in_layout_space(key, viewport_x, viewport_y);
     let (paint_x, paint_y) = node
         .as_any()
         .downcast_ref::<Element>()
-        .and_then(|element| element.map_viewport_to_paint_space(viewport_x, viewport_y))
-        .unwrap_or((viewport_x, viewport_y));
+        .and_then(|element| element.map_viewport_to_paint_space(x, y))
+        .unwrap_or((x, y));
     (paint_x - snapshot.x, paint_y - snapshot.y)
+}
+
+/// `key`'s box, `snapshot`, as events report it: in the viewport.
+pub(super) fn event_bounds(
+    arena: &crate::view::node_arena::NodeArena,
+    key: crate::view::node_arena::NodeKey,
+    snapshot: &BoxModelSnapshot,
+) -> crate::ui::Rect {
+    let bounds = arena.box_model_in_viewport(key, *snapshot);
+    crate::ui::Rect::new(bounds.x, bounds.y, bounds.width, bounds.height)
 }
 
 /// Bubble a pointer-down event from `target_key` up the arena parent chain.
@@ -2547,6 +2566,8 @@ fn dispatch_pointer_down_bubble(
                 let node_id = element.stable_id();
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
+                    cx.arena(),
+                    key,
                     element.as_ref(),
                     &snapshot,
                     event.pointer.viewport_x,
@@ -2556,7 +2577,7 @@ fn dispatch_pointer_down_bubble(
                 event.pointer.local_y = local_y;
                 let ct = crate::ui::EventTarget::snapshot(
                     key,
-                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    event_bounds(cx.arena(), key, &snapshot),
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
@@ -2600,6 +2621,8 @@ fn dispatch_pointer_up_bubble(
             .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
+                    cx.arena(),
+                    key,
                     element.as_ref(),
                     &snapshot,
                     event.pointer.viewport_x,
@@ -2609,7 +2632,7 @@ fn dispatch_pointer_up_bubble(
                 event.pointer.local_y = local_y;
                 let ct = crate::ui::EventTarget::snapshot(
                     key,
-                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    event_bounds(cx.arena(), key, &snapshot),
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
@@ -2652,6 +2675,8 @@ fn dispatch_pointer_move_bubble(
             .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
+                    cx.arena(),
+                    key,
                     element.as_ref(),
                     &snapshot,
                     event.pointer.viewport_x,
@@ -2661,7 +2686,7 @@ fn dispatch_pointer_move_bubble(
                 event.pointer.local_y = local_y;
                 let ct = crate::ui::EventTarget::snapshot(
                     key,
-                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    event_bounds(cx.arena(), key, &snapshot),
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
@@ -2704,6 +2729,8 @@ fn dispatch_wheel_bubble(
             .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
+                    cx.arena(),
+                    key,
                     element.as_ref(),
                     &snapshot,
                     event.viewport_x,
@@ -2713,7 +2740,7 @@ fn dispatch_wheel_bubble(
                 event.local_y = local_y;
                 let ct = crate::ui::EventTarget::snapshot(
                     key,
-                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    event_bounds(cx.arena(), key, &snapshot),
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
@@ -2792,6 +2819,8 @@ fn dispatch_context_menu_bubble(
             .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
+                    cx.arena(),
+                    key,
                     element.as_ref(),
                     &snapshot,
                     event.pointer.viewport_x,
@@ -2801,7 +2830,7 @@ fn dispatch_context_menu_bubble(
                 event.pointer.local_y = local_y;
                 let ct = crate::ui::EventTarget::snapshot(
                     key,
-                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    event_bounds(cx.arena(), key, &snapshot),
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
@@ -2844,6 +2873,8 @@ fn dispatch_click_bubble(
             .mutate_element_ref_with_invalidation(key, |element, cx| {
                 let snapshot = element.box_model_snapshot();
                 let (local_x, local_y) = local_point_for_node(
+                    cx.arena(),
+                    key,
                     element.as_ref(),
                     &snapshot,
                     event.pointer.viewport_x,
@@ -2853,7 +2884,7 @@ fn dispatch_click_bubble(
                 event.pointer.local_y = local_y;
                 let ct = crate::ui::EventTarget::snapshot(
                     key,
-                    crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                    event_bounds(cx.arena(), key, &snapshot),
                     crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                 );
                 event.meta.set_current_target(ct);
@@ -3235,6 +3266,8 @@ macro_rules! define_pointer_target_bubble {
                     .mutate_element_ref_with_invalidation(key, |element, cx| {
                         let snapshot = element.box_model_snapshot();
                         let (local_x, local_y) = local_point_for_node(
+                            cx.arena(),
+                            key,
                             element.as_ref(),
                             &snapshot,
                             event.pointer.viewport_x,
@@ -3244,12 +3277,7 @@ macro_rules! define_pointer_target_bubble {
                         event.pointer.local_y = local_y;
                         let ct = crate::ui::EventTarget::snapshot(
                             key,
-                            crate::ui::Rect::new(
-                                snapshot.x,
-                                snapshot.y,
-                                snapshot.width,
-                                snapshot.height,
-                            ),
+                            event_bounds(cx.arena(), key, &snapshot),
                             crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
                         );
                         event.meta.set_current_target(ct);
@@ -3446,7 +3474,7 @@ pub(crate) fn dispatch_drag_leave_to_key(
             let snapshot = element.box_model_snapshot();
             let target = crate::ui::EventTarget::snapshot(
                 key,
-                crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                event_bounds(cx.arena(), key, &snapshot),
                 crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
             );
             let mut meta = crate::ui::EventMeta::with_target(target);

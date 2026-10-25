@@ -1,6 +1,6 @@
 //! Scene tree helpers — hover, scroll, snapshots, transform updates, box models.
 
-use super::dispatch::local_point_for_node;
+use super::dispatch::{event_bounds, local_point_for_node};
 use super::*;
 use crate::ui::{PointerEnterEvent, PointerLeaveEvent};
 use crate::view::base_component::{BoxModelSnapshot, DirtyFlags, ElementTrait};
@@ -459,22 +459,23 @@ pub(crate) fn collect_box_models(
     arena: &crate::view::node_arena::NodeArena,
 ) -> Vec<BoxModelSnapshot> {
     fn walk(
+        key: crate::view::node_arena::NodeKey,
         node: &dyn ElementTrait,
         arena: &crate::view::node_arena::NodeArena,
         out: &mut Vec<BoxModelSnapshot>,
     ) {
         crate::ui::work_profile::count(|p| p.box_model_reads += 1);
-        out.push(node.box_model_snapshot());
-        for child_key in node.children() {
-            if let Some(child_node) = arena.get(*child_key) {
-                walk(child_node.element.as_ref(), arena, out);
+        out.push(arena.box_model_in_viewport(key, node.box_model_snapshot()));
+        for &child_key in node.children() {
+            if let Some(child_node) = arena.get(child_key) {
+                walk(child_key, child_node.element.as_ref(), arena, out);
             }
         }
     }
 
     let mut out = Vec::new();
     if let Some(root_node) = arena.get(root_key) {
-        walk(root_node.element.as_ref(), arena, &mut out);
+        walk(root_key, root_node.element.as_ref(), arena, &mut out);
     }
     out
 }
@@ -718,6 +719,8 @@ fn dispatch_pointer_enter_to_key(
         .mutate_element_ref_with_invalidation(key, |element, cx| {
             let snapshot = element.box_model_snapshot();
             let (local_x, local_y) = local_point_for_node(
+                cx.arena(),
+                key,
                 element.as_ref(),
                 &snapshot,
                 pointer.viewport_x,
@@ -728,7 +731,7 @@ fn dispatch_pointer_enter_to_key(
             pointer.local_y = local_y;
             let target = crate::ui::EventTarget::snapshot(
                 key,
-                crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                event_bounds(cx.arena(), key, &snapshot),
                 crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
             );
             let mut meta = crate::ui::EventMeta::with_target(target);
@@ -753,6 +756,8 @@ fn dispatch_pointer_leave_to_key(
         .mutate_element_ref_with_invalidation(key, |element, cx| {
             let snapshot = element.box_model_snapshot();
             let (local_x, local_y) = local_point_for_node(
+                cx.arena(),
+                key,
                 element.as_ref(),
                 &snapshot,
                 pointer.viewport_x,
@@ -763,7 +768,7 @@ fn dispatch_pointer_leave_to_key(
             pointer.local_y = local_y;
             let target = crate::ui::EventTarget::snapshot(
                 key,
-                crate::ui::Rect::new(snapshot.x, snapshot.y, snapshot.width, snapshot.height),
+                event_bounds(cx.arena(), key, &snapshot),
                 crate::ui::Rect::new(0.0, 0.0, snapshot.width, snapshot.height),
             );
             let mut meta = crate::ui::EventMeta::with_target(target);

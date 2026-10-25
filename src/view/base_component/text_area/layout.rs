@@ -298,6 +298,8 @@ impl TextArea {
         )
     }
 
+    /// Scrolls the scroll containers above this text area until `rect`, in
+    /// its layout space, is in view.
     fn scroll_rect_into_ancestor_views(
         &self,
         arena: &crate::view::node_arena::NodeArena,
@@ -306,10 +308,11 @@ impl TextArea {
         let Some(self_key) = self.self_node_key else {
             return false;
         };
+        let [dx, dy] = arena.viewport_offset(self_key);
         crate::view::viewport::dispatch::scroll_rect_into_view_from(
             arena,
             self_key,
-            rect,
+            crate::ui::Rect::new(rect.x + dx, rect.y + dy, rect.width, rect.height),
             crate::ui::ScrollIntoViewOptions::default(),
             false,
             true,

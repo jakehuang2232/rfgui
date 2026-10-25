@@ -63,7 +63,7 @@ fn click_in_middle_empty_paragraph_lands_in_empty_run_not_following_sibling() {
             el.as_any()
                 .downcast_ref::<TextArea>()
                 .unwrap()
-                .cursor_target_at_screen(arena, click_x_left, click_y)
+                .cursor_target_at_screen(arena, root, click_x_left, click_y)
                 .char_index
         })
         .unwrap();
@@ -72,7 +72,7 @@ fn click_in_middle_empty_paragraph_lands_in_empty_run_not_following_sibling() {
             el.as_any()
                 .downcast_ref::<TextArea>()
                 .unwrap()
-                .cursor_target_at_screen(arena, click_x_right, click_y)
+                .cursor_target_at_screen(arena, root, click_x_right, click_y)
                 .char_index
         })
         .unwrap();

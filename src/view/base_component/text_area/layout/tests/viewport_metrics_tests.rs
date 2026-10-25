@@ -65,7 +65,7 @@ fn short_content_hit_test_extends_to_viewport_width() {
             text_area.box_model_snapshot().width >= 300.0,
             "TextArea hit box should extend to its viewport width",
         );
-        let target = text_area.cursor_target_at_screen(arena, 250.0, 8.0);
+        let target = text_area.cursor_target_at_screen(arena, root, 250.0, 8.0);
         assert_eq!(
             target.char_index,
             content.chars().count(),

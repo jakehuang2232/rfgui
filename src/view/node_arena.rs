@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 mod mutation_history;
 mod render_changes;
+mod viewport_space;
 
 use crate::view::base_component::{DirtyFlags, ElementTrait, PlacementSkipFailureReason};
 

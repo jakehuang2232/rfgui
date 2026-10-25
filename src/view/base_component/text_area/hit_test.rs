@@ -20,18 +20,22 @@
 //! - Click in a wrapped-inline fragment gap: nearest-line-by-y rule
 //!   resolves to the fragment above or below, never a stop in the gap.
 
-use crate::view::node_arena::NodeArena;
+use crate::view::node_arena::{NodeArena, NodeKey};
 
 use super::TextArea;
 use super::caret_map::{CaretAffinity, CaretNavigationMap, VerticalTarget};
 
 impl TextArea {
+    /// The caret target under the viewport point `(x, y)`; `self_key` is
+    /// this text area's node.
     pub(super) fn cursor_target_at_screen(
         &self,
         arena: &NodeArena,
+        self_key: NodeKey,
         x: f32,
         y: f32,
     ) -> VerticalTarget {
+        let (x, y) = arena.point_in_layout_space(self_key, x, y);
         let fallback = VerticalTarget {
             char_index: self.cursor_char.min(self.content.chars().count()),
             affinity: CaretAffinity::Downstream,

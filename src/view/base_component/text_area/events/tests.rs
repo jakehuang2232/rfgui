@@ -141,7 +141,7 @@ fn pointer_down_at_soft_wrap_tail_keeps_caret_on_upper_line() {
         let upper_tail = line0.stops.last().expect("upper line tail");
 
         let target =
-            text_area.cursor_target_at_screen(arena, upper_tail.x + 1000.0, line0_mid_y);
+            text_area.cursor_target_at_screen(arena, root, upper_tail.x + 1000.0, line0_mid_y);
         text_area.start_pointer_selection_with_affinity(target.char_index, target.affinity);
 
         assert_eq!(text_area.cursor_affinity, CaretAffinity::Upstream);

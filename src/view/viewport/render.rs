@@ -594,7 +594,10 @@ impl Viewport {
             let Some(node) = self.scene.node_arena.get(entry.owner) else {
                 continue;
             };
-            let snapshot = node.element.box_model_snapshot();
+            let snapshot = self
+                .scene
+                .node_arena
+                .box_model_in_viewport(entry.owner, node.element.box_model_snapshot());
             if !snapshot.should_render {
                 continue;
             }
@@ -639,7 +642,10 @@ impl Viewport {
         use crate::view::debug::DebugSurfaceAction;
         use crate::view::paint::RetainedSurfaceCompileAction as Action;
         let node = self.scene.node_arena.get(entry.owner)?;
-        let bounds = node.element.box_model_snapshot();
+        let bounds = self
+            .scene
+            .node_arena
+            .box_model_in_viewport(entry.owner, node.element.box_model_snapshot());
         Some(crate::view::debug::DebugRetainedAutoSurfaceCaptureInput {
             owner: Some(entry.owner),
             stable_id: Some(node.element.stable_id()),

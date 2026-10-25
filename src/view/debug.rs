@@ -867,7 +867,7 @@ impl DebugCaptureBuilder {
                 .cloned()
                 .unwrap_or_else(|| id.clone())
         };
-        let snapshot = element.box_model_snapshot();
+        let snapshot = arena.box_model_in_viewport(key, element.box_model_snapshot());
         let scroll_offset = element.get_scroll_offset();
         let layout = self
             .options
