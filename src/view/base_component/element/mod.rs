@@ -5458,6 +5458,9 @@ pub struct Element {
     /// Assignment inputs temporarily removed by a reusable measure. Consumed
     /// only when both axes are restored exactly; never proves paint validity.
     reusable_measure_assignment: Option<[Option<f32>; 2]>,
+    /// Whether the last `place` found nothing to do. The parent's placement
+    /// loop reads it to leave the node's mutation revision alone.
+    place_was_clean: bool,
     is_hovered: bool,
     event_handlers: Option<Box<ElementEventHandlers>>,
     layout_dirty: bool,
@@ -5466,6 +5469,9 @@ pub struct Element {
     last_layout_proposal: Option<LayoutProposal>,
     flex_info: Option<Box<crate::view::layout::FlexLayoutInfo>>,
     has_absolute_descendant_for_hit_test: bool,
+    /// Of a long child list, the children a hit can land in, in child order,
+    /// as of the last place; `None` means all of them.
+    hit_test_children: Option<Box<[crate::view::node_arena::NodeKey]>>,
     absolute_clip_rect: Option<Rect>,
     anchor_parent_clip_rect: Option<Rect>,
     hit_test_clip_rect: Option<Rect>,
@@ -7197,6 +7203,7 @@ impl ElementTrait for Element {
     fn sync_children_mirror(&mut self, children: &[crate::view::node_arena::NodeKey]) {
         self.children.clear();
         self.children.extend_from_slice(children);
+        self.hit_test_children = None;
     }
 
     fn parent_id(&self) -> Option<u64> {

@@ -172,7 +172,12 @@ fn hit_test_subtree(
     } else {
         ParentGate::OutsideParentSelf
     };
-    let children = node.children.clone();
+    let children = element
+        .as_any()
+        .downcast_ref::<Element>()
+        .and_then(Element::hit_test_children)
+        .unwrap_or(&node.children)
+        .to_vec();
     drop(node);
 
     for child_key in children.iter().rev() {

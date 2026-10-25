@@ -234,11 +234,18 @@ pub(crate) fn place_axis_children(inputs: PlaceAxisChildrenInputs<'_>, arena: &m
                                     profile.translated_subtree_roots += 1;
                                     profile.translated_subtree_nodes += count;
                                 });
-                                ((), NodeChange::Translation)
+                                ((), Some(NodeChange::Translation))
                             } else {
                                 with_layout_place_profile(|profile| profile.child_place_calls += 1);
                                 child.place(placement, arena);
-                                ((), NodeChange::Mutation)
+                                // A place that found nothing to do leaves the
+                                // node as it was, so later passes keep their
+                                // observations of it.
+                                let unchanged = child
+                                    .as_any_mut()
+                                    .downcast_mut::<Element>()
+                                    .is_some_and(Element::take_place_was_clean);
+                                ((), (!unchanged).then_some(NodeChange::Mutation))
                             }
                         });
                     }

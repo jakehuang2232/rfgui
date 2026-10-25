@@ -786,12 +786,19 @@ impl Element {
                 }
             }
         }
+        self.hit_test_children = None;
         self.mark_layout_dirty();
         std::mem::replace(&mut self.children, children)
     }
 
     pub(crate) fn has_absolute_descendant_for_hit_test(&self) -> bool {
         self.has_absolute_descendant_for_hit_test
+    }
+
+    /// The children a hit test has to try, when the last place narrowed
+    /// them down.
+    pub(crate) fn hit_test_children(&self) -> Option<&[crate::view::node_arena::NodeKey]> {
+        self.hit_test_children.as_deref()
     }
 
     pub(crate) fn is_absolute_positioned_for_hit_test(&self) -> bool {

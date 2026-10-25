@@ -123,6 +123,11 @@ fn property_observation_count_depends_on_changed_branch_not_static_sibling_size(
         sync_pair(&mut incremental, &mut full, &arena, &[root, active]);
         assert_eq!(incremental.observed_nodes, 1);
         assert_eq!(incremental.replayed_nodes, count as usize + 1);
+        // A changed child among static siblings: only it and its parent.
+        set_opacity(&arena, arena.children_of(root)[count as usize / 2], 0.5);
+        sync_pair(&mut incremental, &mut full, &arena, &[root, active]);
+        assert_eq!(incremental.observed_nodes, 2);
+        assert_eq!(incremental.replayed_nodes, count as usize);
     }
 }
 

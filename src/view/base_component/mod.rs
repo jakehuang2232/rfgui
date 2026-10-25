@@ -220,6 +220,9 @@ pub(crate) fn animation_frame_request(
         let children = node.children.clone();
         drop(node);
         for child in children {
+            if arena.subtree_animation_idle(child) {
+                continue;
+            }
             request = request.merge(visit(arena, child, seen, now));
             if request == AnimationFrameRequest::NextFrame {
                 break;
@@ -252,6 +255,16 @@ fn native_noop_tick_children(
     let noop = host.is::<Text>() || host.downcast_ref::<Element>()
         .is_some_and(|element| !post_layout || element.post_layout_animation_is_noop());
     noop.then(|| node.element.children().to_vec())
+}
+
+/// Whether every animation hook of `element` is a no-op: neither tick acts
+/// and it requests no frame. Only native hosts can tell.
+pub(crate) fn animation_hooks_are_noop(element: &dyn ElementTrait) -> bool {
+    let host = element.as_any();
+    host.is::<Text>()
+        || host
+            .downcast_ref::<Element>()
+            .is_some_and(Element::post_layout_animation_is_noop)
 }
 
 /// Advance retained animation state using one viewport-owned time sample.
@@ -287,7 +300,9 @@ pub(crate) fn tick_animation_frames(
         };
         let mut changed = !dirty.is_empty();
         for child in children {
-            changed |= visit(arena, child, now, seen);
+            if !arena.subtree_animation_idle(child) {
+                changed |= visit(arena, child, now, seen);
+            }
         }
         changed
     }
@@ -328,7 +343,9 @@ pub(crate) fn tick_post_layout_animation_frames(
         };
         let mut changed = !dirty.is_empty();
         for child in children {
-            changed |= visit(arena, child, now, seen);
+            if !arena.subtree_animation_idle(child) {
+                changed |= visit(arena, child, now, seen);
+            }
         }
         changed
     }

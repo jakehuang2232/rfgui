@@ -14,6 +14,7 @@ pub(super) struct NativeSubtrees {
     arena: Option<Arc<()>>,
     roots: Vec<NodeKey>,
     entries: FxHashMap<NodeKey, Entry>,
+    walks: FxHashMap<NodeKey, ChildWalk>,
 }
 /// One closed subtree. A stored owner's children were stored or replayed in
 /// the same sync. An entry goes only when its owner is visited again or goes
@@ -26,6 +27,10 @@ struct Entry {
     is_root: bool,
     children: Arc<[NodeKey]>,
     inactive_scroll_owner: bool,
+    /// Its boundary inputs come from the node itself and its parent only.
+    local_boundary: bool,
+    /// How many nodes the subtree holds.
+    len: usize,
     /// The whole subtree, flattened the first time it replays: a subtree
     /// that keeps replaying then costs one pass over a list per sync.
     members: OnceLock<Members>,
@@ -33,6 +38,15 @@ struct Entry {
 struct Members {
     keys: Box<[NodeKey]>,
     inactive_scroll_owners: Box<[NodeKey]>,
+}
+/// What a node handed all of its children when it last walked them. While
+/// it hands them the same again, a child whose subtree did not change still
+/// replays, so only changed children and the `volatile` ones, which cannot
+/// replay on their own inputs alone, need a visit.
+pub(super) struct ChildWalk {
+    pub(super) descendants: PropertyTreeState,
+    pub(super) reference_scroll: Option<ScrollNodeId>,
+    pub(super) volatile: Box<[NodeKey]>,
 }
 impl NativeSubtrees {
     pub(super) fn begin(&mut self, arena: &NodeArena, roots: &[NodeKey]) {
@@ -44,12 +58,15 @@ impl NativeSubtrees {
             || self.roots != roots
         {
             self.entries.clear();
+            self.walks.clear();
             self.arena = Some(identity);
             self.roots = roots.to_vec();
         }
     }
-    /// Marks every member of `key`'s unchanged subtree seen and restores its
-    /// inactive scroll owners. Returns how many members it covered.
+    /// Certifies `key`'s unchanged subtree and returns how many nodes it
+    /// holds. A walk that records what it reaches gets every member marked
+    /// seen and the subtree's inactive scroll owners restored.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn replay(
         &self,
         key: NodeKey,
@@ -57,7 +74,7 @@ impl NativeSubtrees {
         boundary: BoundaryInputs,
         inherited: PropertyTreeState,
         is_root: bool,
-        seen: &mut FxHashSet<NodeKey>,
+        seen: Option<&mut FxHashSet<NodeKey>>,
         inactive_scroll_owners: &mut FxHashSet<NodeKey>,
     ) -> Option<usize> {
         let old = self.entries.get(&key)?;
@@ -68,10 +85,12 @@ impl NativeSubtrees {
         if !matches {
             return None;
         }
-        let members = old.members.get_or_init(|| self.members(key));
-        seen.extend(members.keys.iter().copied());
-        inactive_scroll_owners.extend(members.inactive_scroll_owners.iter().copied());
-        Some(members.keys.len())
+        if let Some(seen) = seen {
+            let members = old.members.get_or_init(|| self.members(key));
+            seen.extend(members.keys.iter().copied());
+            inactive_scroll_owners.extend(members.inactive_scroll_owners.iter().copied());
+        }
+        Some(old.len)
     }
     fn members(&self, key: NodeKey) -> Members {
         let mut keys = Vec::new();
@@ -92,6 +111,7 @@ impl NativeSubtrees {
             inactive_scroll_owners: inactive_scroll_owners.into(),
         }
     }
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn store(
         &mut self,
         key: NodeKey,
@@ -101,6 +121,8 @@ impl NativeSubtrees {
         is_root: bool,
         children: Arc<[NodeKey]>,
         inactive_scroll_owner: bool,
+        local_boundary: bool,
+        len: usize,
     ) {
         self.entries.insert(
             key,
@@ -111,6 +133,8 @@ impl NativeSubtrees {
                 is_root,
                 children,
                 inactive_scroll_owner,
+                local_boundary,
+                len,
                 members: OnceLock::new(),
             },
         );
@@ -118,8 +142,55 @@ impl NativeSubtrees {
     pub(super) fn remove(&mut self, key: NodeKey) {
         self.entries.remove(&key);
     }
+    /// The size of `key`'s stored subtree.
+    pub(super) fn len(&self, key: NodeKey) -> Option<usize> {
+        self.entries.get(&key).map(|entry| entry.len)
+    }
+    /// The children `key` had when its subtree was stored.
+    pub(super) fn children(&self, key: NodeKey) -> Option<Arc<[NodeKey]>> {
+        self.entries.get(&key).map(|entry| entry.children.clone())
+    }
+    /// Whether `key` can replay on its own inputs and its parent's alone.
+    pub(super) fn replays_locally(&self, key: NodeKey) -> bool {
+        self.entries
+            .get(&key)
+            .is_some_and(|entry| entry.local_boundary)
+    }
+    /// The size of `key`'s stored subtree and whether it replays locally.
+    pub(super) fn stored(&self, key: NodeKey) -> Option<(usize, bool)> {
+        self.entries
+            .get(&key)
+            .map(|entry| (entry.len, entry.local_boundary))
+    }
+    pub(super) fn walk(&self, key: NodeKey) -> Option<&ChildWalk> {
+        self.walks.get(&key)
+    }
+    pub(super) fn record_walk(&mut self, key: NodeKey, walk: Option<ChildWalk>) {
+        match walk {
+            Some(walk) => self.walks.insert(key, walk),
+            None => self.walks.remove(&key),
+        };
+    }
     pub(super) fn finish(&mut self, seen: &FxHashSet<NodeKey>, valid: bool) {
         self.entries.retain(|key, _| valid && seen.contains(key));
+        self.walks.retain(|key, _| valid && seen.contains(key));
+    }
+}
+
+/// What decides which nodes a walk from `roots` reaches.
+#[derive(PartialEq)]
+pub(super) struct Topology {
+    arena: Arc<()>,
+    clock: u64,
+    roots: Vec<NodeKey>,
+}
+impl Topology {
+    pub(super) fn observe(arena: &NodeArena, roots: &[NodeKey]) -> Self {
+        Self {
+            arena: arena.mutation_identity(),
+            clock: arena.topology_clock(),
+            roots: roots.to_vec(),
+        }
     }
 }
 

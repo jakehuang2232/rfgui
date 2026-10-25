@@ -60,6 +60,11 @@ impl Element {
             && self.can_reuse_measure_output(constraints, arena)
     }
 
+    /// Whether the last `place` found nothing to do; reading it resets it.
+    pub(crate) fn take_place_was_clean(&mut self) -> bool {
+        std::mem::take(&mut self.place_was_clean)
+    }
+
     pub(crate) fn clear_measure_assignment(&mut self) {
         self.reusable_measure_assignment = None;
         with_layout_place_profile(|p| {
@@ -354,6 +359,7 @@ impl Layoutable for Element {
     ) {
         let _profile = layout_profile_scope(LayoutPlaceTiming::PlaceBody);
         self.reusable_measure_assignment = None;
+        self.place_was_clean = false;
         crate::ui::work_profile::count(|p| p.place_calls += 1);
         // O(1) cache read per child; see refresh_subtree_dirty_cache.
         let placement_dirty_mask = DirtyPassMask::PLACEMENT;
@@ -378,6 +384,7 @@ impl Layoutable for Element {
                 ) && self.child_paint_cull_matches_last_place()))
         {
             with_layout_place_profile(|p| p.place_returned_clean += 1);
+            self.place_was_clean = true;
             return;
         }
         with_layout_place_profile(|p| {

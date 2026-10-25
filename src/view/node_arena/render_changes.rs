@@ -94,6 +94,8 @@ impl NodeArena {
     }
 
     pub(super) fn note_topology_change(&self, key: NodeKey) {
+        self.topology_clock
+            .set(self.topology_clock.get().wrapping_add(1));
         self.note_mutation(key);
         if let Some(node) = self.slots.get(key) {
             // Wiring APIs historically leave layout/redraw scheduling to the
@@ -112,6 +114,12 @@ impl NodeArena {
 
     pub(crate) fn mutation_clock(&self) -> u64 {
         self.mutation_clock.get()
+    }
+
+    /// Unchanged while every parent/child edge stays as it was and no node
+    /// is removed, so the same roots reach the same nodes.
+    pub(crate) fn topology_clock(&self) -> u64 {
+        self.topology_clock.get()
     }
 
     /// Only a change detector. Consumers must additionally certify tracked

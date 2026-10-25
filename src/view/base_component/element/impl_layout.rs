@@ -1423,17 +1423,39 @@ impl Element {
         &mut self,
         arena: &crate::view::node_arena::NodeArena,
     ) {
-        self.has_absolute_descendant_for_hit_test = self.children.iter().any(|child_key| {
-            arena
-                .get(*child_key)
-                .and_then(|node| {
-                    node.element.as_any().downcast_ref::<Element>().map(|el| {
-                        el.is_absolute_positioned_for_hit_test()
-                            || el.has_absolute_descendant_for_hit_test
-                    })
-                })
-                .unwrap_or(false)
-        });
+        // A long list keeps the children a hit can land in: one that renders
+        // or has a positioned descendant that may escape it. Every child of
+        // an axis layout was just placed, which is where both can change.
+        let narrow = self.children.len() > 32
+            && matches!(
+                self.computed_style.layout,
+                Layout::Flex { .. } | Layout::Flow { .. }
+            );
+        let mut candidates = narrow.then(Vec::new);
+        let mut escapes = false;
+        for &child_key in &self.children {
+            let (child_escapes, hittable) = arena.get(child_key).map_or((false, false), |node| {
+                let host = node.element.as_any();
+                if let Some(el) = host.downcast_ref::<Element>() {
+                    let child_escapes = el.is_absolute_positioned_for_hit_test()
+                        || el.has_absolute_descendant_for_hit_test;
+                    (
+                        child_escapes,
+                        child_escapes || el.layout_state.should_render,
+                    )
+                } else if host.is::<crate::view::base_component::Text>() {
+                    (false, node.element.box_model_snapshot().should_render)
+                } else {
+                    (false, true)
+                }
+            });
+            escapes |= child_escapes;
+            if hittable && let Some(candidates) = candidates.as_mut() {
+                candidates.push(child_key);
+            }
+        }
+        self.has_absolute_descendant_for_hit_test = escapes;
+        self.hit_test_children = candidates.map(Vec::into_boxed_slice);
     }
 
     pub(crate) fn active_layout_transition_runtime_state(&self) -> bool {

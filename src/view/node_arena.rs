@@ -138,6 +138,9 @@ pub struct Node {
     /// must still check dirty bits, placement keys, clip/anchor context, and
     /// runtime state guards where relevant.
     pub(crate) cached_placement_eligibility: Cell<PlacementEligibilityMetadata>,
+    /// Whether any node of this subtree may act on an animation hook,
+    /// refreshed with `cached_subtree_dirty`.
+    cached_subtree_animates: Cell<bool>,
 }
 
 impl Node {
@@ -158,6 +161,7 @@ impl Node {
             arena_local_dirty: Cell::new(DirtyFlags::NONE),
             cached_subtree_dirty: Cell::new(crate::view::base_component::DirtyFlags::ALL),
             cached_placement_eligibility: Cell::new(PlacementEligibilityMetadata::unknown()),
+            cached_subtree_animates: Cell::new(true),
         }
     }
 
@@ -178,6 +182,7 @@ impl Node {
             arena_local_dirty: Cell::new(DirtyFlags::NONE),
             cached_subtree_dirty: Cell::new(crate::view::base_component::DirtyFlags::ALL),
             cached_placement_eligibility: Cell::new(PlacementEligibilityMetadata::unknown()),
+            cached_subtree_animates: Cell::new(true),
         }
     }
 
@@ -381,6 +386,8 @@ pub struct NodeArena {
     slots: SlotMap<NodeKey, Node>,
     mutation_clock: Cell<u64>,
     translation_clock: Cell<u64>,
+    /// Advances whenever a parent or child edge changes or a node is removed.
+    topology_clock: Cell<u64>,
     mutation_history: RefCell<mutation_history::MutationHistory>,
     render_change_observation: RefCell<Option<render_changes::RenderChangeObservation>>,
     mutation_identity: Arc<()>,
@@ -896,7 +903,7 @@ impl NodeArena {
             return node.cached_subtree_dirty.get();
         }
         crate::ui::work_profile::count(|p| p.dirty_observations += 1);
-        let (mut aggregate, mut placement_eligibility, mut tracked, mut native_clear) = {
+        let (mut aggregate, mut placement_eligibility, mut tracked, mut native_clear, mut animates) = {
             let element = node.element.borrow();
             (
                 element
@@ -908,6 +915,7 @@ impl NodeArena {
                     .as_any()
                     .is::<crate::view::base_component::Element>()
                     || element.as_any().is::<crate::view::base_component::Text>(),
+                !crate::view::base_component::animation_hooks_are_noop(element.as_ref()),
             )
         };
         // Preserve local render causes before layout consumes work flags.
@@ -920,6 +928,10 @@ impl NodeArena {
             });
             placement_eligibility =
                 placement_eligibility.union(self.cached_placement_eligibility_metadata(child));
+            animates |= self
+                .slots
+                .get(child)
+                .is_none_or(|child_node| child_node.cached_subtree_animates.get());
             // Parent links carry invalidation. Never certify a subtree whose
             // wiring cannot carry a later child's mutation back to this node.
             tracked &= self.slots.get(child).is_some_and(|child_node| {
@@ -930,9 +942,21 @@ impl NodeArena {
         node.cached_subtree_dirty.set(aggregate);
         node.native_dirty_clear_subtree.set(native_clear && tracked);
         node.cached_placement_eligibility.set(placement_eligibility);
+        node.cached_subtree_animates.set(animates);
         node.dirty_observation_revision
             .set(if tracked { revision } else { None });
         aggregate
+    }
+
+    /// True when the last dirty observation of `key`'s subtree still holds
+    /// and found every animation hook in it a no-op.
+    pub(crate) fn subtree_animation_idle(&self, key: NodeKey) -> bool {
+        self.slots.get(key).is_some_and(|node| {
+            let revision = self.subtree_mutation_revision(key);
+            revision.is_some()
+                && node.dirty_observation_revision.get() == revision
+                && !node.cached_subtree_animates.get()
+        })
     }
 
     /// Bookkeeping clears change dirty observations without changing paint
@@ -1316,16 +1340,18 @@ impl NodeArena {
     }
 
     /// [`Self::with_element_taken`] for a callback that reports afterwards
-    /// whether it mutated the node or only translated it.
+    /// whether it mutated the node, only translated it, or left it as it was
+    /// (`None`).
     pub(crate) fn with_element_taken_classified<R>(
         &mut self,
         key: NodeKey,
-        f: impl FnOnce(&mut Box<dyn ElementTrait>, &mut NodeArena) -> (R, NodeChange),
+        f: impl FnOnce(&mut Box<dyn ElementTrait>, &mut NodeArena) -> (R, Option<NodeChange>),
     ) -> Option<R> {
         let (result, change) = self.take_element(key, f)?;
         match change {
-            NodeChange::Mutation => self.note_mutation(key),
-            NodeChange::Translation => self.note_translation(key),
+            Some(NodeChange::Mutation) => self.note_mutation(key),
+            Some(NodeChange::Translation) => self.note_translation(key),
+            None => {}
         }
         Some(result)
     }

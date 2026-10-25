@@ -1259,6 +1259,13 @@ impl PropertyChangeFlags {
 pub(crate) struct PropertyTrees {
     native_subtrees: incremental::NativeSubtrees,
     prune_proof: Option<incremental::PruneProof>,
+    /// The topology a complete sync walked without reaching any node twice.
+    walked_topology: Option<incremental::Topology>,
+    /// The arena's mutation clock when the last sync began.
+    synced_clock: u64,
+    /// During a sync over an unchanged topology: for each parent, the
+    /// children whose subtrees changed since the last sync began.
+    changed_children: Option<FxHashMap<NodeKey, Vec<NodeKey>>>,
     recent_write_query: std::cell::RefCell<Option<observed_map::WriteQuery>>,
     pub(crate) observed_nodes: usize,
     pub(crate) replayed_nodes: usize,
@@ -1799,18 +1806,35 @@ impl PropertyTrees {
         self.observed_nodes = 0;
         self.replayed_nodes = 0;
         self.epoch = self.epoch.wrapping_add(1);
-        self.inactive_scroll_owners.clear();
         self.changes.clear();
         self.validation_errors.clear();
         self.spatial_validation_errors.clear();
+        let since = std::mem::replace(&mut self.synced_clock, arena.mutation_clock());
+        // Over an unchanged topology the walk reaches the nodes it reached
+        // last time, so no node can go unseen and none needs recording, and
+        // the inactive scroll owners it does not visit stay as they were.
+        let topology = incremental::Topology::observe(arena, roots);
+        if self.walked_topology.as_ref() == Some(&topology) {
+            self.changed_children = arena
+                .mutated_nodes_since(since)
+                .map(|mutated| changed_children(arena, mutated));
+            for &root in roots {
+                self.sync_subtree(arena, root, PropertyTreeState::default(), true, None, true);
+            }
+            self.changed_children = None;
+            self.refresh_derived_spatial_projections();
+            return;
+        }
+        self.inactive_scroll_owners.clear();
         let mut seen = FxHashSet::default();
+        let mut revisited = false;
         for &root in roots {
             self.sync_subtree(
                 arena,
                 root,
                 PropertyTreeState::default(),
                 true,
-                &mut seen,
+                Some((&mut seen, &mut revisited)),
                 true,
             );
         }
@@ -1819,6 +1843,7 @@ impl PropertyTrees {
         if !same_coverage {
             self.native_subtrees.finish(&seen, true);
         }
+        self.walked_topology = (!revisited).then_some(topology);
     }
 
     fn sync_subtree(
@@ -1827,10 +1852,16 @@ impl PropertyTrees {
         key: NodeKey,
         inherited: PropertyTreeState,
         is_frame_root: bool,
-        seen: &mut FxHashSet<NodeKey>,
+        mut seen: Option<(&mut FxHashSet<NodeKey>, &mut bool)>,
         ancestors_tracked: bool,
     ) -> bool {
-        if !arena.contains_key(key) || !seen.insert(key) {
+        if !arena.contains_key(key) {
+            return false;
+        }
+        if let Some((seen, revisited)) = seen.as_mut()
+            && !seen.insert(key)
+        {
+            **revisited = true;
             return false;
         }
         let Some(node) = arena.get(key) else {
@@ -1847,7 +1878,7 @@ impl PropertyTrees {
                 boundary,
                 inherited,
                 is_frame_root,
-                seen,
+                seen.as_mut().map(|(seen, _)| &mut **seen),
                 &mut self.inactive_scroll_owners,
             ) {
                 self.replayed_nodes += members;
@@ -1944,6 +1975,7 @@ impl PropertyTrees {
         };
 
         let properties = node.element.retained_paint_properties();
+        self.inactive_scroll_owners.remove(&key);
         let scroll_snapshot = if properties.is_scroll_container {
             match node.element.scroll_geometry_observation(key, arena) {
                 ScrollGeometryObservation::Exact(snapshot)
@@ -2213,14 +2245,71 @@ impl PropertyTrees {
             self.states.insert(key, next_state);
         }
 
-        let children: std::sync::Arc<[NodeKey]> = node.children().into();
+        let local_boundary = node.element.retained_absolute_clip_mode_witness(key, arena)
+            == crate::view::base_component::RetainedAbsoluteClipModeWitness::Normal;
+        let children: std::sync::Arc<[NodeKey]> = match self.native_subtrees.children(key) {
+            Some(old) if seen.is_none() => old,
+            _ => node.children().into(),
+        };
         drop(node);
+        // Every child's boundary observes this same parent scroll.
+        let reference_scroll = (!children.is_empty())
+            .then(|| self.spatial_parent_scroll(arena, key))
+            .flatten();
+        let walks = tracked && !children.is_empty();
         let mut complete = tracked;
-        for &child in children.iter() {
-            if !self.sync_subtree(arena, child, descendants, false, seen, tracked) {
-                complete = false;
+        let partial = (seen.is_none() && walks)
+            .then(|| self.partial_child_visits(key, descendants, reference_scroll, &children))
+            .flatten();
+        let (len, volatile) = if let Some((old_len, visits)) = partial {
+            let mut len = old_len;
+            let mut skipped = old_len.saturating_sub(1);
+            for &child in &visits {
+                let old_child = self.native_subtrees.len(child).unwrap_or(0);
+                len = len.saturating_sub(old_child);
+                skipped = skipped.saturating_sub(old_child);
+                if !self.sync_subtree(arena, child, descendants, false, None, tracked) {
+                    complete = false;
+                }
+                len += self.native_subtrees.len(child).unwrap_or(0);
             }
-        }
+            self.replayed_nodes += skipped;
+            let volatile = visits
+                .into_iter()
+                .filter(|&child| !self.native_subtrees.replays_locally(child))
+                .collect();
+            (len, volatile)
+        } else {
+            for &child in children.iter() {
+                let seen = seen
+                    .as_mut()
+                    .map(|(seen, revisited)| (&mut **seen, &mut **revisited));
+                if !self.sync_subtree(arena, child, descendants, false, seen, tracked) {
+                    complete = false;
+                }
+            }
+            let mut len = 1;
+            let mut volatile = Vec::new();
+            if walks {
+                for &child in children.iter() {
+                    match self.native_subtrees.stored(child) {
+                        Some((child_len, true)) => len += child_len,
+                        Some((child_len, false)) => {
+                            len += child_len;
+                            volatile.push(child);
+                        }
+                        None => volatile.push(child),
+                    }
+                }
+            }
+            (len, volatile.into_boxed_slice())
+        };
+        let walk = walks.then_some(incremental::ChildWalk {
+            descendants,
+            reference_scroll,
+            volatile,
+        });
+        self.native_subtrees.record_walk(key, walk);
         if complete
             && errors_before
                 == (
@@ -2238,12 +2327,52 @@ impl PropertyTrees {
                 is_frame_root,
                 children,
                 self.inactive_scroll_owners.contains(&key),
+                local_boundary,
+                len,
             );
             true
         } else {
             self.native_subtrees.remove(key);
             false
         }
+    }
+
+    /// When `key` hands its children what it handed them on its last walk
+    /// and this sync knows which of them changed since, the children that
+    /// still need a visit, in child order, and the size `key`'s subtree had.
+    fn partial_child_visits(
+        &self,
+        key: NodeKey,
+        descendants: PropertyTreeState,
+        reference_scroll: Option<ScrollNodeId>,
+        children: &[NodeKey],
+    ) -> Option<(usize, Vec<NodeKey>)> {
+        let walk = self.native_subtrees.walk(key)?;
+        if walk.descendants != descendants || walk.reference_scroll != reference_scroll {
+            return None;
+        }
+        let len = self.native_subtrees.len(key)?;
+        let changed = self.changed_children.as_ref()?.get(&key);
+        let visits = changed.map_or(0, Vec::len) + walk.volatile.len();
+        // Finding each one's position costs a pass over the children; past a
+        // few, the full walk is as cheap.
+        if visits > 32 {
+            return None;
+        }
+        let mut visits = changed
+            .into_iter()
+            .flatten()
+            .chain(walk.volatile.iter())
+            .filter_map(|&child| {
+                children
+                    .iter()
+                    .position(|&other| other == child)
+                    .map(|index| (index, child))
+            })
+            .collect::<Vec<_>>();
+        visits.sort_unstable();
+        visits.dedup();
+        Some((len, visits.into_iter().map(|(_, child)| child).collect()))
     }
 
     fn sync_spatial_nodes(
@@ -2533,6 +2662,23 @@ impl PropertyTrees {
             .copied()
             .unwrap_or(PropertyChangeFlags::NONE)
     }
+}
+
+/// For each parent of a mutated node or of its ancestors, those of its
+/// children.
+fn changed_children(arena: &NodeArena, mutated: Vec<NodeKey>) -> FxHashMap<NodeKey, Vec<NodeKey>> {
+    let mut changed = FxHashMap::<NodeKey, Vec<NodeKey>>::default();
+    let mut reached = FxHashSet::default();
+    for mut child in mutated {
+        while reached.insert(child) {
+            let Some(parent) = arena.parent_of(child) else {
+                break;
+            };
+            changed.entry(parent).or_default().push(child);
+            child = parent;
+        }
+    }
+    changed
 }
 
 fn matrix_bits_equal(matrix: Mat4, snapshot: [f32; 16]) -> bool {

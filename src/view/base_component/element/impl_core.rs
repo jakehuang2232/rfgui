@@ -1,5 +1,28 @@
 use crate::view::node_arena::InvalidationContext;
 
+/// Whether `new` differs from `old` only in colors, gradients and shadows
+/// that leave the box as visible as it was. Placement reads none of them
+/// beyond that visibility.
+fn paints_differently_only(old: &ComputedStyle, new: &ComputedStyle) -> bool {
+    let visibility = |style: &ComputedStyle| {
+        (
+            style.background_color.to_rgba_f32()[3] > 0.0 || style.background_image.is_some(),
+            style.box_shadow.is_empty(),
+        )
+    };
+    if old == new || visibility(old) != visibility(new) {
+        return false;
+    }
+    let mut masked = new.clone();
+    masked.background_color = old.background_color;
+    masked.background_image = old.background_image.clone();
+    masked.border_image = old.border_image.clone();
+    masked.border_color = old.border_color;
+    masked.border_colors = old.border_colors;
+    masked.box_shadow = old.box_shadow.clone();
+    masked == *old
+}
+
 impl Element {
     const SHOULD_RENDER_OVERSCAN_PX: f32 = 24.0;
 
@@ -688,6 +711,7 @@ impl Element {
             layout_assigned_width: None,
             layout_assigned_height: None,
             reusable_measure_assignment: None,
+            place_was_clean: false,
             is_hovered: false,
             event_handlers: None,
             layout_dirty: true,
@@ -696,6 +720,7 @@ impl Element {
             last_layout_proposal: None,
             flex_info: None,
             has_absolute_descendant_for_hit_test: false,
+            hit_test_children: None,
             absolute_clip_rect: None,
             anchor_parent_clip_rect: None,
             hit_test_clip_rect: None,
@@ -1403,6 +1428,8 @@ impl Element {
         self.has_style_snapshot = true;
         if !old_computed.layout_eq(&self.computed_style) {
             self.mark_layout_dirty();
+        } else if paints_differently_only(&old_computed, &self.computed_style) {
+            self.mark_paint_dirty();
         } else if old_computed != self.computed_style {
             self.mark_place_dirty();
         }
