@@ -3994,10 +3994,9 @@ pub enum SpatialPositionReferenceSnapshot {
 /// Placement-time spatial payload kept separate from transform and scroll.
 ///
 /// `translation_at_scroll_zero` is relative to `reference`. It is captured
-/// from the relative placement target before the visual box is formed; it is
-/// never reconstructed from `layout_flow_position`, which already contains
-/// ancestor scroll projection. `visual_offset` contains only this owner's
-/// transition offset, never the inherited cumulative offset.
+/// from the relative placement target before the visual box is formed.
+/// `visual_offset` contains only this owner's transition offset, never the
+/// inherited cumulative offset.
 #[doc(hidden)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
@@ -4338,8 +4337,8 @@ fn install_inline_ifc_span_op(
     top_offset: f32,
     change: NodeChange,
 ) {
-    // The formatting context root's content origin, scroll included: the
-    // frame its layout-parent descendants are placed in.
+    // The formatting context root's content origin: the frame its
+    // layout-parent descendants are placed in.
     let root_content_origin = [origin_x, origin_y];
     // Every rect is the content origin plus its plan-relative offset, in
     // that order, exactly as the paint witness re-derives it; folding the

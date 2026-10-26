@@ -712,10 +712,8 @@ impl Element {
             y: parent_y + frame_rel_y,
         };
         // Freeze the local layout edge while the relative target and its
-        // reference are still available. `layout_flow_position` is not an
-        // admissible source here: its absolute value has already absorbed
-        // ancestor scroll projection. For a layout-parent edge the parent
-        // origin cancels, leaving the scroll-zero relative placement.
+        // reference are still available. For a layout-parent edge the
+        // parent origin cancels, leaving the relative placement.
         let translation_at_scroll_zero = Position {
             x: flow_position.x - spatial_reference_origin.x,
             y: flow_position.y - spatial_reference_origin.y,
