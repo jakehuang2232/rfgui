@@ -5,7 +5,7 @@ use rfgui::time::Instant;
 use rfgui::ui::{RsxNode, rsx};
 use rfgui::view::base_component::BoxModelSnapshot;
 use rfgui::view::viewport::set_scroll_offset_by_id;
-use rfgui::view::{Element, NodeArena, NodeKey, Text, Viewport};
+use rfgui::view::{Element, Text, Viewport};
 
 #[path = "../../lib/rfgui-components/tests/retained_controls/gpu.rs"]
 mod gpu;
@@ -41,19 +41,14 @@ fn scene() -> RsxNode {
     }
 }
 
-/// The laid-out box of the 40px red element.
-fn red_box(arena: &NodeArena) -> BoxModelSnapshot {
-    fn find(arena: &NodeArena, key: NodeKey) -> Option<BoxModelSnapshot> {
-        let b = arena.get(key)?.element.box_model_snapshot();
-        if b.width == 40.0 && b.height == 40.0 {
-            return Some(b);
-        }
-        arena
-            .children_of(key)
-            .into_iter()
-            .find_map(|child| find(arena, child))
-    }
-    find(arena, arena.roots()[0]).expect("red box")
+/// The laid-out box of the 40px red element, in the viewport.
+fn red_box(viewport: &Viewport) -> BoxModelSnapshot {
+    viewport
+        .frame_box_models()
+        .iter()
+        .find(|b| b.width == 40.0 && b.height == 40.0)
+        .cloned()
+        .expect("red box")
 }
 
 #[test]
@@ -80,7 +75,7 @@ fn atomic_box_in_an_inline_span_paints_where_it_is_placed() -> Result<(), String
                 Instant::now(),
             )?;
             let pixels = gpu.read(&frame.texture, size)?;
-            let b = red_box(viewport.node_arena());
+            let b = red_box(&viewport);
             assert!(b.y + b.height <= 200.0, "DPR {dpr} scroll {scroll}: {b:?}");
             // The red pixels' bounds, within a pixel of the laid-out box.
             let mut found: Option<[u32; 4]> = None;

@@ -315,7 +315,10 @@ fn assert_layout_positions_reproduced(label: &str, arena: &NodeArena, trees: &Pr
     );
     for snapshot in &positions {
         let owner = snapshot.owner;
-        let layout = arena.get(owner).unwrap().element.box_model_snapshot();
+        let layout = arena.box_model_in_viewport(
+            owner,
+            arena.get(owner).unwrap().element.box_model_snapshot(),
+        );
         let derived = graph
             .derive_optional_owner_viewport_position(owner)
             .unwrap_or_else(|error| panic!("{label} {owner:?}: {error:?}"));
@@ -439,7 +442,9 @@ fn placed_self_clips_reproduce_live_scissors() {
                 };
                 assert_eq!(
                     placed.geometry.viewport_scissor(),
-                    element.absolute_clip_scissor_rect(),
+                    element.absolute_clip_scissor_rect_in_viewport(
+                        moved.arena.viewport_offset(clip.owner)
+                    ),
                     "{scene:?} {at:?} {:?}",
                     clip.owner
                 );

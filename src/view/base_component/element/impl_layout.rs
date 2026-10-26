@@ -313,10 +313,8 @@ impl Element {
                     )
                 })
                 .unwrap_or((snapshot.x, snapshot.y));
-            let rel_x = child_flow_x - self.layout_state.layout_flow_inner_position.x
-                + self.scroll_offset.x;
-            let rel_y = child_flow_y - self.layout_state.layout_flow_inner_position.y
-                + self.scroll_offset.y;
+            let rel_x = child_flow_x - self.layout_state.layout_flow_inner_position.x;
+            let rel_y = child_flow_y - self.layout_state.layout_flow_inner_position.y;
             max_x = max_x.max(rel_x + snapshot.width.max(0.0));
             max_y = max_y.max(rel_y + snapshot.height.max(0.0));
         }
@@ -426,6 +424,8 @@ impl Element {
         };
         let mut absolute_clip_rect: Option<Rect> = None;
         if is_absolute {
+            // The viewport, in this element's layout space.
+            let scroll_chain = self.current_scroll_chain();
             let fallback_anchor = AnchorSnapshot {
                 stable_id: self.core.parent_id,
                 x: parent_x,
@@ -439,7 +439,10 @@ impl Element {
                 match anchor_ref {
                     crate::style::Anchor::Viewport => {
                         spatial_reference = SpatialPositionReferenceSnapshot::Viewport;
-                        spatial_reference_origin = Position { x: 0.0, y: 0.0 };
+                        spatial_reference_origin = Position {
+                            x: scroll_chain[0],
+                            y: scroll_chain[1],
+                        };
                     }
                     crate::style::Anchor::Name(_)
                     | crate::style::Anchor::Parent
@@ -542,8 +545,8 @@ impl Element {
                 CollisionBoundary::Viewport => {
                     let (vw, vh) = self.viewport_size_from_runtime(proposal.width, proposal.height);
                     Rect {
-                        x: 0.0,
-                        y: 0.0,
+                        x: scroll_chain[0],
+                        y: scroll_chain[1],
                         width: vw,
                         height: vh,
                     }
@@ -556,15 +559,20 @@ impl Element {
                 ClipMode::Viewport => {
                     let (vw, vh) = self.viewport_size_from_runtime(proposal.width, proposal.height);
                     Rect {
-                        x: 0.0,
-                        y: 0.0,
+                        x: scroll_chain[0],
+                        y: scroll_chain[1],
                         width: vw.max(0.0),
                         height: vh.max(0.0),
                     }
                 }
                 ClipMode::AnchorParent if has_anchor => anchor.parent_clip_rect,
                 ClipMode::AnchorParent => PLACEMENT_RUNTIME
-                    .with(|r| r.borrow().ancestor_stack.last().map(|s| s.parent_clip_rect))
+                    .with(|r| {
+                        r.borrow()
+                            .ancestor_stack
+                            .last()
+                            .map(|s| s.shifted(scroll_chain).parent_clip_rect)
+                    })
                     .unwrap_or(parent_clip_rect),
             });
             apply_collision(
@@ -1065,6 +1073,7 @@ impl Element {
                 runtime.ancestor_stack.clear();
                 runtime.child_clip_stack.clear();
                 runtime.hit_test_clip_stack.clear();
+                runtime.scroll_chain_stack.clear();
                 runtime.viewport_width = placement.viewport_width.max(0.0);
                 runtime.viewport_height = placement.viewport_height.max(0.0);
             }
@@ -1083,8 +1092,41 @@ impl Element {
                 runtime.ancestor_stack.clear();
                 runtime.child_clip_stack.clear();
                 runtime.hit_test_clip_stack.clear();
+                runtime.scroll_chain_stack.clear();
             }
         });
+    }
+
+    /// Children are placed at their scroll-zero positions: their layout
+    /// space is this element's moved by its scroll offset, on top of the
+    /// offsets of every scroll container above it.
+    fn push_children_scroll_scope(&self) {
+        let [x, y] = self.current_scroll_chain();
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime
+                .borrow_mut()
+                .scroll_chain_stack
+                .push([x + self.scroll_offset.x, y + self.scroll_offset.y]);
+        });
+    }
+
+    fn pop_children_scroll_scope(&self) {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime.borrow_mut().scroll_chain_stack.pop();
+        });
+    }
+
+    /// The scroll offsets of every scroll container above the element being
+    /// placed: how far its layout space is from the viewport.
+    pub(crate) fn current_scroll_chain(&self) -> [f32; 2] {
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime
+                .borrow()
+                .scroll_chain_stack
+                .last()
+                .copied()
+                .unwrap_or([0.0, 0.0])
+        })
     }
 
     fn push_child_clip_scope(&self, rect: Rect) {
@@ -1125,37 +1167,43 @@ impl Element {
     /// space so small scroll deltas do not change the recorded child set.
     ///
     /// Descendants are clipped by every ancestor, so the interest is this
-    /// node's own rect within the interest it was culled against. A transform
-    /// places children in another space; there the own rect alone applies.
+    /// node's own rect within the interest it was culled against, both in
+    /// the children's layout space. A transform places children in another
+    /// space; there the own rect alone applies.
     fn child_paint_cull_rect(&self) -> Rect {
         let own = self.own_child_paint_cull_rect();
         match self.inherited_paint_cull_rect {
-            Some(inherited) if self.resolved_transform.is_none() => intersect_rect(own, inherited),
+            Some(inherited) if self.resolved_transform.is_none() => {
+                intersect_rect(own, self.to_children_space(inherited))
+            }
             _ => own,
         }
     }
 
     fn own_child_paint_cull_rect(&self) -> Rect {
         let overscan = Self::SHOULD_RENDER_OVERSCAN_PX.max(0.0);
+        // In the children's layout space: the viewed part of the contents
+        // starts `offset` past their scroll-zero origin.
         let axis = |origin: f32, extent: f32, offset: f32, scrolls: bool| {
+            let offset = if offset.is_finite() { offset } else { 0.0 };
             let start = origin - overscan;
             let size = (extent + overscan * 2.0).max(0.0);
             // Bound extra preparation to less than four existing overscan
             // margins per edge; do not record the entire scrolling contents.
             let step = overscan * 4.0;
-            if !scrolls || step <= 0.0 || !offset.is_finite() || !extent.is_finite() {
-                return (start, size);
+            if !scrolls || step <= 0.0 || !extent.is_finite() {
+                return (start + offset, size);
             }
             let low = ((offset - overscan) / step).floor() * step;
             let high = ((offset + extent + overscan) / step).ceil() * step;
-            let aligned_start = origin + low - offset;
+            let aligned_start = origin + low;
             let aligned_size = high - low;
             if !aligned_start.is_finite()
                 || !aligned_size.is_finite()
-                || aligned_start > start
-                || aligned_start + aligned_size < start + size
+                || aligned_start > start + offset
+                || aligned_start + aligned_size < start + offset + size
             {
-                return (start, size);
+                return (start + offset, size);
             }
             (aligned_start, aligned_size)
         };
@@ -1247,8 +1295,9 @@ impl Element {
         }
     }
 
-    /// The clip a hit on this element's children must fall in, given the
-    /// clip this element inherits; with none, its own box clips them.
+    /// The clip a hit on this element's children must fall in, in their
+    /// layout space, given the clip this element inherits; with none, its
+    /// own box clips them.
     pub(crate) fn child_hit_test_clip_rect(&self, inherited: Option<Rect>) -> Rect {
         let own = inherited.map_or(
             Rect {
@@ -1259,7 +1308,23 @@ impl Element {
             },
             |inherited| self.own_hit_test_clip_rect(inherited),
         );
-        intersect_rect(own, self.inner_clip_rect())
+        self.to_children_space(intersect_rect(own, self.inner_clip_rect()))
+    }
+
+    /// `rect`, in this element's layout space, in its children's: they sit
+    /// at their scroll-zero positions under its scroll offset.
+    pub(crate) fn to_children_space(&self, rect: Rect) -> Rect {
+        Rect {
+            x: rect.x + self.scroll_offset.x,
+            y: rect.y + self.scroll_offset.y,
+            ..rect
+        }
+    }
+
+    /// The scroll offset between this element's layout space and its
+    /// children's.
+    pub(crate) fn children_space_offset(&self) -> (f32, f32) {
+        (self.scroll_offset.x, self.scroll_offset.y)
     }
 
     /// The clip a root inherits: the box its placement offered it.
@@ -1282,14 +1347,7 @@ impl Element {
             width: 0.0,
             height: 0.0,
         });
-        let snapshot = AnchorSnapshot {
-            stable_id: Some(self.core.id),
-            x: self.layout_state.layout_position.x,
-            y: self.layout_state.layout_position.y,
-            width: self.layout_state.layout_size.width.max(0.0),
-            height: self.layout_state.layout_size.height.max(0.0),
-            parent_clip_rect,
-        };
+        let snapshot = self.viewport_anchor_snapshot(parent_clip_rect);
         PLACEMENT_RUNTIME.with(|runtime| {
             runtime
                 .borrow_mut()
@@ -1298,28 +1356,26 @@ impl Element {
         });
     }
 
+    /// The anchor this element is positioned against, in its own layout
+    /// space. Anchors are kept in the viewport; `fallback` is already in
+    /// this element's space.
     fn resolve_anchor_snapshot(&self, fallback: AnchorSnapshot) -> AnchorSnapshot {
         let Some(anchor_ref) = self.computed_style.position.anchor_ref() else {
             return fallback;
         };
+        let scroll_chain = self.current_scroll_chain();
         PLACEMENT_RUNTIME.with(|runtime| {
             let runtime = runtime.borrow();
-            match anchor_ref {
-                crate::style::Anchor::Name(name) => runtime
-                    .anchors
-                    .get(name.as_str())
-                    .copied()
-                    .unwrap_or(fallback),
-                crate::style::Anchor::Parent => {
-                    runtime.ancestor_stack.last().copied().unwrap_or(fallback)
-                }
+            let anchor = match anchor_ref {
+                crate::style::Anchor::Name(name) => runtime.anchors.get(name.as_str()).copied(),
+                crate::style::Anchor::Parent => runtime.ancestor_stack.last().copied(),
                 crate::style::Anchor::Viewport => {
                     let vw = runtime.viewport_width.max(0.0);
                     let vh = runtime.viewport_height.max(0.0);
                     if vw <= 0.0 && vh <= 0.0 {
-                        runtime.ancestor_stack.first().copied().unwrap_or(fallback)
+                        runtime.ancestor_stack.first().copied()
                     } else {
-                        AnchorSnapshot {
+                        Some(AnchorSnapshot {
                             stable_id: None,
                             x: 0.0,
                             y: 0.0,
@@ -1331,7 +1387,7 @@ impl Element {
                                 width: vw,
                                 height: vh,
                             },
-                        }
+                        })
                     }
                 }
                 // Counts from 1 (the parent); 0 or a count past the root
@@ -1343,9 +1399,9 @@ impl Element {
                         .checked_sub(*n)
                         .and_then(|idx| stack.get(idx))
                         .copied()
-                        .unwrap_or(fallback)
                 }
-            }
+            };
+            anchor.map_or(fallback, |anchor| anchor.shifted(scroll_chain))
         })
     }
 
@@ -1356,17 +1412,25 @@ impl Element {
             width: 0.0,
             height: 0.0,
         });
-        let snapshot = AnchorSnapshot {
+        let snapshot = self.viewport_anchor_snapshot(parent_clip_rect);
+        PLACEMENT_RUNTIME.with(|runtime| {
+            runtime.borrow_mut().ancestor_stack.push(snapshot);
+        });
+    }
+
+    /// This element as an anchor, in the viewport, so an element in another
+    /// scroll container can take it into its own layout space.
+    fn viewport_anchor_snapshot(&self, parent_clip_rect: Rect) -> AnchorSnapshot {
+        let [x, y] = self.current_scroll_chain();
+        AnchorSnapshot {
             stable_id: Some(self.core.id),
             x: self.layout_state.layout_position.x,
             y: self.layout_state.layout_position.y,
             width: self.layout_state.layout_size.width.max(0.0),
             height: self.layout_state.layout_size.height.max(0.0),
             parent_clip_rect,
-        };
-        PLACEMENT_RUNTIME.with(|runtime| {
-            runtime.borrow_mut().ancestor_stack.push(snapshot);
-        });
+        }
+        .shifted([-x, -y])
     }
 
     pub(crate) fn pop_ancestor_anchor_scope(&self) {
@@ -1544,6 +1608,26 @@ impl Element {
         })
     }
 
+    /// Whether placing this element or a descendant reads the context it is
+    /// placed in, beyond its placement: anchors and anchored or absolutely
+    /// positioned boxes resolve against the clips above them, the viewport
+    /// and other scroll containers.
+    pub(crate) fn subtree_reads_placement_context(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> bool {
+        let reads = |metadata: crate::view::node_arena::PlacementEligibilityMetadata| {
+            metadata.contains_anchor_name
+                || metadata.contains_anchor_ref
+                || metadata.contains_absolute_descendant
+        };
+        reads(self.local_placement_eligibility_metadata())
+            || self
+                .children
+                .iter()
+                .any(|&child| reads(arena.cached_placement_eligibility_metadata(child)))
+    }
+
     pub(crate) fn local_placement_eligibility_metadata(
         &self,
     ) -> crate::view::node_arena::PlacementEligibilityMetadata {
@@ -1562,10 +1646,9 @@ impl Element {
         }
     }
 
-    fn clean_placement_skip_self_failure_for_parent_clip(
+    fn clean_placement_skip_self_failure(
         &self,
         placement: LayoutPlacement,
-        inherited_hit_test_clip: Rect,
     ) -> Option<PlacementSkipFailureReason> {
         if self.anchor_name.is_some() {
             return Some(PlacementSkipFailureReason::AnchorName);
@@ -1588,9 +1671,6 @@ impl Element {
         if !self.paint_cull_matches_current_scope() {
             return Some(PlacementSkipFailureReason::PaintCullMismatch);
         }
-        if !rect_approx_eq(self.anchor_parent_clip_rect, Some(inherited_hit_test_clip)) {
-            return Some(PlacementSkipFailureReason::AnchorParentClipMismatch);
-        }
         None
     }
 
@@ -1598,14 +1678,6 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
     ) -> Option<PlacementSkipFailureReason> {
-        if !self.children.is_empty()
-            && !rect_approx_eq(
-                self.last_child_hit_test_clip_rect,
-                Some(self.current_child_hit_test_clip_rect()),
-            )
-        {
-            return Some(PlacementSkipFailureReason::HitTestClipMismatch);
-        }
         if !self.children.is_empty() && !self.child_paint_cull_matches_last_place() {
             return Some(PlacementSkipFailureReason::PaintCullMismatch);
         }
@@ -1621,15 +1693,12 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
         placement: LayoutPlacement,
-        inherited_hit_test_clip: Rect,
         target_width: f32,
         target_height: f32,
         offset_x: f32,
         offset_y: f32,
     ) -> Option<PlacementSkipFailureReason> {
-        if let Some(reason) = self
-            .clean_placement_skip_self_failure_for_parent_clip(placement, inherited_hit_test_clip)
-        {
+        if let Some(reason) = self.clean_placement_skip_self_failure(placement) {
             return Some(reason);
         }
         if !approx_eq(self.layout_state.layout_size.width, target_width)
@@ -1671,7 +1740,6 @@ impl Element {
         arena: &crate::view::node_arena::NodeArena,
         child_key: crate::view::node_arena::NodeKey,
         placement: LayoutPlacement,
-        inherited_hit_test_clip: Rect,
     ) -> Option<PlacementSkipFailureReason> {
         if arena.subtree_dirty_intersects(child_key, DirtyPassMask::PLACEMENT) {
             return Some(PlacementSkipFailureReason::DirtySubtree);
@@ -1682,9 +1750,7 @@ impl Element {
         let Some(child) = child_node.element.as_any().downcast_ref::<Element>() else {
             return Some(PlacementSkipFailureReason::NonBaseElement);
         };
-        if let Some(reason) = child
-            .clean_placement_skip_self_failure_for_parent_clip(placement, inherited_hit_test_clip)
-        {
+        if let Some(reason) = child.clean_placement_skip_self_failure(placement) {
             return Some(reason);
         }
         child.clean_placement_skip_subtree_failure(arena)
@@ -1759,6 +1825,7 @@ impl Element {
         let child_paint_cull = self.child_paint_cull_rect();
         self.last_child_paint_cull_rect = Some(child_paint_cull);
         self.push_child_clip_scope(child_paint_cull);
+        self.push_children_scroll_scope();
         // Inline is NOT an axis layout here: its children are placed by the
         // inline IFC install (`run_inline_ifc_root_after_place`), not the
         // flex/flow solver. Routing inline through `place_flex_children`
@@ -1794,8 +1861,8 @@ impl Element {
                 });
             });
         } else {
-            let origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
-            let origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
+            let origin_x = self.layout_state.layout_flow_inner_position.x;
+            let origin_y = self.layout_state.layout_flow_inner_position.y;
             let visual_offset_x =
                 self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
             let visual_offset_y =
@@ -1826,12 +1893,9 @@ impl Element {
                         percent_base_width: child_percent_base_width,
                         percent_base_height: child_percent_base_height,
                     };
-                    if let Some(reason) = self.in_flow_child_placement_skip_failure(
-                        arena,
-                        child_key,
-                        placement,
-                        child_parent_hit_test_clip,
-                    ) {
+                    if let Some(reason) =
+                        self.in_flow_child_placement_skip_failure(arena, child_key, placement)
+                    {
                         with_layout_place_profile(|profile| {
                             profile.placement_skip_failures.record(reason);
                         });
@@ -1884,6 +1948,7 @@ impl Element {
         profile_layout_place_time(LayoutPlaceTiming::RecomputeHitTest, || {
             self.recompute_absolute_descendant_for_hit_test(arena);
         });
+        self.pop_children_scroll_scope();
         self.pop_child_clip_scope();
         self.pop_hit_test_clip_scope();
     }
@@ -1931,8 +1996,8 @@ impl Element {
             viewport_width,
             viewport_height,
         );
-        let origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
-        let origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
+        let origin_x = self.layout_state.layout_flow_inner_position.x;
+        let origin_y = self.layout_state.layout_flow_inner_position.y;
         let visual_offset_x =
             self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
         let visual_offset_y =

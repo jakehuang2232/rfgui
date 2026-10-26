@@ -280,8 +280,11 @@ fn placement_skip_does_not_skip_nested_subtree_when_context_changes() {
     assert_eq!(place_profile.placement_skip_failures.total(), 1);
 }
 
+/// Children sit at their scroll-zero positions, so scrolling within one
+/// paint-interest cell leaves their placement as it was: placement skips
+/// them, and they move only in the viewport.
 #[test]
-fn placement_skip_does_not_skip_scroll_offset_context_change() {
+fn placement_skip_reuses_children_across_a_scroll_offset_change() {
     let mut viewport = Viewport::new();
     viewport
         .render_rsx(&scrollable_grid_box_model_tree())
@@ -290,6 +293,7 @@ fn placement_skip_does_not_skip_scroll_offset_context_change() {
     viewport.refresh_frame_box_models();
 
     let root_key = viewport.scene.ui_root_keys[0];
+    let child_key = viewport.scene.node_arena.children_of(root_key)[0];
     let root_id = viewport
         .scene
         .node_arena
@@ -297,6 +301,13 @@ fn placement_skip_does_not_skip_scroll_offset_context_change() {
         .expect("root exists")
         .element
         .stable_id();
+    let viewport_box = |viewport: &Viewport| {
+        let arena = &viewport.scene.node_arena;
+        let snapshot = arena.get(child_key).unwrap().element.box_model_snapshot();
+        let placed = arena.box_model_in_viewport(child_key, snapshot);
+        [snapshot.x, snapshot.y, placed.x, placed.y]
+    };
+    let before = viewport_box(&viewport);
     crate::view::viewport::scene_helpers::clear_subtree_dirty_flags_with_arena_dirty(
         &mut viewport.scene.node_arena,
         root_key,
@@ -307,16 +318,19 @@ fn placement_skip_does_not_skip_scroll_offset_context_change() {
         &viewport.scene.node_arena,
         root_key,
         root_id,
-        (24.0, 16.0),
+        (12.0, 8.0),
     ));
 
     let (_gate_profile, place_profile) =
         run_layout_for_test_with_gate_profile(&mut viewport, 100.0, 50.0);
 
-    assert_eq!(place_profile.child_place_calls, 1);
-    assert_eq!(place_profile.skipped_child_place_calls, 0);
-    assert_eq!(place_profile.placement_skip_failures.placement_mismatch, 1);
-    assert_eq!(place_profile.placement_skip_failures.total(), 1);
+    assert_eq!(place_profile.child_place_calls, 0);
+    assert_eq!(place_profile.skipped_child_place_calls, 1);
+    assert_eq!(place_profile.placement_skip_failures.total(), 0);
+    assert_eq!(
+        viewport_box(&viewport),
+        [before[0], before[1], before[2] - 12.0, before[3] - 8.0]
+    );
 }
 
 #[test]

@@ -257,6 +257,15 @@ fn native_noop_tick_children(
     noop.then(|| node.element.children().to_vec())
 }
 
+/// The element a native host lays out and hit-tests as: an `Element`, or
+/// the one an `Image` or `Svg` wraps.
+pub(crate) fn host_element(host: &dyn ElementTrait) -> Option<&Element> {
+    let any = host.as_any();
+    any.downcast_ref::<Element>()
+        .or_else(|| any.downcast_ref::<Image>().map(Image::element))
+        .or_else(|| any.downcast_ref::<Svg>().map(Svg::element))
+}
+
 /// Whether every animation hook of `element` is a no-op: neither tick acts
 /// and it requests no frame. Only native hosts can tell.
 pub(crate) fn animation_hooks_are_noop(element: &dyn ElementTrait) -> bool {

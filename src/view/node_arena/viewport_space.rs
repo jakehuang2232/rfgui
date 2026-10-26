@@ -2,16 +2,31 @@
 //!
 //! Geometry handed out of layout (event coordinates and target bounds, the
 //! IME cursor, box-model captures, debug overlays) and comparisons with
-//! viewport points convert here. Placement applies each scroll container's
-//! offset to the positions it gives the nodes inside, so a node's layout
-//! space is currently the viewport itself.
+//! viewport points convert here. Placement puts the nodes inside a scroll
+//! container at their scroll-zero positions, so a node's layout space is the
+//! viewport moved by the offsets of every scroll container above it.
 use super::*;
 use crate::view::base_component::BoxModelSnapshot;
 
 impl NodeArena {
     /// The translation from `key`'s layout space to the viewport.
-    pub(crate) fn viewport_offset(&self, _key: NodeKey) -> [f32; 2] {
-        [0.0, 0.0]
+    pub(crate) fn viewport_offset(&self, key: NodeKey) -> [f32; 2] {
+        let mut offset = [0.0, 0.0];
+        let mut cursor = self.parent_of(key);
+        for _ in 0..self.slots.len() {
+            let Some(ancestor) = cursor else {
+                break;
+            };
+            if let Some((x, y)) = self.get(ancestor).and_then(|node| {
+                crate::view::base_component::host_element(node.element.as_ref())
+                    .map(|element| element.children_space_offset())
+            }) {
+                offset[0] -= x;
+                offset[1] -= y;
+            }
+            cursor = self.parent_of(ancestor);
+        }
+        offset
     }
 
     /// `snapshot`, `key`'s box model, in the viewport.

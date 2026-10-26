@@ -305,9 +305,9 @@ fn flex_axis_child_replay(
         });
         return FlexAxisChildReplay::Place;
     }
-    let Some(child_parent_hit_test_clip) = child_parent_hit_test_clip else {
+    if child_parent_hit_test_clip.is_none() {
         return FlexAxisChildReplay::Place;
-    };
+    }
     let Some(child_node) = arena.get(child_key) else {
         record_flex_replay_failure(PlacementSkipFailureReason::NonBaseElement);
         return FlexAxisChildReplay::Place;
@@ -370,7 +370,6 @@ fn flex_axis_child_replay(
     if let Some(reason) = child_element.flex_axis_placement_replay_failure(
         arena,
         placement,
-        child_parent_hit_test_clip,
         target_width,
         target_height,
         offset_x,

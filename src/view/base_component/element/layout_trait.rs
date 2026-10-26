@@ -371,17 +371,27 @@ impl Layoutable for Element {
         );
         let inline_ifc_layout_call_site_dirty =
             self.inline_ifc_layout_call_site_dirty_gate(arena, placement);
+        // Scrolling above, or a clip above changing, leaves the placement as
+        // it was; only a subtree that places anchors or positioned boxes
+        // against that context has to place again.
+        let scroll_chain = self.current_scroll_chain();
+        let scroll_chain_moved =
+            std::mem::replace(&mut self.last_scroll_chain, scroll_chain) != scroll_chain;
+        let context_moved = (scroll_chain_moved
+            || !self.parent_clip_matches_current_placement(placement)
+            || (!self.children.is_empty()
+                && !rect_approx_eq(
+                    self.last_child_hit_test_clip_rect,
+                    Some(self.current_child_hit_test_clip_rect()),
+                )))
+            && self.subtree_reads_placement_context(arena);
         if !self.dirty_flags.intersects(placement_dirty_mask)
             && !child_placement_dirty
             && !inline_ifc_layout_call_site_dirty
+            && !context_moved
             && self.last_layout_placement == Some(placement)
-            && self.parent_clip_matches_current_placement(placement)
             && self.paint_cull_matches_current_scope()
-            && (self.children.is_empty()
-                || (rect_approx_eq(
-                    self.last_child_hit_test_clip_rect,
-                    Some(self.current_child_hit_test_clip_rect()),
-                ) && self.child_paint_cull_matches_last_place()))
+            && (self.children.is_empty() || self.child_paint_cull_matches_last_place())
         {
             with_layout_place_profile(|p| p.place_returned_clean += 1);
             self.place_was_clean = true;

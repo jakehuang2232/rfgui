@@ -58,14 +58,21 @@ fn clamped_scroll_installs_child_and_descendant_positions_in_the_same_layout_pas
             assert_eq!(host.get_scroll_offset(), (final_offset, final_offset));
             let origin = host.layout_state.layout_inner_position;
             drop(host);
+            // Contents sit at their scroll-zero positions; the clamped
+            // offset moves them in the viewport.
             for key in [child, descendant] {
                 let content = get_element_mut::<Element>(&arena, key);
+                let position = content.layout_state.layout_position;
+                drop(content);
+                let [dx, dy] = arena.viewport_offset(key);
                 assert_eq!(
+                    (position.x, position.y, position.x + dx, position.y + dy),
                     (
-                        content.layout_state.layout_position.x,
-                        content.layout_state.layout_position.y
+                        origin.x,
+                        origin.y,
+                        origin.x - final_offset,
+                        origin.y - final_offset
                     ),
-                    (origin.x - final_offset, origin.y - final_offset),
                     "{layout:?}: host={host_size}, content={content_size}, owner={key:?}"
                 );
             }

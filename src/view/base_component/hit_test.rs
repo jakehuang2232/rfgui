@@ -2,7 +2,7 @@ use crate::style::ClipMode;
 use crate::view::node_arena::{NodeArena, NodeKey};
 use crate::view::popup_stack::PopupStack;
 
-use super::{BoxModelSnapshot, Element, ElementTrait, Image, Rect, Svg};
+use super::{BoxModelSnapshot, Element, ElementTrait, Rect};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HitTestSource {
@@ -168,7 +168,6 @@ fn hit_test_subtree(
     }
 
     let (hit_x, hit_y) = hit_test_point_for_node(element, query.x, query.y);
-    let child_query = HitTestQuery { x: hit_x, y: hit_y };
     let snapshot = element.box_model_snapshot();
     let has_escape_descendant = element_has_parent_hit_gate_escape_descendant(element);
     if !snapshot.should_render && !has_escape_descendant {
@@ -176,6 +175,10 @@ fn hit_test_subtree(
     }
 
     let clips = HitClips::of(element, inherited_clip);
+    let child_query = HitTestQuery {
+        x: hit_x + clips.children_offset.0,
+        y: hit_y + clips.children_offset.1,
+    };
     let in_self = point_in_box_model(&snapshot, hit_x, hit_y)
         && element.hit_test_visible_at(hit_x, hit_y)
         && clips.own.is_none_or(|clip| clip.contains(hit_x, hit_y));
@@ -212,20 +215,17 @@ fn hit_test_subtree(
 }
 
 /// The clips a hit test applies at one node, the ones placement gives it:
-/// to the node itself and to its children.
+/// to the node itself and to its children, in their layout space, which
+/// `children_offset` moves the hit point into.
 struct HitClips {
     own: Option<Rect>,
     children: Option<Rect>,
+    children_offset: (f32, f32),
 }
 
 impl HitClips {
     fn of(host: &dyn ElementTrait, inherited: Option<Rect>) -> Self {
-        let any = host.as_any();
-        let element = any
-            .downcast_ref::<Element>()
-            .or_else(|| any.downcast_ref::<Image>().map(Image::element))
-            .or_else(|| any.downcast_ref::<Svg>().map(Svg::element));
-        match element {
+        match super::host_element(host) {
             // A span its formatting context's root installs is never placed
             // on its own: it clips neither itself nor its children.
             Some(element) if !element.is_inline_ifc_owned() => {
@@ -233,11 +233,13 @@ impl HitClips {
                 Self {
                     own: inherited.map(|inherited| element.own_hit_test_clip_rect(inherited)),
                     children: Some(element.child_hit_test_clip_rect(inherited)),
+                    children_offset: element.children_space_offset(),
                 }
             }
             _ => Self {
                 own: None,
                 children: inherited,
+                children_offset: (0.0, 0.0),
             },
         }
     }

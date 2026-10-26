@@ -90,3 +90,22 @@ impl Element {
 }
 
 impl UiBuildContext {}
+
+impl Element {
+    /// The scissor of this element's absolute clip where it sits in the
+    /// viewport, `viewport_offset` from its layout space.
+    pub(crate) fn absolute_clip_scissor_rect_in_viewport(
+        &self,
+        [dx, dy]: [f32; 2],
+    ) -> Option<[u32; 4]> {
+        if self.computed_style.position.clip_mode() == ClipMode::Viewport {
+            return self.absolute_clip_scissor_rect();
+        }
+        let rect = self.absolute_clip_rect?;
+        rect_to_scissor_rect(Rect {
+            x: rect.x + dx,
+            y: rect.y + dy,
+            ..rect
+        })
+    }
+}

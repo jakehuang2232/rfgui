@@ -8,8 +8,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::view::base_component::paint_offset_after_owner_snap;
 use crate::view::compositor::property_tree::{
-    ClipNodeSnapshot, DerivedSpatialProjection, SpatialProjectionError, SpatialProjectionGraph,
-    TransformNodeId,
+    ClipNodeSnapshot, DerivedSpatialProjection, ScrollNodeId, ScrollNodeSnapshot,
+    SpatialProjectionError, SpatialProjectionGraph, TransformNodeId,
 };
 use crate::view::node_arena::NodeKey;
 
@@ -20,6 +20,9 @@ pub(crate) struct ArtifactSpatialProjection {
     transforms: FxHashMap<TransformNodeId, DerivedSpatialProjection>,
     /// Origins of the layout frames owner-local clips and chunks are placed in.
     frames: FxHashMap<NodeKey, Vec2>,
+    /// For each scroll node, how far contents under it sit from their
+    /// scroll-zero positions: its offset and its ancestors'.
+    scroll_displacements: FxHashMap<ScrollNodeId, Vec2>,
     owner_snap_points: std::sync::Arc<[OwnerSnapPoints]>,
     /// Every owner's snapped paint offset for a zero host offset, for the
     /// last scale factor asked.
@@ -166,9 +169,19 @@ impl ArtifactSpatialProjection {
         Ok(Self {
             transforms,
             frames,
+            scroll_displacements: scroll_displacements(&artifact.scroll_nodes),
             owner_snap_points,
             owner_paint_offsets: Default::default(),
         })
+    }
+
+    /// How far content painting under `scroll` sits from its scroll-zero
+    /// position, where viewport-frame chunks are recorded.
+    pub(crate) fn scroll_displacement(&self, scroll: Option<ScrollNodeId>) -> Option<Vec2> {
+        match scroll {
+            Some(scroll) => self.scroll_displacements.get(&scroll).copied(),
+            None => Some(Vec2::ZERO),
+        }
     }
 
     /// Whether this projection holds the layout frame of every owner of
@@ -244,6 +257,27 @@ impl ArtifactSpatialProjection {
         *memo = Some((scale_factor.to_bits(), offsets.clone()));
         Ok(offsets)
     }
+}
+
+fn scroll_displacements(scrolls: &[ScrollNodeSnapshot]) -> FxHashMap<ScrollNodeId, Vec2> {
+    let by_id = scrolls
+        .iter()
+        .map(|scroll| (scroll.id, scroll))
+        .collect::<FxHashMap<_, _>>();
+    let mut displacements = FxHashMap::default();
+    for scroll in scrolls {
+        let mut displacement = Vec2::ZERO;
+        let mut cursor = Some(scroll.id);
+        for _ in 0..=scrolls.len() {
+            let Some(node) = cursor.and_then(|id| by_id.get(&id)) else {
+                break;
+            };
+            displacement += node.offset;
+            cursor = node.parent;
+        }
+        displacements.insert(scroll.id, displacement);
+    }
+    displacements
 }
 
 fn owner_local_geometry_owners(artifact: &PaintArtifact) -> impl Iterator<Item = NodeKey> + '_ {

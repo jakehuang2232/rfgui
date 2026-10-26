@@ -755,10 +755,11 @@ impl Element {
         self.core.id
     }
 
+    /// Where children are laid out from, at their scroll-zero positions.
     pub(crate) fn child_layout_origin(&self) -> (f32, f32) {
         (
-            self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x,
-            self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y,
+            self.layout_state.layout_flow_inner_position.x,
+            self.layout_state.layout_flow_inner_position.y,
         )
     }
 

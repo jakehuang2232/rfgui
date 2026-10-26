@@ -571,11 +571,12 @@ fn interleaved_projection_matches_owner_compatibility_matrix() {
             .as_any()
             .downcast_ref::<Element>()
             .expect("Element projection owner");
+        let [dx, dy] = arena.viewport_offset(snapshot.owner);
         assert_eq!(
             derived.owner_viewport_position.to_array().map(f32::to_bits),
             [
-                element.layout_state.layout_position.x.to_bits(),
-                element.layout_state.layout_position.y.to_bits(),
+                (element.layout_state.layout_position.x + dx).to_bits(),
+                (element.layout_state.layout_position.y + dy).to_bits(),
             ],
         );
     }

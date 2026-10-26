@@ -10,13 +10,12 @@ const CPU_PHASES: [&str; 10] = [
 
 /// The viewport position of the middle of the first Text reading `label`.
 pub(super) fn text_center(viewport: &Viewport, label: &str) -> Option<(f32, f32)> {
-    fn find(arena: &NodeArena, key: NodeKey, label: &str) -> Option<(f32, f32)> {
+    fn find(arena: &NodeArena, key: NodeKey, label: &str) -> Option<u64> {
         let node = arena.get(key)?;
         if let Some(text) = node.element.as_any().downcast_ref::<Text>()
             && text.content() == label
         {
-            let b = node.element.box_model_snapshot();
-            return Some((b.x + b.width / 2.0, b.y + b.height / 2.0));
+            return Some(node.element.stable_id());
         }
         drop(node);
         arena
@@ -25,10 +24,16 @@ pub(super) fn text_center(viewport: &Viewport, label: &str) -> Option<(f32, f32)
             .find_map(|&key| find(arena, key, label))
     }
     let arena = viewport.node_arena();
-    arena
+    let id = arena
         .roots()
         .iter()
-        .find_map(|&key| find(arena, key, label))
+        .find_map(|&key| find(arena, key, label))?;
+    // Box models in the viewport, scroll applied.
+    let b = viewport
+        .frame_box_models()
+        .iter()
+        .find(|b| b.node_id == id)?;
+    Some((b.x + b.width / 2.0, b.y + b.height / 2.0))
 }
 
 fn median(values: &mut [f64]) -> f64 {

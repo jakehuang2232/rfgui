@@ -627,6 +627,23 @@ struct AnchorSnapshot {
     parent_clip_rect: Rect,
 }
 
+impl AnchorSnapshot {
+    /// This snapshot moved by `[dx, dy]`, between the viewport and a layout
+    /// space displaced from it by a scroll chain.
+    fn shifted(self, [dx, dy]: [f32; 2]) -> Self {
+        Self {
+            x: self.x + dx,
+            y: self.y + dy,
+            parent_clip_rect: Rect {
+                x: self.parent_clip_rect.x + dx,
+                y: self.parent_clip_rect.y + dy,
+                ..self.parent_clip_rect
+            },
+            ..self
+        }
+    }
+}
+
 #[derive(Default)]
 struct PlacementRuntime {
     depth: usize,
@@ -636,6 +653,9 @@ struct PlacementRuntime {
     ancestor_stack: Vec<AnchorSnapshot>,
     child_clip_stack: Vec<Rect>,
     hit_test_clip_stack: Vec<Rect>,
+    /// For each element whose children are being placed, the scroll offsets
+    /// of it and every scroll container above it.
+    scroll_chain_stack: Vec<[f32; 2]>,
 }
 
 thread_local! {
@@ -782,9 +802,7 @@ pub(crate) struct PlacementSkipFailureCounters {
     pub runtime_state: usize,
     pub placement_mismatch: usize,
     pub placement_dirty_self: usize,
-    pub hit_test_clip_mismatch: usize,
     pub paint_cull_mismatch: usize,
-    pub anchor_parent_clip_mismatch: usize,
 }
 
 impl PlacementSkipFailureCounters {
@@ -798,9 +816,7 @@ impl PlacementSkipFailureCounters {
             + self.runtime_state
             + self.placement_mismatch
             + self.placement_dirty_self
-            + self.hit_test_clip_mismatch
             + self.paint_cull_mismatch
-            + self.anchor_parent_clip_mismatch
     }
 
     pub(crate) fn record(&mut self, reason: PlacementSkipFailureReason) {
@@ -813,11 +829,7 @@ impl PlacementSkipFailureCounters {
             PlacementSkipFailureReason::RuntimeState => self.runtime_state += 1,
             PlacementSkipFailureReason::PlacementMismatch => self.placement_mismatch += 1,
             PlacementSkipFailureReason::PlacementDirtySelf => self.placement_dirty_self += 1,
-            PlacementSkipFailureReason::HitTestClipMismatch => self.hit_test_clip_mismatch += 1,
             PlacementSkipFailureReason::PaintCullMismatch => self.paint_cull_mismatch += 1,
-            PlacementSkipFailureReason::AnchorParentClipMismatch => {
-                self.anchor_parent_clip_mismatch += 1;
-            }
         }
     }
 }
@@ -832,9 +844,7 @@ pub(crate) enum PlacementSkipFailureReason {
     RuntimeState,
     PlacementMismatch,
     PlacementDirtySelf,
-    HitTestClipMismatch,
     PaintCullMismatch,
-    AnchorParentClipMismatch,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -5466,6 +5476,8 @@ pub struct Element {
     layout_dirty: bool,
     dirty_flags: DirtyFlags,
     last_layout_placement: Option<LayoutPlacement>,
+    /// The scroll offsets above this element when it was last placed.
+    last_scroll_chain: [f32; 2],
     last_layout_proposal: Option<LayoutProposal>,
     flex_info: Option<Box<crate::view::layout::FlexLayoutInfo>>,
     has_absolute_descendant_for_hit_test: bool,
@@ -5784,7 +5796,14 @@ impl Element {
             .plan
             .iter()
             .any(|op| matches!(op, InlineIfcNodeInstallOp::Atomic { .. }));
-        if origins != install.applied_origins || has_atomic {
+        // Spans' positioned children read the scroll and clips above, which
+        // change without this root moving.
+        let has_positioned = self.children.iter().any(|&child| {
+            arena
+                .cached_placement_eligibility_metadata(child)
+                .contains_absolute_descendant
+        });
+        if origins != install.applied_origins || has_atomic || has_positioned {
             self.reposition_inline_ifc_install_plan(
                 arena,
                 &install.plan,
@@ -5792,6 +5811,7 @@ impl Element {
                 install.content_top_offset,
                 placement,
                 has_atomic,
+                has_positioned,
             );
             install.applied_origins = origins;
         }
@@ -5895,14 +5915,15 @@ impl Element {
         ))
     }
 
-    /// Origins every install apply bakes into absolute coordinates:
-    /// (origin_x, origin_y, flow_origin_x, flow_origin_y), scroll folded.
+    /// Origins every install apply bakes into layout coordinates:
+    /// (origin_x, origin_y, flow_origin_x, flow_origin_y). Children sit at
+    /// their scroll-zero positions.
     fn inline_ifc_apply_origins(&self) -> (f32, f32, f32, f32) {
         (
-            self.layout_state.layout_inner_position.x - self.scroll_offset.x,
-            self.layout_state.layout_inner_position.y - self.scroll_offset.y,
-            self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x,
-            self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y,
+            self.layout_state.layout_inner_position.x,
+            self.layout_state.layout_inner_position.y,
+            self.layout_state.layout_flow_inner_position.x,
+            self.layout_state.layout_flow_inner_position.y,
         )
     }
 
@@ -5922,22 +5943,24 @@ impl Element {
         top_offset: f32,
         placement: LayoutPlacement,
         has_atomic: bool,
+        has_positioned: bool,
     ) {
-        let origin_x = self.layout_state.layout_inner_position.x - self.scroll_offset.x;
-        let origin_y = self.layout_state.layout_inner_position.y - self.scroll_offset.y;
-        let flow_origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
-        let flow_origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
+        let origin_x = self.layout_state.layout_inner_position.x;
+        let origin_y = self.layout_state.layout_inner_position.y;
+        let flow_origin_x = self.layout_state.layout_flow_inner_position.x;
+        let flow_origin_y = self.layout_state.layout_flow_inner_position.y;
         let visual_offset_x =
             self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
         let visual_offset_y =
             self.layout_state.layout_position.y - self.layout_state.layout_flow_position.y;
         // Children placed here, atomic boxes and spans' positioned children,
         // must see the clip scopes place_children gives in-flow children.
-        let places_children = has_atomic || moved;
+        let places_children = has_atomic || has_positioned || moved;
         if places_children {
             let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
             self.push_hit_test_clip_scope(child_parent_hit_test_clip);
             self.push_child_clip_scope(self.child_paint_cull_rect());
+            self.push_children_scroll_scope();
         }
         for op in plan {
             match op {
@@ -5957,6 +5980,8 @@ impl Element {
                             top_offset,
                             NodeChange::Translation,
                         );
+                    }
+                    if moved || has_positioned {
                         place_inline_ifc_span_absolute_children(arena, *node_key, placement);
                     }
                 }
@@ -6005,10 +6030,9 @@ impl Element {
             }
         }
         if places_children {
+            self.pop_children_scroll_scope();
             self.pop_child_clip_scope();
             self.pop_hit_test_clip_scope();
-        }
-        if has_atomic || moved {
             // place_children sampled the old installed child coordinates
             // against this root's new origin. Even a pure text/span move must
             // replace that transient extent after shifting the children, or a
@@ -6028,10 +6052,10 @@ impl Element {
         top_offset: f32,
         placement: LayoutPlacement,
     ) -> Vec<NodeKey> {
-        let origin_x = self.layout_state.layout_inner_position.x - self.scroll_offset.x;
-        let origin_y = self.layout_state.layout_inner_position.y - self.scroll_offset.y;
-        let flow_origin_x = self.layout_state.layout_flow_inner_position.x - self.scroll_offset.x;
-        let flow_origin_y = self.layout_state.layout_flow_inner_position.y - self.scroll_offset.y;
+        let origin_x = self.layout_state.layout_inner_position.x;
+        let origin_y = self.layout_state.layout_inner_position.y;
+        let flow_origin_x = self.layout_state.layout_flow_inner_position.x;
+        let flow_origin_y = self.layout_state.layout_flow_inner_position.y;
         let visual_offset_x =
             self.layout_state.layout_position.x - self.layout_state.layout_flow_position.x;
         let visual_offset_y =
@@ -6043,6 +6067,7 @@ impl Element {
         let child_parent_hit_test_clip = self.current_child_hit_test_clip_rect();
         self.push_hit_test_clip_scope(child_parent_hit_test_clip);
         self.push_child_clip_scope(self.child_paint_cull_rect());
+        self.push_children_scroll_scope();
 
         let mut installed_nodes = Vec::with_capacity(plan.len());
         for op in plan {
@@ -6109,6 +6134,7 @@ impl Element {
             }
         }
 
+        self.pop_children_scroll_scope();
         self.pop_child_clip_scope();
         self.pop_hit_test_clip_scope();
         installed_nodes
@@ -6691,9 +6717,17 @@ impl ElementTrait for Element {
             return ScrollGeometryObservation::Inactive;
         }
 
-        // The contents scissor must exist at the owner's current placement;
-        // the snapshot itself is owner-local.
-        if self.inner_clip_scissor_rect().is_none() {
+        // The contents scissor must exist at the owner's current place in
+        // the viewport; the snapshot itself is owner-local.
+        let [dx, dy] = arena.viewport_offset(owner);
+        let inner = self.inner_clip_rect();
+        if rect_to_scissor_rect(Rect {
+            x: inner.x + dx,
+            y: inner.y + dy,
+            ..inner
+        })
+        .is_none()
+        {
             return ScrollGeometryObservation::Unsupported;
         }
         let scrollport_rect = self.local_inner_clip_rect();

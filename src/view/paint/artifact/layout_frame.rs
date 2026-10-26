@@ -408,16 +408,18 @@ pub(crate) fn artifact_plan_in_layout_frame(
 
 impl PaintChunk {
     /// This chunk and its commands in viewport space: a layout-frame chunk
-    /// first moves to its frame's `origin`, then every chunk takes its
-    /// owner's pixel snap `snap`. The two translations stay separate so each
-    /// coordinate is the recorded value plus the snap.
+    /// first moves to its frame's `origin`, and a viewport-frame chunk by
+    /// the scroll displacement `origin` takes off its scroll-zero position;
+    /// then every chunk takes its owner's pixel snap `snap`. The
+    /// translations stay separate so each coordinate is the recorded value
+    /// plus the snap.
     pub(crate) fn placed(
         &self,
         ops: impl IntoIterator<Item = PaintOp>,
         origin: Option<[f32; 2]>,
         snap: [f32; 2],
     ) -> Option<(Self, Vec<PaintOp>)> {
-        if origin.is_some() != (self.frame == PaintChunkFrame::Layout) {
+        if origin.is_none() && self.frame == PaintChunkFrame::Layout {
             return None;
         }
         let snap = (snap.map(f32::to_bits) != [0.0_f32.to_bits(); 2]).then_some(snap);

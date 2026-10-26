@@ -123,8 +123,14 @@ impl Element {
         match self.computed_style.position.clip_mode() {
             ClipMode::Parent => None,
             ClipMode::Viewport => {
+                // The rect is the viewport in this element's layout space;
+                // in the viewport it starts at the origin.
                 if let Some(rect) = self.absolute_clip_rect {
-                    rect_to_scissor_rect(rect)
+                    rect_to_scissor_rect(Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        ..rect
+                    })
                 } else {
                     let (viewport_w, viewport_h) = self.viewport_size_from_runtime(
                         self.layout_state.layout_size.width,
@@ -295,10 +301,6 @@ impl Element {
     fn local_inner_clip_rect(&self) -> Rect {
         let (frame_width, frame_height) = self.current_clip_layout_size();
         self.local_inner_rect_for_frame_size(frame_width, frame_height)
-    }
-
-    fn inner_clip_scissor_rect(&self) -> Option<[u32; 4]> {
-        rect_to_scissor_rect(self.inner_clip_rect())
     }
 
     fn inner_clip_radii(&self, outer_radii: CornerRadii) -> CornerRadii {
@@ -717,6 +719,7 @@ impl Element {
             layout_dirty: true,
             dirty_flags: DirtyFlags::ALL,
             last_layout_placement: None,
+            last_scroll_chain: [0.0, 0.0],
             last_layout_proposal: None,
             flex_info: None,
             has_absolute_descendant_for_hit_test: false,

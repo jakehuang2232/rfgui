@@ -1233,6 +1233,7 @@ pub(crate) fn place_artifact_chunks(
     };
     if artifact.chunks.iter().all(|chunk| {
         chunk.frame == super::PaintChunkFrame::Viewport
+            && spatial.scroll_displacement(chunk.properties.scroll) == Some(glam::Vec2::ZERO)
             && snaps
                 .get(&chunk.owner)
                 .is_some_and(|snap| snap.map(f32::to_bits) == [0.0_f32.to_bits(); 2])
@@ -1295,7 +1296,14 @@ fn chunk_placement(
 ) -> Result<ChunkPlacement, ChunkPlacementError> {
     let missing = ChunkPlacementError::MissingFrame(chunk.owner);
     let origin = match chunk.frame {
-        super::PaintChunkFrame::Viewport => None,
+        // Recorded at the scroll-zero position of whatever scrolls it.
+        super::PaintChunkFrame::Viewport => {
+            let displacement = sources
+                .spatial
+                .scroll_displacement(chunk.properties.scroll)
+                .ok_or(missing)?;
+            (displacement != glam::Vec2::ZERO).then(|| (-displacement).to_array())
+        }
         super::PaintChunkFrame::Layout => Some(
             chunk
                 .properties

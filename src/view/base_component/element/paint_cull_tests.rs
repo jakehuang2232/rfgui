@@ -11,6 +11,8 @@ fn host(direction: ScrollDirection) -> Element {
     host
 }
 
+/// The interest is in the children's layout space, where they sit at their
+/// scroll-zero positions: it stays put until the scroll crosses a grid line.
 #[test]
 fn paint_interest_is_stable_in_content_space_until_grid_boundary() {
     let mut element = host(ScrollDirection::Both);
@@ -19,18 +21,13 @@ fn paint_interest_is_stable_in_content_space_until_grid_boundary() {
     let second = element.child_paint_cull_rect();
     assert_eq!(
         [first.x, first.y, first.width, first.height],
-        [second.x + 12., second.y + 12., second.width, second.height]
+        [second.x, second.y, second.width, second.height]
     );
     element.scroll_offset = Position { x: 96., y: 96. };
     let crossed = element.child_paint_cull_rect();
     assert_ne!(
         [first.x, first.y, first.width, first.height],
-        [
-            crossed.x + 96.,
-            crossed.y + 96.,
-            crossed.width,
-            crossed.height
-        ]
+        [crossed.x, crossed.y, crossed.width, crossed.height]
     );
 }
 
@@ -49,18 +46,25 @@ fn paint_interest_preserves_existing_overscan_and_non_scrolling_axes() {
                 x: offset,
                 y: offset,
             };
+            // The viewed part of the contents, in their layout space.
             let rect = element.child_paint_cull_rect();
-            assert!(rect.x <= 37. - margin && rect.y <= 60. - margin);
-            assert!(rect.x + rect.width >= 437. + margin);
-            assert!(rect.y + rect.height >= 460. + margin);
+            assert!(rect.x <= 37. - margin + offset && rect.y <= 60. - margin + offset);
+            assert!(rect.x + rect.width >= 437. + margin + offset);
+            assert!(rect.y + rect.height >= 460. + margin + offset);
             if matches!(direction, ScrollDirection::None | ScrollDirection::Vertical) {
-                assert_eq!((rect.x, rect.width), (37. - margin, 400. + margin * 2.));
+                assert_eq!(
+                    (rect.x, rect.width),
+                    (37. - margin + offset, 400. + margin * 2.)
+                );
             }
             if matches!(
                 direction,
                 ScrollDirection::None | ScrollDirection::Horizontal
             ) {
-                assert_eq!((rect.y, rect.height), (60. - margin, 400. + margin * 2.));
+                assert_eq!(
+                    (rect.y, rect.height),
+                    (60. - margin + offset, 400. + margin * 2.)
+                );
             }
         }
     }
