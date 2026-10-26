@@ -35,6 +35,33 @@ impl Element {
         )
     }
 
+    /// The largest scroll offset on each axis.
+    fn scroll_limits(&self) -> (f32, f32) {
+        (
+            (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width)
+                .max(0.0),
+            (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height)
+                .max(0.0),
+        )
+    }
+
+    /// Asks to scroll to `requested`. What is drawn and hit tested moves by
+    /// whole device pixels, so the scrolled content keeps the raster phase
+    /// it was drawn at and its raster is reused. Returns whether that drawn
+    /// offset changed.
+    fn scroll_to(&mut self, requested: Position) -> bool {
+        self.requested_scroll_offset = requested;
+        let (max_x, max_y) = self.scroll_limits();
+        let aligned = Position {
+            x: align_to_device_pixel(requested.x, self.device_scale).clamp(0.0, max_x),
+            y: align_to_device_pixel(requested.y, self.device_scale).clamp(0.0, max_y),
+        };
+        let moved = !approx_eq(aligned.x, self.scroll_offset.x)
+            || !approx_eq(aligned.y, self.scroll_offset.y);
+        self.scroll_offset = aligned;
+        moved
+    }
+
     fn has_scrollbar(&self) -> bool {
         let (max_x, max_y) = self.max_scroll();
         (matches!(
@@ -159,16 +186,14 @@ impl Element {
         else {
             return false;
         };
+        let mut requested = self.requested_scroll_offset;
         let current_scroll = match axis {
-            ScrollbarAxis::Vertical => self.scroll_offset.y,
-            ScrollbarAxis::Horizontal => self.scroll_offset.x,
+            ScrollbarAxis::Vertical => &mut requested.y,
+            ScrollbarAxis::Horizontal => &mut requested.x,
         };
-        let changed = !approx_eq(next_scroll, current_scroll);
-        match axis {
-            ScrollbarAxis::Vertical => self.scroll_offset.y = next_scroll,
-            ScrollbarAxis::Horizontal => self.scroll_offset.x = next_scroll,
-        }
-        if changed {
+        let changed = !approx_eq(next_scroll, *current_scroll);
+        *current_scroll = next_scroll;
+        if self.scroll_to(requested) {
             self.mark_scroll_dirty();
         }
         changed
@@ -277,7 +302,7 @@ impl Element {
                 if let Some(to) =
                     self.scroll_value_from_drag(ScrollbarAxis::Vertical, local_x, local_y, grab)
                 {
-                    let from = self.scroll_offset.y;
+                    let from = self.requested_scroll_offset.y;
                     let _ = control.start_scroll_track(self.core.id, ScrollAxis::Y, from, to);
                 }
                 self.scrollbar_drag = Some(ScrollbarDragState {
@@ -313,7 +338,7 @@ impl Element {
                 if let Some(to) =
                     self.scroll_value_from_drag(ScrollbarAxis::Horizontal, local_x, local_y, grab)
                 {
-                    let from = self.scroll_offset.x;
+                    let from = self.requested_scroll_offset.x;
                     let _ = control.start_scroll_track(self.core.id, ScrollAxis::X, from, to);
                 }
                 self.scrollbar_drag = Some(ScrollbarDragState {

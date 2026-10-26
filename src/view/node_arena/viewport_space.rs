@@ -9,6 +9,16 @@ use super::*;
 use crate::view::base_component::BoxModelSnapshot;
 
 impl NodeArena {
+    /// Physical pixels per logical pixel of the viewport: scroll offsets
+    /// move content by whole device pixels at this scale.
+    pub(crate) fn device_scale(&self) -> f32 {
+        self.device_scale.unwrap_or(1.0)
+    }
+
+    pub(crate) fn set_device_scale(&mut self, device_scale: f32) {
+        self.device_scale = Some(device_scale);
+    }
+
     /// The translation from `key`'s layout space to the viewport.
     pub(crate) fn viewport_offset(&self, key: NodeKey) -> [f32; 2] {
         let mut offset = [0.0, 0.0];

@@ -392,7 +392,7 @@ impl Layoutable for Element {
             && self.dirty_flags.intersects(placement_dirty_mask);
         if scrolled_only && !child_placement_dirty && !inline_ifc_layout_call_site_dirty {
             // The content extent is the last place's.
-            self.clamp_scroll_offset();
+            self.clamp_scroll_offset(arena.device_scale());
         }
         if (!self.dirty_flags.intersects(placement_dirty_mask)
             || (scrolled_only && !self.children_read_placement_context(arena)))

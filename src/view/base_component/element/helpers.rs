@@ -98,6 +98,11 @@ fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.0001
 }
 
+/// The nearest offset that moves content by whole device pixels.
+fn align_to_device_pixel(value: f32, device_scale: f32) -> f32 {
+    (value * device_scale).round() / device_scale
+}
+
 fn rect_approx_eq(a: Option<Rect>, b: Option<Rect>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => {

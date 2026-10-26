@@ -394,10 +394,9 @@ impl EventTarget for Element {
         if !can_scroll {
             return false;
         }
-        let max_scroll_x = (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width).max(0.0);
-        let max_scroll_y = (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height).max(0.0);
-        let mut next_x = self.scroll_offset.x;
-        let mut next_y = self.scroll_offset.y;
+        let (max_scroll_x, max_scroll_y) = self.scroll_limits();
+        let mut next_x = self.requested_scroll_offset.x;
+        let mut next_y = self.requested_scroll_offset.y;
         match self.scroll_direction {
             ScrollDirection::Horizontal => {
                 next_x = (next_x + dx).clamp(0.0, max_scroll_x);
@@ -411,12 +410,15 @@ impl EventTarget for Element {
             }
             ScrollDirection::None => {}
         }
-        let changed =
-            !approx_eq(next_x, self.scroll_offset.x) || !approx_eq(next_y, self.scroll_offset.y);
-        self.scroll_offset.x = next_x;
-        self.scroll_offset.y = next_y;
+        let changed = !approx_eq(next_x, self.requested_scroll_offset.x)
+            || !approx_eq(next_y, self.requested_scroll_offset.y);
         if changed {
             self.note_scrollbar_interaction();
+        }
+        if self.scroll_to(Position {
+            x: next_x,
+            y: next_y,
+        }) {
             self.mark_scroll_dirty();
         }
         changed
@@ -427,10 +429,9 @@ impl EventTarget for Element {
         if !can_scroll {
             return false;
         }
-        let max_scroll_x = (self.layout_state.content_size.width - self.layout_state.layout_inner_size.width).max(0.0);
-        let max_scroll_y = (self.layout_state.content_size.height - self.layout_state.layout_inner_size.height).max(0.0);
-        let mut next_x = self.scroll_offset.x;
-        let mut next_y = self.scroll_offset.y;
+        let (max_scroll_x, max_scroll_y) = self.scroll_limits();
+        let mut next_x = self.requested_scroll_offset.x;
+        let mut next_y = self.requested_scroll_offset.y;
         match self.scroll_direction {
             ScrollDirection::Horizontal => {
                 next_x = (next_x + dx).clamp(0.0, max_scroll_x);
@@ -444,19 +445,22 @@ impl EventTarget for Element {
             }
             ScrollDirection::None => {}
         }
-        !approx_eq(next_x, self.scroll_offset.x) || !approx_eq(next_y, self.scroll_offset.y)
+        !approx_eq(next_x, self.requested_scroll_offset.x)
+            || !approx_eq(next_y, self.requested_scroll_offset.y)
     }
 
     fn get_scroll_offset(&self) -> (f32, f32) {
-        (self.scroll_offset.x, self.scroll_offset.y)
+        (
+            self.requested_scroll_offset.x,
+            self.requested_scroll_offset.y,
+        )
     }
 
     fn set_scroll_offset(&mut self, offset: (f32, f32)) {
-        let changed = !approx_eq(self.scroll_offset.x, offset.0)
-            || !approx_eq(self.scroll_offset.y, offset.1);
-        self.scroll_offset.x = offset.0;
-        self.scroll_offset.y = offset.1;
-        if changed {
+        if self.scroll_to(Position {
+            x: offset.0,
+            y: offset.1,
+        }) {
             self.mark_scroll_dirty();
         }
     }

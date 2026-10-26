@@ -418,6 +418,9 @@ pub struct NodeArena {
     /// element callback. Stable-id lookup may trust the wrapper index only for
     /// these explicitly tracked transient placeholders.
     taken_depths: RefCell<FxHashMap<NodeKey, u32>>,
+    /// Physical pixels per logical pixel of the viewport laying the nodes
+    /// out; `None` until one does.
+    device_scale: Option<f32>,
 }
 
 /// Mutation-scoped handle for recording arena-owned invalidation.

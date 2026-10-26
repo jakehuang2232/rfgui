@@ -324,15 +324,15 @@ impl Element {
         };
     }
 
-    fn clamp_scroll_offset(&mut self) {
-        let max_x = (self.layout_state.content_size.width
-            - self.layout_state.layout_inner_size.width)
-            .max(0.0);
-        let max_y = (self.layout_state.content_size.height
-            - self.layout_state.layout_inner_size.height)
-            .max(0.0);
-        self.scroll_offset.x = self.scroll_offset.x.clamp(0.0, max_x);
-        self.scroll_offset.y = self.scroll_offset.y.clamp(0.0, max_y);
+    /// Keeps the scroll offset inside the content, on the pixel grid of
+    /// `device_scale`.
+    fn clamp_scroll_offset(&mut self, device_scale: f32) {
+        self.device_scale = device_scale;
+        let (max_x, max_y) = self.scroll_limits();
+        let _ = self.scroll_to(Position {
+            x: self.requested_scroll_offset.x.clamp(0.0, max_x),
+            y: self.requested_scroll_offset.y.clamp(0.0, max_y),
+        });
     }
 
     fn update_size_from_measured_children(
@@ -1817,7 +1817,7 @@ impl Element {
             arena,
         );
         profile_layout_place_time(LayoutPlaceTiming::ClampScroll, || {
-            self.clamp_scroll_offset();
+            self.clamp_scroll_offset(arena.device_scale());
         });
         if placed_offset.x != self.scroll_offset.x || placed_offset.y != self.scroll_offset.y {
             // Content extent is known only after placement. If resize/content

@@ -410,6 +410,7 @@ impl Viewport {
         // Take the arena out of the scene so we can pass it by &mut into
         // layout without aliasing the viewport; restore at the end.
         let mut arena = std::mem::take(&mut self.scene.node_arena);
+        arena.set_device_scale(self.scale_factor);
         let root_keys = self.scene.ui_root_keys.clone();
         let mut traversal_profile = super::frame::LayoutTraversalProfile {
             root_count: root_keys.len(),

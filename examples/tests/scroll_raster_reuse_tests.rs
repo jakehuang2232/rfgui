@@ -1,8 +1,8 @@
 //! Real production scroll culling, raster residency and independent pixels.
 use rfgui::style::{Color, Layout, Length, ScrollDirection};
-use rfgui::time::Instant;
+use rfgui::time::{Duration, Instant};
 use rfgui::ui::{RsxNode, rsx};
-use rfgui::view::viewport::set_scroll_offset_by_id;
+use rfgui::view::viewport::{get_scroll_offset_by_id, set_scroll_offset_by_id};
 use rfgui::view::{Element, Text, Viewport};
 
 #[path = "../../lib/rfgui-components/tests/retained_controls/gpu.rs"]
@@ -144,5 +144,67 @@ fn scroll_interest_reuses_rasters_and_refreshes_exposed_or_changed_content() -> 
         assert_ne!(frames[0], frames[1], "scroll must change pixels");
         assert_ne!(frames[10], frames[11], "edit must change pixels");
     }
+    Ok(())
+}
+
+/// Smooth scrolling samples fractional offsets, and a wheel delta can be a
+/// fraction of a pixel. The content moves by whole device pixels, so every
+/// frame reuses its rasters, and the fractions still add up.
+#[test]
+#[ignore = "requires native hardware graphics adapter"]
+fn fractional_scrolls_move_by_device_pixels_and_reuse_rasters() -> Result<(), String> {
+    let gpu = gpu::Gpu::new()?;
+    let dpr = 2;
+    let size = [440 * dpr, 440 * dpr];
+    let tree = scene(false, 512);
+    let mut viewport = Viewport::new();
+    let start = Instant::now();
+    let mut frame = 0;
+    let mut render = |viewport: &mut Viewport| {
+        frame += 1;
+        viewport.render_rsx_offscreen_for_test(
+            &tree,
+            gpu.device.clone(),
+            gpu.queue.clone(),
+            size,
+            dpr as f32,
+            start + Duration::from_millis(frame * 16),
+        )
+    };
+    render(&mut viewport)?;
+    viewport.set_pointer_position_viewport(200., 200.);
+    viewport.dispatch_pointer_move_event();
+    let mut fractional_samples = 0;
+    // One wheel step, then five a fifth of a pixel each; every one runs
+    // its smooth scroll to the end.
+    for delta in [10., 0.2, 0.2, 0.2, 0.2, 0.2] {
+        assert!(viewport.dispatch_pointer_wheel_event(0., delta));
+        for _ in 0..20 {
+            let output = render(&mut viewport)?;
+            assert_eq!(output.rerasterizations, 0, "frame {frame}");
+            assert!(output.reuses > 0);
+            let arena = viewport.node_arena();
+            let root = arena.roots()[0];
+            let id = arena.get(root).unwrap().element.stable_id();
+            let (_, requested) = get_scroll_offset_by_id(arena, root, id).unwrap();
+            if (requested * dpr as f32).fract() != 0. {
+                fractional_samples += 1;
+            }
+            // In tree order: the container, then its first row.
+            let first_row = &viewport.frame_box_models()[1];
+            assert_eq!(
+                (first_row.y * dpr as f32).fract(),
+                0.,
+                "frame {frame} drew at {}",
+                first_row.y
+            );
+        }
+    }
+    assert!(fractional_samples > 0);
+    let arena = viewport.node_arena();
+    let root = arena.roots()[0];
+    let id = arena.get(root).unwrap().element.stable_id();
+    let (_, offset) = get_scroll_offset_by_id(arena, root, id).unwrap();
+    assert!((offset - 11.).abs() < 1e-4, "scrolled to {offset}");
     Ok(())
 }

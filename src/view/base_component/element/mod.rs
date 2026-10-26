@@ -5447,7 +5447,14 @@ pub struct Element {
     foreground_color: Color,
     opacity: f32,
     scroll_direction: ScrollDirection,
+    /// The offset scrolling asked for. It stays exact, so that deltas
+    /// smaller than a device pixel still add up.
+    requested_scroll_offset: Position,
+    /// `requested_scroll_offset` on the device pixel grid, inside the
+    /// content: the offset layout, paint and hit testing use.
     scroll_offset: Position,
+    /// Physical pixels per logical pixel as of the last place.
+    device_scale: f32,
     inline_paint_fragments: Vec<Rect>,
     /// True while an ancestor inline IFC root owns this fragmentable
     /// inline element's geometry: its measure/place become shells and its
