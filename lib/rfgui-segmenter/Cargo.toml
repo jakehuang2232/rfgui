@@ -1,6 +1,6 @@
 [package]
 name = "rfgui-segmenter"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 edition = "2024"
 description = "Cross-platform text segmentation for rfgui — wraps OS-native text services where available, falls back to Unicode rules."
 license = "MIT"

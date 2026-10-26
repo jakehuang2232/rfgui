@@ -1,6 +1,6 @@
 [package]
 name = "rfgui-rsx"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 edition = "2024"
 description = "rsx support for rfgui"
 license = "MIT"
