@@ -362,6 +362,23 @@ impl SpatialProjectionError {
 pub(crate) struct DerivedSpatialProjection {
     pub(crate) owner_viewport_position: Vec2,
     pub(crate) owner_viewport_transform: Mat4,
+    local_matrix: Mat4,
+    local_origin: glam::Vec3,
+}
+
+impl DerivedSpatialProjection {
+    /// The owner's authored transform about its origin in the viewport moved
+    /// by `delta`. Moving the position before composing keeps the matrix
+    /// bit-identical for content that moves along with that space.
+    pub(crate) fn transform_moved_by(&self, delta: Vec2) -> Mat4 {
+        let position = self.owner_viewport_position + delta;
+        let origin = glam::Vec3::new(
+            position.x + self.local_origin.x,
+            position.y + self.local_origin.y,
+            self.local_origin.z,
+        );
+        crate::view::base_component::compose_transform_about_origin(self.local_matrix, origin)
+    }
 }
 
 /// Validated, arena-independent view of the four spatial property families.
@@ -522,28 +539,23 @@ impl<'a> SpatialProjectionGraph<'a> {
             .get(&id)
             .copied()
             .ok_or(SpatialProjectionError::MissingTransform(id))?;
-        let owner_viewport_position = self.layout_flow_position(transform.owner)?
-            + self.cumulative_visual_offset(transform.owner)?;
-        let origin = glam::Vec3::new(
-            owner_viewport_position.x + transform.local_origin.x,
-            owner_viewport_position.y + transform.local_origin.y,
-            transform.local_origin.z,
-        );
-        let owner_viewport_transform = crate::view::base_component::compose_transform_about_origin(
-            transform.local_matrix,
-            origin,
-        );
-        if owner_viewport_transform
+        let mut derived = DerivedSpatialProjection {
+            owner_viewport_position: self.layout_flow_position(transform.owner)?
+                + self.cumulative_visual_offset(transform.owner)?,
+            owner_viewport_transform: Mat4::IDENTITY,
+            local_matrix: transform.local_matrix,
+            local_origin: transform.local_origin,
+        };
+        derived.owner_viewport_transform = derived.transform_moved_by(Vec2::ZERO);
+        if derived
+            .owner_viewport_transform
             .to_cols_array()
             .into_iter()
             .any(|value| !value.is_finite())
         {
             return Err(SpatialProjectionError::InvalidSnapshot(transform.owner));
         }
-        Ok(DerivedSpatialProjection {
-            owner_viewport_position,
-            owner_viewport_transform,
-        })
+        Ok(derived)
     }
 
     /// Reconstruct an ordinary paint owner's viewport placement without a

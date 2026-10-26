@@ -228,6 +228,19 @@ impl ArtifactSpatialProjection {
             .map(|derived| derived.owner_viewport_transform)
     }
 
+    /// The owner's transform in a receiver whose space is the viewport moved
+    /// by `delta`, as a surface rasters the content of a scroll it folds.
+    /// Content that scrolls along with the receiver keeps the same matrix.
+    pub(crate) fn owner_transform_moved_by(
+        &self,
+        id: TransformNodeId,
+        delta: [f32; 2],
+    ) -> Option<Mat4> {
+        self.transforms
+            .get(&id)
+            .map(|derived| derived.transform_moved_by(Vec2::from(delta)))
+    }
+
     /// The snap points of every owner of this artifact.
     pub(crate) fn owner_snap_points(&self) -> &std::sync::Arc<[OwnerSnapPoints]> {
         &self.owner_snap_points

@@ -1,5 +1,5 @@
 //! Real production scroll culling, raster residency and independent pixels.
-use rfgui::style::{Color, Layout, Length, ScrollDirection};
+use rfgui::style::{Angle, Color, Layout, Length, Rotate, ScrollDirection, Transform};
 use rfgui::time::{Duration, Instant};
 use rfgui::ui::{RsxNode, rsx};
 use rfgui::view::viewport::{get_scroll_offset_by_id, set_scroll_offset_by_id};
@@ -8,12 +8,17 @@ use rfgui::view::{Element, Text, Viewport};
 #[path = "../../lib/rfgui-components/tests/retained_controls/gpu.rs"]
 mod gpu;
 
+/// Rows in a scroll container; the first row also holds a rotated box, a
+/// transformed surface inside the scrolled content.
 fn scene(changed: bool, rows: usize) -> RsxNode {
     rsx! {
         <Element style={{width:Length::px(400.), height:Length::px(400.), layout:Layout::flow().column(), scroll_direction:ScrollDirection::Both}}>
             {(0..rows).map(|i| rsx! {
                 <Element style={{width:Length::px(600.), height:Length::px(24.), background:if changed && i==0 {Color::rgb(210,30,80)} else {Color::rgb(20+(i%7)as u8*25,50,90)}}}>
                     <Text>{format!("Row {i}: immutable text")}</Text>
+                    {(i == 0).then(|| rsx! {
+                        <Element style={{width:Length::px(16.), height:Length::px(20.), background:Color::rgb(240,200,40), transform:Transform::new([Rotate::z(Angle::deg(90.))])}} />
+                    }).into_iter().collect::<Vec<_>>()}
                 </Element>
             }).collect::<Vec<_>>()}
         </Element>
@@ -132,7 +137,15 @@ fn scroll_interest_reuses_rasters_and_refreshes_exposed_or_changed_content() -> 
                 assert_eq!(output.rerasterizations, 0, "DPR {dpr} frame {frame}");
                 assert!(output.reuses > 0);
                 assert_eq!(output.target_allocations, 0);
-                assert_eq!(Some(&output.persistent_targets), first_targets.as_ref());
+                // A reused content raster leaves the rotated box's raster in
+                // it unused: only targets the first frame had stay resident.
+                let first = first_targets.as_ref().unwrap();
+                assert!(
+                    output
+                        .persistent_targets
+                        .iter()
+                        .all(|target| first.contains(target))
+                );
             }
             if frame == 11 {
                 assert!(

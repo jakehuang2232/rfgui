@@ -652,6 +652,9 @@ pub(crate) enum ArtifactSurfaceCompositeGeometryStamp {
     Transform {
         source_bounds_bits: [u32; 4],
         destination_bounds_bits: [u32; 4],
+        /// The owner's matrix in layout space; once projected into a surface
+        /// receiver, in that receiver's space, where content scrolling with
+        /// the receiver keeps it.
         receiver_transform_bits: [u32; 16],
         /// Projected corners relative to the destination AABB, in texture UV
         /// order. Freeze from the original source coordinates once: moving
@@ -815,7 +818,16 @@ impl ArtifactSurfaceCompositeGeometryStamp {
         &mut self,
         projection: ArtifactSurfaceRasterOriginProjection,
         receiver_destination_bounds_bits: [u32; 4],
+        receiver_transform: Option<glam::Mat4>,
     ) -> Option<()> {
+        if let Self::Transform {
+            receiver_transform_bits,
+            culled: false,
+            ..
+        } = self
+        {
+            *receiver_transform_bits = receiver_transform?.to_cols_array().map(f32::to_bits);
+        }
         let (destination_bounds_bits, resolved_receiver_clip) = match self {
             Self::Transform {
                 destination_bounds_bits,
@@ -915,11 +927,16 @@ impl ArtifactSurfaceCompositeGeometryState {
         &mut self,
         projection: ArtifactSurfaceRasterOriginProjection,
         receiver_destination_bounds_bits: [u32; 4],
+        receiver_transform: Option<glam::Mat4>,
     ) -> Option<()> {
         let Self::Pending(mut geometry) = *self else {
             return None;
         };
-        geometry.project_into_surface_receiver(projection, receiver_destination_bounds_bits)?;
+        geometry.project_into_surface_receiver(
+            projection,
+            receiver_destination_bounds_bits,
+            receiver_transform,
+        )?;
         *self = Self::Finalized(geometry);
         Some(())
     }
@@ -2957,30 +2974,48 @@ fn surface_receiver_visible_rects(
 }
 
 /// The scale each surface rasters at, by execution index: its receiver's,
-/// times the scale its own transform shows content at, so a surface rasters at
-/// the resolution it is displayed at. The scene root rasters at the device
-/// scale. Parents come first.
+/// times the scale its own transform shows content at in the receiver's
+/// space, so a surface rasters at the resolution it is displayed at. The
+/// scene root rasters at the device scale. Parents come first.
 fn surface_raster_scales(
     program: &ArtifactSurfaceDagProgram,
     context: ArtifactSurfaceRasterContext,
+    scrolls: &FxHashMap<ScrollNodeId, ScrollNodeSnapshot>,
 ) -> Vec<f32> {
     let nodes = program.execution_order.nodes();
     let device = context.scale_factor();
     let mut scales = vec![device; nodes.len()];
+    // Each surface rasters layout space moved by its raster translation.
+    let mut deltas = vec![[0.0; 2]; nodes.len()];
     for execution in nodes.iter().copied() {
-        let receiver = match execution.receiver() {
-            SurfaceDagExecutionTargetId::SceneRoot(_) => device,
-            SurfaceDagExecutionTargetId::Surface(parent) => scales[parent.index()],
+        let (receiver, receiver_delta) = match execution.receiver() {
+            SurfaceDagExecutionTargetId::SceneRoot(_) => (device, [0.0; 2]),
+            SurfaceDagExecutionTargetId::Surface(parent) => {
+                (scales[parent.index()], deltas[parent.index()])
+            }
         };
-        let own = program
+        let node = program
             .surface_dag
             .nodes()
             .get(execution.source().index())
-            .filter(|node| node.id() == execution.source())
+            .filter(|node| node.id() == execution.source());
+        if let Some(node) = node
+            && let Some(folded) = program.execution_order.folded_boundaries(execution.id())
+            && let Ok(delta) = materialized_surface_raster_translation(
+                node.id(),
+                node.kind(),
+                folded,
+                &program.surface_dag,
+                scrolls,
+            )
+        {
+            deltas[execution.id().index()] = delta;
+        }
+        let own = node
             .and_then(|node| match node.kind() {
                 SurfaceDagNodeKind::Transform(transform) => program
                     .spatial
-                    .owner_viewport_transform(transform)
+                    .owner_transform_moved_by(transform, receiver_delta)
                     .map(transform_display_scale),
                 SurfaceDagNodeKind::Effect(_) | SurfaceDagNodeKind::ScrollContent { .. } => None,
             })
@@ -3062,7 +3097,7 @@ fn prepare_artifact_surface_raster_plan_from_program(
         &scrolls,
         &clips,
     );
-    let raster_scales = surface_raster_scales(&program, context);
+    let raster_scales = surface_raster_scales(&program, context, &scrolls);
     let mut prepared_nodes: Vec<Option<PreparedArtifactSurfaceRasterNode>> =
         vec![None; program.execution_order.nodes().len()];
     // The cache budget: GPU source outputs and surface rasters it can hold are
@@ -3367,15 +3402,15 @@ fn prepare_artifact_surface_raster_plan_from_program(
                     parent: source,
                     child: source,
                 })?;
+            let child_node = program
+                .surface_dag
+                .nodes()
+                .get(child.source.index())
+                .filter(|node| node.id() == child.source)
+                .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+                    child.source,
+                ))?;
             if let Some(raster_boundary) = raster_boundary {
-                let child_node = program
-                    .surface_dag
-                    .nodes()
-                    .get(child.source.index())
-                    .filter(|node| node.id() == child.source)
-                    .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
-                        child.source,
-                    ))?;
                 let composite_clip = match child_node.kind() {
                     SurfaceDagNodeKind::ScrollContent { contents_clip, .. } => Some(contents_clip),
                     SurfaceDagNodeKind::Transform(_) | SurfaceDagNodeKind::Effect(_) => child
@@ -3395,9 +3430,26 @@ fn prepare_artifact_surface_raster_plan_from_program(
                         child.source,
                     ))?;
             }
+            // The child's matrix moves into this raster's space with
+            // `base_delta`, as its destination does.
+            let receiver_transform = match child_node.kind() {
+                SurfaceDagNodeKind::Transform(transform) => Some(
+                    program
+                        .spatial
+                        .owner_transform_moved_by(transform, base_delta)
+                        .ok_or(ArtifactSurfaceRasterPlanError::MissingSurfaceSnapshot(
+                            child.source,
+                        ))?,
+                ),
+                SurfaceDagNodeKind::Effect(_) | SurfaceDagNodeKind::ScrollContent { .. } => None,
+            };
             child
                 .geometry
-                .finalize_surface_receiver(raster_origin, receiver_destination_bounds_bits)
+                .finalize_surface_receiver(
+                    raster_origin,
+                    receiver_destination_bounds_bits,
+                    receiver_transform,
+                )
                 .ok_or(ArtifactSurfaceRasterPlanError::InvalidRasterOrigin(
                     child.source,
                 ))?;
