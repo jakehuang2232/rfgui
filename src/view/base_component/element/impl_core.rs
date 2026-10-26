@@ -720,6 +720,7 @@ impl Element {
             dirty_flags: DirtyFlags::ALL,
             last_layout_placement: None,
             last_scroll_chain: [0.0, 0.0],
+            place_dirty_by_scroll_only: false,
             last_layout_proposal: None,
             flex_info: None,
             has_absolute_descendant_for_hit_test: false,
@@ -957,7 +958,21 @@ impl Element {
     }
 
     pub(crate) fn mark_local_dirty(&mut self, flags: DirtyFlags) {
+        if flags.intersects(DirtyPassMask::PLACEMENT.union(DirtyPassMask::LAYOUT)) {
+            self.place_dirty_by_scroll_only = false;
+        }
         self.dirty_flags = self.dirty_flags.union(flags);
+    }
+
+    /// A new scroll offset of this element's own: it repaints and places
+    /// again, but unless something else changed too, its children stay.
+    pub(crate) fn mark_scroll_dirty(&mut self) {
+        let scroll_only = self.place_dirty_by_scroll_only
+            || !self
+                .dirty_flags
+                .intersects(DirtyPassMask::PLACEMENT.union(DirtyPassMask::LAYOUT));
+        self.mark_place_dirty();
+        self.place_dirty_by_scroll_only = scroll_only;
     }
 
     pub fn set_background_color<T: ColorLike + 'static>(&mut self, color: T) {

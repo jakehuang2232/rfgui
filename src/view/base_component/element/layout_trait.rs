@@ -385,14 +385,30 @@ impl Layoutable for Element {
                     Some(self.current_child_hit_test_clip_rect()),
                 )))
             && self.subtree_reads_placement_context(arena);
-        if !self.dirty_flags.intersects(placement_dirty_mask)
+        // A new scroll offset of its own moves none of the children, which
+        // sit at their scroll-zero positions. Only the interest handed to
+        // them and boxes placed against the scroll can change.
+        let scrolled_only = std::mem::take(&mut self.place_dirty_by_scroll_only)
+            && self.dirty_flags.intersects(placement_dirty_mask);
+        if scrolled_only && !child_placement_dirty && !inline_ifc_layout_call_site_dirty {
+            // The content extent is the last place's.
+            self.clamp_scroll_offset();
+        }
+        if (!self.dirty_flags.intersects(placement_dirty_mask)
+            || (scrolled_only && !self.children_read_placement_context(arena)))
             && !child_placement_dirty
             && !inline_ifc_layout_call_site_dirty
             && !context_moved
             && self.last_layout_placement == Some(placement)
-            && self.paint_cull_matches_current_scope()
+            && self.adopt_paint_cull_scope()
             && (self.children.is_empty() || self.child_paint_cull_matches_last_place())
         {
+            if scrolled_only {
+                // The offset changed, so this is not a clean place.
+                with_layout_place_profile(|p| p.place_scrolled_only += 1);
+                self.dirty_flags = self.dirty_flags.without(placement_dirty_mask);
+                return;
+            }
             with_layout_place_profile(|p| p.place_returned_clean += 1);
             self.place_was_clean = true;
             return;

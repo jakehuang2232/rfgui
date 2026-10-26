@@ -33,7 +33,7 @@ fn replay_checks_transitive_property_endpoints_outside_arena_ancestry() {
             owner,
             &PaintRecordingContext::default(),
             0,
-            &[],
+            Arc::from([]),
             false,
             &FxHashMap::default(),
         )
@@ -62,7 +62,7 @@ fn replay_checks_transitive_property_endpoints_outside_arena_ancestry() {
                 generations: OwnerMap::new([]),
             }),
             false,
-            trees.property_store_stamp(),
+            Arc::new(trees.property_store_stamp()),
             generations.generation_store_stamp(),
         ),
     );
@@ -126,7 +126,7 @@ fn completed_commands_reject_intervening_native_ancestor_or_lookup_mutation() {
                 owner,
                 &PaintRecordingContext::default(),
                 0,
-                &[0],
+                Arc::from([0]),
                 false,
                 &FxHashMap::default(),
             )
@@ -224,7 +224,7 @@ fn replay_survives_translation_unless_a_chunk_stayed_in_viewport_space() {
                 owner,
                 &PaintRecordingContext::default(),
                 0,
-                &[],
+                Arc::from([]),
                 false,
                 &FxHashMap::default(),
             )
@@ -249,7 +249,7 @@ fn replay_survives_translation_unless_a_chunk_stayed_in_viewport_space() {
                     generations: OwnerMap::new([]),
                 }),
                 false,
-                trees.property_store_stamp(),
+                Arc::new(trees.property_store_stamp()),
                 generations.generation_store_stamp(),
             ),
         );
@@ -265,7 +265,7 @@ fn replay_survives_translation_unless_a_chunk_stayed_in_viewport_space() {
                 owner,
                 &PaintRecordingContext::default(),
                 0,
-                &[],
+                Arc::from([]),
                 false,
                 &FxHashMap::default(),
             )

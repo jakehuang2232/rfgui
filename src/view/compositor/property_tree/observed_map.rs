@@ -49,6 +49,10 @@ impl<K: Copy + Eq + Hash, V> ObservedMap<K, V> {
             clock: self.clock,
         }
     }
+    /// Whether `stamp` is this map's current one, without taking a new one.
+    fn is_at(&self, stamp: &Stamp) -> bool {
+        self.clock == stamp.clock && Arc::ptr_eq(&self.identity, &stamp.identity)
+    }
     pub(crate) fn write(&mut self, key: K) {
         self.clock = self.clock.saturating_add(1);
         self.writes.push_back((self.clock, key));
@@ -180,18 +184,29 @@ impl PropertyTrees {
             self.states.stamp(),
         ])
     }
+    /// Whether no property has been written since `stamp` was taken.
+    pub(crate) fn property_store_is(&self, stamp: &PropertyStoreStamp) -> bool {
+        self.transforms.is_at(&stamp.0[0])
+            && self.layout_positions.is_at(&stamp.0[1])
+            && self.visual_offsets.is_at(&stamp.0[2])
+            && self.clips.is_at(&stamp.0[3])
+            && self.effects.is_at(&stamp.0[4])
+            && self.scrolls.is_at(&stamp.0[5])
+            && self.states.is_at(&stamp.0[6])
+    }
     /// All writes since the supplied stamp, including removals and changes to
     /// raw snapshots without generation bumps. None requires a complete read.
     pub(crate) fn property_writes_since(
         &self,
         old: &PropertyStoreStamp,
     ) -> Option<Arc<FxHashSet<NodeKey>>> {
-        let after = self.property_store_stamp();
-        if let Some(query) = self.recent_write_query.borrow().as_ref() {
-            if query.before == *old && query.after == after {
-                return Some(query.owners.clone());
-            }
+        if let Some(query) = self.recent_write_query.borrow().as_ref()
+            && query.before == *old
+            && self.property_store_is(&query.after)
+        {
+            return Some(query.owners.clone());
         }
+        let after = self.property_store_stamp();
         let mut owners = FxHashSet::default();
         self.transforms.changed_since(&old.0[0], |id| {
             owners.insert(id.0);

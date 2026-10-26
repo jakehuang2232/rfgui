@@ -169,7 +169,7 @@ impl Element {
             ScrollbarAxis::Horizontal => self.scroll_offset.x = next_scroll,
         }
         if changed {
-            self.mark_place_dirty();
+            self.mark_scroll_dirty();
         }
         changed
     }

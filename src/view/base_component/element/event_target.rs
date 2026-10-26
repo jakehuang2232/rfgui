@@ -417,7 +417,7 @@ impl EventTarget for Element {
         self.scroll_offset.y = next_y;
         if changed {
             self.note_scrollbar_interaction();
-            self.mark_place_dirty();
+            self.mark_scroll_dirty();
         }
         changed
     }
@@ -457,7 +457,7 @@ impl EventTarget for Element {
         self.scroll_offset.x = offset.0;
         self.scroll_offset.y = offset.1;
         if changed {
-            self.mark_place_dirty();
+            self.mark_scroll_dirty();
         }
     }
 

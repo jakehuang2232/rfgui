@@ -206,6 +206,14 @@ impl RendererTestDiagnostics {
                     profiles.iter().map(|p| p.place_returned_clean).sum(),
                 ),
                 (
+                    "place_scrolled_only",
+                    profiles.iter().map(|p| p.place_scrolled_only).sum(),
+                ),
+                (
+                    "place_cull_adopted",
+                    profiles.iter().map(|p| p.place_cull_adopted).sum(),
+                ),
+                (
                     "place_self_dirty",
                     profiles.iter().map(|p| p.place_self_dirty).sum(),
                 ),

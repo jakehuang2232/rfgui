@@ -1155,6 +1155,41 @@ impl Element {
             )
     }
 
+    /// Takes the parent's current child interest without placing again,
+    /// when it changes neither whether this node renders nor the interest
+    /// handed to its children; false when the node must place.
+    fn adopt_paint_cull_scope(&mut self) -> bool {
+        if self.paint_cull_matches_current_scope() {
+            return true;
+        }
+        let Some(cull_rect) = self.current_parent_child_clip_rect() else {
+            return false;
+        };
+        let frame = LayoutFrame {
+            x: self.layout_state.layout_position.x,
+            y: self.layout_state.layout_position.y,
+            width: self.layout_state.layout_size.width,
+            height: self.layout_state.layout_size.height,
+        };
+        let bounds = self.transformed_frame_bounding_rect(frame);
+        let should_render = frame.width > 0.0
+            && frame.height > 0.0
+            && bounds.intersects(cull_rect)
+            && self
+                .absolute_clip_rect
+                .is_none_or(|clip| bounds.intersects(clip));
+        if should_render != self.layout_state.should_render {
+            return false;
+        }
+        let previous = self.inherited_paint_cull_rect.replace(cull_rect);
+        if !self.children.is_empty() && !self.child_paint_cull_matches_last_place() {
+            self.inherited_paint_cull_rect = previous;
+            return false;
+        }
+        with_layout_place_profile(|p| p.place_cull_adopted += 1);
+        true
+    }
+
     pub(crate) fn child_paint_cull_matches_last_place(&self) -> bool {
         rect_approx_eq(
             self.last_child_paint_cull_rect,
@@ -1616,16 +1651,19 @@ impl Element {
         &self,
         arena: &crate::view::node_arena::NodeArena,
     ) -> bool {
-        let reads = |metadata: crate::view::node_arena::PlacementEligibilityMetadata| {
-            metadata.contains_anchor_name
-                || metadata.contains_anchor_ref
-                || metadata.contains_absolute_descendant
-        };
-        reads(self.local_placement_eligibility_metadata())
-            || self
-                .children
-                .iter()
-                .any(|&child| reads(arena.cached_placement_eligibility_metadata(child)))
+        reads_placement_context(self.local_placement_eligibility_metadata())
+            || self.children_read_placement_context(arena)
+    }
+
+    /// Whether a child's subtree reads the context it is placed in, as
+    /// [`Self::subtree_reads_placement_context`] says.
+    pub(crate) fn children_read_placement_context(
+        &self,
+        arena: &crate::view::node_arena::NodeArena,
+    ) -> bool {
+        self.children.iter().any(|&child| {
+            reads_placement_context(arena.cached_placement_eligibility_metadata(child))
+        })
     }
 
     pub(crate) fn local_placement_eligibility_metadata(
@@ -1785,13 +1823,12 @@ impl Element {
         });
         if placed_offset.x != self.scroll_offset.x || placed_offset.y != self.scroll_offset.y {
             // Content extent is known only after placement. If resize/content
-            // removal clamps the offset, install child positions at that final
-            // offset in this same pass. Updating just the owner's offset leaves
-            // paint, hit testing and spatial snapshots at the old displacement.
-            // This is one bounded placement replay, not another layout pass;
-            // update_content_size_from_children removes scroll displacement.
-            // Profiling includes both placement attempts: UpdateContentSize
-            // and RecomputeHitTest run again here; ClampScroll runs only once.
+            // removal clamps the offset, the children keep their positions,
+            // but the interest they were culled against moved: place them
+            // again against it in this same pass. Children whose culling it
+            // leaves alone take it without placing. Profiling includes both
+            // attempts: UpdateContentSize and RecomputeHitTest run again
+            // here; ClampScroll runs only once.
             self.place_children_at_current_scroll_offset(
                 viewport_width,
                 viewport_height,
@@ -1908,9 +1945,7 @@ impl Element {
                     with_layout_place_profile(|profile| {
                         profile.child_place_calls += 1;
                     });
-                    arena.with_element_taken(child_key, |child, arena| {
-                        child.place(placement, arena);
-                    });
+                    place_child(arena, child_key, placement);
                 }
             });
             profile_layout_place_time(LayoutPlaceTiming::AbsoluteChildPlace, || {
@@ -1922,23 +1957,22 @@ impl Element {
                         profile.child_place_calls += 1;
                         profile.absolute_child_place_calls += 1;
                     });
-                    arena.with_element_taken(child_key, |child, arena| {
-                        child.place(
-                            LayoutPlacement {
-                                parent_x: origin_x,
-                                parent_y: origin_y,
-                                visual_offset_x,
-                                visual_offset_y,
-                                available_width: child_available_width,
-                                available_height: child_available_height,
-                                viewport_width,
-                                viewport_height,
-                                percent_base_width: child_percent_base_width,
-                                percent_base_height: child_percent_base_height,
-                            },
-                            arena,
-                        );
-                    });
+                    place_child(
+                        arena,
+                        child_key,
+                        LayoutPlacement {
+                            parent_x: origin_x,
+                            parent_y: origin_y,
+                            visual_offset_x,
+                            visual_offset_y,
+                            available_width: child_available_width,
+                            available_height: child_available_height,
+                            viewport_width,
+                            viewport_height,
+                            percent_base_width: child_percent_base_width,
+                            percent_base_height: child_percent_base_height,
+                        },
+                    );
                 }
             });
         }
@@ -2135,4 +2169,12 @@ fn clean_placement_skip_node_failure(
         }
         None
     }
+}
+
+fn reads_placement_context(
+    metadata: crate::view::node_arena::PlacementEligibilityMetadata,
+) -> bool {
+    metadata.contains_anchor_name
+        || metadata.contains_anchor_ref
+        || metadata.contains_absolute_descendant
 }

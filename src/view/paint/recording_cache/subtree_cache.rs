@@ -23,7 +23,7 @@ pub(crate) struct SubtreeCache {
             Key,
             Arc<Snapshot>,
             bool,
-            PropertyStoreStamp,
+            Arc<PropertyStoreStamp>,
             crate::view::compositor::property_tree::observed_map::Stamp,
         ),
     >,
@@ -33,12 +33,22 @@ pub(crate) struct SubtreeCache {
     /// Owners outside the subtrees recorded this frame, such as a list
     /// shared by all its rows' recordings, observed once and shared.
     shared_properties: FxHashMap<NodeKey, Arc<Properties>>,
+    /// Whether a shared recorded input still holds, checked once while the
+    /// trees stay as `matched_stamp` says: every row of a scrolled list
+    /// replays against the same list.
+    matched_properties: FxHashMap<NodeKey, (Arc<Properties>, bool)>,
+    matched_stamp: Option<Arc<PropertyStoreStamp>>,
+    /// Counts frames, so a parent's ancestor inputs are read once a frame.
+    epoch: u64,
+    /// For each parent, its children's ancestor inputs as last read, with
+    /// the frame and arena clock they were read at.
+    ancestor_inputs: FxHashMap<NodeKey, ((u64, u64), Option<Ancestors>)>,
 }
 #[derive(Clone, PartialEq)]
 pub(crate) struct Key {
     revision: u64,
     index_revision: u64,
-    ancestors: Vec<AncestorInput>,
+    ancestors: Ancestors,
     context: PaintRecordingContext,
     order: CoverageOrder,
     deferred: bool,
@@ -47,6 +57,9 @@ pub(crate) struct Key {
 /// Native ancestor hooks have already produced this frame's complete metadata.
 /// Keep exact data, not a signature hash. Missing observations retain the
 /// conservative mutation dependency (for example outside-frame ancestors).
+/// What an ancestor draws never reaches a subtree's recording, so only the
+/// chunks it records and the frames and property states they paint in are
+/// compared: a scroll container repainting its scrollbar keeps its rows.
 #[derive(Clone)]
 enum AncestorInput {
     Recorded {
@@ -73,7 +86,7 @@ impl PartialEq for AncestorInput {
                     stable: sb,
                     plan: pb,
                 },
-            ) => a == b && sa == sb && (Arc::ptr_eq(pa, pb) || metadata_eq(pa, pb)),
+            ) => a == b && sa == sb && (Arc::ptr_eq(pa, pb) || chunk_structure_eq(pa, pb)),
             (
                 Self::Unobserved {
                     owner: a,
@@ -89,14 +102,44 @@ impl PartialEq for AncestorInput {
     }
 }
 
+fn chunk_structure_eq(
+    a: &PaintNodePlan<PaintChunkMetadata>,
+    b: &PaintNodePlan<PaintChunkMetadata>,
+) -> bool {
+    [&a.before_children, &a.after_children]
+        .into_iter()
+        .zip([&b.before_children, &b.after_children])
+        .all(|(a, b)| {
+            a.len() == b.len()
+                && a.iter().zip(b).all(|(a, b)| {
+                    a.id == b.id
+                        && a.owner == b.owner
+                        && a.frame == b.frame
+                        && a.properties == b.properties
+                })
+        })
+}
+
+/// The inputs of an owner's ancestors, nearest first. All children of a
+/// parent share one list, kept from frame to frame while it holds.
+#[derive(Clone)]
+struct Ancestors(Arc<[AncestorInput]>);
+impl PartialEq for Ancestors {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.0[..] == other.0[..]
+    }
+}
+
 /// One owner's property inputs as the trees hold them now.
 #[derive(Clone, Copy, PartialEq)]
 struct Observation {
-    /// Whether the owner's layout-position and visual-offset edges are part
-    /// of this observation. They are for subtree members. Paint outside the
-    /// subtree is recorded relative to layout frames, so moving an ancestor
-    /// or another dependency changes no recorded input; only viewport-frame
-    /// chunks see it, and those also depend on the subtree's translation.
+    /// Whether the owner's layout-position and visual-offset edges, and
+    /// where its contents are scrolled to, are part of this observation.
+    /// They are for subtree members. Paint outside the subtree is recorded
+    /// relative to layout frames at scroll zero, so moving or scrolling an
+    /// ancestor or another dependency changes no recorded input; only
+    /// viewport-frame chunks see a move, and those also depend on the
+    /// subtree's translation.
     spatial: bool,
     state: Option<NodePropertyState>,
     transform: Option<TransformNodeSnapshot>,
@@ -198,7 +241,10 @@ impl Properties {
             && self.visual == observed.visual
             && self.transform.as_deref() == observed.transform.as_ref()
             && self.effect.as_deref() == observed.effect.as_ref()
-            && self.scroll.as_deref() == observed.scroll.as_ref()
+            && match (self.scroll.as_deref(), observed.scroll.as_ref()) {
+                (Some(old), Some(new)) if !self.spatial => old.eq_ignoring_scroll_position(new),
+                (old, new) => old == new,
+            }
             && self
                 .clips
                 .iter()
@@ -340,6 +386,9 @@ fn tracked_local(arena: &NodeArena, key: NodeKey) -> bool {
 impl SubtreeCache {
     pub(super) fn begin(&mut self) {
         self.hits = 0;
+        self.epoch += 1;
+        self.matched_properties.clear();
+        self.matched_stamp = None;
         for (_, _, seen, _, _) in self.entries.values_mut() {
             *seen = false;
         }
@@ -360,12 +409,15 @@ impl SubtreeCache {
             self.entries.clear();
             self.proofs.clear();
             self.split.clear();
+            self.ancestor_inputs.clear();
             self.arena = Some(identity);
             self.index_revision = index_revision;
             self.roots = roots.to_vec();
         }
         self.proofs.retain(|key, _| arena.contains_key(*key));
         self.split.retain(|key, _| arena.contains_key(*key));
+        self.ancestor_inputs
+            .retain(|key, _| arena.contains_key(*key));
     }
     fn tracked_local(&mut self, arena: &NodeArena, owner: NodeKey) -> bool {
         let clock = arena.mutation_clock();
@@ -419,7 +471,7 @@ impl SubtreeCache {
         owner: NodeKey,
         context: &PaintRecordingContext,
         root_index: usize,
-        path: &[usize],
+        path: Arc<[usize]>,
         deferred: bool,
         metadata: &FxHashMap<NodeKey, (u64, Arc<PaintNodePlan<PaintChunkMetadata>>)>,
     ) -> Option<(Key, Arc<[NodeKey]>)> {
@@ -438,32 +490,12 @@ impl SubtreeCache {
             super::super::work_profile::count("subtree_probe_mutation_skips", 1);
             return None;
         }
-        // ScrollNodeSnapshot compares every float by bits, including the
-        // sampled overlay. Context equality therefore preserves the complete
-        // parent scroll input.
+        // The context holds only what the parent hands down. The parent's
+        // scroll input, apart from where it is scrolled to, is among the
+        // snapshot's properties.
         let members = self.closed(arena, owner, 0)?;
         let subtree_len = members.len();
-        let mut ancestors = Vec::new();
-        let mut parent = arena.parent_of(owner);
-        let mut depth = 0;
-        while let Some(key) = parent {
-            depth += 1;
-            if depth > 128 || !self.tracked_local(arena, key) {
-                return None;
-            }
-            ancestors.push(match metadata.get(&key) {
-                Some((stable, plan)) => AncestorInput::Recorded {
-                    owner: key,
-                    stable: *stable,
-                    plan: plan.clone(),
-                },
-                None => AncestorInput::Unobserved {
-                    owner: key,
-                    revision: arena.mutation_revision(key)?,
-                },
-            });
-            parent = arena.parent_of(key);
-        }
+        let ancestors = self.ancestor_inputs(arena, arena.parent_of(owner), metadata)?;
         let key = Key {
             revision,
             index_revision: arena.stable_id_index_revision()?,
@@ -471,7 +503,7 @@ impl SubtreeCache {
             context: context.clone(),
             order: CoverageOrder {
                 root_index,
-                child_path: path.into(),
+                child_path: path,
                 phase: super::super::PaintNodePhase::BeforeChildren,
                 slot: 0,
             },
@@ -491,6 +523,52 @@ impl SubtreeCache {
             self.split.remove(&owner);
         }
         Some((key, members))
+    }
+    /// The ancestor inputs of `parent`'s children: `parent` and every
+    /// ancestor above it, read once a frame for all the children.
+    fn ancestor_inputs(
+        &mut self,
+        arena: &NodeArena,
+        parent: Option<NodeKey>,
+        metadata: &FxHashMap<NodeKey, (u64, Arc<PaintNodePlan<PaintChunkMetadata>>)>,
+    ) -> Option<Ancestors> {
+        let Some(parent) = parent else {
+            return Some(Ancestors(Arc::from([])));
+        };
+        let stamp = (self.epoch, arena.mutation_clock());
+        if let Some((read_at, inputs)) = self.ancestor_inputs.get(&parent)
+            && *read_at == stamp
+        {
+            return inputs.clone();
+        }
+        let read = (|| {
+            let mut inputs = Vec::new();
+            let mut cursor = Some(parent);
+            while let Some(key) = cursor {
+                if inputs.len() >= 128 || !self.tracked_local(arena, key) {
+                    return None;
+                }
+                inputs.push(match metadata.get(&key) {
+                    Some((stable, plan)) => AncestorInput::Recorded {
+                        owner: key,
+                        stable: *stable,
+                        plan: plan.clone(),
+                    },
+                    None => AncestorInput::Unobserved {
+                        owner: key,
+                        revision: arena.mutation_revision(key)?,
+                    },
+                });
+                cursor = arena.parent_of(key);
+            }
+            Some(inputs)
+        })();
+        let inputs = read.map(|inputs| match self.ancestor_inputs.get(&parent) {
+            Some((_, Some(previous))) if previous.0[..] == inputs[..] => previous.clone(),
+            _ => Ancestors(inputs.into()),
+        });
+        self.ancestor_inputs.insert(parent, (stamp, inputs.clone()));
+        inputs
     }
     pub(crate) fn replay(
         &mut self,
@@ -513,6 +591,24 @@ impl SubtreeCache {
             self.split.insert(owner, key.clone());
             return None;
         }
+        if !self
+            .matched_stamp
+            .as_deref()
+            .is_some_and(|stamp| trees.property_store_is(stamp))
+        {
+            self.matched_properties.clear();
+            self.matched_stamp = Some(Arc::new(trees.property_store_stamp()));
+        }
+        let now = self.matched_stamp.clone().unwrap();
+        let matched = &mut self.matched_properties;
+        let mut matches = |owner: NodeKey, old: &Arc<Properties>| match matched.get(&owner) {
+            Some((checked, result)) if Arc::ptr_eq(checked, old) => *result,
+            _ => {
+                let result = old.matches_trees(trees, owner);
+                matched.insert(owner, (old.clone(), result));
+                result
+            }
+        };
         let written = trees.property_writes_since(stamp);
         let properties_match = match &written {
             Some(owners) if owners.len() < snapshot.properties.len() => {
@@ -520,12 +616,11 @@ impl SubtreeCache {
                     snapshot
                         .properties
                         .get(owner)
-                        .is_none_or(|old| old.matches_trees(trees, *owner))
+                        .is_none_or(|old| matches(*owner, old))
                 })
             }
             _ => snapshot.properties.iter().all(|(owner, old)| {
-                written.as_ref().is_some_and(|keys| !keys.contains(owner))
-                    || old.matches_trees(trees, *owner)
+                written.as_ref().is_some_and(|keys| !keys.contains(owner)) || matches(*owner, old)
             }),
         };
         let generation_writes = generations.generation_writes_since(generation_stamp);
@@ -538,17 +633,19 @@ impl SubtreeCache {
                         .is_none_or(|old| *old == generations.local_generations_for(*owner))
                 })
             }
-            _ => snapshot
-                .generations
-                .iter()
-                .all(|(owner, old)| *old == generations.local_generations_for(*owner)),
+            _ => snapshot.generations.iter().all(|(owner, old)| {
+                generation_writes
+                    .as_ref()
+                    .is_some_and(|keys| !keys.contains(owner))
+                    || *old == generations.local_generations_for(*owner)
+            }),
         };
         if !properties_match || !generations_match {
             self.split.insert(owner, key.clone());
             return None;
         }
         *seen = true;
-        *stamp = trees.property_store_stamp();
+        *stamp = now;
         *generation_stamp = generations.generation_store_stamp();
         self.hits += 1;
         Some(snapshot.clone())
@@ -603,6 +700,7 @@ impl RecordingCache {
         path: &[usize],
         deferred: bool,
     ) -> Option<(Key, Arc<[NodeKey]>)> {
+        let path = self.intern_order_path(owner, path);
         self.subtrees.key(
             arena,
             owner,
@@ -674,7 +772,7 @@ impl RecordingCache {
         {
             return;
         }
-        // Keep the shared membership block on hits. Ancestral generation
+        // Keep the shared membership block on hits. Ancestral property
         // dependencies are collected only when minting a new snapshot.
         let mut ancestors = Vec::new();
         let mut parent = arena.parent_of(owner);
@@ -683,11 +781,6 @@ impl RecordingCache {
             ancestors.push(key);
             parent = arena.parent_of(key);
         }
-        let dependencies = members
-            .iter()
-            .chain(&ancestors)
-            .copied()
-            .collect::<Vec<_>>();
         let has_viewport_chunk = items.iter().any(|item| {
             matches!(
                 item,
@@ -734,8 +827,11 @@ impl RecordingCache {
                 &ancestors,
                 &mut self.subtrees.shared_properties,
             )),
+            // Only the members' own paint is recorded. An ancestor's reaches
+            // none of it; its child order and property inputs are compared
+            // through the key and the properties.
             generations: OwnerMap::new(
-                dependencies
+                members
                     .iter()
                     .map(|key| (*key, generations.local_generations_for(*key))),
             ),
@@ -746,7 +842,7 @@ impl RecordingCache {
                 key,
                 Arc::new(snapshot),
                 true,
-                trees.property_store_stamp(),
+                Arc::new(trees.property_store_stamp()),
                 generations.generation_store_stamp(),
             ),
         );

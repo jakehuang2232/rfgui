@@ -281,10 +281,10 @@ fn placement_skip_does_not_skip_nested_subtree_when_context_changes() {
 }
 
 /// Children sit at their scroll-zero positions, so scrolling within one
-/// paint-interest cell leaves their placement as it was: placement skips
-/// them, and they move only in the viewport.
+/// paint-interest cell leaves their placement as it was: the container takes
+/// its new offset without visiting them, and they move only in the viewport.
 #[test]
-fn placement_skip_reuses_children_across_a_scroll_offset_change() {
+fn scrolling_within_a_cull_cell_leaves_the_children_unvisited() {
     let mut viewport = Viewport::new();
     viewport
         .render_rsx(&scrollable_grid_box_model_tree())
@@ -324,9 +324,9 @@ fn placement_skip_reuses_children_across_a_scroll_offset_change() {
     let (_gate_profile, place_profile) =
         run_layout_for_test_with_gate_profile(&mut viewport, 100.0, 50.0);
 
+    assert_eq!(place_profile.place_scrolled_only, 1);
     assert_eq!(place_profile.child_place_calls, 0);
-    assert_eq!(place_profile.skipped_child_place_calls, 1);
-    assert_eq!(place_profile.placement_skip_failures.total(), 0);
+    assert_eq!(place_profile.skipped_child_place_calls, 0);
     assert_eq!(
         viewport_box(&viewport),
         [before[0], before[1], before[2] - 12.0, before[3] - 8.0]

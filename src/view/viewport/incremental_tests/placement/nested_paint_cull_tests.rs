@@ -114,8 +114,11 @@ fn scrolling_reevaluates_nested_row_culling() {
 
     // Visible content [200, 250) aligns to the interest [96, 288).
     scroll_root_to(&mut viewport, 200.0);
-    run_layout_for_test(&mut viewport, 200.0, 200.0);
+    let (_, place_profile) = run_layout_for_test_with_gate_profile(&mut viewport, 200.0, 200.0);
     assert_eq!(rendered_rows(&viewport), (4..15).collect::<Vec<_>>());
+    // Rows that render, or stay culled, on both sides of the move take the
+    // new interest without placing again: row 4 and rows 15 to 19.
+    assert_eq!(place_profile.place_cull_adopted, 6);
 
     scroll_root_to(&mut viewport, 0.0);
     run_layout_for_test(&mut viewport, 200.0, 200.0);

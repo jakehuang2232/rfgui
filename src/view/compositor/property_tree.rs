@@ -969,19 +969,9 @@ pub(crate) struct ScrollNodeSnapshot {
 
 impl PartialEq for ScrollNodeSnapshot {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-            && self.owner == other.owner
-            && self.parent == other.parent
+        self.eq_ignoring_scroll_position(other)
             && f32_bits_equal(self.offset.x, other.offset.x)
             && f32_bits_equal(self.offset.y, other.offset.y)
-            && self.configured_axis == other.configured_axis
-            && rect_bits_equal(self.viewport, other.viewport)
-            && f32_bits_equal(self.content_size.width, other.content_size.width)
-            && f32_bits_equal(self.content_size.height, other.content_size.height)
-            && rect_bits_equal(
-                self.layout_content_bounds_at_zero,
-                other.layout_content_bounds_at_zero,
-            )
             && scrollbar_overlay_bits_equal(self.scrollbar_overlay, other.scrollbar_overlay)
             && self.generation == other.generation
     }
@@ -990,6 +980,22 @@ impl PartialEq for ScrollNodeSnapshot {
 impl Eq for ScrollNodeSnapshot {}
 
 impl ScrollNodeSnapshot {
+    /// Equality apart from where the contents are scrolled to, the
+    /// scrollbar that shows it and the generation counting such changes.
+    pub(crate) fn eq_ignoring_scroll_position(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.owner == other.owner
+            && self.parent == other.parent
+            && self.configured_axis == other.configured_axis
+            && rect_bits_equal(self.viewport, other.viewport)
+            && f32_bits_equal(self.content_size.width, other.content_size.width)
+            && f32_bits_equal(self.content_size.height, other.content_size.height)
+            && rect_bits_equal(
+                self.layout_content_bounds_at_zero,
+                other.layout_content_bounds_at_zero,
+            )
+    }
+
     /// Exact synchronized geometry gate for a scroll boundary nested below
     /// an independently-owned ancestor clip chain. The contents clip remains
     /// the scroll node's own authority; its parent is deliberately preserved

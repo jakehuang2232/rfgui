@@ -688,6 +688,10 @@ pub(crate) struct LayoutPlaceProfile {
     pub axis_replay_reject_axis: usize,
     pub axis_replay_reject_gap: usize,
     pub place_returned_clean: usize,
+    /// Places that only took a new scroll offset of the element's own.
+    pub place_scrolled_only: usize,
+    /// Clean places that took a new paint interest without placing again.
+    pub place_cull_adopted: usize,
     // Non-exclusive reasons: one executed place can have several causes.
     pub place_self_dirty: usize,
     pub place_descendant_dirty: usize,
@@ -4494,24 +4498,36 @@ fn place_inline_ifc_span_absolute_children(
         return;
     };
     for child in children {
-        arena.with_element_taken(child, |child, arena| {
-            child.place(
-                LayoutPlacement {
-                    parent_x: origin.x,
-                    parent_y: origin.y,
-                    visual_offset_x: 0.0,
-                    visual_offset_y: 0.0,
-                    available_width: size.width,
-                    available_height: size.height,
-                    viewport_width: placement.viewport_width,
-                    viewport_height: placement.viewport_height,
-                    percent_base_width: Some(size.width),
-                    percent_base_height: Some(size.height),
-                },
-                arena,
-            );
-        });
+        place_child(
+            arena,
+            child,
+            LayoutPlacement {
+                parent_x: origin.x,
+                parent_y: origin.y,
+                visual_offset_x: 0.0,
+                visual_offset_y: 0.0,
+                available_width: size.width,
+                available_height: size.height,
+                viewport_width: placement.viewport_width,
+                viewport_height: placement.viewport_height,
+                percent_base_width: Some(size.width),
+                percent_base_height: Some(size.height),
+            },
+        );
     }
+}
+
+/// Places `key`, recording a mutation only when the place found something
+/// to do, so later passes keep their observations of an unchanged node.
+pub(crate) fn place_child(arena: &mut NodeArena, key: NodeKey, placement: LayoutPlacement) {
+    arena.with_element_taken_classified(key, |child, arena| {
+        child.place(placement, arena);
+        let unchanged = child
+            .as_any_mut()
+            .downcast_mut::<Element>()
+            .is_some_and(Element::take_place_was_clean);
+        ((), (!unchanged).then_some(NodeChange::Mutation))
+    });
 }
 
 /// Install one text op of an origin-independent plan at the root's content
@@ -5478,6 +5494,9 @@ pub struct Element {
     last_layout_placement: Option<LayoutPlacement>,
     /// The scroll offsets above this element when it was last placed.
     last_scroll_chain: [f32; 2],
+    /// Whether this element's own scroll offset is all that changed since
+    /// its last place. Its children keep their scroll-zero positions.
+    place_dirty_by_scroll_only: bool,
     last_layout_proposal: Option<LayoutProposal>,
     flex_info: Option<Box<crate::view::layout::FlexLayoutInfo>>,
     has_absolute_descendant_for_hit_test: bool,

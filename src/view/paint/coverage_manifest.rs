@@ -683,7 +683,8 @@ pub(super) fn record_cached_coverage_manifest(
                                 child,
                                 self.arena,
                                 &recording_context,
-                            );
+                            )
+                            .without_owner_scope();
                         path.push(index);
                         self.walk(child, root_index, path, false, &child_recording_context);
                         path.pop();
@@ -827,7 +828,8 @@ pub(super) fn record_cached_coverage_manifest(
                                 child,
                                 self.arena,
                                 &recording_context,
-                            );
+                            )
+                            .without_owner_scope();
                         path.push(index);
                         self.walk(child, root_index, path, false, &child_recording_context);
                         path.pop();
@@ -846,7 +848,8 @@ pub(super) fn record_cached_coverage_manifest(
                                 child,
                                 self.arena,
                                 &recording_context,
-                            );
+                            )
+                            .without_owner_scope();
                         path.push(index);
                         self.walk(child, root_index, path, false, &child_recording_context);
                         path.pop();
@@ -866,7 +869,8 @@ pub(super) fn record_cached_coverage_manifest(
                                     child,
                                     self.arena,
                                     &recording_context,
-                                );
+                                )
+                                .without_owner_scope();
                             path.push(index);
                             self.walk(child, root_index, path, false, &child_recording_context);
                             path.pop();

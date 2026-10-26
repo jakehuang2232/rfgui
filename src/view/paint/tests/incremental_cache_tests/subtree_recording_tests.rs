@@ -243,9 +243,10 @@ fn scroll_subtree_replay_matches_live_recording_after_offset_changes() {
     let mut generations = PaintGenerationTracker::default();
     let mut cache = RecordingCache::default();
     for frame in 0..7 {
-        if frame == 2 {
+        if frame >= 2 {
+            let step = frame as f32;
             crate::view::test_support::get_element_mut::<Element>(&arena, root)
-                .set_scroll_offset((5., 7.));
+                .set_scroll_offset((3. + step, 5. + step));
             let (measure, place) = constraints();
             measure_and_place(&mut arena, root, measure, place);
             for key in [root, child] {
@@ -277,8 +278,10 @@ fn scroll_subtree_replay_matches_live_recording_after_offset_changes() {
         );
         let fresh = record_surface_dag_frame_artifact(&arena, &[root], &properties, &generations);
         assert_eq!(format!("{cached:?}"), format!("{fresh:?}"), "frame {frame}");
-        if frame == 1 || frame == 6 {
-            assert!(cache.subtrees.hits > 0);
+        // The child records at scroll zero: once its frame names the scroll
+        // node, the scrolling container keeps replaying it.
+        if frame == 1 || frame >= 4 {
+            assert!(cache.subtrees.hits > 0, "frame {frame}");
         }
     }
 }

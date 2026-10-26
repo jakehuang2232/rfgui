@@ -95,6 +95,22 @@ impl PaintRecordingContext {
             .then_some(snapshot)
     }
 
+    /// This context as a child inherits it: the authority scoped to the
+    /// owner's own recording stays behind, as the walker binds it afresh
+    /// for every node.
+    pub(crate) fn without_owner_scope(self) -> Self {
+        Self {
+            is_frame_root: false,
+            recording_owner: None,
+            recording_owner_stable_id: None,
+            authoritative_self_clip: None,
+            deferred_viewport_self_clip: None,
+            surface_dag_scroll: None,
+            surface_dag_scroll_snapshot: None,
+            ..self
+        }
+    }
+
     pub(crate) fn without_text_area_child_authority(&self) -> Self {
         Self {
             text_area_selection: None,
